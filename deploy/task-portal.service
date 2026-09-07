@@ -1,0 +1,30 @@
+# Install as /etc/systemd/system/task-portal.service
+[Unit]
+Description=Task Portal (Next.js)
+Documentation=https://github.com/OWNER/REPO
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/task-portal
+EnvironmentFile=/etc/task-portal.env
+# Bind to loopback only; nginx terminates TLS and proxies to it.
+ExecStart=/srv/task-portal/node_modules/.bin/next start -H 127.0.0.1 -p 3000
+Restart=always
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/srv/task-portal /var/lib/task-portal
+
+[Install]
+WantedBy=multi-user.target

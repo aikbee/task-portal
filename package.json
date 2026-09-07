@@ -1,17 +1,22 @@
 {
-  "name": "admin-portal",
+  "name": "task-portal",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:setup": "node --env-file=.env.local scripts/setup-db.mjs",
+    "db:reset": "node --env-file=.env.local scripts/setup-db.mjs --reset"
   },
   "dependencies": {
+    "lucide-react": "^1.39.0",
+    "mysql2": "^3.24.2",
     "next": "16.3.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
