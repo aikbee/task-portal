@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Lock, Delete, Unlock, Sparkles, LogOut } from "lucide-react";
+import { Lock, Delete, Unlock, LogOut } from "lucide-react";
+import Logo from "@/components/ui/Logo";
 import { useAuth } from "@/lib/auth-context";
 import { api } from "@/lib/api";
 import Avatar from "@/components/ui/Avatar";
@@ -272,7 +273,7 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
           <LogOut size={13} /> {signingOut ? tr("Signing out…") : user ? tr("Not {name}? Sign out", { name: user.name.split(" ")[0] }) : tr("Sign out")}
         </button>
         <p className="flex items-center gap-2 text-xs text-fg-faint">
-          <Sparkles size={12} /> Task Portal · type the PIN or use the keypad
+          <Logo size={14} className="rounded-[3px]" /> Task Portal · type the PIN or use the keypad
         </p>
       </div>
     </div>

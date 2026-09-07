@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Sparkles, Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User } from "lucide-react";
+import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePrefs } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ import AnimatedBackground from "@/components/shell/AnimatedBackground";
 import { ToastProvider } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import { Input, Field, Checkbox } from "@/components/ui/Controls";
+import Logo from "@/components/ui/Logo";
 import {LOCALES, switchLocale, useLocale, useT } from "@/lib/i18n";
 
 export default function LoginView({ demo = false }) {
@@ -66,9 +67,7 @@ function LoginCard({ demo }) {
     <div className="relative z-10 flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-[420px] anim-rise">
         <div className="mb-6 flex items-center justify-center gap-3">
-          <span className="grid h-12 w-12 place-items-center rounded-app bg-gradient-to-br from-accent to-accent-strong text-white shadow-[0_10px_24px_-8px_var(--accent)]">
-            <Sparkles size={22} />
-          </span>
+          <Logo size={48} className="rounded-app shadow-[0_10px_24px_-8px_var(--accent)]" />
           <span>
             <span className="block text-lg font-semibold tracking-tight">{tr("Task Portal")}</span>
             <span className="block text-xs text-fg-muted">{tr("Control center")}</span>

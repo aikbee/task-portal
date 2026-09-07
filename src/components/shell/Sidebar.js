@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
+import Logo from "@/components/ui/Logo";
 import { usePathname } from "next/navigation";
-import { Sparkles, ChevronsLeft, ChevronsRight, SlidersHorizontal, StickyNote, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, SlidersHorizontal, StickyNote, X } from "lucide-react";
 import { USER_ROLES } from "@/lib/modules";
 import { useAuth, useVisibleModules } from "@/lib/auth-context";
 import Avatar from "@/components/ui/Avatar";
@@ -41,9 +42,7 @@ export default function Sidebar() {
           <span className="absolute -right-6 top-4 h-20 w-20 rounded-full bg-cyan-400/30 blur-2xl" />
         </div>
         <Link href="/" className="relative flex items-center gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-app bg-gradient-to-br from-accent to-accent-strong text-white shadow-[0_8px_20px_-8px_var(--accent)]">
-            <Sparkles size={19} />
-          </span>
+          <Logo size={40} className="shrink-0 rounded-app shadow-[0_8px_20px_-8px_var(--accent)]" />
           {!collapsed ? (
             <span className="min-w-0">
               <span className="block truncate text-sm font-semibold tracking-tight">{tr("Task Portal")}</span>

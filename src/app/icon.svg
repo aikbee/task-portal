@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#g)"/>
+  <!-- the portal: an open ring; the check passes out through its opening -->
+  <path d="M48.94 30.52 A17 17 0 1 1 37.81 16.03" fill="none" stroke="#fff" stroke-opacity="0.6" stroke-width="6.5" stroke-linecap="round"/>
+  <polyline points="21 33 29.5 41.5 47.5 19" fill="none" stroke="#fff" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
