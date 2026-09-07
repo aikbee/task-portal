@@ -416,6 +416,29 @@ console.log("notifications");
   check("clear read notifications", cleared.status === 200);
 }
 
+console.log("push + reminder scheduler");
+{
+  const key = await call("GET", "/api/push/key");
+  check("push public key exposed", key.status === 200 && typeof key.data.publicKey === "string" && key.data.publicKey.length > 20);
+  const bad = await call("POST", "/api/push/subscribe", { body: { endpoint: "http://not-https", keys: {} } });
+  check("invalid subscription -> 400", bad.status === 400);
+  const ep = `https://push.example.test/sub/${Date.now()}`;
+  const sub = await call("POST", "/api/push/subscribe", { body: { endpoint: ep, keys: { p256dh: "BPl-fake-p256dh", auth: "fake-auth" } } });
+  check("subscribe 200", sub.status === 200 && sub.data.enabled === true);
+  const again = await call("POST", "/api/push/subscribe", { body: { endpoint: ep, keys: { p256dh: "BPl-fake-2", auth: "fake-2" } } });
+  check("re-subscribe upserts", again.status === 200);
+  const test = await call("POST", "/api/push/test", { body: {} });
+  check("test push attempted (unreachable endpoint fails gracefully, subscription kept)", test.status === 200 && test.data.total === 1 && test.data.sent === 0);
+  const un = await call("POST", "/api/push/unsubscribe", { body: { endpoint: ep } });
+  check("unsubscribe 200", un.status === 200);
+  const none = await call("POST", "/api/push/test", { body: {} });
+  check("test push with no device -> 400", none.status === 400);
+  const noauth = await call("GET", "/api/cron/reminders", { noAuth: true });
+  check("scheduler without key -> 401", noauth.status === 401);
+  const cron = await call("GET", `/api/cron/reminders?key=${process.env.CRON_SECRET || "local-dev-secret"}`, { noAuth: true });
+  check("scheduler with key runs over every profile", cron.status === 200 && cron.data.profiles >= 1 && typeof cron.data.created === "number");
+}
+
 console.log("users (admin only)");
 let userId;
 const adminJar = { ...jar };

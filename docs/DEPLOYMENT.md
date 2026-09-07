@@ -23,6 +23,7 @@ them. The app is a plain Node process behind CloudPanel's reverse proxy.
 | Node | v24 via that user's nvm, matching CI |
 | Database | `task-portal`, created through CloudPanel |
 | Logs | `pm2 logs task-portal`, nginx logs in `~/logs/nginx/` |
+| Reminder scheduler | site-user crontab → `GET /api/cron/reminders` with `x-cron-key: $CRON_SECRET`, 00:05 and 05:00 UTC (08:05 / 13:00 MYT), log in `~/logs/cron-reminders.log` |
 
 The app runs as the CloudPanel site user, which is also the account CI deploys with,
 so no sudo is involved anywhere in the pipeline.
@@ -96,6 +97,16 @@ The server also holds a read-only **deploy key** so it can pull the private repo
    ```
 
    Then as root, once: `pm2 startup systemd -u system-portal-task --hp /home/system-portal-task`
+
+## Push notifications
+
+`.env` also carries `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `CRON_SECRET`.
+Generate the key pair once with `npx web-push generate-vapid-keys`; rotating it silently
+invalidates every device's subscription, so treat it like `DATA_KEY`. The crontab entry:
+
+```
+5 0,5 * * * curl -fsS -m 120 -H "x-cron-key: <CRON_SECRET>" http://127.0.0.1:3891/api/cron/reminders >> /home/system-portal-task/logs/cron-reminders.log 2>&1
+```
 
 ## Never do these
 

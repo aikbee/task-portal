@@ -1,6 +1,6 @@
 "use client";
-import { useState } from "react";
-import { Volume2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Volume2, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePrefs } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
@@ -10,6 +10,7 @@ import { Toggle } from "@/components/ui/Controls";
 import Button from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { useT } from "@/lib/i18n";
+import { pushSupported, currentPushSubscription, enablePush, disablePush } from "@/lib/push-client";
 
 /** Which categories reach you (saved on your account) + how they are announced (this browser). */
 export default function NotificationSettings() {
@@ -20,6 +21,39 @@ export default function NotificationSettings() {
   const setPrefs = usePrefs((s) => s.set);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // push state for THIS device: unknown | unsupported | off | on | blocked | busy
+  const [push, setPush] = useState(() => (pushSupported() ? "unknown" : "unsupported"));
+  useEffect(() => {
+    if (!pushSupported()) return;
+    currentPushSubscription()
+      .then((sub) => setPush(sub ? "on" : Notification.permission === "denied" ? "blocked" : "off"))
+      .catch(() => setPush("off"));
+  }, []);
+  const togglePush = async (v) => {
+    if (push === "busy" || push === "blocked") return;
+    setPush("busy");
+    try {
+      if (v) {
+        await enablePush();
+        setPush("on");
+        toast.success(tr("Push notifications enabled"));
+      } else {
+        await disablePush();
+        setPush("off");
+      }
+    } catch (e) {
+      setPush(typeof Notification !== "undefined" && Notification.permission === "denied" ? "blocked" : "off");
+      toast.error("Could not change push notifications", e.message);
+    }
+  };
+  const sendTest = async () => {
+    try {
+      await api.post("/api/push/test", {});
+      toast.success(tr("Test notification sent"));
+    } catch (e) {
+      toast.error("Could not send a test notification", e.message);
+    }
+  };
   const prefs = typeof user?.notification_prefs === "string" ? JSON.parse(user.notification_prefs) : user?.notification_prefs;
   const muted = new Set(prefs?.muted ?? []);
 
@@ -59,6 +93,23 @@ export default function NotificationSettings() {
         <Button size="xs" variant="outline" icon={Volume2} onClick={async () => { primeAudio(); if (!(await playChime("work"))) toast.error("Sound is not available"); }}>{tr("Test")}</Button>
       </div>
       <Toggle checked={notifyDesktop} onChange={enableDesktop} label={tr("Desktop notification")} description={tr("When this tab is in the background")} />
+      <p className="pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Push (this device)")}</p>
+      {push === "unsupported" ? (
+        <p className="text-xs text-fg-muted">{tr("Push notifications are not supported in this browser. On iPhone, add the app to the Home Screen first.")}</p>
+      ) : (
+        <div className={busy || push === "busy" ? "opacity-70" : ""}>
+          <div className="flex items-center gap-3">
+            <Toggle
+              className="flex-1"
+              checked={push === "on"}
+              onChange={togglePush}
+              label={tr("Push notifications")}
+              description={push === "blocked" ? tr("Blocked in browser settings") : tr("Task reminders and updates, even when the app is closed")}
+            />
+            {push === "on" ? <Button size="xs" variant="outline" icon={Send} onClick={sendTest}>{tr("Test")}</Button> : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

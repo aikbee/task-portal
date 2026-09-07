@@ -1,5 +1,6 @@
 import { query, queryOne, execute } from "./db";
 import { NOTIFICATION_TYPES } from "./constants";
+import { sendPush } from "./push";
 
 /** Types a user sees even for their own actions (milestones, reminders, security). */
 const SELF_VISIBLE = new Set(["task_done", "requirement_done", "project_completed", "task_due", "task_overdue", "security_login"]);
@@ -23,10 +24,12 @@ export async function notify({ userId, type, title, body = null, href = null, en
     const exists = await queryOne("SELECT id FROM notifications WHERE user_id = ? AND dedupe_key = ?", [userId, dedupeKey]);
     if (exists) return false;
   }
-  await execute(
+  const res = await execute(
     "INSERT INTO notifications (user_id, type, title, body, href, entity_type, entity_id, profile_id, actor_id, dedupe_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [userId, type, title.slice(0, 200), body ? String(body).slice(0, 500) : null, href, entityType, entityId, profileId, actorId, dedupeKey]
   );
+  // devices that opted in get the same notification as a push (fire and forget)
+  sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: dedupeKey || `n-${res.insertId}`, type }).catch(() => {});
   return true;
 }
 
@@ -43,6 +46,7 @@ export async function notifyAdmins(actor, payload) {
 
 /** Generate due-soon / overdue reminders for the workspace's open tasks (idempotent via dedupe keys). */
 export async function ensureReminders(userId, profileId) {
+  let created = 0;
   const tasks = await query(
     `SELECT t.id, t.title, t.due_date, p.name AS project_name,
        DATEDIFF(t.due_date, CURDATE()) AS days
@@ -53,7 +57,7 @@ export async function ensureReminders(userId, profileId) {
   for (const t of tasks) {
     const overdue = t.days < 0;
     const when = overdue ? `${-t.days} day${t.days === -1 ? "" : "s"} overdue` : t.days === 0 ? "due today" : "due tomorrow";
-    await notify({
+    const made = await notify({
       userId,
       type: overdue ? "task_overdue" : "task_due",
       title: `${t.title} is ${when}`,
@@ -63,6 +67,8 @@ export async function ensureReminders(userId, profileId) {
       entityId: t.id,
       profileId,
       dedupeKey: `${overdue ? "overdue" : "due"}:${t.id}:${t.due_date}`,
-    }).catch(() => {});
+    }).catch(() => false);
+    if (made) created++;
   }
+  return created;
 }
