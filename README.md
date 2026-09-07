@@ -150,20 +150,21 @@ All endpoints return `{ data }` or `{ error }`.
 
 ## Deployment
 
-Pushing to `main` runs lint and build in GitHub Actions, then deploys to the VPS over
-SSH: pull the commit, install, build into a staging directory, run migrations, swap the
-build in, restart and health-check. Any failure restores the previous release.
+Pushing to `main` runs lint and build in GitHub Actions, then deploys over SSH to a
+Hostinger VPS running CloudPanel: pull the commit, install, build into a staging
+directory, run migrations, swap the build in, restart pm2 and health-check. Any
+failure restores the previous release.
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the one-time server setup.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the server layout and setup.
 
 Deployments run `node scripts/setup-db.mjs --no-seed`, which applies the schema and
 migrations only — never the demo logins or sample data. On an empty database it creates
 the first admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`. `npm run db:reset` drops every
 table and must never run on a server.
 
-Two values in `/etc/task-portal.env` are permanent: `DATA_KEY` decrypts stored Info
+Two values in the server's `.env` are permanent: `DATA_KEY` decrypts stored Info
 credentials and `SESSION_SECRET` signs sessions. Attachments live in `UPLOAD_DIR`
-outside the deploy directory. Back up the database, the uploads and that env file together.
+outside the checkout. Back up the database, the uploads and that env file together.
 
 ## Adding a module
 

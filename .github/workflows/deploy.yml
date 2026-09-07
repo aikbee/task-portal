@@ -61,7 +61,7 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
-          APP_DIR: ${{ vars.APP_DIR || '/srv/task-portal' }}
+          APP_DIR: ${{ vars.APP_DIR || '/home/system-portal-task/htdocs/task.system-portal.com' }}
           SHA: ${{ github.sha }}
         run: |
           ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o BatchMode=yes \
