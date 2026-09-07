@@ -53,7 +53,12 @@ rollback() {
 trap 'rollback; fail "Deploy failed - previous release restored"' ERR
 
 log "Fetching $REF"
-git fetch --prune --quiet origin
+fetched=0
+for attempt in 1 2 3; do
+  if git fetch --prune --quiet origin; then fetched=1; break; fi
+  echo "fetch attempt $attempt failed, retrying in 10s"; sleep 10
+done
+[ "$fetched" = 1 ] || fail "could not fetch from origin after 3 attempts"
 git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null || fail "commit $REF not found on this server"
 if ! git diff --quiet "$PREV_SHA" "$REF" -- package.json package-lock.json; then
   DEPS_CHANGED=1

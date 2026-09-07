@@ -56,6 +56,20 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Wait for the server to accept SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_USER@$SSH_HOST" true; then
+              echo "connected on attempt $attempt"; exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 15s"; sleep 15
+          done
+          echo "could not reach $SSH_HOST over SSH"; exit 1
+
       - name: Deploy
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -64,6 +78,6 @@ jobs:
           APP_DIR: ${{ vars.APP_DIR || '/home/system-portal-task/htdocs/task.system-portal.com' }}
           SHA: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o BatchMode=yes \
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 \
             "$SSH_USER@$SSH_HOST" \
             "APP_DIR='$APP_DIR' bash -s -- '$SHA'" < scripts/deploy.sh
