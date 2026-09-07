@@ -146,7 +146,12 @@ export const useUI = create((set, get) => ({
   notes: null, // all sticky notes (loaded once, kept in sync by the notes tool)
   // remaining === null means "full configured duration for the current mode"
   timer: { running: false, endsAt: null, remaining: null, mode: "work" },
+  mobileNav: false, // off-canvas sidebar on small screens
+  installPrompt: null, // deferred `beforeinstallprompt` event, when the browser offers PWA install
 
+  setMobileNav: (v) => set({ mobileNav: v }),
+  toggleMobileNav: () => set({ mobileNav: !get().mobileNav }),
+  setInstallPrompt: (e) => set({ installPrompt: e }),
   setPrefsOpen: (v) => set({ prefsOpen: v }),
   togglePrefs: () => set({ prefsOpen: !get().prefsOpen }),
   setActiveTool: (t) => set({ activeTool: t }),

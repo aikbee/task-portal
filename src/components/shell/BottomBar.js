@@ -72,13 +72,13 @@ export default function BottomBar() {
   const timerLabel = timer.running || timer.remaining != null ? fmt(timer.remaining ?? timerTotalSeconds(timer.mode, timerFocusMin, timerBreakMin)) : null;
 
   return (
-    <footer className="relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-2 glass border-t px-3 text-xs">
+    <footer className="relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-1.5 overflow-hidden glass border-t px-2 text-xs sm:gap-2 sm:px-3">
       {/* tool panel */}
       {tool ? (
         <div
           ref={panelRef}
           className={cn(
-            "absolute bottom-[calc(100%+10px)] left-1/2 max-w-[calc(100vw-var(--sidebar-w)-40px)] -translate-x-1/2 overflow-hidden rounded-app-lg border border-line bg-surface shadow-app-lg anim-slide-up",
+            "absolute bottom-[calc(100%+10px)] left-1/2 max-w-[calc(100vw-var(--sidebar-w)-40px)] -translate-x-1/2 overflow-hidden rounded-app-lg border border-line bg-surface shadow-app-lg anim-slide-up max-md:left-3 max-md:right-3 max-md:w-auto max-md:max-w-none max-md:translate-x-0",
             tool.width
           )}
         >
@@ -145,7 +145,7 @@ export default function BottomBar() {
         </span>
         <button
           onClick={() => setPrefs({ density: density === "compact" ? "comfortable" : "compact" })}
-          className="rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg"
+          className="hidden rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg sm:inline-flex"
           data-tip={`Density: ${density}`}
         >
           {density === "compact" ? <Rows3 size={14} /> : <LayoutGrid size={14} />}

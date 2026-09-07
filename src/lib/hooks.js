@@ -60,3 +60,16 @@ const noopSubscribe = () => () => {};
 export function useMounted() {
   return useSyncExternalStore(noopSubscribe, () => true, () => false);
 }
+
+/** True when the media query matches; false during SSR and until hydration. */
+export function useMediaQuery(query) {
+  const subscribe = useCallback(
+    (cb) => {
+      const m = window.matchMedia(query);
+      m.addEventListener("change", cb);
+      return () => m.removeEventListener("change", cb);
+    },
+    [query]
+  );
+  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
+}

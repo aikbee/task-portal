@@ -171,11 +171,11 @@ export default function CalendarView() {
         {view === "agenda" ? (
           <Agenda days={days} byDay={byDay} deadlinesByDay={deadlinesByDay} today={today} loading={loading && !tasks} onOpen={(t) => router.push(`/tasks/${t.id}`)} onStatus={quickStatus} onNew={(day) => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })} />
         ) : (
-          <Card padding={false} className="overflow-hidden">
-            <div className="grid grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+          <Card padding={false} className="overflow-x-auto">
+            <div className="grid min-w-[640px] grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
               {WEEKDAYS.map((d) => <div key={d} className="py-2">{d}</div>)}
             </div>
-            <div className={cn("grid grid-cols-7", view === "week" ? "min-h-[520px]" : "")}>
+            <div className={cn("grid min-w-[640px] grid-cols-7", view === "week" ? "min-h-[520px]" : "")}>
               {days.map((day) => {
                 const d = parseIso(day);
                 const inMonth = view !== "month" || d.getMonth() === cursor.getMonth();

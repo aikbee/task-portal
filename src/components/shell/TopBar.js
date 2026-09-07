@@ -9,7 +9,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X,
 } from "lucide-react";
 import { moduleFromPath, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
@@ -29,6 +29,14 @@ export default function TopBar() {
   const router = useRouter();
   const mounted = useMounted();
   const toggleSidebar = usePrefs((s) => s.toggleSidebar);
+  const toggleMobileNav = useUI((s) => s.toggleMobileNav);
+  const installPrompt = useUI((s) => s.installPrompt);
+  const setInstallPrompt = useUI((s) => s.setInstallPrompt);
+  const promptInstall = async () => {
+    const ev = installPrompt;
+    setInstallPrompt(null);
+    try { await ev.prompt(); } catch {}
+  };
   const theme = usePrefs((s) => s.theme);
   const setPrefs = usePrefs((s) => s.set);
   const pageMeta = useUI((s) => s.pageMeta);
@@ -64,7 +72,7 @@ export default function TopBar() {
 
   return (
     <header className="relative z-30 flex h-[var(--topbar-h)] shrink-0 items-center gap-2 glass border-b px-4">
-      <Button variant="ghost" size="icon" icon={PanelLeft} onClick={toggleSidebar} aria-label={tr("Toggle sidebar")} data-tip="Toggle sidebar ⌘B" data-tip-pos="bottom" />
+      <Button variant="ghost" size="icon" icon={PanelLeft} onClick={() => (window.matchMedia("(max-width: 767px)").matches ? toggleMobileNav() : toggleSidebar())} aria-label={tr("Toggle sidebar")} data-tip="Toggle sidebar ⌘B" data-tip-pos="bottom" />
       <div className="hidden items-center gap-0.5 sm:flex">
         <Button variant="ghost" size="iconSm" icon={ArrowLeft} onClick={() => router.back()} aria-label={tr("Back")} />
         <Button variant="ghost" size="iconSm" icon={ArrowRight} onClick={() => router.forward()} aria-label={tr("Forward")} />
@@ -102,7 +110,7 @@ export default function TopBar() {
         aria-label={isPinned ? "Unpin page" : "Pin page"}
         data-tip={isPinned ? "Unpin page (P)" : "Pin page (P)"}
         data-tip-pos="bottom"
-        className={isPinned ? "text-accent" : ""}
+        className={cn("hidden sm:inline-flex", isPinned && "text-accent")}
       />
 
       <div className="flex-1" />
@@ -112,9 +120,12 @@ export default function TopBar() {
       <DropdownMenu
         width="w-48"
         trigger={({ toggle }) => (
-          <Button variant="primary" size="sm" icon={Plus} onClick={toggle} className="hidden sm:inline-flex">
-            {tr("New")}
-          </Button>
+          <>
+            <Button variant="primary" size="sm" icon={Plus} onClick={toggle} className="hidden sm:inline-flex">
+              {tr("New")}
+            </Button>
+            <Button variant="primary" size="icon" icon={Plus} onClick={toggle} className="sm:hidden" aria-label={tr("New")} />
+          </>
         )}
         items={visibleModules.filter((m) => m.creatable).map((m) => ({
           label: tr("New {x}", { x: tr(m.singular) }),
@@ -181,7 +192,7 @@ export default function TopBar() {
       <DropdownMenu
         width="w-44"
         trigger={({ toggle }) => (
-          <Button variant="ghost" size="icon" icon={Languages} onClick={toggle} aria-label={tr("Language")} data-tip={LOCALES[locale]} data-tip-pos="bottom" />
+          <Button className="hidden sm:inline-flex" variant="ghost" size="icon" icon={Languages} onClick={toggle} aria-label={tr("Language")} data-tip={LOCALES[locale]} data-tip-pos="bottom" />
         )}
         items={Object.entries(LOCALES).map(([code, name]) => ({ label: name, icon: code === locale ? Check : Languages, onClick: () => code !== locale && switchLocale(code) }))}
       />
@@ -189,6 +200,7 @@ export default function TopBar() {
       <NotificationsBell />
 
       <Button
+        className="hidden sm:inline-flex"
         variant="ghost"
         size="icon"
         icon={ThemeIcon}
@@ -215,6 +227,7 @@ export default function TopBar() {
           { divider: true },
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
+          ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },
           { divider: true },
           { label: tr("Sign out"), icon: LogOut, onClick: logout, danger: true },
@@ -230,6 +243,7 @@ function GlobalSearch() {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
+  const [mobile, setMobile] = useState(false); // full-screen search on phones
   const [results, setResults] = useState(null); // { q, projects, employees, tasks }
   const [cursor, setCursor] = useState(0);
   const dq = useDebouncedValue(q, 220);
@@ -282,39 +296,28 @@ function GlobalSearch() {
   const go = (item) => {
     if (!item) return;
     setOpen(false);
+    setMobile(false);
     setQ("");
     router.push(item.href);
   };
+  const inputProps = {
+    value: q,
+    onChange: (e) => {
+      setQ(e.target.value);
+      setCursor(0);
+      setOpen(true);
+    },
+    onKeyDown: (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(flat.length - 1, c + 1)); }
+      if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(0, c - 1)); }
+      if (e.key === "Enter") go(flat[cursor]);
+      if (e.key === "Escape") { setOpen(false); setMobile(false); inputRef.current?.blur(); }
+    },
+    placeholder: tr("Search projects, people, tasks…"),
+  };
 
-  return (
-    <div ref={wrapRef} className="relative hidden md:block">
-      <div className="relative">
-        <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
-        <input
-          ref={inputRef}
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setCursor(0);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(flat.length - 1, c + 1)); }
-            if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(0, c - 1)); }
-            if (e.key === "Enter") go(flat[cursor]);
-            if (e.key === "Escape") { setOpen(false); inputRef.current?.blur(); }
-          }}
-          placeholder={tr("Search projects, people, tasks…")}
-          className="control h-9 w-64 pl-9 pr-16 lg:w-80"
-        />
-        <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-          <Kbd><Command size={9} /></Kbd>
-          <Kbd>K</Kbd>
-        </span>
-      </div>
-      {open && q.trim() ? (
-        <div className="absolute right-0 top-full z-[80] mt-2 w-[420px] overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop">
+  const resultList = (
+    <>
           {loading ? (
             <p className="px-4 py-6 text-center text-xs text-fg-muted">{tr("Searching…")}</p>
           ) : flat.length === 0 ? (
@@ -357,13 +360,44 @@ function GlobalSearch() {
               })}
             </ul>
           )}
-          <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-[10px] text-fg-faint">
+          <div className="hidden items-center gap-3 border-t border-line px-3 py-1.5 text-[10px] text-fg-faint md:flex">
             <span className="flex items-center gap-1"><Kbd>↑</Kbd><Kbd>↓</Kbd>{tr("navigate")}</span>
             <span className="flex items-center gap-1"><Kbd>↵</Kbd>{tr("open")}</span>
             <span className="flex items-center gap-1"><Kbd>esc</Kbd>{tr("close")}</span>
           </div>
+    </>
+  );
+
+  return (
+    <>
+      <Button variant="ghost" size="icon" icon={Search} className="md:hidden" onClick={() => { setMobile(true); setOpen(true); }} aria-label={tr("Search")} />
+      {mobile ? (
+        <div className="fixed inset-0 z-[90] flex flex-col bg-bg md:hidden">
+          <div className="flex items-center gap-2 border-b border-line p-3" style={{ paddingTop: "calc(0.75rem + env(safe-area-inset-top))" }}>
+            <div className="relative flex-1">
+              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
+              <input autoFocus {...inputProps} className="control h-10 w-full pl-9" />
+            </div>
+            <Button variant="ghost" size="icon" icon={X} onClick={() => setMobile(false)} aria-label={tr("Close")} />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">{q.trim() ? resultList : <p className="px-4 py-8 text-center text-xs text-fg-muted">{tr("Search projects, people, tasks…")}</p>}</div>
+        </div>
+      ) : null}
+    <div ref={wrapRef} className="relative hidden md:block">
+      <div className="relative">
+        <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
+        <input ref={inputRef} {...inputProps} onFocus={() => setOpen(true)} className="control h-9 w-64 pl-9 pr-16 lg:w-80" />
+        <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+          <Kbd><Command size={9} /></Kbd>
+          <Kbd>K</Kbd>
+        </span>
+      </div>
+      {open && q.trim() ? (
+        <div className="absolute right-0 top-full z-[80] mt-2 w-[420px] overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop">
+          {resultList}
         </div>
       ) : null}
     </div>
+    </>
   );
 }

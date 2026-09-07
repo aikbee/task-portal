@@ -3,6 +3,7 @@ import "./globals.css";
 import { cookies } from "next/headers";
 import { I18nProvider } from "@/lib/i18n";
 import { LOCALES, LOCALE_COOKIE } from "@/lib/i18n-config";
+import PwaRegister from "@/components/shell/PwaRegister";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -10,6 +11,20 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata = {
   title: { default: "Task Portal", template: "%s · Task Portal" },
   description: "Projects, employees and tasks control center.",
+  applicationName: "Task Portal",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Task Portal", statusBarStyle: "black-translucent" },
+  formatDetection: { telephone: false },
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f3f4fa" },
+    { media: "(prefers-color-scheme: dark)", color: "#090c15" },
+  ],
 };
 
 /**
@@ -59,6 +74,7 @@ export default async function RootLayout({ children }) {
       </head>
       <body className="min-h-full bg-bg text-fg font-sans">
         <I18nProvider locale={locale}>{children}</I18nProvider>
+        <PwaRegister />
       </body>
     </html>
   );

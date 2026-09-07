@@ -253,6 +253,13 @@
   }
 }
 
+/* touch: no grey flash on taps */
+body { -webkit-tap-highlight-color: transparent; }
+/* touch: hover tooltips would stick after a tap, so skip them on coarse pointers */
+@media (hover: none) {
+  [data-tip]::before, [data-tip]::after { display: none !important; }
+}
+
 /* ---------- inline mentions inside rich paragraphs ---------- */
 .richtext a.mention {
   color: var(--accent);

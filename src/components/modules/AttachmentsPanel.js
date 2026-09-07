@@ -215,7 +215,7 @@ function AttachmentRow({ att, url, onRename, onDelete }) {
   };
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
       {isImage ? (
         <a href={url} target="_blank" rel="noreferrer" className="block h-10 w-10 shrink-0 overflow-hidden rounded-app-sm border border-line bg-surface-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -226,7 +226,7 @@ function AttachmentRow({ att, url, onRename, onDelete }) {
           <Icon size={18} />
         </span>
       )}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-40">
         {editing ? (
           <div className="flex items-center gap-1">
             <input
@@ -246,7 +246,7 @@ function AttachmentRow({ att, url, onRename, onDelete }) {
           {formatBytes(att.size_bytes)} · {att.mime_type || "unknown type"} · {formatDateTime(att.created_at)}
         </p>
       </div>
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <Button variant="ghost" size="iconXs" icon={Pencil} onClick={() => setEditing(true)} aria-label={tr("Rename")} data-tip={tr("Rename")} />
         <a href={url} target="_blank" rel="noreferrer"><Button variant="ghost" size="iconXs" icon={ExternalLink} aria-label={tr("Open")} data-tip={tr("Open")} /></a>
         <a href={`${url}?download=1`}><Button variant="ghost" size="iconXs" icon={Download} aria-label={tr("Download")} data-tip={tr("Download")} /></a>

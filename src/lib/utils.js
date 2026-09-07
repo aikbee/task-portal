@@ -1,10 +1,12 @@
+import { twMerge } from "tailwind-merge";
 let dateLocale; // undefined = browser default; set by the i18n provider
 export const setDateLocale = (l) => { dateLocale = l; };
 export const getDateLocale = () => dateLocale;
 
 /** Join class names, skipping falsy values. */
+/** Join class names, skipping falsy values; later Tailwind classes override earlier conflicting ones (so `hidden` can beat a component's `inline-flex`). */
 export function cn(...parts) {
-  return parts.flat().filter(Boolean).join(" ");
+  return twMerge(parts.flat().filter(Boolean).join(" "));
 }
 
 export function fullName(e) {

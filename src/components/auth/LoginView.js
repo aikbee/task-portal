@@ -115,7 +115,7 @@ function LoginCard({ demo }) {
         {demo ? (
           <div className="mt-4 rounded-app border border-dashed border-line bg-surface/60 p-3 text-xs text-fg-muted">
             <p className="mb-2 font-medium text-fg">{tr("Demo accounts (development)")}</p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <DemoAccount icon={ShieldCheck} role="Admin" email="admin@example.com" pw="admin123" onPick={fill} />
               <DemoAccount icon={User} role="User" email="user@example.com" pw="user123" onPick={fill} />
             </div>

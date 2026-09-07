@@ -9,7 +9,7 @@ import Avatar from "@/components/ui/Avatar";
 import ProfileSwitcher from "./ProfileSwitcher";
 import { usePrefs, useUI } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { useMounted } from "@/lib/hooks";
+import { useMounted, useMediaQuery } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 
 export default function Sidebar() {
@@ -26,12 +26,20 @@ export default function Sidebar() {
   const setPrefsOpen = useUI((s) => s.setPrefsOpen);
   const { user } = useAuth();
   const modules = useVisibleModules();
-  const collapsed = mounted && collapsedPref;
+  const isMobile = useMediaQuery("(max-width: 767px)");
+  const mobileNav = useUI((s) => s.mobileNav);
+  const setMobileNav = useUI((s) => s.setMobileNav);
+  const closeNav = () => setMobileNav(false);
+  // phones always get the full-width drawer; the collapsed rail is a desktop thing
+  const collapsed = mounted && collapsedPref && !isMobile;
 
   return (
+    <>
+      {mobileNav ? <div className="fixed inset-0 z-40 bg-black/45 backdrop-blur-[2px] md:hidden anim-fade" onClick={closeNav} aria-hidden /> : null}
     <aside
       className={cn(
-        "relative z-20 flex h-screen shrink-0 flex-col glass border-r transition-[width] duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]",
+        "fixed inset-y-0 left-0 z-50 flex h-dvh shrink-0 flex-col glass border-r transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] md:static md:z-20 md:translate-x-0 md:transition-[width]",
+        mobileNav ? "translate-x-0 shadow-app-lg" : "-translate-x-full",
         collapsed ? "w-[var(--sidebar-w-collapsed)]" : "w-[var(--sidebar-w)]"
       )}
     >
@@ -41,15 +49,18 @@ export default function Sidebar() {
           <span className="absolute -left-10 -top-10 h-32 w-32 rounded-full bg-accent/40 blur-2xl" />
           <span className="absolute -right-6 top-4 h-20 w-20 rounded-full bg-cyan-400/30 blur-2xl" />
         </div>
-        <Link href="/" className="relative flex items-center gap-3">
+        <Link href="/" onClick={closeNav} className="relative flex items-center gap-3">
           <Logo size={40} className="shrink-0 rounded-app shadow-[0_8px_20px_-8px_var(--accent)]" />
           {!collapsed ? (
-            <span className="min-w-0">
+            <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold tracking-tight">{tr("Task Portal")}</span>
               <span className="block truncate text-[11px] text-fg-muted">{tr("Control center")}</span>
             </span>
           ) : null}
         </Link>
+        <button onClick={closeNav} className="absolute right-2 top-2 rounded-app-sm p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg md:hidden" aria-label={tr("Close menu")}>
+          <X size={16} />
+        </button>
       </div>
 
       <div className={cn("border-b border-line", collapsed ? "px-2.5 py-2" : "px-3 py-2.5")}>
@@ -68,6 +79,7 @@ export default function Sidebar() {
               <li key={m.key}>
                 <Link
                   href={m.href}
+                  onClick={closeNav}
                   data-tip={collapsed ? tr(m.label) : undefined}
                   data-tip-pos="right"
                   className={cn(
@@ -148,7 +160,7 @@ export default function Sidebar() {
         <button
           onClick={toggleSidebar}
           className={cn(
-            "mt-1 flex w-full items-center justify-center gap-2 rounded-app-sm py-2 text-xs text-fg-muted transition hover:bg-surface-2 hover:text-fg",
+            "mt-1 hidden w-full items-center justify-center gap-2 rounded-app-sm py-2 text-xs text-fg-muted transition hover:bg-surface-2 hover:text-fg md:flex",
             collapsed && "mt-0"
           )}
           data-tip={collapsed ? "Expand" : undefined}
@@ -158,5 +170,6 @@ export default function Sidebar() {
         </button>
       </div>
     </aside>
+    </>
   );
 }

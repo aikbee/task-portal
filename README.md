@@ -148,6 +148,21 @@ All endpoints return `{ data }` or `{ error }`.
 | GET/POST | `/api/users` | admin only |
 | GET/PUT/DELETE | `/api/users/:id` | admin only; PUT accepts an optional `password` to reset |
 
+## Mobile and PWA
+
+The layout adapts down to phone widths: the sidebar becomes an off-canvas drawer (hamburger
+in the top bar, tap outside or a module to close), search opens full-screen, the header keeps
+only the essentials, tables and the kanban board scroll sideways inside their cards, and the
+calendar scrolls rather than squeezing. The shell uses dynamic viewport units and safe-area
+insets so it sits correctly under notches and above the home indicator when installed.
+
+It is installable as a PWA: `src/app/manifest.js` serves the web app manifest, `public/icons/`
+holds the 192/512 and maskable icons, and `public/sw.js` is a deliberately conservative service
+worker (registered in production only by `PwaRegister`). It never caches pages or API responses;
+it serves `/offline` when a navigation fails and caches immutable `/_next/static` assets. When a
+browser offers installation, an **Install app** entry appears in the account menu; on iOS use
+Share → Add to Home Screen. `/offline`, `/manifest.webmanifest` and `/sw.js` are public routes.
+
 ## Deployment
 
 Pushing to `main` runs lint and build in GitHub Actions, then deploys over SSH to a

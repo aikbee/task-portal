@@ -51,6 +51,8 @@ const zhCN = {
   "Mark all read": "全部标为已读", "View all": "查看全部", "You’re all caught up": "没有新通知", "Changes, reminders and sign-ins will show up here.": "变动、提醒和登录记录会显示在这里。", Unread: "未读", All: "全部", "Clear read": "清除已读", "Mark read": "标为已读", "Mark unread": "标为未读", "No unread notifications": "没有未读通知", Reminders: "提醒", Accounts: "账户", Security: "安全", "Receive": "接收", "Announce (this browser)": "提醒方式（此浏览器）", "When a new notification arrives": "有新通知时", "When this tab is in the background": "当此标签页在后台时",
   // board / calendar
   "Filter cards…": "筛选卡片…", "Drop tasks here": "把任务拖到这里", "Add task": "添加任务", "Task title, then Enter": "输入任务标题后按 Enter", "New task here": "在此新建任务", Month: "月", Week: "周", Agenda: "日程", "Hide done": "隐藏已完成", Deadlines: "截止日期", "{n} tasks in view": "视图中有 {n} 个任务", "Pick a day": "选择一天", "Click a day to see its tasks here. Double-click a day to add a task.": "点击某天在此查看任务，双击某天添加任务。", "No tasks are due on this day.": "这一天没有到期任务。", "Nothing scheduled": "没有安排",
+  // mobile + pwa
+  "Install app": "安装应用", "Close menu": "关闭菜单", "You're offline": "你已离线", "This page needs a connection. Check your network and try again.": "此页面需要网络连接。请检查网络后重试。", Retry: "重试",
   // mentions
   Linked: "关联", "@ tags a person, project, task, requirement or info item · paste a copied table to add a grid": "输入 @ 可标记人员、项目、任务、需求或资料 · 粘贴复制的表格可添加网格", "Tag “{q}”": "标记“{q}”", "Type to search people, projects, tasks, requirements and info": "输入以搜索人员、项目、任务、需求和资料",
   // task assignee

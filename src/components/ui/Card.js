@@ -18,8 +18,8 @@ export default function Card({ className, children, padding = true, hover = fals
 
 export function CardHeader({ title, description, icon: Icon, actions, className }) {
   return (
-    <div className={cn("mb-4 flex items-start justify-between gap-4", className)}>
-      <div className="flex items-center gap-3 min-w-0">
+    <div className={cn("mb-4 flex flex-wrap items-start justify-between gap-x-4 gap-y-2", className)}>
+      <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
         {Icon ? (
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-app-sm bg-accent/12 text-accent">
             <Icon size={17} />
