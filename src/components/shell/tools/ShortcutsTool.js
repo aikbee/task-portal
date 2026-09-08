@@ -7,9 +7,9 @@ const GROUPS = [
   { title: "Search", items: [["↑", "↓", "Move selection"], ["↵", null, "Open result"]] },
 ];
 
-export default function ShortcutsTool() {
+export default function ShortcutsTool({ wide = false }) {
   return (
-    <div className="space-y-4 p-4">
+    <div className={wide ? "mx-auto grid w-full max-w-4xl gap-6 p-6 md:grid-cols-2" : "space-y-4 p-4"}>
       {GROUPS.map((g) => (
         <div key={g.title}>
           <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{g.title}</p>

@@ -1,24 +1,16 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { StickyNote, Timer, Calculator, Keyboard, ArrowUp, Database, Rows3, LayoutGrid, X, Lock } from "lucide-react";
+import { ArrowUp, Database, Rows3, LayoutGrid, X, Lock, Maximize2 } from "lucide-react";
 import { useUI, usePrefs } from "@/lib/store";
 import { api } from "@/lib/api";
 import { moduleFromPath } from "@/lib/modules";
 import { cn } from "@/lib/utils";
 import { useMounted } from "@/lib/hooks";
-import StickyNotes from "./tools/StickyNotes";
-import TimerTool, { timerTotalSeconds } from "./tools/TimerTool";
-import CalcTool from "./tools/CalcTool";
-import ShortcutsTool from "./tools/ShortcutsTool";
+import { timerTotalSeconds } from "./tools/TimerTool";
+import { TOOLS, useToolExpanded } from "./ToolWorkspace";
 import { useT } from "@/lib/i18n";
 
-const TOOLS = [
-  { key: "notes", label: "Notes", icon: StickyNote, hint: "⌘J", Component: StickyNotes, width: "w-[720px]" },
-  { key: "timer", label: "Timer", icon: Timer, Component: TimerTool, width: "w-80" },
-  { key: "calc", label: "Calculator", icon: Calculator, Component: CalcTool, width: "w-80" },
-  { key: "shortcuts", label: "Shortcuts", icon: Keyboard, hint: "?", Component: ShortcutsTool, width: "w-96" },
-];
 
 export default function BottomBar() {
   const tr = useT();
@@ -39,6 +31,7 @@ export default function BottomBar() {
   const canLock = usePrefs((s) => Boolean(s.pinHash) && s.lockEnabled);
   const autoLockMinutes = usePrefs((s) => s.autoLockMinutes);
   const lock = usePrefs((s) => s.lock);
+  const expanded = useToolExpanded();
 
   const [health, setHealth] = useState(null);
   const [now, setNow] = useState(null);
@@ -72,9 +65,9 @@ export default function BottomBar() {
   const timerLabel = timer.running || timer.remaining != null ? fmt(timer.remaining ?? timerTotalSeconds(timer.mode, timerFocusMin, timerBreakMin)) : null;
 
   return (
-    <footer className="relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-1.5 overflow-hidden glass border-t px-2 text-xs sm:gap-2 sm:px-3">
+    <footer className="relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-1.5 glass border-t px-2 text-xs sm:gap-2 sm:px-3">
       {/* tool panel */}
-      {tool ? (
+      {tool && !expanded ? (
         <div
           ref={panelRef}
           className={cn(
@@ -87,9 +80,14 @@ export default function BottomBar() {
               <tool.icon size={15} className="text-accent" /> {tool.label}
               {tool.key === "notes" ? <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] text-fg-muted">{tr(mod.label)}</span> : null}
             </span>
-            <button onClick={closeTool} className="rounded-app-sm p-1 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label={tr("Close")}>
-              <X size={14} />
-            </button>
+            <span className="flex items-center gap-0.5">
+              <button onClick={() => setPrefs({ toolExpanded: true })} className="rounded-app-sm p-1 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label={tr("Expand")} data-tip={tr("Expand")}>
+                <Maximize2 size={14} />
+              </button>
+              <button onClick={closeTool} className="rounded-app-sm p-1 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label={tr("Close")}>
+                <X size={14} />
+              </button>
+            </span>
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             <tool.Component key={mod.key} module={mod} />

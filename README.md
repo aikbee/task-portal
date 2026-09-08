@@ -163,6 +163,15 @@ it serves `/offline` when a navigation fails and caches immutable `/_next/static
 browser offers installation, an **Install app** entry appears in the account menu; on iOS use
 Share → Add to Home Screen. `/offline`, `/manifest.webmanifest` and `/sw.js` are public routes.
 
+## Bottom-bar tools
+
+Notes, Timer, Calculator and Shortcuts open as a popover above the bottom bar. Each has an
+**Expand** button that turns it into a full-screen workspace with its own sidebar: Notes gets
+search, a module filter and the list of every note beside a wall of all notes (or one note in
+a large editor); Timer gets a big clock with durations and alert settings beside it; Calculator
+gets a large keypad with its history beside it. "Collapse to panel" returns to the popover; the
+choice is remembered. On phones tools always open as the workspace.
+
 ## Push notifications
 
 Preferences → Notifications → **Push (this device)** subscribes the browser with Web Push

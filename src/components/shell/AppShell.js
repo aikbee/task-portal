@@ -12,6 +12,7 @@ import BottomBar from "./BottomBar";
 import PreferencesDrawer from "./PreferencesDrawer";
 import LockScreen from "./LockScreen";
 import SplitView from "./SplitView";
+import ToolWorkspace from "./ToolWorkspace";
 import TimerEngine from "./TimerEngine";
 import { usePrefs, useUI } from "@/lib/store";
 import { api } from "@/lib/api";
@@ -82,6 +83,7 @@ export default function AppShell({ user, children }) {
         </div>
       )}
       {locked ? null : <PreferencesDrawer />}
+      {locked ? null : <ToolWorkspace />}
       <TimerEngine />
       <LockScreen />
     </ToastProvider>

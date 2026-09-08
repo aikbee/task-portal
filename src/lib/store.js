@@ -16,6 +16,7 @@ export const ACCENTS = {
 export const RADII = { sm: "8px", md: "14px", lg: "20px" };
 
 export const DEFAULT_PREFS = {
+  toolExpanded: false, // bottom-bar tools open as a full-screen workspace instead of a popover
   theme: "system", // light | dark | system
   accent: "indigo",
   bgStyle: "aurora", // aurora | orbs | grid | none
@@ -147,9 +148,11 @@ export const useUI = create((set, get) => ({
   // remaining === null means "full configured duration for the current mode"
   timer: { running: false, endsAt: null, remaining: null, mode: "work" },
   mobileNav: false, // off-canvas sidebar on small screens
+  calc: { expr: "", history: [] }, // calculator state shared by the popover and the workspace
   installPrompt: null, // deferred `beforeinstallprompt` event, when the browser offers PWA install
 
   setMobileNav: (v) => set({ mobileNav: v }),
+  setCalc: (patch) => set({ calc: { ...get().calc, ...(typeof patch === "function" ? patch(get().calc) : patch) } }),
   toggleMobileNav: () => set({ mobileNav: !get().mobileNav }),
   setInstallPrompt: (e) => set({ installPrompt: e }),
   setPrefsOpen: (v) => set({ prefsOpen: v }),

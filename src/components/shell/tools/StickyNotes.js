@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
-import { Plus, Pin, PinOff, Trash2, Check } from "lucide-react";
+import { Plus, Pin, PinOff, Trash2, Maximize2 } from "lucide-react";
 import { NOTE_COLORS } from "@/lib/modules";
 import { useVisibleModules } from "@/lib/auth-context";
 import { useUI, usePrefs } from "@/lib/store";
@@ -11,24 +11,20 @@ import Button from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 
-/** Per-module sticky notes (persisted in MySQL). */
-export default function StickyNotes({ module }) {
-  const tr = useT();
+/** Notes live in the UI store (loaded once by the bottom bar); these actions keep it and the API in sync. */
+export function useNotesActions() {
   const notesRaw = useUI((s) => s.notes);
   const notes = useMemo(() => notesRaw ?? [], [notesRaw]);
   const setNotes = useUI((s) => s.setNotes);
-  const [scope, setScope] = useState(module.key); // BottomBar re-keys this component per module
   const toast = useToast();
-  const MODULES = useVisibleModules();
-
-  const list = useMemo(() => notes.filter((n) => n.module === scope).sort((a, b) => b.pinned - a.pinned || a.sort_order - b.sort_order || a.id - b.id), [notes, scope]);
-
-  const add = async () => {
+  const add = async (module, colorIndex = 0) => {
     try {
-      const note = await api.post("/api/notes", { module: scope, title: "", content: "", color: Object.keys(NOTE_COLORS)[list.length % 6] });
+      const note = await api.post("/api/notes", { module, title: "", content: "", color: Object.keys(NOTE_COLORS)[colorIndex % 6] });
       setNotes((all) => [...all, note]);
+      return note;
     } catch (e) {
       toast.error("Could not create note", e.message);
+      return null;
     }
   };
   const update = async (id, patch) => {
@@ -48,6 +44,20 @@ export default function StickyNotes({ module }) {
       toast.error("Could not delete note", e.message);
     }
   };
+  return { notes, add, update, remove };
+}
+
+export const sortNotes = (list) => [...list].sort((a, b) => b.pinned - a.pinned || a.sort_order - b.sort_order || a.id - b.id);
+
+/** Per-module sticky notes: the compact bottom-bar panel. */
+export default function StickyNotes({ module, onOpen }) {
+  const tr = useT();
+  const { notes, add: addNote, update, remove } = useNotesActions();
+  const [scope, setScope] = useState(module.key); // BottomBar re-keys this component per module
+  const MODULES = useVisibleModules();
+
+  const list = useMemo(() => sortNotes(notes.filter((n) => n.module === scope)), [notes, scope]);
+  const add = () => addNote(scope, list.length);
 
   return (
     <div className="p-4">
@@ -78,7 +88,7 @@ export default function StickyNotes({ module }) {
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((n, i) => (
-            <Note key={n.id} note={n} index={i} onChange={(patch) => update(n.id, patch)} onDelete={() => remove(n.id)} />
+            <NoteCard key={n.id} note={n} index={i} onChange={(patch) => update(n.id, patch)} onDelete={() => remove(n.id)} onOpen={onOpen ? () => onOpen(n.id) : undefined} />
           ))}
         </div>
       )}
@@ -86,7 +96,8 @@ export default function StickyNotes({ module }) {
   );
 }
 
-function Note({ note, index, onChange, onDelete }) {
+/** One sticky note. `large` turns it into a full-height editor (no tilt); `onOpen` adds an expand button. */
+export function NoteCard({ note, index = 0, onChange, onDelete, onOpen, large = false }) {
   const tr = useT();
   const autosaveSeconds = usePrefs((s) => s.autosaveSeconds);
   const theme = usePrefs((s) => s.theme);
@@ -111,11 +122,11 @@ function Note({ note, index, onChange, onDelete }) {
     setSaved(false);
   };
 
-  const rotate = [-1.2, 0.8, -0.6, 1.1, -0.9, 0.5][index % 6];
+  const rotate = large ? 0 : [-1.2, 0.8, -0.6, 1.1, -0.9, 0.5][index % 6];
 
   return (
     <div
-      className="sticky-note relative flex flex-col rounded-[6px] p-3"
+      className={cn("sticky-note relative flex flex-col rounded-[6px]", large ? "min-h-[60vh] p-6" : "p-3")}
       style={{ background: isDark ? c.darkBg : c.bg, color: isDark ? c.darkInk : c.ink, transform: `rotate(${rotate}deg)` }}
     >
       {/* tape */}
@@ -124,14 +135,14 @@ function Note({ note, index, onChange, onDelete }) {
         value={title}
         onChange={edit(setTitle)}
         placeholder={tr("Title")}
-        className="w-full bg-transparent text-sm font-semibold outline-none placeholder:opacity-50"
+        className={cn("w-full bg-transparent font-semibold outline-none placeholder:opacity-50", large ? "text-xl" : "text-sm")}
       />
       <textarea
         value={content}
         onChange={edit(setContent)}
         placeholder={tr("Write something…")}
-        rows={4}
-        className="mt-1 w-full resize-none bg-transparent text-xs leading-relaxed outline-none placeholder:opacity-50"
+        rows={large ? 18 : 4}
+        className={cn("mt-1 w-full resize-none bg-transparent leading-relaxed outline-none placeholder:opacity-50", large ? "flex-1 text-sm" : "text-xs")}
       />
       <div className="mt-2 flex items-center gap-1">
         {Object.entries(NOTE_COLORS).map(([key, col]) => (
@@ -151,6 +162,11 @@ function Note({ note, index, onChange, onDelete }) {
         <button onClick={onDelete} className="rounded p-1 opacity-70 hover:bg-black/10 hover:opacity-100" data-tip={tr("Delete")}>
           <Trash2 size={13} />
         </button>
+        {onOpen ? (
+          <button onClick={onOpen} className="rounded p-1 opacity-70 hover:bg-black/10 hover:opacity-100" data-tip={tr("Open in editor")} aria-label={tr("Open in editor")}>
+            <Maximize2 size={13} />
+          </button>
+        ) : null}
       </div>
     </div>
   );

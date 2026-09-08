@@ -14,9 +14,8 @@ export function timerTotalSeconds(mode, focusMin, breakMin) {
   return (mode === "work" ? focusMin : breakMin) * 60;
 }
 
-/** Pomodoro-style timer with user-configurable focus and cooldown lengths (persisted). */
-export default function TimerTool() {
-  const tr = useT();
+/** Shared timer logic: state, derived values and the actions both views use. */
+export function useTimerControls() {
   const timer = useUI((s) => s.timer);
   const setTimer = useUI((s) => s.setTimer);
   const focusMin = usePrefs((s) => s.timerFocusMin);
@@ -43,49 +42,79 @@ export default function TimerTool() {
     if (affects && !timer.running) setTimer({ remaining: null });
   };
 
-  const r = 54;
+  return { timer, focusMin, breakMin, total, remaining, pct, start, pause, reset, setDuration };
+}
+
+const fmt2 = (n) => String(n).padStart(2, "0");
+
+/** Focus / cooldown switch. */
+export function ModeSwitch({ mode, onChange, size = "sm" }) {
+  const tr = useT();
+  return (
+    <div className="flex gap-1 rounded-full bg-surface-2 p-0.5">
+      {[
+        { v: "work", label: tr("Focus"), icon: Briefcase },
+        { v: "break", label: tr("Cooldown"), icon: Coffee },
+      ].map((o) => (
+        <button
+          key={o.v}
+          onClick={() => onChange(o.v)}
+          className={cn("flex items-center gap-1.5 rounded-full font-medium transition", size === "lg" ? "px-4 py-1.5 text-sm" : "px-3 py-1 text-xs", mode === o.v ? "bg-accent text-white" : "text-fg-muted")}
+        >
+          <o.icon size={size === "lg" ? 14 : 12} /> {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Progress ring with the remaining time in the middle. */
+export function TimerRing({ size = 140, stroke = 8, remaining, pct, textClass = "text-3xl" }) {
+  const r = size / 2 - stroke - 2;
   const circ = 2 * Math.PI * r;
-  const m = Math.floor(remaining / 60);
-  const s = remaining % 60;
+  return (
+    <div className="relative grid place-items-center">
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="var(--surface-3)" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke="var(--accent)" strokeWidth={stroke} fill="none" strokeLinecap="round"
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+          className="transition-[stroke-dashoffset] duration-500"
+        />
+      </svg>
+      <span className={cn("absolute font-mono font-semibold tabular-nums", textClass)}>
+        {fmt2(Math.floor(remaining / 60))}:{fmt2(remaining % 60)}
+      </span>
+    </div>
+  );
+}
+
+/** Start / pause / reset. */
+export function TimerButtons({ running, atStart, onStart, onPause, onReset, size = "md" }) {
+  const tr = useT();
+  return (
+    <div className="flex items-center gap-2">
+      {running ? (
+        <Button size={size} icon={Pause} onClick={onPause} variant="secondary">{tr("Pause")}</Button>
+      ) : (
+        <Button size={size} icon={Play} onClick={onStart}>{atStart ? tr("Start") : tr("Resume")}</Button>
+      )}
+      <Button variant="ghost" size={size === "lg" ? "md" : "icon"} icon={RotateCcw} onClick={onReset} aria-label={tr("Reset")}>{size === "lg" ? tr("Reset") : null}</Button>
+    </div>
+  );
+}
+
+/** Pomodoro-style timer with user-configurable focus and cooldown lengths (persisted): the compact panel. */
+export default function TimerTool() {
+  const tr = useT();
+  const { timer, focusMin, breakMin, total, remaining, pct, start, pause, reset, setDuration } = useTimerControls();
 
   return (
     <div className="flex flex-col items-center p-5">
-      <div className="mb-3 flex gap-1 rounded-full bg-surface-2 p-0.5">
-        {[
-          { v: "work", label: tr("Focus"), icon: Briefcase },
-          { v: "break", label: tr("Cooldown"), icon: Coffee },
-        ].map((o) => (
-          <button
-            key={o.v}
-            onClick={() => reset(o.v)}
-            className={cn("flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition", timer.mode === o.v ? "bg-accent text-white" : "text-fg-muted")}
-          >
-            <o.icon size={12} /> {o.label}
-          </button>
-        ))}
-      </div>
-      <div className="relative grid place-items-center">
-        <svg width="140" height="140" className="-rotate-90">
-          <circle cx="70" cy="70" r={r} stroke="var(--surface-3)" strokeWidth="8" fill="none" />
-          <circle
-            cx="70" cy="70" r={r}
-            stroke="var(--accent)" strokeWidth="8" fill="none" strokeLinecap="round"
-            strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
-            className="transition-[stroke-dashoffset] duration-500"
-          />
-        </svg>
-        <span className="absolute font-mono text-3xl font-semibold tabular-nums">
-          {String(m).padStart(2, "0")}:{String(s).padStart(2, "0")}
-        </span>
-      </div>
-      <div className="mt-4 flex items-center gap-2">
-        {timer.running ? (
-          <Button icon={Pause} onClick={pause} variant="secondary">{tr("Pause")}</Button>
-        ) : (
-          <Button icon={Play} onClick={start}>{remaining === total ? "Start" : "Resume"}</Button>
-        )}
-        <Button variant="ghost" size="icon" icon={RotateCcw} onClick={() => reset()} aria-label={tr("Reset")} />
-      </div>
+      <div className="mb-3"><ModeSwitch mode={timer.mode} onChange={(v) => reset(v)} /></div>
+      <TimerRing remaining={remaining} pct={pct} />
+      <div className="mt-4"><TimerButtons running={timer.running} atStart={remaining === total} onStart={start} onPause={pause} onReset={() => reset()} /></div>
 
       <div className="mt-5 w-full space-y-3 border-t border-line pt-4">
         <DurationRow label={tr("Focus length")} icon={Briefcase} value={focusMin} presets={FOCUS_PRESETS} onChange={(v) => setDuration("timerFocusMin", v)} />
@@ -95,6 +124,27 @@ export default function TimerTool() {
         <TimerAlertSettings />
       </div>
       <p className="mt-3 text-center text-[11px] text-fg-muted">{tr("Settings are saved. The timer keeps running while the panel is closed.")}</p>
+    </div>
+  );
+}
+
+/** Full-screen timer: a big clock in the middle, durations and alert settings in the sidebar. */
+export function TimerWorkspace() {
+  const tr = useT();
+  const { timer, focusMin, breakMin, total, remaining, pct, start, pause, reset, setDuration } = useTimerControls();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <aside className="order-2 w-full shrink-0 space-y-4 overflow-y-auto border-t border-line bg-surface/60 p-4 md:order-1 md:w-80 md:border-r md:border-t-0">
+        <DurationRow label={tr("Focus length")} icon={Briefcase} value={focusMin} presets={FOCUS_PRESETS} onChange={(v) => setDuration("timerFocusMin", v)} />
+        <DurationRow label={tr("Cooldown length")} icon={Coffee} value={breakMin} presets={BREAK_PRESETS} onChange={(v) => setDuration("timerBreakMin", v)} />
+        <div className="border-t border-line pt-4"><TimerAlertSettings /></div>
+        <p className="text-[11px] text-fg-muted">{tr("Settings are saved. The timer keeps running while the panel is closed.")}</p>
+      </aside>
+      <section className="order-1 flex min-h-0 flex-1 flex-col items-center justify-center gap-8 p-6 md:order-2">
+        <ModeSwitch mode={timer.mode} onChange={(v) => reset(v)} size="lg" />
+        <TimerRing size={300} stroke={14} remaining={remaining} pct={pct} textClass="text-6xl sm:text-7xl" />
+        <TimerButtons running={timer.running} atStart={remaining === total} onStart={start} onPause={pause} onReset={() => reset()} size="lg" />
+      </section>
     </div>
   );
 }
