@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -76,6 +76,32 @@ export default function DataTable({
   dense,
 }) {
   const tr = useT();
+  const bodyRef = useRef(null);
+  // The table body scrolls internally and takes exactly the space left in the pane below the
+  // header/toolbar (and above the pagination footer), so the page itself never over-scrolls.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const pane = el.closest("main");
+    if (!pane) return;
+    const apply = () => {
+      const offsetTop = el.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+      const footer = el.nextElementSibling;
+      const footerH = footer ? footer.getBoundingClientRect().height : 0;
+      const bottomGap = parseFloat(getComputedStyle(pane).paddingBottom) + 2;
+      const avail = Math.floor(pane.clientHeight - offsetTop - footerH - bottomGap);
+      el.style.maxHeight = `${Math.max(200, avail)}px`;
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(pane);
+    if (el.parentElement) ro.observe(el.parentElement);
+    window.addEventListener("resize", apply);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", apply);
+    };
+  }, []);
   const prefPageSize = usePrefs((s) => s.pageSize);
   const tables = usePrefs((s) => s.tables);
   const setColumnVisibility = usePrefs((s) => s.setColumnVisibility);
@@ -410,7 +436,7 @@ export default function DataTable({
       </div>
 
       {/* table */}
-      <div className="max-h-[calc(100vh-var(--topbar-h)-var(--bottombar-h)-220px)] min-h-[200px] w-full overflow-auto">
+      <div ref={bodyRef} className="relative min-h-[200px] w-full overflow-auto">
         <table className={cn("data-table w-full min-w-max border-collapse text-sm", dense && "text-xs")}>
           <thead>
             <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-fg-muted">

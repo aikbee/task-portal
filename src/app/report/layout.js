@@ -9,7 +9,7 @@ export default async function ReportLayout({ children }) {
   const { session_id, expires_at, ...safe } = user;
   return (
     <AuthProvider user={safe}>
-      <div data-theme="light" className="report-root min-h-dvh bg-[#eef0f6] text-fg print:bg-white">
+      <div data-theme="light" className="report-root h-dvh overflow-y-auto bg-[#eef0f6] text-fg print:h-auto print:overflow-visible print:bg-white">
         {children}
       </div>
     </AuthProvider>
