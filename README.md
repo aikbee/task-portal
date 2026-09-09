@@ -163,6 +163,15 @@ it serves `/offline` when a navigation fails and caches immutable `/_next/static
 browser offers installation, an **Install app** entry appears in the account menu; on iOS use
 Share → Add to Home Screen. `/offline`, `/manifest.webmanifest` and `/sw.js` are public routes.
 
+## Reports and PDF
+
+Every list and detail page has a **Report** button that opens a print-ready document in a new
+tab (`/report/<module>` for the whole module, `/report/<module>/<id>` for one record). The left
+panel toggles sections and, for tasks, Info items and requirements, picks which outputs, notes
+and attachments to include; images are embedded so they land in the PDF. **Save as PDF** uses
+the browser's print dialog, so nothing is generated on the server. Module reports can be
+filtered by status and grouped by project or department. Secrets are never included.
+
 ## Bottom-bar tools
 
 Notes, Timer, Calculator and Shortcuts open as a popover above the bottom bar. Each has an

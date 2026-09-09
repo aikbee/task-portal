@@ -14,6 +14,7 @@ import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, Pe
 import { EMPLOYEE_STATUS, MODULE_MAP } from "@/lib/modules";
 import { fullName, formatDate } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function EmployeesList() {
   const tr = useT();
@@ -69,7 +70,7 @@ export default function EmployeesList() {
 
   return (
     <>
-      <PageHeader title={tr("Employees")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button>} />
+      <PageHeader title={tr("Employees")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="employees" /><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></>} />
       <DataTable
         id="employees"
         columns={columns}

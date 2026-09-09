@@ -15,6 +15,7 @@ import { INFO_CATEGORY, MODULE_MAP } from "@/lib/modules";
 import { useNav } from "@/lib/nav";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function InfoList() {
   const tr = useT();
@@ -84,7 +85,7 @@ export default function InfoList() {
 
   return (
     <>
-      <PageHeader title={tr("Info")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><Button variant="outline" icon={Search} onClick={() => router.push("/info/search")}>{tr("Search")}</Button><Button icon={Plus} onClick={openNew}>{tr("New info")}</Button></>} />
+      <PageHeader title={tr("Info")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="info" /><Button variant="outline" icon={Search} onClick={() => router.push("/info/search")}>{tr("Search")}</Button><Button icon={Plus} onClick={openNew}>{tr("New info")}</Button></>} />
       <DataTable
         id="info"
         columns={columns}

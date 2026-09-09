@@ -17,6 +17,7 @@ import { useFetch } from "@/lib/hooks";
 import { useNav } from "@/lib/nav";
 import { formatDate, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function RequirementsList() {
   const tr = useT();
@@ -77,7 +78,7 @@ export default function RequirementsList() {
 
   return (
     <>
-      <PageHeader title={tr("Requirements")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button>} />
+      <PageHeader title={tr("Requirements")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="requirements" /><Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button></>} />
       <DataTable
         id="requirements"
         columns={columns}

@@ -16,6 +16,7 @@ import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow } f
 import { PROJECT_STATUS, MODULE_MAP } from "@/lib/modules";
 import { formatDate, formatMoney, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function ProjectsList() {
   const tr = useT();
@@ -74,7 +75,7 @@ export default function ProjectsList() {
         icon={mod.icon}
         color={mod.color}
         crumbs={[]}
-        actions={<Button icon={Plus} onClick={openNew}>{tr("New project")}</Button>}
+        actions={<><ReportButton module="projects" /><Button icon={Plus} onClick={openNew}>{tr("New project")}</Button></>}
       />
       <DataTable
         id="projects"

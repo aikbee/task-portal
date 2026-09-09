@@ -23,6 +23,7 @@ import TaskOutputs from "./TaskOutputs";
 import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 const NOTE_LABELS = { title: "Notes", singular: "note", plural: "notes", add: "Add note", first: "Add first note", empty: "No notes yet", emptyHint: "Add any number of notes to this topic — steps, snippets, history. Each keeps its own position.", placeholder: "Write a note…" };
 
@@ -70,6 +71,7 @@ export default function InfoDetail({ id }) {
         crumbs={[{ label: tr("Info"), href: "/info" }]}
         actions={
           <>
+            <ReportButton module="info" id={id} />
             <Button variant="outline" icon={item.pinned ? PinOff : Pin} onClick={togglePin}>{item.pinned ? "Unpin" : "Pin"}</Button>
             <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
             <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>

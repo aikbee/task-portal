@@ -22,6 +22,7 @@ import TaskOutputs from "./TaskOutputs";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function TaskDetail({ id }) {
   const tr = useT();
@@ -92,6 +93,7 @@ export default function TaskDetail({ id }) {
         crumbs={[{ label: tr("Tasks"), href: "/tasks" }]}
         actions={
           <>
+            <ReportButton module="tasks" id={id} />
             <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
             <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
           </>

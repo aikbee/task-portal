@@ -22,6 +22,7 @@ import TaskForm from "./TaskForm";
 import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function EmployeeDetail({ id }) {
   const tr = useT();
@@ -96,6 +97,7 @@ export default function EmployeeDetail({ id }) {
             </div>
           </div>
           <div className="flex gap-2">
+            <ReportButton module="employees" id={id} />
             <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
             <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
           </div>

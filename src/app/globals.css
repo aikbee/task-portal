@@ -253,6 +253,17 @@
   }
 }
 
+/* ---------- print-ready reports ---------- */
+@media print {
+  @page { size: A4; margin: 14mm; }
+  html, body { background: #fff !important; }
+  .print-hide, .bg-layer, [data-lock-screen] { display: none !important; }
+  .report-root { background: #fff !important; }
+  .report-section { break-inside: avoid; }
+  .report tr { break-inside: avoid; }
+  .report a[href] { color: inherit; text-decoration: none; }
+}
+
 /* touch: no grey flash on taps */
 body { -webkit-tap-highlight-color: transparent; }
 /* touch: hover tooltips would stick after a tap, so skip them on coarse pointers */

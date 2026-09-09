@@ -51,6 +51,8 @@ const zhCN = {
   "Mark all read": "全部标为已读", "View all": "查看全部", "You’re all caught up": "没有新通知", "Changes, reminders and sign-ins will show up here.": "变动、提醒和登录记录会显示在这里。", Unread: "未读", All: "全部", "Clear read": "清除已读", "Mark read": "标为已读", "Mark unread": "标为未读", "No unread notifications": "没有未读通知", Reminders: "提醒", Accounts: "账户", Security: "安全", "Receive": "接收", "Announce (this browser)": "提醒方式（此浏览器）", "When a new notification arrives": "有新通知时", "When this tab is in the background": "当此标签页在后台时",
   // board / calendar
   "Filter cards…": "筛选卡片…", "Drop tasks here": "把任务拖到这里", "Add task": "添加任务", "Task title, then Enter": "输入任务标题后按 Enter", "New task here": "在此新建任务", Month: "月", Week: "周", Agenda: "日程", "Hide done": "隐藏已完成", Deadlines: "截止日期", "{n} tasks in view": "视图中有 {n} 个任务", "Pick a day": "选择一天", "Click a day to see its tasks here. Double-click a day to add a task.": "点击某天在此查看任务，双击某天添加任务。", "No tasks are due on this day.": "这一天没有到期任务。", "Nothing scheduled": "没有安排",
+  // reports
+  Report: "报告", "Save as PDF": "保存为 PDF", "Use your browser's print dialog and choose “Save as PDF”.": "在浏览器打印对话框中选择“保存为 PDF”。", "Select none": "全不选", Generated: "生成于", "Report generated from Task Portal": "由 Task Portal 生成", "Stored, not included in the report": "已存储，不包含在报告中", "Untitled output": "未命名输出", Pinned: "已固定", "Project role": "项目角色", "Group by {x}": "按{x}分组", "No project": "无项目", "No department": "无部门",
   // tool workspace
   "Collapse to panel": "收起为面板", "All notes": "全部便签", "Search notes…": "搜索便签…", "All modules": "全部模块", "No notes match": "没有匹配的便签", "Untitled note": "未命名便签", "Open in editor": "在编辑器中打开", "No calculations yet": "还没有计算记录", Backspace: "退格", Calculator: "计算器",
   // push

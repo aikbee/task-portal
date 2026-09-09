@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { formatDate, relativeTime, fullName } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ReportButton from "@/components/report/ReportButton";
 
 export default function TasksList() {
   const tr = useT();
@@ -71,7 +72,7 @@ export default function TasksList() {
 
   return (
     <>
-      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New task")}</Button>} />
+      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></>} />
       <DataTable
         id="tasks"
         columns={columns}

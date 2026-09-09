@@ -439,6 +439,19 @@ console.log("push + reminder scheduler");
   check("scheduler with key runs over every profile", cron.status === 200 && cron.data.profiles >= 1 && typeof cron.data.created === "number");
 }
 
+console.log("report pages");
+{
+  const rec = await call("GET", `/api/tasks/${taskId}`);
+  const page = await fetch(`${BASE}/report/tasks/${taskId}`, { headers: { cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ") }, redirect: "manual" });
+  check("record report renders for a signed-in user", rec.status === 200 && page.status === 200 && (await page.text()).includes("report"));
+  const list = await fetch(`${BASE}/report/tasks`, { headers: { cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ") }, redirect: "manual" });
+  check("module report renders", list.status === 200);
+  const anon = await fetch(`${BASE}/report/tasks/${taskId}`, { redirect: "manual" });
+  check("report requires a session", anon.status === 307 || anon.status === 302);
+  const bad = await fetch(`${BASE}/report/nope/1`, { headers: { cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ") }, redirect: "manual" });
+  check("unknown module -> 404", bad.status === 404);
+}
+
 console.log("users (admin only)");
 let userId;
 const adminJar = { ...jar };
