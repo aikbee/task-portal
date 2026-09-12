@@ -1,5 +1,5 @@
 "use client";
-import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck } from "lucide-react";
+import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem } from "lucide-react";
 import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
@@ -13,7 +13,7 @@ import NotificationSettings from "./NotificationSettings";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/Toast";
 
-const BG_ICONS = { aurora: Wind, mesh: Blend, orbs: CircleDashed, bubbles: Droplets, stars: Star, waves: Waves, hexagons: Hexagon, sunrise: Sunrise, grid: Grid3x3, rain: CloudRain, snow: Snowflake, topography: Mountain, circuit: Cpu, confetti: PartyPopper, none: Ban };
+const BG_ICONS = { aurora: Wind, mesh: Blend, orbs: CircleDashed, bubbles: Droplets, stars: Star, waves: Waves, hexagons: Hexagon, sunrise: Sunrise, grid: Grid3x3, rain: CloudRain, snow: Snowflake, topography: Mountain, circuit: Cpu, confetti: PartyPopper, galaxy: Orbit, terrain: MountainSnow, crystals: Gem, none: Ban };
 
 export default function PreferencesDrawer() {
   const tr = useT();

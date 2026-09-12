@@ -14,16 +14,22 @@ export const BG_STYLES = [
   { value: "topography", label: "Topography", desc: "Contour lines slowly breathing" },
   { value: "circuit", label: "Circuit", desc: "Traces with light pulses" },
   { value: "confetti", label: "Confetti", desc: "Colourful pieces tumbling down" },
+  { value: "galaxy", label: "Galaxy", desc: "3D particle spiral slowly turning", three: true },
+  { value: "terrain", label: "Terrain", desc: "3D wireframe landscape rippling", three: true },
+  { value: "crystals", label: "Crystals", desc: "3D low-poly shapes drifting in light", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
+export const THREE_STYLES = new Set(BG_STYLES.filter((b) => b.three).map((b) => b.value));
 
 /** Admin settings: which styles users may pick, the default, and whether the default is forced on everyone. */
 export const DEFAULT_BG_SETTINGS = { enabled: BG_KEYS.slice(), default: "aurora", locked: false };
 
 export function normaliseBgSettings(raw) {
   const s = { ...DEFAULT_BG_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
-  let enabled = Array.isArray(s.enabled) ? BG_KEYS.filter((k) => s.enabled.includes(k)) : BG_KEYS.slice();
+  // styles added after the admin last saved (not in `known`) stay enabled until the admin decides
+  const known = Array.isArray(s.known) ? s.known : null;
+  let enabled = Array.isArray(s.enabled) ? BG_KEYS.filter((k) => s.enabled.includes(k) || (known && !known.includes(k))) : BG_KEYS.slice();
   if (!enabled.length) enabled = ["none"];
   const def = enabled.includes(s.default) ? s.default : enabled[0];
   return { enabled, default: def, locked: Boolean(s.locked) };

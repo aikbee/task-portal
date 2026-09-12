@@ -3,7 +3,8 @@ import { useEffect } from "react";
 import { usePrefs, useUI } from "@/lib/store";
 import { useMounted } from "@/lib/hooks";
 import { api } from "@/lib/api";
-import { resolveBackground } from "@/lib/backgrounds";
+import { resolveBackground, THREE_STYLES } from "@/lib/backgrounds";
+import ThreeBackground from "./ThreeBackground";
 
 const ORBS = [
   { c: "var(--accent)", size: 420, left: "8%", top: "12%", d: "22s", delay: "0s" },
@@ -58,6 +59,13 @@ export default function AnimatedBackground({ preview = null }) {
   const style = preview ?? resolveBackground(pref, settings);
   const cls = preview ? "bg-layer bg-preview-layer" : "bg-layer";
   if (!mounted || style === "none") return <div className={cls} aria-hidden />;
+  if (THREE_STYLES.has(style)) {
+    return (
+      <div className={cls} aria-hidden>
+        <ThreeBackground style={style} preview={Boolean(preview)} />
+      </div>
+    );
+  }
 
   return (
     <div className={cls} aria-hidden>

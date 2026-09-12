@@ -20,9 +20,11 @@ export const PUT = handler(
     if (!BG_KEYS.includes(body.default)) throw new HttpError("Unknown default background.", 400);
     if (!body.enabled.includes(body.default)) throw new HttpError("The default background must be one of the enabled ones.", 400);
     const value = normaliseBgSettings({ enabled: body.enabled, default: body.default, locked: Boolean(body.locked) });
+    // remember which styles existed at save time so future additions show up enabled by default
+    const stored = { ...value, known: BG_KEYS };
     await execute(
       "INSERT INTO app_settings (name, value, updated_by) VALUES ('backgrounds', ?, ?) AS new ON DUPLICATE KEY UPDATE value = new.value, updated_by = new.updated_by",
-      [JSON.stringify(value), user.id]
+      [JSON.stringify(stored), user.id]
     );
     return ok(value);
   },
