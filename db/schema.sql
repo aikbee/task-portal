@@ -350,3 +350,11 @@ CREATE TABLE IF NOT EXISTS draw_board_attachments (
   KEY idx_draw_board_att (board_id, sort_order),
   CONSTRAINT fk_draw_board_att FOREIGN KEY (board_id) REFERENCES draw_boards(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Instance-wide settings managed by admins (JSON documents keyed by name), e.g. "backgrounds"
+CREATE TABLE IF NOT EXISTS app_settings (
+  name VARCHAR(64) NOT NULL PRIMARY KEY,
+  value JSON NOT NULL,
+  updated_by INT UNSIGNED NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

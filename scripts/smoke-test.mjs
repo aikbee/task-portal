@@ -416,6 +416,25 @@ console.log("notifications");
   check("clear read notifications", cleared.status === 200);
 }
 
+console.log("background settings");
+{
+  const pub = await call("GET", "/api/settings/backgrounds", { noAuth: true });
+  check("GET is public and returns defaults", pub.status === 200 && Array.isArray(pub.data.enabled) && pub.data.enabled.length >= 10 && typeof pub.data.default === "string" && pub.data.locked === false);
+  const before = pub.data;
+  const bad1 = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["aurora", "nope"], default: "aurora" } });
+  check("unknown key -> 400", bad1.status === 400);
+  const bad2 = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["aurora"], default: "stars" } });
+  check("default outside enabled -> 400", bad2.status === 400);
+  const bad3 = await call("PUT", "/api/settings/backgrounds", { body: { enabled: [], default: "none" } });
+  check("empty list -> 400", bad3.status === 400);
+  const saved = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "none", "rain"], default: "rain", locked: true } });
+  check("admin saves settings", saved.status === 200 && saved.data.default === "rain" && saved.data.locked === true && saved.data.enabled.join() === "stars,rain,none");
+  const readBack = await call("GET", "/api/settings/backgrounds", { noAuth: true });
+  check("settings persist", readBack.data.default === "rain" && readBack.data.locked === true);
+  const restore = await call("PUT", "/api/settings/backgrounds", { body: before });
+  check("restore defaults", restore.status === 200 && restore.data.locked === false);
+}
+
 console.log("draw boards");
 {
   const created = await call("POST", "/api/drawboards", { body: { title: "Smoke board", description: "sketch", width: 1280, height: 800, background: "#ffffff" } });
@@ -545,6 +564,8 @@ const adminJar = { ...jar };
     jar = userJar;
   }
   const notUser = await call("PUT", "/api/auth/workspace", { body: { user_id: 1 } });
+  const bgAsUser = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["none"], default: "none" } });
+  check("role user cannot change background settings (403)", bgAsUser.status === 403);
   check("role user cannot switch workspace", notUser.status === 403);
 
   const note = await call("POST", "/api/notes", { body: { module: "tasks", title: "mine" } });

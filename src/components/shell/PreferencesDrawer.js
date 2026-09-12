@@ -1,5 +1,6 @@
 "use client";
-import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge } from "lucide-react";
+import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck } from "lucide-react";
+import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
 import { Toggle, Segmented, Select, Field, Input } from "@/components/ui/Controls";
@@ -12,18 +13,7 @@ import NotificationSettings from "./NotificationSettings";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/Toast";
 
-const BG_STYLES = [
-  { value: "aurora", label: "Aurora", icon: Wind, desc: "Soft drifting ribbons" },
-  { value: "mesh", label: "Mesh", icon: Blend, desc: "Colour-shifting gradient" },
-  { value: "orbs", label: "Orbs", icon: CircleDashed, desc: "Floating glowing balls" },
-  { value: "bubbles", label: "Bubbles", icon: Droplets, desc: "Rising soap bubbles" },
-  { value: "stars", label: "Stars", icon: Star, desc: "Twinkling starfield" },
-  { value: "waves", label: "Waves", icon: Waves, desc: "Ribbons rolling along the bottom" },
-  { value: "hexagons", label: "Hexagons", icon: Hexagon, desc: "Honeycomb with a roaming light" },
-  { value: "sunrise", label: "Sunrise", icon: Sunrise, desc: "Horizon glow and a breathing sun" },
-  { value: "grid", label: "Grid", icon: Grid3x3, desc: "Perspective floor" },
-  { value: "none", label: "None", icon: Ban, desc: "Plain background" },
-];
+const BG_ICONS = { aurora: Wind, mesh: Blend, orbs: CircleDashed, bubbles: Droplets, stars: Star, waves: Waves, hexagons: Hexagon, sunrise: Sunrise, grid: Grid3x3, rain: CloudRain, snow: Snowflake, topography: Mountain, circuit: Cpu, confetti: PartyPopper, none: Ban };
 
 export default function PreferencesDrawer() {
   const tr = useT();
@@ -32,6 +22,9 @@ export default function PreferencesDrawer() {
   const prefs = usePrefs();
   const toast = useToast();
   const locale = useLocale();
+  const bgRaw = useUI((s) => s.bgSettings);
+  const bg = normaliseBgSettings(bgRaw);
+  const bgChoices = BG_STYLES.filter((b) => bg.enabled.includes(b.value));
 
   return (
     <Drawer open={open} onClose={() => setOpen(false)} title={tr("Preferences")} description={tr("Personalise the workspace. Saved in this browser.")}>
@@ -94,9 +87,12 @@ export default function PreferencesDrawer() {
         <Divider />
 
         <Section title={tr("Background")} icon={Waves}>
-          <div className="grid grid-cols-2 gap-2">
-            {BG_STYLES.map((b) => {
-              const Icon = b.icon;
+          {bg.locked ? (
+            <p className="flex items-start gap-2 rounded-app border border-line bg-surface-2/60 p-3 text-xs text-fg-muted"><ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" /> {tr("Your administrator has set the background for everyone.")}</p>
+          ) : null}
+          <div className={cn("grid grid-cols-2 gap-2", bg.locked && "hidden")}>
+            {bgChoices.map((b) => {
+              const Icon = BG_ICONS[b.value] ?? Ban;
               const active = prefs.bgStyle === b.value;
               return (
                 <button
@@ -135,10 +131,10 @@ export default function PreferencesDrawer() {
               variant="outline"
               size="sm"
               icon={Shuffle}
-              className="mt-5"
+              className={cn("mt-5", bg.locked && "hidden")}
               onClick={() => {
-                const pool = BG_STYLES.filter((b) => b.value !== "none" && b.value !== prefs.bgStyle);
-                prefs.set({ bgStyle: pool[Math.floor(Math.random() * pool.length)].value });
+                const pool = bgChoices.filter((b) => b.value !== "none" && b.value !== prefs.bgStyle);
+                if (pool.length) prefs.set({ bgStyle: pool[Math.floor(Math.random() * pool.length)].value });
               }}
             >
               {tr("Shuffle")}

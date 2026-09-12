@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifySessionToken, SESSION_COOKIE, sessionSecret } from "@/lib/session-token";
 
-const PUBLIC = new Set(["/login", "/api/auth/login", "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders"]);
+const PUBLIC = new Set(["/login", "/api/auth/login", "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds"]);
 
 /**
  * Request guard: pages without a validly signed session cookie go to /login,

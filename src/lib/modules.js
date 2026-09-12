@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -118,6 +118,16 @@ export const MODULES = [
     icon: Bell,
     color: "#f59e0b",
     description: "What changed in your workspace, reminders and security alerts.",
+  },
+  {
+    key: "backgrounds",
+    label: "Backgrounds",
+    singular: "Background",
+    href: "/backgrounds",
+    icon: Palette,
+    color: "#ec4899",
+    description: "Choose which background styles users can pick, set the default, or lock one for everyone.",
+    adminOnly: true,
   },
   {
     key: "users",
