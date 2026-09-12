@@ -65,11 +65,16 @@ export default function DrawBoardEditor({ board, onSaved }) {
     c.requestRenderAll();
     setZoomState(z);
   };
+  const manualZoom = useRef(false); // true after Zoom in/out; auto-fit stays off until "Fit"
+  const fitWidth = () => (wrapRef.current?.offsetWidth ?? W) - 8 - 16; // outer width minus padding and a scrollbar allowance
   const fitZoom = () => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const avail = el.clientWidth - 8;
-    applyZoom(Math.max(0.1, Math.min(1, avail / W)));
+    manualZoom.current = false;
+    applyZoom(Math.max(0.1, Math.min(1, fitWidth() / W)));
+  };
+  const zoomStep = (dir) => {
+    manualZoom.current = true;
+    const next = dir > 0 ? ZOOMS.find((z) => z > zoom + 0.01) ?? ZOOMS[ZOOMS.length - 1] : ZOOMS.filter((z) => z < zoom - 0.01).pop() ?? ZOOMS[0];
+    applyZoom(next);
   };
   const serialize = () => JSON.stringify(fab.current.toJSON()).replaceAll(`${location.origin}/api/attachments/`, "/api/attachments/");
   const pushHistory = () => {
@@ -391,7 +396,16 @@ export default function DrawBoardEditor({ board, onSaved }) {
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("paste", onPaste);
-    const ro = new ResizeObserver(() => fitZoom());
+    // refit only when the available width changes; zooming changes the wrapper's own height
+    // (the canvas grows or shrinks inside it), which must not snap the zoom back to "fit"
+    let lastWidth = wrapRef.current?.offsetWidth ?? 0;
+    const ro = new ResizeObserver(() => {
+      const w = wrapRef.current?.offsetWidth ?? 0;
+      if (w !== lastWidth) {
+        lastWidth = w;
+        if (!manualZoom.current) fitZoom();
+      }
+    });
     if (wrapRef.current) ro.observe(wrapRef.current);
     return () => {
       document.removeEventListener("keydown", onKey);
@@ -409,7 +423,7 @@ export default function DrawBoardEditor({ board, onSaved }) {
     const c = fab.current;
     if (!c || !ready) return;
     c.backgroundColor = board.background;
-    applyZoom(Math.min(1, Math.max(0.1, ((wrapRef.current?.clientWidth ?? W) - 8) / W)));
+    if (!manualZoom.current) applyZoom(Math.min(1, Math.max(0.1, fitWidth() / W)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [board.width, board.height, board.background, ready]);
 
@@ -462,9 +476,9 @@ export default function DrawBoardEditor({ board, onSaved }) {
           <Button variant="ghost" size="iconSm" icon={Copy} onClick={duplicateSelection} disabled={!hasSelection} aria-label={tr("Duplicate")} data-tip={tr("Duplicate")} data-tip-pos="bottom" />
           <Button variant="dangerGhost" size="iconSm" icon={Trash2} onClick={deleteSelection} disabled={!hasSelection} aria-label={tr("Delete")} data-tip={tr("Delete")} data-tip-pos="bottom" />
           <span className="mx-1 h-6 w-px bg-line" />
-          <Button variant="ghost" size="iconSm" icon={ZoomOut} onClick={() => applyZoom(ZOOMS.filter((z) => z < zoom - 0.01).pop() ?? ZOOMS[0])} aria-label={tr("Zoom out")} />
+          <Button variant="ghost" size="iconSm" icon={ZoomOut} onClick={() => zoomStep(-1)} aria-label={tr("Zoom out")} />
           <button type="button" onClick={fitZoom} className="min-w-[3.25rem] rounded-app-sm px-1 text-xs tabular-nums text-fg-muted hover:bg-surface-2 hover:text-fg" data-tip={tr("Fit to width")} data-tip-pos="bottom">{Math.round(zoom * 100)}%</button>
-          <Button variant="ghost" size="iconSm" icon={ZoomIn} onClick={() => applyZoom(ZOOMS.find((z) => z > zoom + 0.01) ?? ZOOMS[ZOOMS.length - 1])} aria-label={tr("Zoom in")} />
+          <Button variant="ghost" size="iconSm" icon={ZoomIn} onClick={() => zoomStep(1)} aria-label={tr("Zoom in")} />
           <Button variant="ghost" size="iconSm" icon={Maximize} onClick={fitZoom} aria-label={tr("Fit to width")} />
           <span className="mx-1 h-6 w-px bg-line" />
           <DropdownMenu width="w-44" trigger={({ toggle }) => <Button variant="outline" size="sm" icon={Download} onClick={toggle}>{tr("Export")}</Button>} items={[
@@ -478,7 +492,7 @@ export default function DrawBoardEditor({ board, onSaved }) {
       </div>
 
       {/* canvas */}
-      <div ref={wrapRef} onDragOver={(e) => e.preventDefault()} onDrop={onDrop} className="overflow-auto bg-[repeating-conic-gradient(var(--surface-2)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-1" style={{ maxHeight: "78vh" }}>
+      <div ref={wrapRef} onDragOver={(e) => e.preventDefault()} onDrop={onDrop} className="overflow-auto bg-[repeating-conic-gradient(var(--surface-2)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-1" style={{ maxHeight: "78vh", scrollbarGutter: "stable" }}>
         <div className="inline-block shadow-app" style={{ lineHeight: 0 }}>
           <canvas ref={canvasEl} />
         </div>

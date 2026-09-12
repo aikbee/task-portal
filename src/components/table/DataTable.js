@@ -25,6 +25,7 @@ import { Checkbox, Select, Input, Field } from "@/components/ui/Controls";
 import { formatDate } from "@/lib/utils";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
+import { isoDate } from "@/lib/dates";
 
 /**
  * Full-width data table with sortable columns, a column-visibility dropdown,
@@ -178,7 +179,8 @@ export default function DataTable({
       out = out.filter((row) => {
         const v = row[field];
         if (!v) return false; // rows without a date fall outside any range
-        const d = String(v).slice(0, 10);
+        // DATE columns are plain "YYYY-MM-DD"; timestamps are ISO instants -> compare on the viewer's local date
+        const d = String(v).length === 10 ? String(v) : isoDate(new Date(v));
         return (!from || d >= from) && (!to || d <= to);
       });
     }
