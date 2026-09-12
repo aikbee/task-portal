@@ -3,10 +3,10 @@ import { handler, ok } from "@/lib/api-utils";
 
 export const GET = handler(async (request, _params, user) => {
   const q = (request.nextUrl.searchParams.get("q") || "").trim();
-  if (q.length < 1) return ok({ projects: [], employees: [], tasks: [], requirements: [], info: [] });
+  if (q.length < 1) return ok({ projects: [], employees: [], tasks: [], requirements: [], info: [], drawboards: [] });
   const like = `%${q}%`;
   const owner = user.profile_id;
-  const [projects, employees, tasks, requirements, info] = await Promise.all([
+  const [projects, employees, tasks, requirements, info, drawboards] = await Promise.all([
     query("SELECT id, name, code, color, status FROM projects WHERE profile_id = ? AND (name LIKE ? OR code LIKE ?) ORDER BY name LIMIT 5", [owner, like, like]),
     query(
       "SELECT id, first_name, last_name, email, job_title, avatar_color FROM employees WHERE profile_id = ? AND (CONCAT(first_name,' ',last_name) LIKE ? OR email LIKE ? OR job_title LIKE ?) ORDER BY first_name LIMIT 5",
@@ -28,6 +28,11 @@ export const GET = handler(async (request, _params, user) => {
       `SELECT id, title, category, tags, color FROM info_items WHERE profile_id = ? AND (title LIKE ? OR tags LIKE ? OR summary LIKE ?) ORDER BY pinned DESC, updated_at DESC LIMIT 5`,
       [owner, like, like, like]
     ),
+    query(
+      `SELECT b.id, b.title, b.description, p.name AS project_name FROM draw_boards b LEFT JOIN projects p ON p.id = b.project_id
+       WHERE b.profile_id = ? AND (b.title LIKE ? OR b.description LIKE ?) ORDER BY b.updated_at DESC LIMIT 5`,
+      [owner, like, like]
+    ),
   ]);
-  return ok({ projects, employees, tasks, requirements, info });
+  return ok({ projects, employees, tasks, requirements, info, drawboards });
 });

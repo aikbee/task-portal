@@ -8,6 +8,7 @@ const TABLES = {
   requirement_attachments: { parent: "requirement_id" },
   info_notes: { parent: "info_id" },
   info_attachments: { parent: "info_id" },
+  draw_board_attachments: { parent: "board_id" },
   tasks: { parent: null },
 };
 

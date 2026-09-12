@@ -22,6 +22,8 @@ function spec(module, tr) {
       return { statusMap: TASK_STATUS, statusKey: "status", groupKey: "project_name", columns: [{ key: "title", label: tr("Task") }, { key: "project_name", label: tr("Project") }, { key: "assignee_name", label: tr("Assignee") }, { key: "status", label: tr("Status"), render: (r) => label(TASK_STATUS, r.status) }, { key: "priority", label: tr("Priority"), render: (r) => label(TASK_PRIORITY, r.priority) }, { key: "due_date", label: tr("Due"), render: (r) => (r.due_date ? formatDate(r.due_date) : "—") }] };
     case "info":
       return { statusMap: INFO_CATEGORY, statusKey: "category", groupKey: "project_name", columns: [{ key: "title", label: tr("Title") }, { key: "category", label: tr("Category"), render: (r) => label(INFO_CATEGORY, r.category) }, { key: "project_name", label: tr("Project") }, { key: "tags", label: tr("Tags"), render: (r) => (r.tags ? r.tags.split(",").map((t) => `#${t}`).join(" ") : "—") }, { key: "updated_at", label: tr("Updated"), render: (r) => formatDate(r.updated_at) }] };
+    case "drawboards":
+      return { statusMap: { any: { label: "All" } }, statusKey: "_any", groupKey: "project_name", columns: [{ key: "title", label: tr("Title") }, { key: "project_name", label: tr("Project") }, { key: "size", label: tr("Size"), render: (r) => `${r.width} × ${r.height}` }, { key: "image_count", label: tr("Images"), align: "right" }, { key: "updated_at", label: tr("Updated"), render: (r) => formatDate(r.updated_at) }] };
     default:
       return null;
   }
@@ -37,13 +39,13 @@ export default function ModuleReport({ module }) {
   const [statuses, setStatuses] = useState(null); // null = all
   const [grouped, setGrouped] = useState(false);
   const statusItems = Object.entries(s.statusMap).map(([id, v]) => ({ id, label: tr(v.label) }));
-  const visible = rows.filter((r) => !statuses || statuses.has(r[s.statusKey]));
+  const visible = rows.filter((r) => s.statusKey === "_any" || !statuses || statuses.has(r[s.statusKey]));
   const none = module === "employees" ? tr("No department") : tr("No project");
   const groups = grouped && s.groupKey ? Object.entries(visible.reduce((acc, r) => ((acc[r[s.groupKey] || none] ??= []).push(r), acc), {})).sort(([a], [b]) => (a === none) - (b === none) || a.localeCompare(b)) : null;
 
   const controls = (
     <>
-      <Checklist title={module === "info" ? tr("Category") : tr("Status")} items={statusItems} selected={statuses ?? new Set(statusItems.map((i) => i.id))} onChange={setStatuses} />
+      {s.statusKey !== "_any" ? <Checklist title={module === "info" ? tr("Category") : tr("Status")} items={statusItems} selected={statuses ?? new Set(statusItems.map((i) => i.id))} onChange={setStatuses} /> : null}
       {s.groupKey ? <Toggle checked={grouped} onChange={setGrouped} label={tr("Group by {x}", { x: (module === "employees" ? tr("Department") : tr("Project")).toLowerCase() })} /> : null}
     </>
   );

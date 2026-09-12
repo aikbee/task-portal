@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -67,6 +67,17 @@ export const MODULES = [
     icon: BookOpen,
     color: "#14b8a6",
     description: "Guidelines, credentials, links and reference notes — each with its own notes and attachments.",
+    creatable: true,
+  },
+  {
+    key: "drawboards",
+    label: "Draw Board",
+    singular: "Board",
+    href: "/drawboards",
+    api: "/api/drawboards",
+    icon: Brush,
+    color: "#f97316",
+    description: "Sketch ideas, paste screenshots, move, resize and rotate them, tag related records and export as an image.",
     creatable: true,
   },
   {

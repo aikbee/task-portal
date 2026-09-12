@@ -13,6 +13,7 @@ export const GET = handler(async (_request, _params, user) => {
       (SELECT COUNT(*) FROM tasks WHERE profile_id = ?) AS tasks,
       (SELECT COUNT(*) FROM requirements WHERE profile_id = ?) AS requirements,
       (SELECT COUNT(*) FROM info_items WHERE profile_id = ?) AS info,
+      (SELECT COUNT(*) FROM draw_boards WHERE profile_id = ?) AS drawboards,
       (SELECT COUNT(*) FROM requirements WHERE profile_id = ? AND status = 'done') AS requirements_done,
       (SELECT COUNT(*) FROM tasks WHERE profile_id = ? AND status <> 'done') AS open_tasks,
       (SELECT COUNT(*) FROM tasks WHERE profile_id = ? AND status <> 'done' AND due_date IS NOT NULL AND due_date < CURDATE()) AS overdue_tasks,
@@ -20,7 +21,7 @@ export const GET = handler(async (_request, _params, user) => {
       (SELECT COUNT(*) FROM users) AS users,
       (SELECT COUNT(*) FROM task_attachments a JOIN tasks t ON t.id = a.task_id WHERE t.profile_id = ?) AS attachments,
       (SELECT COUNT(*) FROM task_outputs x JOIN tasks t ON t.id = x.task_id WHERE t.profile_id = ?) AS outputs`,
-    [o, o, o, o, o, o, o, o, o, o, user.id, o, o]
+    [o, o, o, o, o, o, o, o, o, o, o, user.id, o, o]
   );
 
   const tasksByStatus = await query("SELECT status, COUNT(*) AS n FROM tasks WHERE profile_id = ? GROUP BY status", [o]);

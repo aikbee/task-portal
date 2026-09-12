@@ -116,6 +116,21 @@ function build(module, d, tr) {
       ],
     };
   }
+  if (module === "drawboards") {
+    return {
+      title: d.title,
+      subtitle: d.description || d.project_name || null,
+      badges: [d.project_name, `${d.width} × ${d.height}`],
+      sections: [
+        { key: "drawing", label: tr("Drawing"), render: () => d.thumbnail ? (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={d.thumbnail} alt={d.title} className="max-w-full rounded border border-line" />
+        ) : <p className="text-sm text-fg-muted">—</p> },
+        { key: "details", label: tr("Details"), render: () => <KV items={[[tr("Project"), d.project_name], [tr("Size"), `${d.width} × ${d.height}`], [tr("Images"), d.image_count], [tr("Created"), formatDateTime(d.created_at)], [tr("Updated"), formatDateTime(d.updated_at)]]} /> },
+        { key: "notes", label: tr("Notes"), render: () => <Blocks text={d.notes} /> },
+      ],
+    };
+  }
   if (module === "employees") {
     return {
       title: fullName(d),

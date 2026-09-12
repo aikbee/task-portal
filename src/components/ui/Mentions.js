@@ -1,13 +1,13 @@
 "use client";
 import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
-import { Users, FolderKanban, CheckSquare, ClipboardList, BookOpen } from "lucide-react";
+import { Users, FolderKanban, CheckSquare, ClipboardList, BookOpen, Brush } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNav } from "@/lib/nav";
 import { useT } from "@/lib/i18n";
 import { MENTION_TYPES, parseMentions } from "@/lib/mentions";
 
-export const MENTION_ICONS = { employee: Users, project: FolderKanban, task: CheckSquare, requirement: ClipboardList, info: BookOpen };
+export const MENTION_ICONS = { employee: Users, project: FolderKanban, task: CheckSquare, requirement: ClipboardList, info: BookOpen, drawboard: Brush };
 
 /** Clickable chips for every `@[Label](type:id)` in the text — the way to open a tagged record while editing. */
 export function MentionChips({ text, label, className, size = "sm" }) {

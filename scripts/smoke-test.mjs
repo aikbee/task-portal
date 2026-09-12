@@ -416,6 +416,44 @@ console.log("notifications");
   check("clear read notifications", cleared.status === 200);
 }
 
+console.log("draw boards");
+{
+  const created = await call("POST", "/api/drawboards", { body: { title: "Smoke board", description: "sketch", width: 1280, height: 800, background: "#ffffff" } });
+  check("POST /api/drawboards 201", created.status === 201 && created.data?.id > 0 && created.data.has_drawing === false, JSON.stringify(created.raw).slice(0, 160));
+  const bid = created.data.id;
+  const badSize = await call("POST", "/api/drawboards", { body: { title: "x", width: 10 } });
+  check("width out of range -> 400", badSize.status === 400);
+  const badBg = await call("PUT", `/api/drawboards/${bid}`, { body: { background: "red" } });
+  check("non-hex background -> 400", badBg.status === 400);
+  const badData = await call("PUT", `/api/drawboards/${bid}`, { body: { data: "{not json" } });
+  check("non-JSON drawing -> 400", badData.status === 400);
+  const badThumb = await call("PUT", `/api/drawboards/${bid}`, { body: { thumbnail: "http://evil" } });
+  check("non-data-URL thumbnail -> 400", badThumb.status === 400);
+  const fabricJson = JSON.stringify({ version: "7.0.0", objects: [{ type: "Rect", left: 10, top: 10, width: 100, height: 50, fill: "red" }], background: "#ffffff" });
+  const saved = await call("PUT", `/api/drawboards/${bid}?light=1`, { body: { data: fabricJson, thumbnail: "data:image/jpeg;base64,/9j/4AAQ", notes: "see @[Smoke Project](project:1)" } });
+  check("PUT drawing + thumbnail + notes (light response)", saved.status === 200 && saved.data.has_drawing === true && !("data" in saved.data));
+  const detail = await call("GET", `/api/drawboards/${bid}`);
+  check("GET detail carries data, thumbnail, attachments", detail.data.data === fabricJson && detail.data.thumbnail.startsWith("data:image/") && Array.isArray(detail.data.attachments));
+  const list = await call("GET", "/api/drawboards");
+  check("list has the board without the drawing data", list.data.some((b) => b.id === bid) && list.data.every((b) => !("data" in b)));
+  const form = new FormData();
+  form.append("files", new Blob([Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64")], { type: "image/png" }), "pasted.png");
+  const up = await call("POST", `/api/drawboards/${bid}/attachments`, { form });
+  check("image upload for a board", up.status === 201 && up.data.length === 1);
+  const file = await call("GET", `/api/attachments/drawboard/${up.data[0].id}`);
+  check("board image served via /api/attachments/drawboard/:id", file.status === 200);
+  const s = await call("GET", "/api/search?q=Smoke%20board");
+  check("global search finds boards", Array.isArray(s.data.drawboards) && s.data.drawboards.some((b) => b.id === bid));
+  const stats = await call("GET", "/api/stats");
+  check("stats count boards", typeof stats.data.counts.drawboards === "number" && stats.data.counts.drawboards >= 1);
+  const foreign = await call("PUT", `/api/drawboards/${bid}`, { body: { project_id: 999999 } });
+  check("foreign project -> 400", foreign.status === 400);
+  const del = await call("DELETE", `/api/drawboards/${bid}`);
+  check("DELETE board (purges images)", del.status === 200);
+  const gone = await call("GET", `/api/attachments/drawboard/${up.data[0].id}`);
+  check("image gone after delete", gone.status === 404);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");

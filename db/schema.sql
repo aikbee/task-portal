@@ -314,3 +314,39 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   KEY idx_push_user (user_id),
   CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Draw boards: freehand drawings with images, saved as Fabric.js JSON; pasted images are attachments
+CREATE TABLE IF NOT EXISTS draw_boards (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  profile_id INT UNSIGNED NOT NULL,
+  project_id INT UNSIGNED NULL,
+  title VARCHAR(200) NOT NULL,
+  description VARCHAR(500) NULL,
+  notes LONGTEXT NULL,
+  data LONGTEXT NULL,
+  thumbnail MEDIUMTEXT NULL,
+  width INT NOT NULL DEFAULT 1280,
+  height INT NOT NULL DEFAULT 800,
+  background VARCHAR(16) NOT NULL DEFAULT '#ffffff',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_draw_boards_profile (profile_id, updated_at),
+  KEY idx_draw_boards_project (project_id),
+  CONSTRAINT fk_draw_boards_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_draw_boards_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+  CONSTRAINT fk_draw_boards_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS draw_board_attachments (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  board_id INT UNSIGNED NOT NULL,
+  stored_name VARCHAR(255) NOT NULL,
+  original_name VARCHAR(255) NOT NULL,
+  mime_type VARCHAR(120) NULL,
+  size_bytes INT UNSIGNED NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_draw_board_att (board_id, sort_order),
+  CONSTRAINT fk_draw_board_att FOREIGN KEY (board_id) REFERENCES draw_boards(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

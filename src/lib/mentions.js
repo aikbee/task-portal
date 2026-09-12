@@ -8,6 +8,7 @@ export const MENTION_TYPES = {
   task: { path: "tasks", label: "Task" },
   requirement: { path: "requirements", label: "Requirement" },
   info: { path: "info", label: "Info" },
+  drawboard: { path: "drawboards", label: "Board" },
 };
 
 const TYPE_ALT = Object.keys(MENTION_TYPES).join("|");
@@ -53,5 +54,6 @@ export function searchToMentions(data, fullName) {
     ...(data.tasks ?? []).map((t) => ({ type: "task", id: t.id, label: t.title, sub: t.project_name })),
     ...(data.requirements ?? []).map((r) => ({ type: "requirement", id: r.id, label: `${r.code} · ${r.title}`, sub: r.project_name, color: r.project_color })),
     ...(data.info ?? []).map((i) => ({ type: "info", id: i.id, label: i.title, sub: i.category, color: i.color })),
+    ...(data.drawboards ?? []).map((b) => ({ type: "drawboard", id: b.id, label: b.title, sub: b.project_name || b.description, color: "#f97316" })),
   ];
 }

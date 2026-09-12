@@ -7,6 +7,7 @@ export const ATTACHMENT_KINDS = {
   task: { table: "task_attachments", parentCol: "task_id", parentTable: "tasks", apiBase: "tasks" },
   requirement: { table: "requirement_attachments", parentCol: "requirement_id", parentTable: "requirements", apiBase: "requirements" },
   info: { table: "info_attachments", parentCol: "info_id", parentTable: "info_items", apiBase: "info" },
+  drawboard: { table: "draw_board_attachments", parentCol: "board_id", parentTable: "draw_boards", apiBase: "drawboards" },
 };
 
 export function kindOf(kind) {

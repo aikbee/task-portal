@@ -9,7 +9,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush,
 } from "lucide-react";
 import { moduleFromPath, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
@@ -290,6 +290,7 @@ function GlobalSearch() {
         ...shown.tasks.map((t) => ({ kind: "task", href: `/tasks/${t.id}`, label: t.title, sub: t.project_name, status: t.status, icon: CheckSquare })),
         ...(shown.requirements ?? []).map((r) => ({ kind: "requirement", href: `/requirements/${r.id}`, label: `${r.code} · ${r.title}`, sub: r.project_name, color: r.project_color, icon: ClipboardList })),
         ...(shown.info ?? []).map((i) => ({ kind: "info", href: `/info/${i.id}`, label: i.title, sub: [i.category, i.tags].filter(Boolean).join(" · "), color: i.color, icon: BookOpen })),
+        ...(shown.drawboards ?? []).map((b) => ({ kind: "drawboard", href: `/drawboards/${b.id}`, label: b.title, sub: b.project_name || b.description || "", color: "#f97316", icon: Brush })),
       ]
     : [];
 
@@ -324,7 +325,7 @@ function GlobalSearch() {
             <p className="px-4 py-6 text-center text-xs text-fg-muted">No results for “{q}”.</p>
           ) : (
             <ul className="max-h-[60vh] overflow-y-auto p-1.5">
-              {["project", "requirement", "employee", "task", "info"].map((kind) => {
+              {["project", "requirement", "employee", "task", "info", "drawboard"].map((kind) => {
                 const group = flat.filter((f) => f.kind === kind);
                 if (!group.length) return null;
                 return (

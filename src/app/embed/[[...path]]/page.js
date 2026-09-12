@@ -17,6 +17,8 @@ import BoardView from "@/components/modules/BoardView";
 import InfoList from "@/components/modules/InfoList";
 import InfoDetail from "@/components/modules/InfoDetail";
 import InfoSearch from "@/components/modules/InfoSearch";
+import DrawBoardsList from "@/components/modules/DrawBoardsList";
+import DrawBoardDetail from "@/components/modules/DrawBoardDetail";
 
 /**
  * Mirrors the app's routes under /embed/* so a pane can show any page
@@ -44,6 +46,8 @@ function pick(segments) {
       return id == null ? <InfoList /> : <InfoDetail id={num} />;
     case "board":
       return id == null ? <BoardView /> : null;
+    case "drawboards":
+      return id == null ? <DrawBoardsList /> : <DrawBoardDetail id={num} />;
     case "calendar":
       return id == null ? <CalendarView /> : null;
     case "profiles":
