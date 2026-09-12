@@ -17,6 +17,11 @@ export const BG_STYLES = [
   { value: "galaxy", label: "Galaxy", desc: "3D particle spiral slowly turning", three: true },
   { value: "terrain", label: "Terrain", desc: "3D wireframe landscape rippling", three: true },
   { value: "crystals", label: "Crystals", desc: "3D low-poly shapes drifting in light", three: true },
+  { value: "earth", label: "Earth links", desc: "3D globe with a web of connections", three: true },
+  { value: "neon", label: "Neon energy", desc: "3D glowing beams pulsing with energy", three: true },
+  { value: "island", label: "Island", desc: "3D low-poly island floating on water", three: true },
+  { value: "bloodmoon", label: "Blood moon", desc: "3D crimson moon, drifting clouds and embers", three: true },
+  { value: "ocean", label: "Ocean", desc: "3D rolling sea under a low sun", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
