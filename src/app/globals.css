@@ -1286,6 +1286,26 @@ body { -webkit-tap-highlight-color: transparent; }
   }
 }
 
+.chat-mark {
+  background: color-mix(in oklab, #f59e0b 45%, transparent);
+  color: inherit;
+}
+.chat-mine .chat-mark {
+  background: color-mix(in oklab, #fde68a 70%, transparent);
+  color: #1e1b4b;
+}
+.chat-msg {
+  transition: background-color 0.4s;
+}
+.chat-msg.chat-flash {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in oklab, var(--accent) 16%, transparent);
+}
+.chat-newer {
+  display: flex;
+  width: max-content;
+}
+
 /* Modern chat */
 [data-table-theme="modern"] .chat-shell {
   border-radius: 1.25rem;
@@ -1389,6 +1409,21 @@ body { -webkit-tap-highlight-color: transparent; }
 }
 [data-table-theme="modern"] .chat-voice-btn {
   box-shadow: 0 6px 14px -8px rgb(0 0 0 / 0.45);
+}
+[data-table-theme="modern"] .chat-find {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+[data-table-theme="modern"] .chat-result {
+  border-radius: 0.9rem;
+}
+[data-table-theme="modern"] .chat-result.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+}
+[data-table-theme="modern"] .chat-newer {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  backdrop-filter: blur(10px);
 }
 [data-table-theme="modern"] .chat-typing {
   color: color-mix(in oklab, var(--accent) 65%, var(--fg-muted));

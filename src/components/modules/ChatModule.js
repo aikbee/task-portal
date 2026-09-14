@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -18,7 +18,7 @@ import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { useClickOutside } from "@/lib/hooks";
+import { useClickOutside, useDebouncedValue } from "@/lib/hooks";
 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 function dayLabel(iso, tr) {
@@ -58,6 +58,32 @@ function systemText(m, tr) {
   }
 }
 const isGroup = (c) => c?.kind === "group";
+/** Wrap every case-insensitive occurrence of `q` in <mark>. */
+function highlight(text, q) {
+  if (!q || !text) return text;
+  const parts = [];
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  let i = 0;
+  let at = lower.indexOf(needle);
+  if (at < 0) return text;
+  while (at >= 0) {
+    if (at > i) parts.push(text.slice(i, at));
+    parts.push(<mark key={`${at}`} className="chat-mark rounded-sm px-px">{text.slice(at, at + q.length)}</mark>);
+    i = at + q.length;
+    at = lower.indexOf(needle, i);
+  }
+  if (i < text.length) parts.push(text.slice(i));
+  return parts;
+}
+/** A short window of text around the first match. */
+function snippet(text, q, span = 60) {
+  const at = text.toLowerCase().indexOf(q.toLowerCase());
+  if (at < 0) return text.slice(0, span * 2);
+  const start = Math.max(0, at - span);
+  const end = Math.min(text.length, at + q.length + span);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+}
 const TYPING_TTL = 6000; // a typer is forgotten after this unless they ping again
 const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
 const VOICE_MAX_MS = 5 * 60 * 1000;
@@ -194,12 +220,25 @@ export default function ChatModule() {
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
   const [newGroup, setNewGroup] = useState(false);
   const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
+  const [focusId, setFocusId] = useState(null); // message to scroll to and flash after a search jump
+  const [detached, setDetached] = useState({}); // conversation id -> true while the loaded window stops before the newest message
+  const jumpRef = useRef(null); // { cid, mid } consumed by the thread-loading effect
+  const onFocused = useCallback(() => setFocusId(null), []);
   const activeRef = useRef(active);
   const toastRef = useRef(toast);
+  const detachedRef = useRef(detached);
+  const convosRef = useRef(convos);
   useEffect(() => {
     activeRef.current = active;
     toastRef.current = toast;
-  }, [active, toast]);
+    detachedRef.current = detached;
+    convosRef.current = convos;
+  }, [active, toast, detached, convos]);
+  /** A loaded window is "older" when it stops before the conversation's newest message. */
+  const isDetached = (cid, list) => {
+    const last = convosRef.current?.find((c) => c.id === cid)?.last_id;
+    return list.length > 0 && (last ? list[list.length - 1].id < last : list.length === 61);
+  };
 
   const loadConvos = useCallback(async () => {
     try {
@@ -264,22 +303,57 @@ export default function ChatModule() {
     return () => clearInterval(id);
   }, [anyTyping]);
 
-  // opening a thread loads it and marks it read
+  // opening a thread loads its newest page (or a window around a searched message) and marks it read
   useEffect(() => {
     if (!active) return;
     let alive = true;
+    const jump = jumpRef.current?.cid === active ? jumpRef.current : null;
+    jumpRef.current = null;
     api
-      .get(`/api/chat/conversations/${active}/messages`)
+      .get(`/api/chat/conversations/${active}/messages${jump ? `?around=${jump.mid}` : ""}`)
       .then((list) => {
         if (!alive) return;
         setThreads((t) => ({ ...t, [active]: list }));
-        if (list.length) markRead(active, list[list.length - 1].id);
+        if (jump) {
+          setDetached((d) => ({ ...d, [active]: isDetached(active, list) }));
+          setFocusId(jump.mid);
+          if (list.length) markRead(active, list[list.length - 1].id);
+        } else {
+          setDetached((d) => (d[active] ? { ...d, [active]: false } : d));
+          if (list.length) markRead(active, list[list.length - 1].id);
+        }
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
   }, [active, markRead]);
+  /** Open a conversation at one message (from search). */
+  const jumpTo = (cid, mid) => {
+    jumpRef.current = { cid, mid };
+    setTab("chats");
+    if (active === cid) {
+      // same thread: fetch the window directly, the effect will not re-run
+      jumpRef.current = null;
+      api
+        .get(`/api/chat/conversations/${cid}/messages?around=${mid}`)
+        .then((list) => {
+          setThreads((t) => ({ ...t, [cid]: list }));
+          setDetached((d) => ({ ...d, [cid]: isDetached(cid, list) }));
+          setFocusId(mid);
+        })
+        .catch(() => {});
+    } else setActive(cid);
+  };
+  /** Back to the newest page after a jump. */
+  const jumpToLatest = async (cid) => {
+    const list = await loadThread(cid);
+    setDetached((d) => ({ ...d, [cid]: false }));
+    if (list?.length) {
+      setFocusId(list[list.length - 1].id);
+      markRead(cid, list[list.length - 1].id);
+    }
+  };
 
   // a scanned QR link lands here as ?add=CODE
   useEffect(() => {
@@ -326,6 +400,11 @@ export default function ChatModule() {
     const onMessage = (ev) => {
       const { conversation_id, message } = ev;
       onTyping({ conversation_id, user_id: message.sender_id, typing: false });
+      if (detachedRef.current[conversation_id]) {
+        // the thread shows an older window: leave it alone, the "newer messages" pill is the way back
+        loadConvos();
+        return;
+      }
       setThreads((t) => {
         const list = t[conversation_id];
         if (!list || list.some((m) => m.id === message.id)) return t;
@@ -412,7 +491,7 @@ export default function ChatModule() {
             <TabButton active={tab === "friends"} icon={Users} label={tr("Friends")} count={pendingIn} onClick={() => setTab("friends")} />
           </div>
           {tab === "chats" ? (
-            <ConversationList tr={tr} me={user} convos={convos} typing={typing} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} onNewGroup={() => setNewGroup(true)} />
+            <ConversationList tr={tr} me={user} convos={convos} typing={typing} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} onNewGroup={() => setNewGroup(true)} onJump={jumpTo} />
           ) : (
             <FriendsPanel tr={tr} toast={toast} data={friends} reload={loadFriends} onMessage={openWith} onSendRequest={sendRequest} />
           )}
@@ -426,6 +505,10 @@ export default function ChatModule() {
               messages={threads[active]}
               onBack={() => setActive(null)}
               onSent={(m) => {
+                if (detached[active]) {
+                  jumpToLatest(active);
+                  return;
+                }
                 // the live stream may already have delivered our own message
                 setThreads((t) => (t[active]?.some((x) => x.id === m.id) ? t : { ...t, [active]: [...(t[active] ?? []), m] }));
                 loadConvos();
@@ -438,6 +521,11 @@ export default function ChatModule() {
               }}
               friends={friends?.friends ?? []}
               typers={Object.values(typing[active] ?? {})}
+              focusId={focusId}
+              onFocused={onFocused}
+              detached={Boolean(detached[active])}
+              onJump={jumpTo}
+              onJumpLatest={() => jumpToLatest(active)}
               onReactions={(messageId, reactions, at) => setThreads((t) => ({ ...t, [active]: (t[active] ?? []).map((m) => (m.id === messageId ? applyReactions(m, reactions, at) : m)) }))}
               onConvoChange={upsertConvo}
               onLeft={(id) => {
@@ -509,8 +597,52 @@ function TabButton({ active, icon: Icon, label, count, onClick }) {
   );
 }
 
-function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriends, onNewGroup }) {
+/** Results of a message search (global or one chat), newest first. */
+function SearchResults({ tr, me, q, results, onPick, activeId, compact = false }) {
+  if (!results) return <div className="grid flex-1 place-items-center py-6"><Spinner className="text-fg-muted" /></div>;
+  if (!results.length) return <p className="px-3 py-6 text-center text-xs text-fg-faint">{tr("No messages match")}</p>;
+  return (
+    <ul className={cn("chat-results min-h-0 flex-1 overflow-y-auto", compact ? "p-1" : "p-2")}>
+      {results.map((r) => (
+        <li key={r.id}>
+          <button type="button" onClick={() => onPick(r)} className={cn("chat-result flex w-full items-start gap-2.5 rounded-app-sm px-2.5 py-2 text-left transition hover:bg-surface-2", activeId === r.id && "is-active bg-accent/12")}>
+            {compact ? null : r.conversation_kind === "group" ? (
+              <span className="chat-group-avatar inline-grid h-8 w-8 shrink-0 place-items-center rounded-full text-white" style={{ background: r.conversation_color }}><Users size={14} /></span>
+            ) : (
+              <Avatar name={r.conversation_name} color={r.conversation_color} size="sm" className="mt-0.5" />
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-[11px] text-fg-muted">
+                {compact ? null : <span className="truncate font-semibold text-fg">{r.conversation_name}</span>}
+                {r.sender_id === me?.id ? <span className="truncate">{tr("You")}</span> : compact || r.conversation_kind === "group" ? <span className="truncate">{r.sender_name}</span> : null}
+                <span className="ml-auto shrink-0 text-fg-faint">{relativeTime(r.created_at)}</span>
+              </span>
+              <span className="mt-0.5 block text-xs leading-snug text-fg [overflow-wrap:anywhere]">{highlight(snippet(r.body, q), q)}</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriends, onNewGroup, onJump }) {
+  const [q, setQ] = useState("");
+  const dq = useDebouncedValue(q.trim(), 300);
+  const [results, setResults] = useState(null); // { q, list } for the last answered query; loading while q differs
+  useEffect(() => {
+    if (dq.length < 2) return;
+    let alive = true;
+    api
+      .get(`/api/chat/search?q=${encodeURIComponent(dq)}`)
+      .then((r) => alive && setResults({ q: dq, list: r }))
+      .catch(() => alive && setResults({ q: dq, list: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [dq]);
   if (!convos) return <div className="grid flex-1 place-items-center"><Spinner className="text-fg-muted" /></div>;
+  const searching = dq.length >= 2;
   const preview = (c) => {
     const typers = Object.values(typing?.[c.id] ?? {});
     if (typers.length) {
@@ -544,7 +676,18 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
         <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Chats")}</span>
         <Button size="xs" variant="outline" icon={Users} onClick={onNewGroup}>{tr("New group")}</Button>
       </div>
-      {!convos.length ? (
+      <div className="chat-search relative px-3 pb-2">
+        <Search size={14} className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 text-fg-faint" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Search messages…")} className="h-9 pl-8 pr-8 text-sm" aria-label={tr("Search messages")} />
+        {q ? (
+          <button type="button" onClick={() => setQ("")} className="absolute right-5 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full text-fg-faint hover:bg-surface-2 hover:text-fg focus-ring" aria-label={tr("Clear search")}>
+            <X size={13} />
+          </button>
+        ) : null}
+      </div>
+      {searching ? (
+        <SearchResults tr={tr} me={me} q={dq} results={results?.q === dq ? results.list : null} onPick={(r) => onJump(r.conversation_id, r.id)} />
+      ) : !convos.length ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <EmptyState compact icon={MessageCircle} title={tr("No chats yet")} description={tr("Add a friend, then press Message to start.")} />
           <Button variant="secondary" size="sm" icon={Users} onClick={onFindFriends}>{tr("Find friends")}</Button>
@@ -788,7 +931,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], onReactions, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, detached, onJump, onJumpLatest, onReactions, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -797,6 +940,48 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
+  const [find, setFind] = useState(null); // { q, results, idx } while searching inside this chat
+  const findQ = useDebouncedValue(find?.q?.trim() ?? "", 300);
+  const findInputRef = useRef(null);
+  useEffect(() => {
+    if (!find || findQ.length < 2) return;
+    let alive = true;
+    api
+      .get(`/api/chat/search?q=${encodeURIComponent(findQ)}&c=${convo.id}`)
+      .then((r) => {
+        if (!alive) return;
+        setFind((f) => (f ? { ...f, results: r, idx: r.length ? 0 : -1 } : f));
+        if (r.length) onJump(convo.id, r[0].id);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [findQ, convo.id, find ? 1 : 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  const goResult = (idx) => {
+    if (!find?.results?.length) return;
+    const i = (idx + find.results.length) % find.results.length;
+    setFind((f) => ({ ...f, idx: i }));
+    onJump(convo.id, find.results[i].id);
+  };
+  // scroll to and flash a message after a search jump
+  useEffect(() => {
+    if (!focusId) return;
+    const el = document.getElementById(`msg-${focusId}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.classList.add("chat-flash");
+    const t = setTimeout(() => {
+      el.classList.remove("chat-flash");
+      onFocused();
+    }, 1600);
+    return () => {
+      clearTimeout(t);
+      el.classList.remove("chat-flash");
+    };
+  }, [focusId, onFocused]);
+  const activeQ = find && findQ.length >= 2 ? findQ : "";
+  const renderBody = (text) => (activeQ ? highlight(text, activeQ) : text);
   const [rec, setRec] = useState(null); // { elapsed, levels[] } while recording
   const recRef = useRef(null); // { recorder, stream, chunks, mime, startedAt, timer, ctx, analyser, data, send }
   const group = isGroup(convo);
@@ -928,8 +1113,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   useEffect(() => () => pendingRef.current.forEach((p) => URL.revokeObjectURL(p.url)), []);
   const count = messages?.length ?? 0;
   useEffect(() => {
+    if (focusId || detached) return; // a search jump positions the thread itself
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [convo.id, count]);
+  }, [convo.id, count]); // eslint-disable-line react-hooks/exhaustive-deps
   const canChat = group || !convo.friend_status || convo.friend_status === "accepted";
 
   const addFiles = async (list) => {
@@ -1014,8 +1200,32 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
           <span className="block truncate text-sm font-semibold">{convo.name}</span>
           <span className="block truncate text-[11px] text-fg-muted">{group ? `${memberCount(convo.member_count, tr)} · ${convo.members.map((m) => (m.id === me?.id ? tr("You") : m.name)).join(", ")}` : convo.email}</span>
         </span>
+        <Button variant="ghost" size="iconSm" icon={Search} onClick={() => { setFind((f) => (f ? null : { q: "", results: null, idx: -1 })); setTimeout(() => findInputRef.current?.focus(), 50); }} aria-label={tr("Search in this chat")} data-tip={tr("Search in this chat")} className={cn(find && "text-accent")} />
         {group ? <Button variant="ghost" size="iconSm" icon={Settings2} onClick={() => setPanel(true)} aria-label={tr("Group settings")} data-tip={tr("Group settings")} /> : null}
       </header>
+      {find ? (
+        <div className="chat-find flex items-center gap-2 border-b border-line px-3 py-2" onKeyDown={(e) => e.key === "Escape" && setFind(null)}>
+          <Search size={14} className="shrink-0 text-fg-faint" />
+          <input
+            ref={findInputRef}
+            value={find.q}
+            onChange={(e) => setFind((f) => ({ ...f, q: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                goResult((find.idx < 0 ? -1 : find.idx) + (e.shiftKey ? -1 : 1));
+              }
+            }}
+            placeholder={tr("Search in this chat…")}
+            className="control h-8 min-w-0 flex-1 text-sm"
+            aria-label={tr("Search in this chat")}
+          />
+          <span className="shrink-0 text-[11px] tabular-nums text-fg-muted">{find.results ? (find.results.length ? tr("{i} of {n}", { i: find.idx + 1, n: find.results.length }) : tr("No matches")) : findQ.length >= 2 ? "…" : ""}</span>
+          <Button variant="ghost" size="iconXs" icon={ChevronUp} onClick={() => goResult(find.idx - 1)} disabled={!find.results?.length} aria-label={tr("Previous result")} />
+          <Button variant="ghost" size="iconXs" icon={ChevronDown} onClick={() => goResult(find.idx + 1)} disabled={!find.results?.length} aria-label={tr("Next result")} />
+          <Button variant="ghost" size="iconXs" icon={X} onClick={() => setFind(null)} aria-label={tr("Close search")} />
+        </div>
+      ) : null}
       {group && panel ? <GroupPanel tr={tr} me={me} convo={convo} friends={friends ?? []} open={panel} onClose={() => setPanel(false)} onChange={onConvoChange} onLeft={(id) => { setPanel(false); onLeft(id); }} /> : null}
       <div className="relative flex min-h-0 flex-1 flex-col" {...dropProps}>
         {dragging ? (
@@ -1040,7 +1250,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
                 if (m.kind === "system") {
                   return (
-                    <div key={m.id}>
+                    <div key={m.id} id={`msg-${m.id}`}>
                       {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
                       <p className="chat-system my-1.5 text-center text-[11px] text-fg-muted" title={formatDateTime(m.created_at)}>{systemText(m, tr)}</p>
                     </div>
@@ -1067,7 +1277,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
                 const bubbleW = voice ? 272 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
                 return (
-                  <div key={m.id}>
+                  <div key={m.id} id={`msg-${m.id}`} className="chat-msg rounded-app">
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
                     <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
                       {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
@@ -1108,12 +1318,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         {voice ? <VoicePlayer tr={tr} src={voice.url} duration={voice.duration} mine={mine} /> : null}
                         {photos.length || voice ? (
                           <span className={cn("flex items-end gap-2 px-1.5", voice ? "pt-0.5" : "pt-1")}>
-                            {m.body ? <span className="min-w-0">{m.body}</span> : null}
+                            {m.body ? <span className="min-w-0">{renderBody(m.body)}</span> : null}
                             {time}
                           </span>
                         ) : (
                           <>
-                            {m.body}
+                            {renderBody(m.body)}
                             {time}
                           </>
                         )}
@@ -1145,6 +1355,11 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
               <div ref={bottomRef} />
             </div>
           )}
+          {detached ? (
+            <button type="button" onClick={onJumpLatest} className="chat-newer sticky bottom-2 mx-auto mt-3 flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium shadow-app-lg hover:bg-surface-2 focus-ring">
+              <ArrowDown size={13} /> {tr("Jump to latest messages")}
+            </button>
+          ) : null}
         </div>
         <div className="chat-typing flex min-h-6 items-center gap-1.5 px-4 text-[11px] text-fg-muted" aria-live="polite">
           {typers.length ? (
