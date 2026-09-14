@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -79,6 +79,16 @@ export const MODULES = [
     color: "#f97316",
     description: "Sketch ideas, paste screenshots, move, resize and rotate them, tag related records and export as an image.",
     creatable: true,
+  },
+  {
+    key: "chat",
+    label: "Chat",
+    singular: "Chat",
+    href: "/chat",
+    api: "/api/chat/conversations",
+    icon: MessageCircle,
+    color: "#0ea5e9",
+    description: "Add friends with a QR code and message them one to one.",
   },
   {
     key: "board",

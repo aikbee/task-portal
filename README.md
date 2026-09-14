@@ -162,6 +162,29 @@ All endpoints return `{ data }` or `{ error }`.
 | GET/POST | `/api/users` | admin only |
 | GET/PUT/DELETE | `/api/users/:id` | admin only; PUT accepts an optional `password` to reset |
 
+## Chat
+
+`/chat` is a one-to-one text chat between friends.
+
+- **Friends by QR code.** Every account gets a friend code (`XXXX-XXXX-XXXX`, shown as a QR code on the Friends tab). Scanning it opens `/chat?add=CODE`, which previews the person and asks before sending the request; the code can also be typed in. Requests must be accepted before either side can message; you can cancel, decline, unfriend or block, and regenerate your code so old QR codes stop working.
+- **Messages.** Text only (up to 4000 characters), Enter to send, Shift+Enter for a new line, day separators, "Seen" read receipts and unread counts. The sidebar badge counts unread messages plus requests waiting for you.
+- **Live updates** come over Server-Sent Events (`/api/chat/stream`, events `message`, `read`, `friends`); if the stream cannot connect the page polls every 5 seconds. New messages and friend requests also raise notifications (and pushes) in the **Chat** category, one bell entry per conversation.
+
+Endpoints:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET/POST | `/api/chat/friends` | my code, link and QR plus `friends[]`, `incoming[]`, `outgoing[]`, `blocked[]` / `{ code }` sends a request (auto-accepts when they asked first) |
+| POST | `/api/chat/friends/code` | new friend code |
+| GET | `/api/chat/friends/lookup?code=` | who owns a code and the `relation` (none, incoming, outgoing, friends, blocked, unavailable, self) |
+| POST/DELETE | `/api/chat/friends/requests/:userId/accept` · `/api/chat/friends/requests/:userId` | accept / decline or cancel |
+| DELETE | `/api/chat/friends/:userId` | unfriend (history stays, no new messages) |
+| POST/DELETE | `/api/chat/friends/:userId/block` | block / unblock |
+| GET/POST | `/api/chat/conversations` | my chats with unread counts / `{ user_id }` opens the direct chat with a friend |
+| GET/POST | `/api/chat/conversations/:id/messages` | `?before=&limit=` pages backwards / `{ body }` |
+| POST | `/api/chat/conversations/:id/read` | `{ message_id }` marks read up to that message |
+| GET | `/api/chat/stream` | Server-Sent Events for the signed-in user |
+
 ## Mobile and PWA
 
 The layout adapts down to phone widths: the sidebar becomes an off-canvas drawer (hamburger

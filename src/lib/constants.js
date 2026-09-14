@@ -67,6 +67,7 @@ export const NOTIFICATION_CATEGORIES = {
   reminders: { label: "Reminders", description: "Tasks due today, tomorrow or overdue" },
   team: { label: "Accounts", description: "User accounts created, changed or removed (admins)" },
   security: { label: "Security", description: "New sign-ins to your account" },
+  chat: { label: "Chat", description: "Friend requests and new messages" },
 };
 
 export const NOTIFICATION_TYPES = {
@@ -89,6 +90,9 @@ export const NOTIFICATION_TYPES = {
   user_deleted: { category: "team", label: "Account removed", tone: "rose" },
   security_login: { category: "security", label: "New sign-in", tone: "amber" },
   security_method: { category: "security", label: "Sign-in method changed", tone: "amber" },
+  friend_request: { category: "chat", label: "Friend request", tone: "sky" },
+  friend_accepted: { category: "chat", label: "Friend accepted", tone: "emerald" },
+  chat_message: { category: "chat", label: "New message", tone: "indigo" },
 };
 
 export const USER_ROLES = {

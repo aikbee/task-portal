@@ -103,6 +103,10 @@ async function migrate(db, adminId) {
     log("migrating: users.totp_* (two-factor authentication)");
     await db.query("ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) NULL AFTER google_sub, ADD COLUMN totp_enabled_at DATETIME NULL AFTER totp_secret, ADD COLUMN totp_last_step BIGINT UNSIGNED NULL AFTER totp_enabled_at");
   }
+  if (!(await hasColumn(db, "users", "friend_code"))) {
+    log("migrating: users.friend_code (chat)");
+    await db.query("ALTER TABLE users ADD COLUMN friend_code VARCHAR(16) NULL AFTER totp_last_step, ADD UNIQUE KEY uq_users_friend_code (friend_code)");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

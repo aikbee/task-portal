@@ -18,11 +18,13 @@ CREATE TABLE IF NOT EXISTS users (
   totp_secret VARCHAR(255) NULL, -- encrypted authenticator secret while two-factor authentication is on
   totp_enabled_at DATETIME NULL,
   totp_last_step BIGINT UNSIGNED NULL, -- last accepted 30 s time step, so a code cannot be replayed
+  friend_code VARCHAR(16) NULL, -- XXXX-XXXX-XXXX shown as a QR code so friends can add you in Chat
   last_login_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email (email),
   UNIQUE KEY uq_users_google_sub (google_sub),
+  UNIQUE KEY uq_users_friend_code (friend_code),
   KEY idx_users_role (role),
   KEY idx_users_employee (employee_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -423,4 +425,48 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value JSON NOT NULL,
   updated_by INT UNSIGNED NULL,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Chat: friendships are one row per pair (requester asked first); accepted pairs can talk
+CREATE TABLE IF NOT EXISTS friendships (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  requester_id INT UNSIGNED NOT NULL,
+  addressee_id INT UNSIGNED NOT NULL,
+  status ENUM('pending','accepted','blocked') NOT NULL DEFAULT 'pending',
+  blocked_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  responded_at DATETIME NULL,
+  UNIQUE KEY uq_friendships_pair (requester_id, addressee_id),
+  KEY idx_friendships_addressee (addressee_id, status),
+  CONSTRAINT fk_friendships_requester FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_friendships_addressee FOREIGN KEY (addressee_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One-to-one text conversations (kind is reserved for group chats later)
+CREATE TABLE IF NOT EXISTS conversations (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  kind ENUM('direct') NOT NULL DEFAULT 'direct',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS conversation_members (
+  conversation_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  last_read_message_id INT UNSIGNED NULL, -- read receipts and unread counts
+  joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (conversation_id, user_id),
+  KEY idx_conversation_members_user (user_id),
+  CONSTRAINT fk_conversation_members_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_conversation_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  conversation_id INT UNSIGNED NOT NULL,
+  sender_id INT UNSIGNED NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_messages_conversation (conversation_id, id),
+  CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

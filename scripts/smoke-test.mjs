@@ -708,6 +708,161 @@ const adminJar = { ...jar };
   check("cannot delete own account", self.status === 400);
 }
 
+console.log("chat (friends by code, one-to-one messages)");
+{
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  const as = async (j, fn) => { const keep = jar; jar = { ...j }; try { return await fn(); } finally { jar = keep; } };
+  const adminId = (await as(adminJar, () => call("GET", "/api/auth/me"))).data.id;
+  const notifIds = [];
+
+  const mine = await as(adminJar, () => call("GET", "/api/chat/friends"));
+  check("GET /api/chat/friends: code, link and QR", mine.status === 200 && /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(mine.data.code) && mine.data.link.endsWith(`/chat?add=${mine.data.code}`) && mine.data.qr.startsWith("data:image/png;base64,"), JSON.stringify(mine.raw).slice(0, 200));
+  const again = await as(adminJar, () => call("GET", "/api/chat/friends"));
+  check("the code is stable between calls", again.data.code === mine.data.code);
+  const adminCode = mine.data.code;
+  const self = await as(adminJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  check("adding your own code -> 400", self.status === 400);
+  const unknown = await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: "ZZZZ-ZZZZ-ZZZZ" } }));
+  check("unknown code -> 404", unknown.status === 404);
+  const lookup = await as(userJar, () => call("GET", `/api/chat/friends/lookup?code=${adminCode.toLowerCase().replace(/-/g, "")}`));
+  check("lookup previews the owner (case and dashes ignored)", lookup.status === 200 && lookup.data.user.id === adminId && lookup.data.relation === "none", JSON.stringify(lookup.raw));
+  const tooEarly = await as(userJar, () => call("POST", "/api/chat/conversations", { body: { user_id: adminId } }));
+  check("no chat before being friends -> 403", tooEarly.status === 403);
+
+  const req = await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  check("POST /api/chat/friends sends a request (201)", req.status === 201 && req.data.status === "requested" && req.data.user.id === adminId, JSON.stringify(req.raw));
+  const dup = await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  check("sending it twice -> 409", dup.status === 409);
+  const inbox = await as(adminJar, () => call("GET", "/api/chat/friends"));
+  check("admin sees it as incoming", inbox.data.incoming.some((u) => u.id === userId) && inbox.data.friends.every((u) => u.id !== userId));
+  const outbox = await as(userJar, () => call("GET", "/api/chat/friends"));
+  check("sender sees it as outgoing", outbox.data.outgoing.some((u) => u.id === adminId));
+  const rel = await as(userJar, () => call("GET", `/api/chat/friends/lookup?code=${adminCode}`));
+  check("lookup now says outgoing", rel.data.relation === "outgoing");
+  const statsPending = await as(adminJar, () => call("GET", "/api/stats"));
+  check("stats.counts.chat counts the pending request", Number(statsPending.data.counts.chat) >= 1, JSON.stringify(statsPending.data.counts.chat));
+  const n1 = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  const fr = n1.data.items.find((n) => n.type === "friend_request" && n.entity_id === userId);
+  check("admin got a friend_request notification", Boolean(fr));
+  if (fr) notifIds.push(fr.id);
+
+  const wrongSide = await as(userJar, () => call("POST", `/api/chat/friends/requests/${adminId}/accept`));
+  check("the sender cannot accept their own request -> 404", wrongSide.status === 404);
+  const cancel = await as(userJar, () => call("DELETE", `/api/chat/friends/requests/${adminId}`));
+  check("sender cancels the request", cancel.status === 200 && cancel.data.outgoing.length === 0);
+  await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  const decline = await as(adminJar, () => call("DELETE", `/api/chat/friends/requests/${userId}`));
+  check("admin declines a request", decline.status === 200 && decline.data.incoming.every((u) => u.id !== userId));
+  await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  const accept = await as(adminJar, () => call("POST", `/api/chat/friends/requests/${userId}/accept`));
+  check("admin accepts -> friends", accept.status === 200 && accept.data.friends.some((u) => u.id === userId), JSON.stringify(accept.raw));
+  const n2 = await as(userJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  check("sender got a friend_accepted notification", n2.data.items.some((n) => n.type === "friend_accepted" && n.entity_id === adminId));
+  const nowFriends = await as(userJar, () => call("GET", `/api/chat/friends/lookup?code=${adminCode}`));
+  check("lookup says friends", nowFriends.data.relation === "friends");
+  const already = await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  check("adding a friend again -> 409", already.status === 409);
+
+  const convo = await as(userJar, () => call("POST", "/api/chat/conversations", { body: { user_id: adminId } }));
+  check("POST /api/chat/conversations opens the chat", convo.status === 200 && convo.data.id > 0 && convo.data.user_id === adminId && convo.data.email, JSON.stringify(convo.raw));
+  const convoId = convo.data.id;
+  const same = await as(adminJar, () => call("POST", "/api/chat/conversations", { body: { user_id: userId } }));
+  check("the other side gets the same conversation", same.data.id === convoId);
+  const empty = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "   " } }));
+  check("empty message -> 400", empty.status === 400);
+  const long = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "x".repeat(4001) } }));
+  check("message over 4000 chars -> 400", long.status === 400);
+  const m1 = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "Hello from the smoke test\r\nsecond line" } }));
+  check("POST message 201, CRLF normalised", m1.status === 201 && m1.data.sender_id === userId && m1.data.body === "Hello from the smoke test\nsecond line", JSON.stringify(m1.raw));
+  const strangers = await call("GET", `/api/chat/conversations/999999/messages`);
+  check("unknown conversation -> 404", strangers.status === 404);
+  const adminList = await as(adminJar, () => call("GET", "/api/chat/conversations"));
+  const row = adminList.data.find((c) => c.id === convoId);
+  check("admin's list shows 1 unread and the last message", row && row.unread === 1 && row.last_body.startsWith("Hello") && row.last_sender_id === userId && row.friend_status === "accepted", JSON.stringify(row));
+  const statsUnread = await as(adminJar, () => call("GET", "/api/stats"));
+  check("stats.counts.chat counts unread messages", Number(statsUnread.data.counts.chat) >= 1);
+  const n3 = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  const cm = n3.data.items.find((n) => n.type === "chat_message" && n.entity_id === convoId);
+  check("admin got a chat_message notification linking to the thread", Boolean(cm) && cm.href === `/chat?c=${convoId}`);
+  const read = await as(adminJar, () => call("POST", `/api/chat/conversations/${convoId}/read`, { body: { message_id: m1.data.id } }));
+  check("mark read clears unread", read.status === 200 && read.data.last_read_message_id === m1.data.id);
+  const afterRead = await as(adminJar, () => call("GET", "/api/chat/conversations"));
+  check("unread is 0 after reading", afterRead.data.find((c) => c.id === convoId).unread === 0);
+  const n4 = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  check("reading the thread also clears the bell entry", !n4.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId));
+  const receipt = await as(userJar, () => call("GET", "/api/chat/conversations"));
+  check("sender sees the read receipt", Number(receipt.data.find((c) => c.id === convoId).peer_last_read) === m1.data.id);
+  const m2 = await as(adminJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "Hi back" } }));
+  const thread = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
+  check("thread is oldest-first with both messages", thread.data.length === 2 && thread.data[0].id === m1.data.id && thread.data[1].id === m2.data.id);
+  const older = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages?before=${m2.data.id}&limit=1`));
+  check("?before pages backwards", older.data.length === 1 && older.data[0].id === m1.data.id);
+  const n5 = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  check("your own message does not notify you", !n5.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && n.actor_id === adminId));
+
+  // live stream says hello
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${BASE}/api/chat/stream`, { headers: { cookie: Object.entries(userJar).map(([k, v]) => `${k}=${v}`).join("; ") }, signal: ctrl.signal });
+    const reader = res.body.getReader();
+    const { value } = await reader.read();
+    check("GET /api/chat/stream is an event stream that says hello", res.headers.get("content-type")?.includes("text/event-stream") && new TextDecoder().decode(value).includes("event: hello"));
+    ctrl.abort();
+  } catch (e) {
+    check("GET /api/chat/stream is an event stream that says hello", false, e.message);
+  } finally {
+    clearTimeout(timer);
+  }
+  const anonStream = await fetch(`${BASE}/api/chat/stream`);
+  check("stream requires a session", anonStream.status === 401);
+  await anonStream.body?.cancel();
+
+  // block / unblock
+  const block = await as(adminJar, () => call("POST", `/api/chat/friends/${userId}/block`));
+  check("admin blocks the user", block.status === 200 && block.data.blocked.some((u) => u.id === userId) && block.data.friends.every((u) => u.id !== userId));
+  const blockedMsg = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "still there?" } }));
+  check("blocked user cannot message -> 403", blockedMsg.status === 403);
+  const blockedReq = await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  check("blocked user cannot send a request -> 403", blockedReq.status === 403);
+  const hidden = await as(userJar, () => call("GET", `/api/chat/friends/lookup?code=${adminCode}`));
+  check("lookup says unavailable to the blocked side", hidden.data.relation === "unavailable");
+  const stillListed = await as(userJar, () => call("GET", "/api/chat/conversations"));
+  check("history stays visible, friend_status = blocked", stillListed.data.find((c) => c.id === convoId)?.friend_status === "blocked");
+  const unblock = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}/block`));
+  check("admin unblocks", unblock.status === 200 && unblock.data.blocked.length === 0);
+  const notBlocked = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}/block`));
+  check("unblocking again -> 404", notBlocked.status === 404);
+
+  // reconnect: the user asks, the admin answers with the user's code (mutual = accepted right away)
+  await as(userJar, () => call("POST", "/api/chat/friends", { body: { code: adminCode } }));
+  const userCode = (await as(userJar, () => call("GET", "/api/chat/friends"))).data.code;
+  const mutual = await as(adminJar, () => call("POST", "/api/chat/friends", { body: { code: userCode } }));
+  check("answering a pending request with their code makes friends", mutual.status === 200 && mutual.data.status === "friends", JSON.stringify(mutual.raw));
+  const m3 = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "back again" } }));
+  check("messages flow again after reconnecting", m3.status === 201);
+  const rotate = await as(userJar, () => call("POST", "/api/chat/friends/code"));
+  check("rotating the code gives a new one", rotate.status === 200 && rotate.data.code !== userCode && rotate.data.qr.startsWith("data:image/png"));
+  const stale = await as(adminJar, () => call("GET", `/api/chat/friends/lookup?code=${userCode}`));
+  check("the old code stops working", stale.status === 404);
+  const unfriend = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
+  check("unfriend", unfriend.status === 200 && unfriend.data.friends.every((u) => u.id !== userId));
+  const afterUnfriend = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "?" } }));
+  check("no messages after unfriending -> 403", afterUnfriend.status === 403);
+  const keepsHistory = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
+  check("history is still readable", keepsHistory.status === 200 && keepsHistory.data.length === 3);
+  const notFriends = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
+  check("unfriending again -> 404", notFriends.status === 404);
+
+  // tidy the admin's bell (the smoke user's rows go with the account)
+  const bell = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
+  for (const n of bell.data.items.filter((x) => ["friend_request", "friend_accepted", "chat_message"].includes(x.type) && (x.actor_id === userId || x.entity_id === convoId))) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
+  jar = { ...adminJar };
+}
+
 console.log("cleanup");
 {
   const u = await call("DELETE", `/api/users/${userId}`);

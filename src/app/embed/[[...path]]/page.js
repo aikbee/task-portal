@@ -20,6 +20,7 @@ import InfoDetail from "@/components/modules/InfoDetail";
 import InfoSearch from "@/components/modules/InfoSearch";
 import DrawBoardsList from "@/components/modules/DrawBoardsList";
 import DrawBoardDetail from "@/components/modules/DrawBoardDetail";
+import ChatModule from "@/components/modules/ChatModule";
 
 /**
  * Mirrors the app's routes under /embed/* so a pane can show any page
@@ -59,6 +60,8 @@ function pick(segments) {
       return id == null ? <UsersList /> : null;
     case "security":
       return id == null ? <SecurityPage /> : null;
+    case "chat":
+      return id == null ? <ChatModule /> : null;
     default:
       return null;
   }

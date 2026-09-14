@@ -1188,6 +1188,102 @@ body { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 6px 14px -10px color-mix(in oklab, var(--accent) 70%, transparent);
 }
 
+/* Chat module (base) */
+.chat-bubble.chat-mine {
+  border-bottom-right-radius: 0.3rem;
+}
+.chat-bubble.chat-theirs {
+  border-bottom-left-radius: 0.3rem;
+}
+.chat-scroll {
+  overscroll-behavior: contain;
+}
+.chat-composer textarea {
+  field-sizing: content;
+}
+
+/* Modern chat */
+[data-table-theme="modern"] .chat-shell {
+  border-radius: 1.25rem;
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent 45%),
+    color-mix(in srgb, var(--surface) 72%, transparent);
+  box-shadow: 0 24px 50px -40px color-mix(in oklab, var(--accent) 60%, transparent);
+}
+[data-table-theme="modern"] .chat-side {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+}
+[data-table-theme="modern"] .chat-tabs {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
+  padding: 0.6rem;
+  gap: 0.35rem;
+}
+[data-table-theme="modern"] .chat-tab {
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+[data-table-theme="modern"] .chat-tab.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  box-shadow: 0 8px 18px -14px color-mix(in oklab, var(--accent) 80%, transparent);
+}
+[data-table-theme="modern"] .chat-list-item,
+[data-table-theme="modern"] .chat-person {
+  border-radius: 0.9rem;
+  transition: background-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+[data-table-theme="modern"] .chat-list-item:hover,
+[data-table-theme="modern"] .chat-person:hover {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+[data-table-theme="modern"] .chat-list-item.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent), 0 10px 22px -18px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .chat-head {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  backdrop-filter: blur(10px);
+}
+[data-table-theme="modern"] .chat-bubble {
+  border-radius: 1.1rem;
+  box-shadow: 0 8px 18px -14px rgb(0 0 0 / 0.45);
+}
+[data-table-theme="modern"] .chat-bubble.chat-mine {
+  background: linear-gradient(135deg, var(--accent), color-mix(in oklab, var(--accent) 70%, #6366f1));
+  border-bottom-right-radius: 0.35rem;
+}
+[data-table-theme="modern"] .chat-bubble.chat-theirs {
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-bottom-left-radius: 0.35rem;
+}
+[data-table-theme="modern"] .chat-day {
+  color: color-mix(in oklab, var(--accent) 60%, var(--fg-muted));
+  letter-spacing: 0.14em;
+}
+[data-table-theme="modern"] .chat-composer {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+[data-table-theme="modern"] .chat-composer .control {
+  border-radius: 1.1rem;
+}
+[data-table-theme="modern"] .chat-qr-card {
+  border-radius: 1.1rem;
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--line));
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
+    color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: 0 16px 34px -30px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .chat-qr {
+  border-radius: 0.9rem;
+  box-shadow: 0 10px 24px -16px rgb(0 0 0 / 0.5);
+}
+
 /* Modern calculator and shortcuts tools */
 [data-table-theme="modern"] .calc-key {
   border-radius: 0.85rem;

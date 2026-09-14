@@ -1,5 +1,5 @@
 "use client";
-import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell } from "lucide-react";
+import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell, UserCheck, MessageCircle } from "lucide-react";
 import { NOTIFICATION_TYPES } from "./constants";
 
 const ICONS = {
@@ -21,6 +21,9 @@ const ICONS = {
   user_updated: ShieldCheck,
   user_deleted: ShieldAlert,
   security_login: LogIn,
+  friend_request: UserPlus,
+  friend_accepted: UserCheck,
+  chat_message: MessageCircle,
 };
 
 const TONE_CLASS = {

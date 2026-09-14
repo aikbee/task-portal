@@ -66,7 +66,7 @@ export default function AppShell({ user, children }) {
 
   // refresh sidebar counts whenever the route changes (cheap, local DB)
   useEffect(() => {
-    api.get("/api/stats").then((s) => setCounts({ projects: s.counts.projects, requirements: s.counts.requirements, employees: s.counts.employees, tasks: s.counts.tasks, info: s.counts.info, drawboards: s.counts.drawboards })).catch(() => {});
+    api.get("/api/stats").then((s) => setCounts({ projects: s.counts.projects, requirements: s.counts.requirements, employees: s.counts.employees, tasks: s.counts.tasks, info: s.counts.info, drawboards: s.counts.drawboards, chat: s.counts.chat || null })).catch(() => {});
   }, [pathname, setCounts]);
 
   // global keyboard shortcuts
