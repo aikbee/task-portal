@@ -54,9 +54,9 @@ export function Divider({ className, label }) {
 export function ProgressBar({ value = 0, color, className, size = "sm" }) {
   const pct = Math.max(0, Math.min(100, Math.round(value)));
   return (
-    <div className={cn("w-full overflow-hidden rounded-full bg-surface-3", size === "sm" ? "h-1.5" : "h-2.5", className)}>
+    <div className={cn("ui-progress w-full overflow-hidden rounded-full bg-surface-3", size === "sm" ? "h-1.5" : "h-2.5", className)}>
       <div
-        className="h-full rounded-full transition-[width] duration-500"
+        className="ui-progress-fill h-full rounded-full transition-[width] duration-500"
         style={{ width: `${pct}%`, background: color ?? "var(--accent)" }}
       />
     </div>

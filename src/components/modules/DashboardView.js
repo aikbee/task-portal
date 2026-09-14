@@ -48,9 +48,9 @@ export default function DashboardView() {
   return (
     <>
       <PageHeader title={tr("Dashboard")} crumbs={[]} hideTitle />
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3 anim-rise">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{tr(greeting)} 👋</h1>
+      <div className="dash-hero mb-5 flex flex-wrap items-end justify-between gap-3 anim-rise" style={{ "--ph-color": user?.profile?.color || "var(--accent)" }}>
+        <div className="dash-hero-text">
+          <h1 className="dash-hero-title text-2xl font-semibold tracking-tight">{tr(greeting)} 👋</h1>
           <p className="text-sm text-fg-muted">
             {tr("Here's what's happening in")}
             {user?.profile ? (
@@ -64,7 +64,7 @@ export default function DashboardView() {
             .
           </p>
         </div>
-        <button onClick={() => setActiveTool("notes")} className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+        <button onClick={() => setActiveTool("notes")} className="dash-hero-note inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-fg-muted hover:text-fg">
           <StickyNote size={13} className="text-amber-500" /> {tr(counts.notes === 1 ? "{n} sticky note" : "{n} sticky notes", { n: counts.notes })}
         </button>
       </div>
@@ -184,7 +184,7 @@ export default function DashboardView() {
 function TaskList({ items, emptyTitle, showDue, showUpdated }) {
   if (!items.length) return <EmptyState compact title={emptyTitle} />;
   return (
-    <ul className="divide-y divide-line">
+    <ul className="dash-list divide-y divide-line">
       {items.map((t) => {
         const overdue = isOverdue(t.due_date, t.status);
         return (
