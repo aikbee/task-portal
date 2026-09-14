@@ -54,7 +54,7 @@ export default function SecurityPage() {
     <>
       <PageHeader title={tr("Security")} description={tr("Where you are signed in, and your recent sign-ins.")} icon={ShieldCheck} color="#10b981" crumbs={[]} />
       <div className="mx-auto w-full max-w-5xl space-y-6 p-4 sm:p-6">
-        <section className="card p-5">
+        <section className="ui-card card p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">{tr("Active sessions")}</h2>
@@ -100,7 +100,7 @@ export default function SecurityPage() {
           </p>
         </section>
 
-        <section className="card p-5">
+        <section className="ui-card card p-5">
           <h2 className="text-base font-semibold">{tr("Login history")}</h2>
           <p className="mb-4 text-xs text-fg-muted">{tr("Successful sign-ins and failed attempts on your account, newest first. Kept for 180 days.")}</p>
           {history.loading && !history.data ? (

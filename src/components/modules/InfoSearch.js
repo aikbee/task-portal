@@ -126,7 +126,7 @@ export default function InfoSearch() {
         actions={<Button variant="outline" icon={ArrowLeft} onClick={() => nav.push("/info")}>{tr("Info")}</Button>}
       />
 
-      <Card className="mb-4 space-y-3">
+      <Card className="search-panel mb-4 space-y-3">
         <div className="relative">
           <Search size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-fg-faint" />
           <input
@@ -159,7 +159,7 @@ export default function InfoSearch() {
                 <button onClick={() => writeRecent([])} className="flex items-center gap-1 hover:text-fg"><Trash2 size={11} /> {tr("clear")}</button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {recent.map((r) => <button key={r} onClick={() => setQ(r)} className="rounded-full border border-line px-2.5 py-1 text-xs hover:border-accent hover:text-accent">{r}</button>)}
+                {recent.map((r) => <button key={r} onClick={() => setQ(r)} className="chip rounded-full border border-line px-2.5 py-1 text-xs hover:border-accent hover:text-accent">{r}</button>)}
               </div>
             </div>
           ) : null}

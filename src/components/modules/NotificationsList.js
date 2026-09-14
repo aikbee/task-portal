@@ -126,9 +126,9 @@ export default function NotificationsList() {
           className="border-0"
         />
         <div className="flex flex-wrap gap-1">
-          <button onClick={() => setCategory("")} className={cn("rounded-full border px-2.5 py-1 text-xs font-medium", !category ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>{tr("All types")}</button>
+          <button onClick={() => setCategory("")} className={cn("chip rounded-full border px-2.5 py-1 text-xs font-medium", !category ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>{tr("All types")}</button>
           {Object.entries(NOTIFICATION_CATEGORIES).map(([k, v]) => (
-            <button key={k} onClick={() => setCategory(k === category ? "" : k)} className={cn("rounded-full border px-2.5 py-1 text-xs font-medium", category === k ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>{tr(v.label)}</button>
+            <button key={k} onClick={() => setCategory(k === category ? "" : k)} className={cn("chip rounded-full border px-2.5 py-1 text-xs font-medium", category === k ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>{tr(v.label)}</button>
           ))}
         </div>
       </div>

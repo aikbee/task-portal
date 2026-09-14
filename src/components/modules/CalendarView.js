@@ -139,7 +139,7 @@ export default function CalendarView() {
       />
 
       {/* toolbar */}
-      <div className="card mb-4 flex flex-wrap items-center gap-2 px-3 py-2">
+      <div className="tool-bar card mb-4 flex flex-wrap items-center gap-2 px-3 py-2">
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="iconSm" icon={ChevronLeft} onClick={() => go(-1)} aria-label="Previous" />
           <Button variant="outline" size="sm" onClick={goToday}>{tr("Today")}</Button>
@@ -171,11 +171,11 @@ export default function CalendarView() {
         {view === "agenda" ? (
           <Agenda days={days} byDay={byDay} deadlinesByDay={deadlinesByDay} today={today} loading={loading && !tasks} onOpen={(t) => router.push(`/tasks/${t.id}`)} onStatus={quickStatus} onNew={(day) => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })} />
         ) : (
-          <Card padding={false} className="overflow-x-auto">
-            <div className="grid min-w-[640px] grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+          <Card padding={false} className="cal-grid overflow-x-auto">
+            <div className="cal-head grid min-w-[640px] grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
               {WEEKDAYS.map((d) => <div key={d} className="py-2">{d}</div>)}
             </div>
-            <div className={cn("grid min-w-[640px] grid-cols-7", view === "week" ? "min-h-[520px]" : "")}>
+            <div className={cn("cal-days grid min-w-[640px] grid-cols-7", view === "week" ? "min-h-[520px]" : "")}>
               {days.map((day) => {
                 const d = parseIso(day);
                 const inMonth = view !== "month" || d.getMonth() === cursor.getMonth();
@@ -194,10 +194,10 @@ export default function CalendarView() {
                     onDragLeave={() => setOverDay((o) => (o === day ? null : o))}
                     onDrop={(e) => { e.preventDefault(); if (dragId != null) reschedule(dragId, day); setDragId(null); setOverDay(null); }}
                     className={cn(
-                      "group relative flex min-h-[112px] cursor-pointer flex-col border-b border-r border-line/70 p-1.5 transition-colors",
+                      "cal-day group relative flex min-h-[112px] cursor-pointer flex-col border-b border-r border-line/70 p-1.5 transition-colors",
                       view === "week" && "min-h-[520px]",
                       !inMonth && "bg-surface-2/40 text-fg-faint",
-                      isSelected && "bg-accent/6",
+                      isSelected && "is-selected bg-accent/6",
                       overDay === day && dragId != null && "bg-accent/15 ring-2 ring-inset ring-accent/50"
                     )}
                   >
@@ -263,7 +263,7 @@ function TaskChip({ task: t, today, dragging, onDragStart, onDragEnd, onOpen }) 
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
       title={`${t.title}${t.project_name ? ` · ${t.project_name}` : ""}${t.assignee_name ? ` · ${t.assignee_name}` : ""}`}
       className={cn(
-        "flex w-full items-center gap-1.5 rounded-md border border-line/70 bg-surface px-1.5 py-1 text-left text-[11px] leading-tight transition hover:border-line-strong hover:bg-surface-2",
+        "cal-event flex w-full items-center gap-1.5 rounded-md border border-line/70 bg-surface px-1.5 py-1 text-left text-[11px] leading-tight transition hover:border-line-strong hover:bg-surface-2",
         dragging && "opacity-40",
         t.status === "done" && "opacity-60"
       )}
@@ -351,7 +351,7 @@ function Agenda({ days, byDay, deadlinesByDay, today, loading, onOpen, onStatus,
         const isToday = day === today;
         return (
           <section key={day} className="grid grid-cols-[88px_1fr] gap-3">
-            <button onClick={() => onNew(day)} className={cn("h-fit rounded-app border border-line p-2 text-center hover:bg-surface-2", isToday && "border-accent bg-accent/8")} title="New task on this day">
+            <button onClick={() => onNew(day)} className={cn("agenda-day h-fit rounded-app border border-line p-2 text-center hover:bg-surface-2", isToday && "border-accent bg-accent/8")} title="New task on this day">
               <span className="block text-[10px] uppercase tracking-wider text-fg-muted">{d.toLocaleDateString(undefined, { weekday: "short" })}</span>
               <span className={cn("block text-2xl font-semibold leading-tight", isToday && "text-accent")}>{d.getDate()}</span>
               <span className="block text-[10px] text-fg-muted">{d.toLocaleDateString(undefined, { month: "short" })}</span>

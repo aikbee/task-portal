@@ -149,7 +149,7 @@ export default function BoardView() {
         actions={<Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: filters.project_id ? { project_id: filters.project_id } : {} })}>{tr("New task")}</Button>}
       />
 
-      <div className="card mb-4 flex flex-wrap items-center gap-2 px-3 py-2">
+      <div className="tool-bar card mb-4 flex flex-wrap items-center gap-2 px-3 py-2">
         <div className="relative min-w-[200px] flex-1 max-w-xs">
           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
           <input value={filters.q} onChange={setFilter("q")} placeholder={tr("Filter cards…")} className="control h-8 pl-8 pr-7 text-xs" />
@@ -196,12 +196,12 @@ export default function BoardView() {
               }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver((o) => (o?.col === c.key ? null : o)); }}
               onDrop={(e) => { e.preventDefault(); dropTo(c.key, over?.col === c.key ? over.index : list.length); }}
-              className={cn("card flex w-[288px] shrink-0 flex-col p-0 transition-shadow", isOverCol && "ring-2 ring-accent/50")}
+              className={cn("board-col ui-card card flex w-[288px] shrink-0 flex-col p-0 transition-shadow", isOverCol && "ring-2 ring-accent/50")}
             >
-              <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+              <header className="board-col-head flex items-center gap-2 border-b border-line px-3 py-2.5">
                 {c.color ? <Avatar name={c.label} color={c.color} size="xs" /> : <span className={cn("h-2.5 w-2.5 rounded-full", TONE_BAR[c.tone])} />}
                 <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{tr(c.label)}</h3>
-                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-fg-muted">{list.length}</span>
+                <span className="board-col-count rounded-full bg-surface-3 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-fg-muted">{list.length}</span>
                 <button onClick={() => setTaskForm({ open: true, initial: null, defaults: defaultsFor(c.key) })} className="grid h-6 w-6 place-items-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label={`New task in ${c.label}`} title={tr("New task here")}>
                   <Plus size={14} />
                 </button>
@@ -265,7 +265,7 @@ function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpe
       onClick={onOpen}
       onDoubleClick={(e) => { e.stopPropagation(); onEdit(); }}
       className={cn(
-        "group cursor-grab rounded-app border border-line bg-surface p-2.5 shadow-sm transition hover:border-line-strong hover:shadow-app active:cursor-grabbing",
+        "board-card group cursor-grab rounded-app border border-line bg-surface p-2.5 shadow-sm transition hover:border-line-strong hover:shadow-app active:cursor-grabbing",
         dragging && "opacity-40",
         t.status === "done" && "opacity-70"
       )}

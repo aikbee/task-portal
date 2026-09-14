@@ -96,7 +96,7 @@ export default function ProfilesList() {
                   [Users, p.employee_count, "people"],
                   [CheckSquare, p.open_task_count, "open"],
                 ].map(([Icon, n, label]) => (
-                  <div key={label} className="rounded-app-sm bg-surface-2 py-2">
+                  <div key={label} className="mini-stat rounded-app-sm bg-surface-2 py-2">
                     <Icon size={13} className="mx-auto mb-0.5 text-fg-muted" />
                     <dd className="text-lg font-semibold tabular-nums leading-tight">{n}</dd>
                     <dt className="text-[10px] uppercase tracking-wider text-fg-faint">{label}</dt>
