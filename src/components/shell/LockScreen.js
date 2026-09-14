@@ -271,7 +271,7 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
           <button
             onClick={() => setBgOnly(true)}
             className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/70 px-4 py-2 text-xs font-medium text-fg-muted transition hover:border-accent/50 hover:text-accent"
-            data-tip={tr("Click anywhere or press any key to return")}
+            data-tip={`${tr("Click anywhere or press any key to return")} · ⌘⇧.`}
             data-tip-pos="top"
           >
             <Wallpaper size={13} /> {tr("Show background only")}

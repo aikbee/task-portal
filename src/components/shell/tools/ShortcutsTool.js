@@ -2,7 +2,7 @@
 import { Kbd } from "@/components/ui/Misc";
 
 const GROUPS = [
-  { title: "Navigation", items: [["⌘", "K", "Search everything"], ["⌘", "B", "Toggle sidebar"], ["⌘", ",", "Open preferences"], ["⌘", "J", "Sticky notes"], ["⌘⇧", "L", "Lock screen"]] },
+  { title: "Navigation", items: [["⌘", "K", "Search everything"], ["⌘", "B", "Toggle sidebar"], ["⌘", ",", "Open preferences"], ["⌘", "J", "Sticky notes"], ["⌘⇧", "L", "Lock screen"], ["⌘⇧", ".", "Show background only"]] },
   { title: "Pages", items: [["P", null, "Pin / unpin current page"], ["N", null, "New record (on list pages)"], ["Esc", null, "Close dialog / panel"], ["?", null, "This cheat-sheet"]] },
   { title: "Search", items: [["↑", "↓", "Move selection"], ["↵", null, "Open result"]] },
 ];

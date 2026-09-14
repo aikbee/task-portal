@@ -45,6 +45,19 @@ export default function BackgroundOnly() {
   const setBgOnly = useUI((s) => s.setBgOnly);
   const wasOn = useRef(false);
 
+  // ⌘⇧. (Ctrl+Shift+. on Windows/Linux) opens the view from anywhere, the lock screen included
+  useEffect(() => {
+    if (on) return;
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "Period" || e.key === "." || e.key === ">")) {
+        e.preventDefault();
+        setBgOnly(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [on, setBgOnly]);
+
   useEffect(() => {
     const root = document.documentElement;
     if (on) {

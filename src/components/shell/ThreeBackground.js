@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePrefs } from "@/lib/store";
 
 /** Accent + theme as three.js-friendly hex strings, read from the live CSS variables. */
@@ -420,7 +420,724 @@ function ocean(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean };
+/* ---------- shared helpers for the cute / supernatural / astronomy scenes ---------- */
+function starField(THREE, scene, n, radius, pal, size = 0.14) {
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) pos.set(onSphere(radius * rand(0.7, 1)), i * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({ color: new THREE.Color(pal.dark ? "#ffffff" : "#475569"), size, transparent: true, opacity: pal.dark ? 0.85 : 0.55, depthWrite: false });
+  scene.add(new THREE.Points(geo, mat));
+  return {
+    setPalette(p) { mat.color.set(p.dark ? "#ffffff" : "#475569"); mat.opacity = p.dark ? 0.85 : 0.55; },
+    dispose() { geo.dispose(); mat.dispose(); },
+  };
+}
+/** Vertical gradient of bands; a sphere's v coordinate maps latitude onto it (gas giants). */
+function bandTexture(THREE, stops) {
+  const c = document.createElement("canvas");
+  c.width = 8; c.height = 256;
+  const g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  stops.forEach((col, i) => grad.addColorStop(i / (stops.length - 1), col));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 8, 256);
+  const tex = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** Concentric translucent bands for a planetary ring (RingGeometry UVs are planar). */
+function ringTexture(THREE, inner, outer, [r, g, b]) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const ctx = c.getContext("2d");
+  const grad = ctx.createRadialGradient(128, 128, 128 * (inner / outer), 128, 128, 128);
+  const alphas = [0, 0.55, 0.2, 0.75, 0.35, 0.8, 0.1, 0.6, 0.45, 0.65, 0.05];
+  alphas.forEach((a, i) => grad.addColorStop(i / (alphas.length - 1), `rgba(${r},${g},${b},${a})`));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+  const tex = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** Switch a material between additive glow (dark theme) and plain blending (light theme). */
+function blend(THREE, mat, dark) {
+  mat.blending = dark ? THREE.AdditiveBlending : THREE.NormalBlending;
+  mat.needsUpdate = true;
+}
+
+/* ---------- Balloons: pastel party balloons drifting up on strings ---------- */
+function balloons(THREE, scene, camera, pal, preview) {
+  const colors = ["#f472b6", "#fb923c", "#facc15", "#4ade80", "#38bdf8", "#a78bfa", pal.accent];
+  const n = preview ? 8 : 18;
+  const bodyGeo = new THREE.SphereGeometry(1, 24, 18);
+  bodyGeo.scale(1, 1.18, 1);
+  const knotGeo = new THREE.ConeGeometry(0.16, 0.24, 8);
+  const stringMat = new THREE.LineBasicMaterial({ color: new THREE.Color(pal.dark ? "#cbd5e1" : "#475569"), transparent: true, opacity: 0.6 });
+  const items = [];
+  const disposables = [bodyGeo, knotGeo, stringMat];
+  const accentMats = [];
+  for (let i = 0; i < n; i++) {
+    const g = new THREE.Group();
+    const color = colors[i % colors.length];
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.35, metalness: 0.05 });
+    if (color === pal.accent) accentMats.push(mat);
+    disposables.push(mat);
+    const knot = new THREE.Mesh(knotGeo, mat);
+    knot.position.y = -1.28;
+    knot.rotation.x = Math.PI;
+    const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(0, -1.4, 0), new THREE.Vector3(0.18, -2.3, 0.05), new THREE.Vector3(-0.1, -3.3, -0.05)]);
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(12));
+    disposables.push(lineGeo);
+    g.add(new THREE.Mesh(bodyGeo, mat), knot, new THREE.Line(lineGeo, stringMat));
+    g.scale.setScalar(rand(0.55, 1.1));
+    g.position.set(rand(-13, 13), rand(-10, 10), rand(-8, 2));
+    scene.add(g);
+    items.push({ g, speed: rand(0.35, 0.8), phase: rand(0, 6.28), sway: rand(0.3, 0.8) });
+  }
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.6 : 1.1);
+  const key = new THREE.DirectionalLight(0xffffff, pal.dark ? 1.4 : 1.8);
+  key.position.set(4, 8, 6);
+  scene.add(amb, key);
+  camera.position.set(0, 0, 14);
+  camera.lookAt(0, 0, 0);
+  return {
+    update(dt, t) {
+      for (const it of items) {
+        it.g.position.y += dt * it.speed;
+        it.g.position.x += Math.sin(t * 0.6 + it.phase) * dt * it.sway;
+        it.g.rotation.z = Math.sin(t * 0.8 + it.phase) * 0.12;
+        if (it.g.position.y > 12) { it.g.position.y = -12; it.g.position.x = rand(-13, 13); }
+      }
+    },
+    setPalette(p) { amb.intensity = p.dark ? 0.6 : 1.1; key.intensity = p.dark ? 1.4 : 1.8; stringMat.color.set(p.dark ? "#cbd5e1" : "#475569"); accentMats.forEach((m) => m.color.set(p.accent)); },
+    dispose() { disposables.forEach((d) => d.dispose()); },
+  };
+}
+
+/* ---------- Hearts: glossy extruded hearts bobbing in a pink haze ---------- */
+function heartGeometry(THREE) {
+  const s = new THREE.Shape();
+  s.moveTo(0.5, 0.5);
+  s.bezierCurveTo(0.5, 0.5, 0.4, 0, 0, 0);
+  s.bezierCurveTo(-0.6, 0, -0.6, 0.7, -0.6, 0.7);
+  s.bezierCurveTo(-0.6, 1.1, -0.3, 1.54, 0.5, 1.9);
+  s.bezierCurveTo(1.2, 1.54, 1.6, 1.1, 1.6, 0.7);
+  s.bezierCurveTo(1.6, 0.7, 1.6, 0, 1, 0);
+  s.bezierCurveTo(0.7, 0, 0.5, 0.5, 0.5, 0.5);
+  const geo = new THREE.ExtrudeGeometry(s, { depth: 0.45, bevelEnabled: true, bevelThickness: 0.14, bevelSize: 0.14, bevelSegments: 4, curveSegments: 14 });
+  geo.center();
+  geo.rotateZ(Math.PI); // the shape is drawn tip-up
+  return geo;
+}
+function hearts(THREE, scene, camera, pal, preview) {
+  const geo = heartGeometry(THREE);
+  const colors = ["#f43f5e", "#fb7185", "#f472b6", "#fda4af", "#e11d48", "#ec4899", pal.accent];
+  const n = preview ? 10 : 24;
+  const items = [];
+  const disposables = [geo];
+  const accentMats = [];
+  for (let i = 0; i < n; i++) {
+    const color = colors[i % colors.length];
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.3, metalness: 0.1, emissive: new THREE.Color(color), emissiveIntensity: pal.dark ? 0.15 : 0.02 });
+    if (color === pal.accent) accentMats.push(mat);
+    disposables.push(mat);
+    const m = new THREE.Mesh(geo, mat);
+    m.scale.setScalar(rand(0.35, 1));
+    m.position.set(rand(-12, 12), rand(-8, 8), rand(-8, 2));
+    m.rotation.set(rand(-0.3, 0.3), rand(0, 6.28), rand(-0.2, 0.2));
+    scene.add(m);
+    items.push({ m, y0: m.position.y, phase: rand(0, 6.28), spin: rand(0.2, 0.7), rise: rand(0.15, 0.4) });
+  }
+  const S = preview ? 60 : 180;
+  const spos = new Float32Array(S * 3);
+  for (let i = 0; i < S; i++) spos.set([rand(-14, 14), rand(-9, 9), rand(-9, 3)], i * 3);
+  const sGeo = new THREE.BufferGeometry();
+  sGeo.setAttribute("position", new THREE.BufferAttribute(spos, 3));
+  const sMat = new THREE.PointsMaterial({ color: new THREE.Color(pal.dark ? "#fecdd3" : "#be123c"), size: 0.09, transparent: true, opacity: 0.8, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+  scene.add(new THREE.Points(sGeo, sMat));
+  disposables.push(sGeo, sMat);
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.5 : 1);
+  const key = new THREE.DirectionalLight(0xffffff, pal.dark ? 1.6 : 1.9);
+  key.position.set(5, 6, 8);
+  const fill = new THREE.PointLight(new THREE.Color("#fb7185"), pal.dark ? 60 : 30, 60);
+  fill.position.set(-6, -4, 4);
+  scene.add(amb, key, fill);
+  camera.position.set(0, 0, 14);
+  camera.lookAt(0, 0, 0);
+  return {
+    update(dt, t) {
+      for (const it of items) {
+        it.m.rotation.y += dt * it.spin;
+        it.m.position.y += dt * it.rise;
+        it.m.position.x += Math.sin(t * 0.5 + it.phase) * dt * 0.3;
+        if (it.m.position.y > 10) it.m.position.y = -10;
+      }
+      sMat.opacity = 0.6 + Math.sin(t * 2) * 0.25;
+    },
+    setPalette(p) {
+      items.forEach((it) => { it.m.material.emissiveIntensity = p.dark ? 0.15 : 0.02; });
+      accentMats.forEach((m) => { m.color.set(p.accent); m.emissive.set(p.accent); });
+      sMat.color.set(p.dark ? "#fecdd3" : "#be123c");
+      blend(THREE, sMat, p.dark);
+      amb.intensity = p.dark ? 0.5 : 1; key.intensity = p.dark ? 1.6 : 1.9; fill.intensity = p.dark ? 60 : 30;
+    },
+    dispose() { disposables.forEach((d) => d.dispose()); },
+  };
+}
+
+/* ---------- Jellyfish: glowing bells pulsing upward through plankton ---------- */
+function jellyfish(THREE, scene, camera, pal, preview) {
+  const n = preview ? 4 : 8;
+  const T = 6, K = 12; // tentacles per jelly, points per tentacle
+  const bellGeo = new THREE.SphereGeometry(1, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const colors = ["#f472b6", "#22d3ee", "#a78bfa", "#34d399", "#fb7185", "#60a5fa"];
+  const glow = glowTexture(THREE);
+  const jellies = [];
+  const disposables = [bellGeo, glow];
+  for (let i = 0; i < n; i++) {
+    const g = new THREE.Group();
+    const col = new THREE.Color(colors[i % colors.length]);
+    const mat = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: pal.dark ? 0.5 : 0.15, transparent: true, opacity: pal.dark ? 0.55 : 0.75, side: THREE.DoubleSide, roughness: 0.4, depthWrite: false });
+    const sMat = new THREE.SpriteMaterial({ map: glow, color: col, transparent: true, opacity: pal.dark ? 0.45 : 0.2, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    const lMat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: pal.dark ? 0.7 : 0.85 });
+    disposables.push(mat, sMat, lMat);
+    const sprite = new THREE.Sprite(sMat);
+    sprite.scale.setScalar(3.2);
+    sprite.position.y = 0.2;
+    g.add(new THREE.Mesh(bellGeo, mat), sprite);
+    const tentacles = [];
+    for (let j = 0; j < T; j++) {
+      const a = (j / T) * Math.PI * 2;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(K * 3), 3));
+      disposables.push(geo);
+      g.add(new THREE.Line(geo, lMat));
+      tentacles.push({ geo, x0: Math.cos(a) * 0.7, z0: Math.sin(a) * 0.7, phase: rand(0, 6.28) });
+    }
+    const base = rand(0.5, 1.1);
+    g.position.set(rand(-11, 11), rand(-8, 8), rand(-6, 1));
+    g.rotation.z = rand(-0.25, 0.25);
+    scene.add(g);
+    jellies.push({ g, mat, sMat, lMat, tentacles, base, phase: rand(0, 6.28), speed: rand(0.25, 0.55), drift: rand(-0.2, 0.2), rate: rand(1.2, 2) });
+  }
+  const P = preview ? 80 : 260;
+  const ppos = new Float32Array(P * 3);
+  for (let i = 0; i < P; i++) ppos.set([rand(-14, 14), rand(-9, 9), rand(-8, 2)], i * 3);
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute("position", new THREE.BufferAttribute(ppos, 3));
+  const pMat = new THREE.PointsMaterial({ color: new THREE.Color(pal.dark ? "#a5f3fc" : "#0e7490"), size: 0.07, transparent: true, opacity: 0.5, depthWrite: false });
+  scene.add(new THREE.Points(pGeo, pMat));
+  disposables.push(pGeo, pMat);
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.5 : 1);
+  const top = new THREE.DirectionalLight(0xbfefff, pal.dark ? 1.2 : 1.4);
+  top.position.set(0, 10, 4);
+  scene.add(amb, top);
+  scene.fog = new THREE.Fog(new THREE.Color(pal.dark ? "#06121f" : "#cfe8f5"), 8, 26);
+  camera.position.set(0, 0, 13);
+  camera.lookAt(0, 0, 0);
+  const pp = pGeo.attributes.position;
+  return {
+    update(dt, t) {
+      for (const j of jellies) {
+        const pulse = Math.sin(t * j.rate + j.phase);
+        j.g.scale.set((1 - pulse * 0.08) * j.base, (1 + pulse * 0.12) * j.base, (1 - pulse * 0.08) * j.base);
+        j.g.position.y += dt * j.speed * (0.5 + Math.max(0, pulse));
+        j.g.position.x += dt * j.drift;
+        if (j.g.position.y > 10) { j.g.position.y = -10; j.g.position.x = rand(-11, 11); }
+        for (const tn of j.tentacles) {
+          const arr = tn.geo.attributes.position.array;
+          for (let k = 0; k < K; k++) {
+            arr[k * 3] = tn.x0 + Math.sin(t * 2 + k * 0.5 + tn.phase) * 0.06 * k;
+            arr[k * 3 + 1] = -k * 0.26;
+            arr[k * 3 + 2] = tn.z0 + Math.cos(t * 1.7 + k * 0.4 + tn.phase) * 0.05 * k;
+          }
+          tn.geo.attributes.position.needsUpdate = true;
+        }
+      }
+      const arr = pp.array;
+      for (let i = 1; i < arr.length; i += 3) { arr[i] += dt * 0.12; if (arr[i] > 9) arr[i] = -9; }
+      pp.needsUpdate = true;
+    },
+    setPalette(p) {
+      for (const j of jellies) { j.mat.emissiveIntensity = p.dark ? 0.5 : 0.15; j.mat.opacity = p.dark ? 0.55 : 0.75; j.sMat.opacity = p.dark ? 0.45 : 0.2; blend(THREE, j.sMat, p.dark); j.lMat.opacity = p.dark ? 0.7 : 0.85; }
+      pMat.color.set(p.dark ? "#a5f3fc" : "#0e7490");
+      amb.intensity = p.dark ? 0.5 : 1; top.intensity = p.dark ? 1.2 : 1.4;
+      scene.fog.color.set(p.dark ? "#06121f" : "#cfe8f5");
+    },
+    dispose() { disposables.forEach((d) => d.dispose()); scene.fog = null; },
+  };
+}
+
+/* ---------- Ghosts: friendly sheet ghosts with waving hems drifting through mist ---------- */
+function ghosts(THREE, scene, camera, pal, preview) {
+  const profile = [[0, 1.6], [0.45, 1.55], [0.8, 1.25], [0.95, 0.8], [0.9, 0.2], [0.95, -0.4], [1, -1], [1, -1.4]].map(([x, y]) => new THREE.Vector2(x, y));
+  const proto = new THREE.LatheGeometry(profile, preview ? 20 : 32);
+  const base = proto.attributes.position.array.slice();
+  const eyeGeo = new THREE.SphereGeometry(0.11, 10, 8);
+  const mouthGeo = new THREE.SphereGeometry(0.07, 8, 6);
+  const faceMat = new THREE.MeshBasicMaterial({ color: new THREE.Color("#1e1b4b") });
+  const glow = glowTexture(THREE, "rgba(199,210,254,1)", "rgba(199,210,254,0)");
+  const n = preview ? 3 : 6;
+  const items = [];
+  const disposables = [proto, eyeGeo, mouthGeo, faceMat, glow];
+  for (let i = 0; i < n; i++) {
+    const g = new THREE.Group();
+    const geo = proto.clone();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(pal.dark ? "#e0e7ff" : "#cbd5e1"), emissive: new THREE.Color("#818cf8"), emissiveIntensity: pal.dark ? 0.35 : 0.08, transparent: true, opacity: pal.dark ? 0.75 : 0.9, roughness: 0.9, side: THREE.DoubleSide });
+    const sMat = new THREE.SpriteMaterial({ map: glow, transparent: true, opacity: pal.dark ? 0.35 : 0.12, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    disposables.push(geo, mat, sMat);
+    const sprite = new THREE.Sprite(sMat);
+    sprite.scale.setScalar(4.5);
+    sprite.position.z = -0.5;
+    const eyeL = new THREE.Mesh(eyeGeo, faceMat);
+    const eyeR = new THREE.Mesh(eyeGeo, faceMat);
+    const mouth = new THREE.Mesh(mouthGeo, faceMat);
+    eyeL.position.set(-0.32, 0.78, 0.86);
+    eyeR.position.set(0.32, 0.78, 0.86);
+    mouth.position.set(0, 0.42, 0.93);
+    g.add(new THREE.Mesh(geo, mat), eyeL, eyeR, mouth, sprite);
+    g.scale.setScalar(rand(0.7, 1.3));
+    g.position.set(rand(-10, 10), rand(-3, 4), rand(-6, 1));
+    scene.add(g);
+    items.push({ g, geo, mat, sMat, y0: g.position.y, phase: rand(0, 6.28), drift: rand(0.15, 0.4) * (Math.random() < 0.5 ? -1 : 1) });
+  }
+  const cloudTex = cloudTexture(THREE);
+  const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: pal.dark ? 0.3 : 0.35, color: new THREE.Color(pal.dark ? "#312e81" : "#94a3b8"), depthWrite: false });
+  const cloudGeo = new THREE.PlaneGeometry(10, 5);
+  const mist = [];
+  for (let i = 0; i < (preview ? 3 : 7); i++) {
+    const m = new THREE.Mesh(cloudGeo, cloudMat);
+    m.position.set(rand(-14, 14), rand(-7, -4), rand(-5, 2));
+    m.scale.setScalar(rand(1, 2));
+    scene.add(m);
+    mist.push({ m, speed: rand(0.1, 0.3) });
+  }
+  disposables.push(cloudTex, cloudMat, cloudGeo);
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.5 : 1);
+  const moon = new THREE.PointLight(new THREE.Color("#a5b4fc"), pal.dark ? 80 : 30, 80);
+  moon.position.set(6, 8, 4);
+  scene.add(amb, moon);
+  scene.fog = new THREE.Fog(new THREE.Color(pal.dark ? "#0b0a1a" : "#e2e8f0"), 10, 30);
+  camera.position.set(0, 0.5, 13);
+  camera.lookAt(0, 0, 0);
+  return {
+    update(dt, t) {
+      for (const it of items) {
+        it.g.position.y = it.y0 + Math.sin(t * 0.9 + it.phase) * 0.5;
+        it.g.position.x += dt * it.drift;
+        if (it.g.position.x > 13) it.g.position.x = -13;
+        if (it.g.position.x < -13) it.g.position.x = 13;
+        it.g.rotation.y = Math.sin(t * 0.5 + it.phase) * 0.35;
+        it.g.rotation.z = Math.sin(t * 0.7 + it.phase) * 0.08;
+        const arr = it.geo.attributes.position.array;
+        for (let i = 0; i < arr.length; i += 3) {
+          const by = base[i + 1];
+          if (by >= -0.3) continue;
+          const k = (-by - 0.3) / 1.1;
+          arr[i + 1] = by + Math.sin(Math.atan2(base[i + 2], base[i]) * 5 + t * 3 + it.phase) * 0.14 * k;
+        }
+        it.geo.attributes.position.needsUpdate = true;
+      }
+      for (const c of mist) { c.m.position.x += dt * c.speed; if (c.m.position.x > 16) c.m.position.x = -16; }
+    },
+    setPalette(p) {
+      for (const it of items) { it.mat.color.set(p.dark ? "#e0e7ff" : "#cbd5e1"); it.mat.emissiveIntensity = p.dark ? 0.35 : 0.08; it.mat.opacity = p.dark ? 0.75 : 0.9; it.sMat.opacity = p.dark ? 0.35 : 0.12; blend(THREE, it.sMat, p.dark); }
+      cloudMat.opacity = p.dark ? 0.3 : 0.35; cloudMat.color.set(p.dark ? "#312e81" : "#94a3b8");
+      amb.intensity = p.dark ? 0.5 : 1; moon.intensity = p.dark ? 80 : 30;
+      scene.fog.color.set(p.dark ? "#0b0a1a" : "#e2e8f0");
+    },
+    dispose() { disposables.forEach((d) => d.dispose()); scene.fog = null; },
+  };
+}
+
+/* ---------- Portal: an arcane ring, a vortex of particles and crackling arcs ---------- */
+function portal(THREE, scene, camera, pal, preview) {
+  const group = new THREE.Group();
+  group.rotation.x = 0.35;
+  scene.add(group);
+  const ringGeo = new THREE.TorusGeometry(3.4, 0.22, 16, 90);
+  const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(pal.dark ? "#c084fc" : "#7e22ce") });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  group.add(ring);
+  const glow = glowTexture(THREE, "rgba(192,132,252,1)", "rgba(192,132,252,0)");
+  const glowMat = new THREE.SpriteMaterial({ map: glow, transparent: true, opacity: pal.dark ? 0.75 : 0.35, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false, color: new THREE.Color(pal.dark ? "#ffffff" : "#6d28d9") });
+  const glowSprite = new THREE.Sprite(glowMat);
+  glowSprite.scale.setScalar(11);
+  group.add(glowSprite);
+  const N = preview ? 500 : 1600;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const r = new Float32Array(N), a = new Float32Array(N), sp = new Float32Array(N);
+  for (let i = 0; i < N; i++) { r[i] = rand(0.2, 3.3); a[i] = rand(0, 6.28); sp[i] = rand(0.6, 1.4); }
+  const inner = new THREE.Color(pal.dark ? "#a855f7" : "#6d28d9");
+  const outer = new THREE.Color(pal.dark ? "#22d3ee" : "#0e7490");
+  const tmp = new THREE.Color();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 0.95, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+  group.add(new THREE.Points(geo, mat));
+  const S = preview ? 60 : 160;
+  const spos = new Float32Array(S * 3);
+  const sdir = new Float32Array(S * 3);
+  const slife = new Float32Array(S);
+  const resetSpark = (i) => {
+    const ang = rand(0, 6.28);
+    spos.set([Math.cos(ang) * 3.4, Math.sin(ang) * 3.4, 0], i * 3);
+    sdir.set([Math.cos(ang) * rand(1, 3), Math.sin(ang) * rand(1, 3), rand(-1, 1)], i * 3);
+    slife[i] = rand(0.4, 1.4);
+  };
+  for (let i = 0; i < S; i++) { resetSpark(i); slife[i] *= Math.random(); }
+  const sGeo = new THREE.BufferGeometry();
+  sGeo.setAttribute("position", new THREE.BufferAttribute(spos, 3));
+  const sMat = new THREE.PointsMaterial({ color: new THREE.Color(pal.dark ? "#f5d0fe" : "#7e22ce"), size: 0.1, transparent: true, opacity: 0.9, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+  group.add(new THREE.Points(sGeo, sMat));
+  const A = preview ? 3 : 5, AP = 9;
+  const arcMat = new THREE.LineBasicMaterial({ color: new THREE.Color(pal.dark ? "#e9d5ff" : "#6d28d9"), transparent: true, opacity: 0.85 });
+  const arcs = [];
+  for (let i = 0; i < A; i++) {
+    const ag = new THREE.BufferGeometry();
+    ag.setAttribute("position", new THREE.BufferAttribute(new Float32Array(AP * 3), 3));
+    group.add(new THREE.Line(ag, arcMat));
+    arcs.push(ag);
+  }
+  const jolt = () => {
+    for (const ag of arcs) {
+      const ang = rand(0, 6.28);
+      const arr = ag.attributes.position.array;
+      for (let k = 0; k < AP; k++) {
+        const f = k / (AP - 1);
+        const j = (1 - f) * 0.4;
+        arr[k * 3] = Math.cos(ang) * 3.4 * (1 - f) + rand(-j, j);
+        arr[k * 3 + 1] = Math.sin(ang) * 3.4 * (1 - f) + rand(-j, j);
+        arr[k * 3 + 2] = rand(-j, j);
+      }
+      ag.attributes.position.needsUpdate = true;
+    }
+  };
+  jolt();
+  camera.position.set(0, 0.5, 11);
+  camera.lookAt(0, 0, 0);
+  let acc = 0;
+  const pp = geo.attributes.position, cc = geo.attributes.color, spp = sGeo.attributes.position;
+  return {
+    update(dt, t) {
+      for (let i = 0; i < N; i++) {
+        r[i] -= dt * sp[i] * 0.6;
+        a[i] += dt * (1.2 + 2 / (r[i] + 0.3));
+        if (r[i] < 0.15) { r[i] = 3.3; a[i] = rand(0, 6.28); }
+        pos[i * 3] = Math.cos(a[i]) * r[i];
+        pos[i * 3 + 1] = Math.sin(a[i]) * r[i];
+        pos[i * 3 + 2] = Math.sin(a[i] * 3 + t) * 0.15 * (r[i] / 3.3);
+        tmp.copy(outer).lerp(inner, 1 - r[i] / 3.3);
+        col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+      }
+      pp.needsUpdate = true; cc.needsUpdate = true;
+      for (let i = 0; i < S; i++) {
+        slife[i] -= dt;
+        if (slife[i] <= 0) { resetSpark(i); continue; }
+        spos[i * 3] += sdir[i * 3] * dt; spos[i * 3 + 1] += sdir[i * 3 + 1] * dt; spos[i * 3 + 2] += sdir[i * 3 + 2] * dt;
+      }
+      spp.needsUpdate = true;
+      acc += dt;
+      if (acc > 0.1) { acc = 0; jolt(); }
+      ring.rotation.z += dt * 0.25;
+      group.rotation.y = Math.sin(t * 0.3) * 0.2;
+      glowMat.opacity = (pal.dark ? 0.75 : 0.35) * (0.85 + Math.sin(t * 2.2) * 0.15);
+    },
+    setPalette(p) {
+      pal = p;
+      ringMat.color.set(p.dark ? "#c084fc" : "#7e22ce");
+      glowMat.color.set(p.dark ? "#ffffff" : "#6d28d9"); blend(THREE, glowMat, p.dark);
+      inner.set(p.dark ? "#a855f7" : "#6d28d9"); outer.set(p.dark ? "#22d3ee" : "#0e7490"); blend(THREE, mat, p.dark);
+      sMat.color.set(p.dark ? "#f5d0fe" : "#7e22ce"); blend(THREE, sMat, p.dark);
+      arcMat.color.set(p.dark ? "#e9d5ff" : "#6d28d9");
+    },
+    dispose() { [ringGeo, ringMat, glow, glowMat, geo, mat, sGeo, sMat, arcMat, ...arcs].forEach((d) => d.dispose()); },
+  };
+}
+
+/* ---------- Wisps: spirit lights with trails over a misty pine forest ---------- */
+function wisps(THREE, scene, camera, pal, preview) {
+  const groundGeo = new THREE.PlaneGeometry(90, 40);
+  const groundMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(pal.dark ? "#0a1410" : "#94a3b8"), roughness: 1 });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -3;
+  scene.add(ground);
+  const treeGeo = new THREE.ConeGeometry(1, 5, 7);
+  const treeMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(pal.dark ? "#06100c" : "#475569"), roughness: 1, flatShading: true });
+  for (let i = 0; i < (preview ? 12 : 30); i++) {
+    const s = rand(0.7, 1.8);
+    const tree = new THREE.Mesh(treeGeo, treeMat);
+    tree.scale.setScalar(s);
+    tree.position.set(rand(-26, 26), -3 + 2.5 * s, rand(-20, -6));
+    scene.add(tree);
+  }
+  const cloudTex = cloudTexture(THREE);
+  const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: pal.dark ? 0.25 : 0.4, color: new THREE.Color(pal.dark ? "#1f3a33" : "#cbd5e1"), depthWrite: false });
+  const cloudGeo = new THREE.PlaneGeometry(12, 5);
+  const mist = [];
+  for (let i = 0; i < (preview ? 3 : 6); i++) {
+    const m = new THREE.Mesh(cloudGeo, cloudMat);
+    m.position.set(rand(-16, 16), rand(-3, -1.5), rand(-8, 2));
+    m.scale.setScalar(rand(1, 2.2));
+    scene.add(m);
+    mist.push({ m, speed: rand(0.1, 0.25) });
+  }
+  const glow = glowTexture(THREE);
+  const colors = ["#5eead4", "#a3e635", "#c084fc", "#67e8f9", "#fde68a", "#f0abfc", "#86efac"];
+  const W = preview ? 4 : 7, TR = 28;
+  const items = [];
+  const disposables = [groundGeo, groundMat, treeGeo, treeMat, cloudTex, cloudMat, cloudGeo, glow];
+  for (let i = 0; i < W; i++) {
+    const col = new THREE.Color(colors[i % colors.length]);
+    const sMat = new THREE.SpriteMaterial({ map: glow, color: col, transparent: true, opacity: pal.dark ? 0.95 : 0.6, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    const sprite = new THREE.Sprite(sMat);
+    sprite.scale.setScalar(rand(1.2, 2));
+    scene.add(sprite);
+    const tpos = new Float32Array(TR * 3);
+    const tcol = new Float32Array(TR * 3);
+    const tGeo = new THREE.BufferGeometry();
+    tGeo.setAttribute("position", new THREE.BufferAttribute(tpos, 3));
+    tGeo.setAttribute("color", new THREE.BufferAttribute(tcol, 3));
+    const tMat = new THREE.PointsMaterial({ size: 0.16, vertexColors: true, transparent: true, opacity: 0.9, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    scene.add(new THREE.Points(tGeo, tMat));
+    disposables.push(sMat, tGeo, tMat);
+    let light = null;
+    if (i < 4) { light = new THREE.PointLight(col, pal.dark ? 25 : 8, 20); scene.add(light); }
+    items.push({ sprite, sMat, tGeo, tMat, tpos, tcol, col, light, head: 0, cx: rand(-11, 11), cz: rand(-6, 2), ax: rand(2, 5), az: rand(1, 3), fx: rand(0.15, 0.35), fy: rand(0.4, 0.9), fz: rand(0.2, 0.4), p1: rand(0, 6.28), p2: rand(0, 6.28), p3: rand(0, 6.28) });
+    for (let k = 0; k < TR; k++) tpos.set([items[i].cx, -1, items[i].cz], k * 3);
+  }
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.25 : 0.9);
+  const moon = new THREE.DirectionalLight(0xc7d2fe, pal.dark ? 0.6 : 1);
+  moon.position.set(-4, 10, -6);
+  scene.add(amb, moon);
+  scene.fog = new THREE.Fog(new THREE.Color(pal.dark ? "#050a08" : "#cbd5e1"), 10, 45);
+  camera.position.set(0, 0.5, 14);
+  camera.lookAt(0, -1, 0);
+  return {
+    update(dt, t) {
+      for (const w of items) {
+        const x = w.cx + Math.sin(t * w.fx + w.p1) * w.ax;
+        const y = -0.6 + Math.sin(t * w.fy + w.p2) * 0.9;
+        const z = w.cz + Math.cos(t * w.fz + w.p3) * w.az;
+        w.sprite.position.set(x, y, z);
+        if (w.light) w.light.position.set(x, y, z);
+        w.head = (w.head + 1) % TR;
+        w.tpos.set([x + rand(-0.08, 0.08), y + rand(-0.08, 0.08), z], w.head * 3);
+        const fade = pal.dark ? [0, 0, 0] : [0.8, 0.84, 0.9]; // additive trails fade to black, plain ones into the mist
+        for (let k = 0; k < TR; k++) {
+          const age = ((w.head - k + TR) % TR) / TR;
+          const b = (1 - age) * (1 - age);
+          w.tcol[k * 3] = w.col.r * b + fade[0] * (1 - b); w.tcol[k * 3 + 1] = w.col.g * b + fade[1] * (1 - b); w.tcol[k * 3 + 2] = w.col.b * b + fade[2] * (1 - b);
+        }
+        w.tGeo.attributes.position.needsUpdate = true;
+        w.tGeo.attributes.color.needsUpdate = true;
+        w.sMat.opacity = (pal.dark ? 0.95 : 0.6) * (0.8 + Math.sin(t * 3 + w.p1) * 0.2);
+      }
+      for (const c of mist) { c.m.position.x += dt * c.speed; if (c.m.position.x > 20) c.m.position.x = -20; }
+    },
+    setPalette(p) {
+      pal = p;
+      groundMat.color.set(p.dark ? "#0a1410" : "#94a3b8"); treeMat.color.set(p.dark ? "#06100c" : "#475569");
+      cloudMat.opacity = p.dark ? 0.25 : 0.4; cloudMat.color.set(p.dark ? "#1f3a33" : "#cbd5e1");
+      for (const w of items) { blend(THREE, w.sMat, p.dark); blend(THREE, w.tMat, p.dark); if (w.light) w.light.intensity = p.dark ? 25 : 8; }
+      amb.intensity = p.dark ? 0.25 : 0.9; moon.intensity = p.dark ? 0.6 : 1;
+      scene.fog.color.set(p.dark ? "#050a08" : "#cbd5e1");
+    },
+    dispose() { disposables.forEach((d) => d.dispose()); scene.fog = null; },
+  };
+}
+
+/* ---------- Ringed planet: a banded gas giant, translucent rings and two moons ---------- */
+function saturn(THREE, scene, camera, pal, preview) {
+  const stars = starField(THREE, scene, preview ? 300 : 1200, 60, pal);
+  const group = new THREE.Group();
+  group.rotation.set(0.42, 0, 0.18);
+  group.position.x = 1.5;
+  scene.add(group);
+  const planetGeo = new THREE.SphereGeometry(2.4, 48, 32);
+  const bands = bandTexture(THREE, ["#c9a97a", "#e8d3a6", "#b78d5a", "#f1e2bd", "#caa570", "#e2c48e", "#a67c4e", "#e8d3a6", "#c9a97a", "#d9bf8c"]);
+  const planetMat = new THREE.MeshStandardMaterial({ map: bands, roughness: 0.9 });
+  const planet = new THREE.Mesh(planetGeo, planetMat);
+  group.add(planet);
+  const ringGeo = new THREE.RingGeometry(3.1, 5.4, 128);
+  const ringTex = ringTexture(THREE, 3.1, 5.4, [232, 214, 176]);
+  const ringMat = new THREE.MeshStandardMaterial({ map: ringTex, transparent: true, side: THREE.DoubleSide, roughness: 0.9, depthWrite: false });
+  const rings = new THREE.Mesh(ringGeo, ringMat);
+  rings.rotation.x = -Math.PI / 2;
+  group.add(rings);
+  const RP = preview ? 400 : 1400;
+  const rpos = new Float32Array(RP * 3);
+  for (let i = 0; i < RP; i++) { const rr = rand(3.2, 5.3), ang = rand(0, 6.28); rpos.set([Math.cos(ang) * rr, rand(-0.04, 0.04), Math.sin(ang) * rr], i * 3); }
+  const rpGeo = new THREE.BufferGeometry();
+  rpGeo.setAttribute("position", new THREE.BufferAttribute(rpos, 3));
+  const rpMat = new THREE.PointsMaterial({ color: new THREE.Color("#f5e9cf"), size: 0.045, transparent: true, opacity: 0.8, depthWrite: false });
+  const ringDust = new THREE.Points(rpGeo, rpMat);
+  group.add(ringDust);
+  const moonGeo = new THREE.SphereGeometry(0.22, 16, 12);
+  const moonMat = new THREE.MeshStandardMaterial({ color: new THREE.Color("#d6d3d1"), roughness: 1 });
+  const moons = [{ r: 6.6, speed: 0.35, a: rand(0, 6.28), s: 1 }, { r: 7.9, speed: 0.22, a: rand(0, 6.28), s: 0.7 }].map((m) => {
+    const mesh = new THREE.Mesh(moonGeo, moonMat);
+    mesh.scale.setScalar(m.s);
+    group.add(mesh);
+    return { ...m, mesh };
+  });
+  const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
+  sun.position.set(-8, 4, 6);
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.25 : 0.6);
+  scene.add(sun, amb);
+  camera.position.set(0, 1.5, 11);
+  camera.lookAt(1, 0, 0);
+  return {
+    update(dt, t) {
+      planet.rotation.y += dt * 0.12;
+      ringDust.rotation.y += dt * 0.05;
+      for (const m of moons) { m.a += dt * m.speed; m.mesh.position.set(Math.cos(m.a) * m.r, 0, Math.sin(m.a) * m.r); }
+      camera.position.y = 1.5 + Math.sin(t * 0.2) * 0.4;
+      camera.lookAt(1, 0, 0);
+    },
+    setPalette(p) { stars.setPalette(p); amb.intensity = p.dark ? 0.25 : 0.6; },
+    dispose() { stars.dispose(); [planetGeo, bands, planetMat, ringGeo, ringTex, ringMat, rpGeo, rpMat, moonGeo, moonMat].forEach((d) => d.dispose()); },
+  };
+}
+
+/* ---------- Nebula: layered gas clouds, a dense starfield and a few bright stars ---------- */
+function nebula(THREE, scene, camera, pal, preview) {
+  const stars = starField(THREE, scene, preview ? 400 : 1800, 50, pal, 0.1);
+  const cloud = cloudTexture(THREE);
+  const darkCols = ["#7c3aed", "#db2777", "#0891b2", "#4f46e5", "#be185d", "#0e7490"];
+  const lightCols = ["#a78bfa", "#f472b6", "#67e8f9", "#818cf8", "#f9a8d4", "#5eead4"];
+  const N = preview ? 8 : 16;
+  const planeGeo = new THREE.PlaneGeometry(10, 5);
+  const clouds = [];
+  for (let i = 0; i < N; i++) {
+    const mat = new THREE.MeshBasicMaterial({ map: cloud, color: new THREE.Color((pal.dark ? darkCols : lightCols)[i % 6]), transparent: true, opacity: pal.dark ? 0.35 : 0.45, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    const m = new THREE.Mesh(planeGeo, mat);
+    m.position.set(rand(-10, 10), rand(-6, 6), rand(-12, -2));
+    m.scale.setScalar(rand(1.2, 3.2));
+    m.rotation.z = rand(0, 6.28);
+    scene.add(m);
+    clouds.push({ m, mat, i, rot: rand(-0.05, 0.05), phase: rand(0, 6.28) });
+  }
+  const glow = glowTexture(THREE);
+  const brightCols = ["#ffffff", "#bfdbfe", "#fbcfe8", "#fef3c7"];
+  const bright = [];
+  for (let i = 0; i < (preview ? 4 : 9); i++) {
+    const mat = new THREE.SpriteMaterial({ map: glow, color: new THREE.Color(pal.dark ? brightCols[i % 4] : "#a5b4fc"), transparent: true, opacity: pal.dark ? 0.9 : 0.55, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+    const s = new THREE.Sprite(mat);
+    s.scale.setScalar(rand(0.6, 1.8));
+    s.position.set(rand(-12, 12), rand(-7, 7), rand(-10, -1));
+    scene.add(s);
+    bright.push({ s, mat, phase: rand(0, 6.28), base: s.scale.x });
+  }
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, -5);
+  return {
+    update(dt, t) {
+      for (const c of clouds) { c.m.rotation.z += dt * c.rot; c.mat.opacity = (pal.dark ? 0.35 : 0.45) + Math.sin(t * 0.4 + c.phase) * 0.08; }
+      for (const b of bright) { const k = 0.8 + Math.sin(t * 1.8 + b.phase) * 0.25; b.s.scale.setScalar(b.base * k); }
+      camera.position.set(Math.sin(t * 0.08) * 1.2, Math.cos(t * 0.06) * 0.8, 10);
+      camera.lookAt(0, 0, -5);
+    },
+    setPalette(p) {
+      pal = p;
+      stars.setPalette(p);
+      for (const c of clouds) { c.mat.color.set((p.dark ? darkCols : lightCols)[c.i % 6]); blend(THREE, c.mat, p.dark); }
+      bright.forEach((b, i) => { b.mat.color.set(p.dark ? brightCols[i % 4] : "#a5b4fc"); b.mat.opacity = p.dark ? 0.9 : 0.55; blend(THREE, b.mat, p.dark); });
+    },
+    dispose() { stars.dispose(); cloud.dispose(); planeGeo.dispose(); glow.dispose(); clouds.forEach((c) => c.mat.dispose()); bright.forEach((b) => b.mat.dispose()); },
+  };
+}
+
+/* ---------- Solar system: planets on their orbits around a glowing sun ---------- */
+function orbits(THREE, scene, camera, pal, preview) {
+  const stars = starField(THREE, scene, preview ? 300 : 1000, 70, pal, 0.12);
+  const sys = new THREE.Group();
+  scene.add(sys);
+  const sunGeo = new THREE.SphereGeometry(1.3, 32, 24);
+  const sunMat = new THREE.MeshBasicMaterial({ color: new THREE.Color("#fbbf24") });
+  sys.add(new THREE.Mesh(sunGeo, sunMat));
+  const glow = glowTexture(THREE, "rgba(251,191,36,1)", "rgba(251,146,60,0)");
+  const glowMat = new THREE.SpriteMaterial({ map: glow, transparent: true, opacity: pal.dark ? 0.9 : 0.6, blending: pal.dark ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false });
+  const sunGlow = new THREE.Sprite(glowMat);
+  sunGlow.scale.setScalar(6.5);
+  sys.add(sunGlow);
+  const light = new THREE.PointLight(0xfff1c0, 140, 90);
+  sys.add(light);
+  const amb = new THREE.AmbientLight(0xffffff, pal.dark ? 0.15 : 0.5);
+  scene.add(amb);
+  const PLANETS = [
+    { r: 2.6, size: 0.18, color: "#a3a3a3", speed: 1.6 },
+    { r: 3.5, size: 0.3, color: "#f59e0b", speed: 1.15 },
+    { r: 4.6, size: 0.32, color: "#3b82f6", speed: 0.9, moon: true },
+    { r: 5.7, size: 0.24, color: "#ef4444", speed: 0.7 },
+    { r: 7.4, size: 0.7, color: "#d4a373", speed: 0.42 },
+    { r: 9.2, size: 0.58, color: "#fcd34d", speed: 0.3, ring: true },
+    { r: 10.8, size: 0.4, color: "#67e8f9", speed: 0.22 },
+  ];
+  const sphere = new THREE.SphereGeometry(1, 20, 14);
+  const orbitMat = new THREE.LineBasicMaterial({ color: new THREE.Color(pal.dark ? "#64748b" : "#94a3b8"), transparent: true, opacity: pal.dark ? 0.45 : 0.7 });
+  const moonMat = new THREE.MeshStandardMaterial({ color: new THREE.Color("#d6d3d1"), roughness: 1 });
+  const ringGeo = new THREE.RingGeometry(1.4, 2.2, 48);
+  const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color("#eab308"), transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+  const disposables = [sunGeo, sunMat, glow, glowMat, sphere, orbitMat, moonMat, ringGeo, ringMat];
+  const bodies = [];
+  for (const p of PLANETS) {
+    const pivot = new THREE.Group();
+    pivot.rotation.y = rand(0, 6.28);
+    sys.add(pivot);
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(p.color), roughness: 0.8 });
+    disposables.push(mat);
+    const mesh = new THREE.Mesh(sphere, mat);
+    mesh.scale.setScalar(p.size);
+    mesh.position.x = p.r;
+    pivot.add(mesh);
+    const pts = new THREE.EllipseCurve(0, 0, p.r, p.r, 0, Math.PI * 2, false, 0).getPoints(preview ? 64 : 128).map((v) => new THREE.Vector3(v.x, 0, v.y));
+    const og = new THREE.BufferGeometry().setFromPoints(pts);
+    disposables.push(og);
+    sys.add(new THREE.LineLoop(og, orbitMat));
+    let moonPivot = null;
+    if (p.moon) {
+      moonPivot = new THREE.Group();
+      moonPivot.position.x = p.r;
+      const moon = new THREE.Mesh(sphere, moonMat);
+      moon.scale.setScalar(0.09);
+      moon.position.x = 0.7;
+      moonPivot.add(moon);
+      pivot.add(moonPivot);
+    }
+    if (p.ring) {
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.scale.setScalar(p.size);
+      ring.position.x = p.r;
+      ring.rotation.x = -Math.PI / 2 + 0.4;
+      pivot.add(ring);
+    }
+    bodies.push({ pivot, mesh, moonPivot, speed: p.speed });
+  }
+  camera.position.set(0, 8.5, 14);
+  camera.lookAt(0, 0, 0);
+  return {
+    update(dt, t) {
+      for (const b of bodies) { b.pivot.rotation.y += dt * b.speed * 0.35; b.mesh.rotation.y += dt * 0.8; if (b.moonPivot) b.moonPivot.rotation.y += dt * 2.2; }
+      sys.rotation.y += dt * 0.02;
+      glowMat.opacity = (pal.dark ? 0.9 : 0.6) * (0.9 + Math.sin(t * 1.5) * 0.1);
+    },
+    setPalette(p) {
+      pal = p;
+      stars.setPalette(p);
+      orbitMat.color.set(p.dark ? "#64748b" : "#94a3b8"); orbitMat.opacity = p.dark ? 0.45 : 0.7;
+      amb.intensity = p.dark ? 0.15 : 0.5;
+      blend(THREE, glowMat, p.dark);
+    },
+    dispose() { stars.dispose(); disposables.forEach((d) => d.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
@@ -436,9 +1153,20 @@ export default function ThreeBackground({ style, preview = false }) {
     running.current = animate && !reduce;
   }, [animate, reduce]);
 
+  // Previews (the admin Backgrounds page shows every scene at once) only hold a WebGL context
+  // while they are on screen: browsers allow about 16 live contexts per page.
+  const [visible, setVisible] = useState(!preview);
   useEffect(() => {
     const el = ref.current;
-    if (!el || !BUILDERS[style]) return;
+    if (!preview || !el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "80px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [preview]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !BUILDERS[style] || !visible) return;
     let disposed = false;
     let raf = 0;
     let cleanup = () => {};
@@ -457,7 +1185,16 @@ export default function ThreeBackground({ style, preview = false }) {
       el.appendChild(renderer.domElement);
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 200);
-      const built = BUILDERS[style](THREE, scene, camera, readPalette(), preview);
+      let built;
+      try {
+        built = BUILDERS[style](THREE, scene, camera, readPalette(), preview);
+      } catch (err) {
+        console.error(`Background "${style}" failed to build`, err);
+        renderer.dispose();
+        renderer.domElement.remove();
+        return;
+      }
+      if (process.env.NODE_ENV !== "production" && !preview) window.__bgScene = { style, scene, camera, renderer, built };
       const resize = () => {
         const w = el.clientWidth || 1;
         const h = el.clientHeight || 1;
@@ -482,7 +1219,13 @@ export default function ThreeBackground({ style, preview = false }) {
           return;
         }
         staticDrawn = false;
-        built.update(dt, now / 1000);
+        try {
+          built.update(dt, now / 1000);
+        } catch (err) {
+          console.error(`Background "${style}" failed while animating`, err);
+          cancelAnimationFrame(raf);
+          return;
+        }
         renderer.render(scene, camera);
       };
       raf = requestAnimationFrame(loop);
@@ -499,7 +1242,7 @@ export default function ThreeBackground({ style, preview = false }) {
       disposed = true;
       cleanup();
     };
-  }, [style, preview]);
+  }, [style, preview, visible]);
 
   return <div ref={ref} className="three bg-anim" />;
 }

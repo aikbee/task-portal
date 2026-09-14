@@ -217,7 +217,7 @@ export default function TopBar() {
         icon={Wallpaper}
         onClick={() => setBgOnly(true)}
         aria-label={tr("Show background only")}
-        data-tip={tr("Show background only")}
+        data-tip={`${tr("Show background only")} ⌘⇧.`}
         data-tip-pos="bottom"
       />
       <Button variant="ghost" size="icon" icon={SlidersHorizontal} onClick={togglePrefs} aria-label={tr("Preferences")} data-tip="Preferences ⌘," data-tip-pos="bottom" />
@@ -238,7 +238,7 @@ export default function TopBar() {
           { divider: true },
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
-          { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true) },
+          { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true), hint: "⌘⇧." },
           ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },
           { divider: true },

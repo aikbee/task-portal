@@ -22,6 +22,15 @@ export const BG_STYLES = [
   { value: "island", label: "Island", desc: "3D low-poly island floating on water", three: true },
   { value: "bloodmoon", label: "Blood moon", desc: "3D crimson moon, drifting clouds and embers", three: true },
   { value: "ocean", label: "Ocean", desc: "3D rolling sea under a low sun", three: true },
+  { value: "balloons", label: "Balloons", desc: "3D party balloons floating up", three: true },
+  { value: "hearts", label: "Hearts", desc: "3D glossy hearts bobbing about", three: true },
+  { value: "jellyfish", label: "Jellyfish", desc: "3D glowing jellies pulsing in deep water", three: true },
+  { value: "ghosts", label: "Ghosts", desc: "3D friendly ghosts drifting through mist", three: true },
+  { value: "portal", label: "Portal", desc: "3D arcane vortex pulling in sparks", three: true },
+  { value: "wisps", label: "Wisps", desc: "3D spirit lights over a misty forest", three: true },
+  { value: "saturn", label: "Ringed planet", desc: "3D gas giant with rings and moons", three: true },
+  { value: "nebula", label: "Nebula", desc: "3D star nursery glowing in deep space", three: true },
+  { value: "orbits", label: "Solar system", desc: "3D planets circling a bright sun", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
