@@ -8,6 +8,7 @@ export default function ThemeApplier() {
   const accent = usePrefs((s) => s.accent);
   const radius = usePrefs((s) => s.radius);
   const density = usePrefs((s) => s.density);
+  const tableTheme = usePrefs((s) => s.tableTheme);
   const glass = usePrefs((s) => s.glass);
   const bgAnimate = usePrefs((s) => s.bgAnimate);
   const bgIntensity = usePrefs((s) => s.bgIntensity);
@@ -48,11 +49,12 @@ export default function ThemeApplier() {
     el.style.setProperty("--accent-soft", a.soft);
     el.style.setProperty("--radius", RADII[radius] ?? RADII.md);
     el.dataset.density = density;
+    el.dataset.tableTheme = tableTheme === "modern" ? "modern" : "classic";
     el.dataset.glass = glass ? "on" : "off";
     el.dataset.bgAnimate = bgAnimate ? "on" : "off";
     el.style.setProperty("--bg-intensity", { subtle: "0.45", normal: "0.8", vivid: "1" }[bgIntensity] ?? "0.8");
     el.dataset.motion = reduceMotion ? "reduce" : "normal";
-  }, [accent, radius, density, glass, bgAnimate, bgIntensity, reduceMotion]);
+  }, [accent, radius, density, tableTheme, glass, bgAnimate, bgIntensity, reduceMotion]);
 
   return null;
 }

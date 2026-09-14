@@ -287,6 +287,160 @@ body { -webkit-tap-highlight-color: transparent; }
   text-decoration-color: var(--accent);
 }
 
+/* ---------- table style "Modern" (Preferences → Layout → Table style) ----------
+   Unlayered on purpose so it wins over the Tailwind utilities on the same elements. */
+[data-table-theme="modern"] .dt-root {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 0;
+}
+[data-table-theme="modern"] .dt-toolbar {
+  position: relative;
+  gap: 0.6rem;
+  padding: 0.25rem 0.25rem 0.9rem;
+  border-bottom: 0;
+}
+[data-table-theme="modern"] .dt-toolbar::after {
+  content: "";
+  position: absolute;
+  left: 0.25rem;
+  right: 0.25rem;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 60%, transparent), color-mix(in oklab, var(--accent) 12%, transparent) 55%, transparent);
+}
+[data-table-theme="modern"] .dt-search {
+  max-width: 30rem;
+}
+[data-table-theme="modern"] .dt-search .control {
+  height: 2.75rem;
+  border-radius: 999px;
+  padding-left: 2.9rem;
+  font-size: 0.9rem;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border-color: color-mix(in srgb, var(--line) 85%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.05), 0 10px 28px -18px color-mix(in oklab, var(--accent) 65%, transparent);
+}
+[data-table-theme="modern"] .dt-search .control:focus {
+  border-color: color-mix(in oklab, var(--accent) 60%, var(--line));
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 16%, transparent), 0 14px 34px -14px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .dt-search > svg:first-child {
+  left: 1.05rem;
+  color: var(--accent);
+}
+[data-table-theme="modern"] .dt-search > button {
+  right: 0.9rem;
+}
+[data-table-theme="modern"] .dt-filters .control,
+[data-table-theme="modern"] .dt-btn {
+  height: 2.75rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border-color: color-mix(in srgb, var(--line) 85%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 8px 22px -18px color-mix(in oklab, var(--accent) 60%, transparent);
+}
+[data-table-theme="modern"] .dt-filters .control {
+  padding-left: 0.85rem;
+  padding-right: 1.9rem;
+  font-weight: 500;
+}
+[data-table-theme="modern"] .dt-btn {
+  padding-left: 1rem;
+  padding-right: 1rem;
+  font-size: 0.8rem;
+}
+[data-table-theme="modern"] .dt-btn:hover,
+[data-table-theme="modern"] .dt-filters .control:hover {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent));
+}
+[data-table-theme="modern"] .dt-body {
+  padding: 0.15rem 0.25rem 0.35rem;
+}
+[data-table-theme="modern"] .data-table {
+  border-collapse: separate;
+  border-spacing: 0 0.45rem;
+}
+[data-table-theme="modern"] .data-table thead th {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 0;
+  color: color-mix(in oklab, var(--accent) 65%, var(--fg-muted));
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  padding-top: 0.55rem;
+  padding-bottom: 0.2rem;
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row td {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  padding-top: calc(var(--cell-y) + 4px);
+  padding-bottom: calc(var(--cell-y) + 4px);
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row td:first-child {
+  border-left: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  border-top-left-radius: var(--radius);
+  border-bottom-left-radius: var(--radius);
+  padding-left: calc(var(--cell-x) + 4px);
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row td:last-child {
+  border-right: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  border-top-right-radius: var(--radius);
+  border-bottom-right-radius: var(--radius);
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row:hover td {
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent));
+  border-color: color-mix(in oklab, var(--accent) 38%, var(--line));
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row:hover td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row.is-selected td {
+  background: color-mix(in oklab, var(--accent) 11%, var(--surface));
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+}
+[data-table-theme="modern"] .data-table tbody tr.dt-row.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+[data-glass="off"][data-table-theme="modern"] .dt-search .control,
+[data-glass="off"][data-table-theme="modern"] .dt-filters .control,
+[data-glass="off"][data-table-theme="modern"] .dt-btn,
+[data-glass="off"][data-table-theme="modern"] .data-table tbody tr.dt-row td {
+  background: var(--surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-table-theme="modern"] .dt-footer {
+  border-top: 0;
+  padding: 0.35rem 0.5rem 0.25rem;
+}
+[data-table-theme="modern"] .dt-footer .control {
+  border-radius: 999px;
+  padding-left: 0.8rem;
+}
+[data-table-theme="modern"] .dt-footer button {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+[data-table-theme="modern"] .dt-footer button:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  color: var(--accent);
+}
+
 /* ---------- animations ---------- */
 @keyframes fade-in {
   from { opacity: 0; }

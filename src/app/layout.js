@@ -42,6 +42,7 @@ const bootScript = `
     var el = document.documentElement;
     el.dataset.theme = theme;
     el.dataset.density = p.density || 'comfortable';
+    el.dataset.tableTheme = p.tableTheme === 'modern' ? 'modern' : 'classic';
     el.dataset.glass = p.glass === false ? 'off' : 'on';
     el.dataset.locked = locked ? 'true' : 'false';
     var accents = ${JSON.stringify(

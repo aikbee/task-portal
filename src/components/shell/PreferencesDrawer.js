@@ -1,5 +1,5 @@
 "use client";
-import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper, Lollipop, Heart, Fish, Ghost, Aperture, Flame, Eclipse } from "lucide-react";
+import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper, Lollipop, Heart, Fish, Ghost, Aperture, Flame, Eclipse, Table2 } from "lucide-react";
 import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
@@ -168,6 +168,17 @@ export default function PreferencesDrawer() {
               options={[
                 { value: "comfortable", label: tr("Comfortable"), icon: LayoutGrid },
                 { value: "compact", label: tr("Compact"), icon: Rows3 },
+              ]}
+              className="w-full"
+            />
+          </Field>
+          <Field label={tr("Table style")} hint={tr(prefs.tableTheme === "modern" ? "Floating rows, pill filters and a bigger search field" : "Compact bordered rows with the search and filters in one bar")}>
+            <Segmented
+              value={prefs.tableTheme === "modern" ? "modern" : "classic"}
+              onChange={(v) => prefs.set({ tableTheme: v })}
+              options={[
+                { value: "classic", label: tr("Classic"), icon: Table2 },
+                { value: "modern", label: tr("Modern"), icon: Sparkles },
               ]}
               className="w-full"
             />

@@ -258,10 +258,10 @@ export default function DataTable({
   const colSpan = visibleColumns.length + (selectable ? 1 : 0) + (rowActions ? 1 : 0);
 
   return (
-    <div className={cn("card overflow-hidden p-0", className)}>
+    <div className={cn("dt-root card overflow-hidden p-0", className)}>
       {/* toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
-        <div className="relative min-w-[200px] flex-1 max-w-sm">
+      <div className="dt-toolbar flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
+        <div className="dt-search relative min-w-[200px] flex-1 max-w-sm">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
           <input
             value={query}
@@ -275,13 +275,13 @@ export default function DataTable({
             </button>
           ) : null}
         </div>
-        {filters}
+        {filters ? <div className="dt-filters contents">{filters}</div> : null}
         {dateFields?.length ? (
           <Popover
             width="w-80"
             align="start"
             trigger={({ toggle, open }) => (
-              <Button variant={dateActive ? "subtle" : open ? "secondary" : "outline"} size="sm" icon={CalendarRange} onClick={toggle}>
+              <Button variant={dateActive ? "subtle" : open ? "secondary" : "outline"} size="sm" icon={CalendarRange} onClick={toggle} className="dt-btn">
                 {dateSummary}
                 {dateActive ? (
                   <span
@@ -341,7 +341,7 @@ export default function DataTable({
             </div>
           </Popover>
         ) : null}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="dt-actions ml-auto flex items-center gap-2">
           {selectable && selectedIds.length > 0 ? (
             <div className="flex items-center gap-2 rounded-app-sm bg-accent/10 px-2 py-1 text-xs font-medium text-accent anim-pop">
               {selectedIds.length} selected
@@ -356,13 +356,13 @@ export default function DataTable({
             </div>
           ) : null}
           {toolbar}
-          <Button variant="outline" size="sm" icon={Download} onClick={exportCsv} title={tr("Export the visible columns as CSV")}>
+          <Button variant="outline" size="sm" icon={Download} onClick={exportCsv} title={tr("Export the visible columns as CSV")} className="dt-btn">
             <span className="hidden sm:inline">{tr("Export")}</span>
           </Button>
           <Popover
             width="w-80"
             trigger={({ toggle, open }) => (
-              <Button variant={open ? "secondary" : "outline"} size="sm" icon={Columns3} onClick={toggle}>
+              <Button variant={open ? "secondary" : "outline"} size="sm" icon={Columns3} onClick={toggle} className="dt-btn">
                 {tr("Columns")}
                 <span className="rounded-full bg-surface-3 px-1.5 text-[10px] text-fg-muted">
                   {visibleColumns.length}/{columns.length}
@@ -438,7 +438,7 @@ export default function DataTable({
       </div>
 
       {/* table */}
-      <div ref={bodyRef} className="relative min-h-[200px] w-full overflow-auto">
+      <div ref={bodyRef} className="dt-body relative min-h-[200px] w-full overflow-auto">
         <table className={cn("data-table w-full min-w-max border-collapse text-sm", dense && "text-xs")}>
           <thead>
             <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
@@ -517,9 +517,9 @@ export default function DataTable({
                     key={rid ?? i}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     className={cn(
-                      "border-b border-line/70 transition-colors last:border-0",
+                      "dt-row border-b border-line/70 transition-colors last:border-0",
                       onRowClick && "cursor-pointer",
-                      isSel ? "bg-accent/6" : "hover:bg-surface-2/70"
+                      isSel ? "is-selected bg-accent/6" : "hover:bg-surface-2/70"
                     )}
                   >
                     {selectable ? (
@@ -549,7 +549,7 @@ export default function DataTable({
       </div>
 
       {/* footer / pagination */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-3 py-2 text-xs text-fg-muted">
+      <div className="dt-footer flex flex-wrap items-center justify-between gap-3 border-t border-line px-3 py-2 text-xs text-fg-muted">
         <div className="flex items-center gap-3">
           <span>
             {total === 0 ? tr("0 rows") : tr("{from}–{to} of {total}", { from, to, total })}

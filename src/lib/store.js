@@ -24,6 +24,7 @@ export const DEFAULT_PREFS = {
   bgIntensity: "normal", // subtle | normal | vivid
   glass: true,
   density: "comfortable", // comfortable | compact
+  tableTheme: "classic", // classic | modern — look of list tables and their search / filter bar
   radius: "md",
   sidebarCollapsed: false,
   pageSize: 10,
