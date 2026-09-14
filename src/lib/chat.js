@@ -208,6 +208,13 @@ export async function conversationFor(conversationId, userId) {
   return c;
 }
 export const recipientsOf = (convo, me) => convo.members.map((m) => m.id).filter((id) => id !== me);
+/** Member ids of a conversation the user belongs to (one query; 404 otherwise). */
+export async function memberIdsOf(conversationId, userId) {
+  const rows = await query("SELECT user_id FROM conversation_members WHERE conversation_id = ?", [conversationId]);
+  const ids = rows.map((r) => r.user_id);
+  if (!ids.includes(userId)) throw new HttpError("Conversation not found.", 404);
+  return ids;
+}
 /** Send a live event to every member (optionally skipping one). */
 export function broadcast(convo, event, { except = null } = {}) {
   for (const m of convo.members) if (m.id !== except) publish(m.id, event);

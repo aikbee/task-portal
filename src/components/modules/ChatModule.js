@@ -57,6 +57,22 @@ function systemText(m, tr) {
   }
 }
 const isGroup = (c) => c?.kind === "group";
+const TYPING_TTL = 6000; // a typer is forgotten after this unless they ping again
+/** "Ann is typing" / "Ann and Bob are typing" / "3 people are typing". */
+function typingText(typers, tr) {
+  const names = typers.map((t) => t.name);
+  if (!names.length) return "";
+  if (names.length === 1) return tr("{name} is typing", { name: names[0] });
+  if (names.length === 2) return tr("{a} and {b} are typing", { a: names[0], b: names[1] });
+  return tr("{n} people are typing", { n: names.length });
+}
+const Dots = () => (
+  <span className="chat-dots" aria-hidden="true">
+    <i />
+    <i />
+    <i />
+  </span>
+);
 const memberCount = (n, tr) => (n === 1 ? tr("1 member") : tr("{n} members", { n }));
 /** Avatar for a conversation row: the person, or a coloured group badge. */
 function ConvoAvatar({ convo, size = "md" }) {
@@ -85,6 +101,7 @@ export default function ChatModule() {
   const [threads, setThreads] = useState({});
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
   const [newGroup, setNewGroup] = useState(false);
+  const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
   const activeRef = useRef(active);
   const toastRef = useRef(toast);
   useEffect(() => {
@@ -135,6 +152,26 @@ export default function ChatModule() {
     setCounts({ ...(useUI.getState().counts ?? {}), chat: n || null });
   }, [convos, friends, setCounts]);
 
+  // typers who stop pinging fade out after TYPING_TTL
+  const anyTyping = Object.values(typing).some((m) => Object.keys(m).length > 0);
+  useEffect(() => {
+    if (!anyTyping) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      setTyping((t) => {
+        let changed = false;
+        const next = {};
+        for (const [cid, users] of Object.entries(t)) {
+          const keep = Object.fromEntries(Object.entries(users).filter(([, u]) => u.until > now));
+          if (Object.keys(keep).length !== Object.keys(users).length) changed = true;
+          if (Object.keys(keep).length) next[cid] = keep;
+        }
+        return changed ? next : t;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [anyTyping]);
+
   // opening a thread loads it and marks it read
   useEffect(() => {
     if (!active) return;
@@ -176,8 +213,21 @@ export default function ChatModule() {
         if (activeRef.current) loadThread(activeRef.current);
       }, 5000);
     };
+    const onTyping = (ev) => {
+      if (ev.user_id === user?.id) return;
+      setTyping((t) => {
+        const cur = { ...(t[ev.conversation_id] ?? {}) };
+        if (ev.typing) cur[ev.user_id] = { name: ev.name, avatar_color: ev.avatar_color, until: Date.now() + TYPING_TTL };
+        else delete cur[ev.user_id];
+        const next = { ...t };
+        if (Object.keys(cur).length) next[ev.conversation_id] = cur;
+        else delete next[ev.conversation_id];
+        return next;
+      });
+    };
     const onMessage = (ev) => {
       const { conversation_id, message } = ev;
+      onTyping({ conversation_id, user_id: message.sender_id, typing: false });
       setThreads((t) => {
         const list = t[conversation_id];
         if (!list || list.some((m) => m.id === message.id)) return t;
@@ -210,6 +260,7 @@ export default function ChatModule() {
       es.addEventListener("message", (e) => onMessage(JSON.parse(e.data)));
       es.addEventListener("read", (e) => onRead(JSON.parse(e.data)));
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
+      es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
       es.addEventListener("friends", () => {
         loadFriends();
         loadConvos();
@@ -262,7 +313,7 @@ export default function ChatModule() {
             <TabButton active={tab === "friends"} icon={Users} label={tr("Friends")} count={pendingIn} onClick={() => setTab("friends")} />
           </div>
           {tab === "chats" ? (
-            <ConversationList tr={tr} me={user} convos={convos} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} onNewGroup={() => setNewGroup(true)} />
+            <ConversationList tr={tr} me={user} convos={convos} typing={typing} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} onNewGroup={() => setNewGroup(true)} />
           ) : (
             <FriendsPanel tr={tr} toast={toast} data={friends} reload={loadFriends} onMessage={openWith} onSendRequest={sendRequest} />
           )}
@@ -287,6 +338,7 @@ export default function ChatModule() {
                 setThreads((t) => ({ ...t, [active]: [...older, ...(t[active] ?? [])] }));
               }}
               friends={friends?.friends ?? []}
+              typers={Object.values(typing[active] ?? {})}
               onConvoChange={upsertConvo}
               onLeft={(id) => {
                 setConvos((list) => (list ?? []).filter((c) => c.id !== id));
@@ -357,9 +409,18 @@ function TabButton({ active, icon: Icon, label, count, onClick }) {
   );
 }
 
-function ConversationList({ tr, me, convos, active, onOpen, onFindFriends, onNewGroup }) {
+function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriends, onNewGroup }) {
   if (!convos) return <div className="grid flex-1 place-items-center"><Spinner className="text-fg-muted" /></div>;
   const preview = (c) => {
+    const typers = Object.values(typing?.[c.id] ?? {});
+    if (typers.length) {
+      return (
+        <span className="chat-typing-preview flex items-center text-accent">
+          {isGroup(c) ? typingText(typers, tr) : tr("typing")}
+          <Dots />
+        </span>
+      );
+    }
     if (!c.last_id) return tr("No messages yet");
     if (c.last_kind === "system") return systemText({ body: c.last_body, sender_name: c.last_sender_name }, tr);
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
@@ -621,7 +682,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -630,6 +691,31 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
   const group = isGroup(convo);
+  // "typing" pings: at most one every 2.5 s while the draft changes, "stopped" after 4 s of quiet or when leaving
+  const typingRef = useRef({ on: false, sentAt: 0, timer: null, id: convo.id });
+  const signalTyping = (on) => {
+    const st = typingRef.current;
+    st.on = on;
+    st.sentAt = Date.now();
+    fetch(`/api/chat/conversations/${st.id}/typing`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ typing: on }), keepalive: true }).catch(() => {});
+  };
+  const onDraftChange = (value) => {
+    setDraft(value);
+    const st = typingRef.current;
+    clearTimeout(st.timer);
+    if (value.trim()) {
+      if (!st.on || Date.now() - st.sentAt > 2500) signalTyping(true);
+      st.timer = setTimeout(() => signalTyping(false), 4000);
+    } else if (st.on) signalTyping(false);
+  };
+  useEffect(() => {
+    const st = typingRef.current;
+    st.id = convo.id;
+    return () => {
+      clearTimeout(st.timer);
+      if (st.on) signalTyping(false);
+    };
+  }, [convo.id]);
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
@@ -691,6 +777,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       setDraft("");
       pending.forEach((p) => URL.revokeObjectURL(p.url));
       setPending([]);
+      clearTimeout(typingRef.current.timer);
+      typingRef.current.on = false; // the message itself tells the others we stopped
       onSent(m);
     } catch (e) {
       toast.error(tr("Could not send"), e.message);
@@ -826,6 +914,19 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             </div>
           )}
         </div>
+        <div className="chat-typing flex min-h-6 items-center gap-1.5 px-4 text-[11px] text-fg-muted" aria-live="polite">
+          {typers.length ? (
+            <>
+              <span className="flex -space-x-1.5">
+                {typers.slice(0, 3).map((t) => (
+                  <Avatar key={t.name} name={t.name} color={t.avatar_color} size="xs" ring />
+                ))}
+              </span>
+              <span>{typingText(typers, tr)}</span>
+              <Dots />
+            </>
+          ) : null}
+        </div>
         <div className="chat-composer border-t border-line p-3">
           {canChat ? (
             <div className="mx-auto max-w-3xl">
@@ -858,7 +959,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 <Button variant="ghost" size="icon" icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
                 <textarea
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => onDraftChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();

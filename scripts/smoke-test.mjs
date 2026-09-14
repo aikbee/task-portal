@@ -907,14 +907,30 @@ console.log("chat (friends by code, one-to-one messages)");
   try {
     const res = await fetch(`${BASE}/api/chat/stream`, { headers: { cookie: Object.entries(userJar).map(([k, v]) => `${k}=${v}`).join("; ") }, signal: ctrl.signal });
     const reader = res.body.getReader();
+    const dec = new TextDecoder();
     const { value } = await reader.read();
-    check("GET /api/chat/stream is an event stream that says hello", res.headers.get("content-type")?.includes("text/event-stream") && new TextDecoder().decode(value).includes("event: hello"));
+    let buf = dec.decode(value);
+    check("GET /api/chat/stream is an event stream that says hello", res.headers.get("content-type")?.includes("text/event-stream") && buf.includes("event: hello"));
+    // typing pings from the other side arrive on this stream
+    const typed = await as(adminJar, () => call("POST", `/api/chat/conversations/${convoId}/typing`, { body: { typing: true } }));
+    check("POST /api/chat/conversations/:id/typing -> 200", typed.status === 200 && typed.data.typing === true);
+    const deadline = Date.now() + 4000;
+    while (!/event: typing/.test(buf) && Date.now() < deadline) {
+      const r = await Promise.race([reader.read(), new Promise((resolve) => setTimeout(() => resolve({ done: true }), Math.max(0, deadline - Date.now())))]);
+      if (r.done) break;
+      buf += dec.decode(r.value);
+    }
+    const typingLine = buf.split("\n").find((l) => l.startsWith("data:") && /"type":"typing"/.test(l));
+    const typingEv = typingLine ? JSON.parse(typingLine.slice(5)) : null;
+    check("typing events reach the other member's stream with the typer's name", typingEv?.typing === true && typingEv?.user_id === adminId && typingEv?.name === "Admin User" && typingEv?.conversation_id === convoId, buf.slice(0, 300));
     ctrl.abort();
   } catch (e) {
     check("GET /api/chat/stream is an event stream that says hello", false, e.message);
   } finally {
     clearTimeout(timer);
   }
+  const typingElsewhere = await as(userJar, () => call("POST", "/api/chat/conversations/999999/typing", { body: { typing: true } }));
+  check("typing in a conversation you are not in -> 404", typingElsewhere.status === 404);
   const anonStream = await fetch(`${BASE}/api/chat/stream`);
   check("stream requires a session", anonStream.status === 401);
   await anonStream.body?.cancel();
