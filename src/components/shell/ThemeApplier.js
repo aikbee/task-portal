@@ -12,6 +12,8 @@ export default function ThemeApplier() {
   const bgAnimate = usePrefs((s) => s.bgAnimate);
   const bgIntensity = usePrefs((s) => s.bgIntensity);
   const reduceMotion = usePrefs((s) => s.reduceMotion);
+  const lockTheme = usePrefs((s) => s.lockTheme);
+  const locked = usePrefs((s) => s.locked && Boolean(s.pinHash));
 
   // keep split-view panes and other tabs in sync with preference changes
   useEffect(() => {
@@ -22,18 +24,21 @@ export default function ThemeApplier() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  // While locked the page follows the lock-screen appearance, so the animated background behind
+  // the lock overlay uses the same palette (the boot script does the same before hydration).
+  const effective = locked && lockTheme && lockTheme !== "system" ? lockTheme : theme;
   useEffect(() => {
     const el = document.documentElement;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
-      el.dataset.theme = theme === "system" ? (mq.matches ? "dark" : "light") : theme;
+      el.dataset.theme = effective === "system" ? (mq.matches ? "dark" : "light") : effective;
     };
     apply();
-    if (theme === "system") {
+    if (effective === "system") {
       mq.addEventListener("change", apply);
       return () => mq.removeEventListener("change", apply);
     }
-  }, [theme]);
+  }, [effective]);
 
   useEffect(() => {
     const el = document.documentElement;

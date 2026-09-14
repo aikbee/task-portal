@@ -1,12 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Lock, Delete, Unlock, LogOut } from "lucide-react";
+import { Lock, Delete, Unlock, LogOut, Wallpaper } from "lucide-react";
 import Logo from "@/components/ui/Logo";
 import { useAuth } from "@/lib/auth-context";
 import { api } from "@/lib/api";
 import Avatar from "@/components/ui/Avatar";
-import { usePrefs } from "@/lib/store";
+import { usePrefs, useUI } from "@/lib/store";
 import { hashPin } from "@/lib/pin";
 import { cn } from "@/lib/utils";
 import { useMounted } from "@/lib/hooks";
@@ -101,6 +101,7 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
   const tr = useT();
   const { user, logout, setUser } = useAuth();
   const lockTheme = usePrefs((s) => s.lockTheme);
+  const setBgOnly = useUI((s) => s.setBgOnly);
   const [signingOut, setSigningOut] = useState(false);
   const [pin, setPin] = useState("");
   const [error, setError] = useState(null);
@@ -190,14 +191,18 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
     <div
       data-lock-screen
       data-theme={lockTheme === "system" ? undefined : lockTheme}
-      className="fixed inset-0 z-[300] flex flex-col items-center justify-center bg-bg/90 p-4 text-fg backdrop-blur-2xl"
+      className="fixed inset-0 z-[300] flex flex-col items-center justify-center p-4 text-fg"
       role="dialog"
       aria-modal="true"
       aria-label="Screen locked"
     >
+      {/* the animated background shows through; the scrim and the content are separate layers so the
+          background-only view can fade both away and bring them back (see BackgroundOnly.js) */}
+      <div className="lock-scrim" aria-hidden />
+      <div className="relative flex w-full flex-col items-center">
       <div className="mb-8 text-center anim-rise">
-        <p className="text-5xl font-semibold tracking-tight tabular-nums">{date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</p>
-        <p className="mt-1 text-sm text-fg-muted">{date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</p>
+        <p className="lock-clock text-5xl font-semibold tracking-tight tabular-nums">{date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</p>
+        <p className="lock-clock mt-1 text-sm text-fg-muted">{date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</p>
       </div>
 
       <div className="glass w-[340px] max-w-full rounded-app-lg p-7 text-center shadow-app-lg anim-pop">
@@ -262,19 +267,30 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
       </div>
 
       <div className="mt-6 flex flex-col items-center gap-3 anim-fade">
-        <button
-          onClick={async () => {
-            setSigningOut(true);
-            await logout();
-          }}
-          disabled={signingOut}
-          className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/70 px-4 py-2 text-xs font-medium text-fg-muted transition hover:border-rose-500/40 hover:text-rose-500 disabled:opacity-60"
-        >
-          <LogOut size={13} /> {signingOut ? tr("Signing out…") : user ? tr("Not {name}? Sign out", { name: user.name.split(" ")[0] }) : tr("Sign out")}
-        </button>
-        <p className="flex items-center gap-2 text-xs text-fg-faint">
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            onClick={() => setBgOnly(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/70 px-4 py-2 text-xs font-medium text-fg-muted transition hover:border-accent/50 hover:text-accent"
+            data-tip={tr("Click anywhere or press any key to return")}
+            data-tip-pos="top"
+          >
+            <Wallpaper size={13} /> {tr("Show background only")}
+          </button>
+          <button
+            onClick={async () => {
+              setSigningOut(true);
+              await logout();
+            }}
+            disabled={signingOut}
+            className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/70 px-4 py-2 text-xs font-medium text-fg-muted transition hover:border-rose-500/40 hover:text-rose-500 disabled:opacity-60"
+          >
+            <LogOut size={13} /> {signingOut ? tr("Signing out…") : user ? tr("Not {name}? Sign out", { name: user.name.split(" ")[0] }) : tr("Sign out")}
+          </button>
+        </div>
+        <p className="lock-clock flex items-center gap-2 text-xs text-fg-faint">
           <Logo size={14} className="rounded-[3px]" /> Task Portal · type the PIN or use the keypad
         </p>
+      </div>
       </div>
     </div>
   );

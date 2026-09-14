@@ -11,6 +11,7 @@ import WorkspaceBanner from "./WorkspaceBanner";
 import BottomBar from "./BottomBar";
 import PreferencesDrawer from "./PreferencesDrawer";
 import LockScreen from "./LockScreen";
+import BackgroundOnly from "./BackgroundOnly";
 import SplitView from "./SplitView";
 import ToolWorkspace from "./ToolWorkspace";
 import TimerEngine from "./TimerEngine";
@@ -71,7 +72,7 @@ export default function AppShell({ user, children }) {
       <ThemeApplier />
       <AnimatedBackground />
       {locked ? null : (
-        <div className="app-shell relative z-10 flex h-dvh overflow-hidden" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div className="app-shell relative z-10 flex h-dvh overflow-clip" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           <Sidebar />
           <div className="flex min-w-0 flex-1 flex-col">
             <TopBar />
@@ -86,6 +87,7 @@ export default function AppShell({ user, children }) {
       {locked ? null : <ToolWorkspace />}
       <TimerEngine />
       <LockScreen />
+      <BackgroundOnly />
     </ToastProvider>
     </AuthProvider>
   );

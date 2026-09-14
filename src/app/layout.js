@@ -36,13 +36,14 @@ const bootScript = `
   try {
     var raw = localStorage.getItem('admin-portal-prefs');
     var p = raw ? (JSON.parse(raw).state || {}) : {};
-    var theme = p.theme || 'system';
+    var locked = Boolean(p.locked && p.pinHash && location.pathname !== '/login');
+    var theme = locked && p.lockTheme && p.lockTheme !== 'system' ? p.lockTheme : (p.theme || 'system');
     if (theme === 'system') theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     var el = document.documentElement;
     el.dataset.theme = theme;
     el.dataset.density = p.density || 'comfortable';
     el.dataset.glass = p.glass === false ? 'off' : 'on';
-    el.dataset.locked = p.locked && p.pinHash && location.pathname !== '/login' ? 'true' : 'false';
+    el.dataset.locked = locked ? 'true' : 'false';
     var accents = ${JSON.stringify(
       Object.fromEntries(
         Object.entries({

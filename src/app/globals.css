@@ -476,14 +476,39 @@ body { -webkit-tap-highlight-color: transparent; }
 
 /* lock screen: hide every layer (app, drawers, modals, toasts) except the lock overlay and the
    animated background. data-locked is set by the boot script before hydration and by LockScreen. */
-[data-locked="true"] body > *:not([data-lock-screen]),
-[data-locked="true"] body > *:not([data-lock-screen]) * {
+[data-locked="true"] body > *:not([data-lock-screen]):not([data-bg-keep]):not(.bg-layer),
+[data-locked="true"] body > *:not([data-lock-screen]):not([data-bg-keep]):not(.bg-layer) * {
   visibility: hidden !important;
   transition: none !important; /* elements with transition-all would otherwise linger visible */
 }
-html[data-locked="true"] body .bg-layer,
-html[data-locked="true"] body .bg-layer * {
-  visibility: visible !important;
+/* the lock screen sits on the animated background: a soft vignette keeps the clock and keypad legible */
+[data-lock-screen] .lock-scrim {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 95% at 50% 42%, color-mix(in oklab, var(--bg) 42%, transparent) 0%, color-mix(in oklab, var(--bg) 82%, transparent) 100%);
+}
+[data-lock-screen] .lock-clock {
+  text-shadow: 0 2px 22px color-mix(in oklab, var(--bg) 85%, transparent), 0 0 2px color-mix(in oklab, var(--bg) 60%, transparent);
+}
+
+/* background-only view (BackgroundOnly.js): every layer except the background and the click catcher
+   is hidden. The fade out / fade in is played with the Web Animations API so no element's own
+   transitions or entry animations are touched; this rule only holds the hidden state. */
+[data-bg-only="true"] body > *:not(.bg-layer):not([data-lock-screen]):not([data-bg-keep]),
+[data-bg-only="true"] [data-lock-screen] > *:not([data-bg-keep]) {
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes bg-only-hint {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.bg-only-hint {
+  position: absolute;
+  left: 50%;
+  bottom: max(28px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  animation: bg-only-hint 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 1.4s both;
 }
 @keyframes shake {
   10%, 90% { transform: translateX(-1px); }

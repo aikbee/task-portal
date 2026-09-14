@@ -1,5 +1,5 @@
 "use client";
-import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat } from "lucide-react";
+import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper } from "lucide-react";
 import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
@@ -19,6 +19,7 @@ export default function PreferencesDrawer() {
   const tr = useT();
   const open = useUI((s) => s.prefsOpen);
   const setOpen = useUI((s) => s.setPrefsOpen);
+  const setBgOnly = useUI((s) => s.setBgOnly);
   const prefs = usePrefs();
   const toast = useToast();
   const locale = useLocale();
@@ -140,6 +141,19 @@ export default function PreferencesDrawer() {
               {tr("Shuffle")}
             </Button>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={Wallpaper}
+            className="w-full"
+            onClick={() => {
+              setOpen(false);
+              setBgOnly(true);
+            }}
+          >
+            {tr("Show background only")}
+          </Button>
+          <p className="-mt-1 text-[11px] text-fg-muted">{tr("Hides everything except the background; click or press any key to return.")}</p>
           <Toggle checked={prefs.bgAnimate} onChange={(v) => prefs.set({ bgAnimate: v })} label={tr("Animate background")} description={tr("Pause to save battery")} />
           <Toggle checked={prefs.reduceMotion} onChange={(v) => prefs.set({ reduceMotion: v })} label={tr("Reduce motion")} description={tr("Disable UI transitions")} />
         </Section>

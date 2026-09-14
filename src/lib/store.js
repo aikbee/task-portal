@@ -151,12 +151,14 @@ export const useUI = create((set, get) => ({
   calc: { expr: "", history: [] }, // calculator state shared by the popover and the workspace
   bgSettings: null, // admin background settings ({ enabled, default, locked }), loaded by AnimatedBackground
   installPrompt: null, // deferred `beforeinstallprompt` event, when the browser offers PWA install
+  bgOnly: false, // background-only view: everything else is hidden until the user clicks or presses a key
 
   setMobileNav: (v) => set({ mobileNav: v }),
   setBgSettings: (v) => set({ bgSettings: v }),
   setCalc: (patch) => set({ calc: { ...get().calc, ...(typeof patch === "function" ? patch(get().calc) : patch) } }),
   toggleMobileNav: () => set({ mobileNav: !get().mobileNav }),
   setInstallPrompt: (e) => set({ installPrompt: e }),
+  setBgOnly: (v) => set({ bgOnly: v }),
   setPrefsOpen: (v) => set({ prefsOpen: v }),
   togglePrefs: () => set({ prefsOpen: !get().prefsOpen }),
   setActiveTool: (t) => set({ activeTool: t }),

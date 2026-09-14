@@ -9,7 +9,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush, Wallpaper,
 } from "lucide-react";
 import { moduleFromPath, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
@@ -39,6 +39,7 @@ export default function TopBar() {
   };
   const theme = usePrefs((s) => s.theme);
   const setPrefs = usePrefs((s) => s.set);
+  const setBgOnly = useUI((s) => s.setBgOnly);
   const pageMeta = useUI((s) => s.pageMeta);
   const togglePrefs = useUI((s) => s.togglePrefs);
   const { user, logout, isAdmin } = useAuth();
@@ -209,6 +210,16 @@ export default function TopBar() {
         data-tip={`Theme: ${mounted ? theme : "system"}`}
         data-tip-pos="bottom"
       />
+      <Button
+        className="hidden lg:inline-flex"
+        variant="ghost"
+        size="icon"
+        icon={Wallpaper}
+        onClick={() => setBgOnly(true)}
+        aria-label={tr("Show background only")}
+        data-tip={tr("Show background only")}
+        data-tip-pos="bottom"
+      />
       <Button variant="ghost" size="icon" icon={SlidersHorizontal} onClick={togglePrefs} aria-label={tr("Preferences")} data-tip="Preferences ⌘," data-tip-pos="bottom" />
 
       <DropdownMenu
@@ -227,6 +238,7 @@ export default function TopBar() {
           { divider: true },
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
+          { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true) },
           ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },
           { divider: true },
