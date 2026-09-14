@@ -99,7 +99,7 @@ export default function PinSettings() {
 
   return (
     <div className="space-y-3.5">
-      <div className="flex items-center justify-between rounded-app border border-line bg-surface-2 px-3 py-2.5">
+      <div className="pref-tile flex items-center justify-between rounded-app border border-line bg-surface-2 px-3 py-2.5">
         <span className="flex items-center gap-2.5 text-sm">
           <span className={`grid h-8 w-8 place-items-center rounded-app-sm ${hasPin ? "bg-emerald-500/12 text-emerald-500" : "bg-surface-3 text-fg-muted"}`}>
             {hasPin ? <ShieldCheck size={16} /> : <KeyRound size={16} />}
@@ -122,7 +122,7 @@ export default function PinSettings() {
       </div>
 
       {mode ? (
-        <form onSubmit={save} className="space-y-3 rounded-app border border-accent/30 bg-accent/5 p-3 anim-pop">
+        <form onSubmit={save} className="pref-form space-y-3 rounded-app border border-accent/30 bg-accent/5 p-3 anim-pop">
           <p className="text-xs font-semibold">{mode === "set" ? "Create a PIN" : mode === "change" ? "Change PIN" : "Remove PIN"}</p>
           {mode !== "set" ? <Field label={tr("Current PIN")}>{pinInput(current, setCurrent, "••••", true)}</Field> : null}
           {mode !== "remove" ? (

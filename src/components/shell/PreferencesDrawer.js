@@ -89,7 +89,7 @@ export default function PreferencesDrawer() {
 
         <Section title={tr("Background")} icon={Waves}>
           {bg.locked ? (
-            <p className="flex items-start gap-2 rounded-app border border-line bg-surface-2/60 p-3 text-xs text-fg-muted"><ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" /> {tr("Your administrator has set the background for everyone.")}</p>
+            <p className="pref-note flex items-start gap-2 rounded-app border border-line bg-surface-2/60 p-3 text-xs text-fg-muted"><ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" /> {tr("Your administrator has set the background for everyone.")}</p>
           ) : null}
           <div className={cn("grid grid-cols-2 gap-2", bg.locked && "hidden")}>
             {bgChoices.map((b) => {
@@ -101,8 +101,8 @@ export default function PreferencesDrawer() {
                   type="button"
                   onClick={() => prefs.set({ bgStyle: b.value })}
                   className={cn(
-                    "flex items-start gap-2.5 rounded-app border p-3 text-left transition",
-                    active ? "border-accent bg-accent/8 ring-1 ring-accent/40" : "border-line hover:bg-surface-2"
+                    "pref-choice flex items-start gap-2.5 rounded-app border p-3 text-left transition",
+                    active ? "is-active border-accent bg-accent/8 ring-1 ring-accent/40" : "border-line hover:bg-surface-2"
                   )}
                 >
                   <Icon size={16} className={active ? "text-accent" : "text-fg-muted"} />
@@ -290,9 +290,9 @@ export default function PreferencesDrawer() {
 
 function Section({ title, icon: Icon, children }) {
   return (
-    <section className="space-y-3.5">
-      <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
-        {Icon ? <Icon size={13} /> : null}
+    <section className="pref-section space-y-3.5">
+      <h3 className="pref-title flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+        {Icon ? <span className="pref-title-icon inline-grid place-items-center"><Icon size={13} /></span> : null}
         {title}
       </h3>
       {children}

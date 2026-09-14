@@ -41,9 +41,9 @@ export function Kbd({ children, className }) {
 }
 
 export function Divider({ className, label }) {
-  if (!label) return <div className={cn("h-px w-full bg-line", className)} />;
+  if (!label) return <div className={cn("ui-divider h-px w-full bg-line", className)} />;
   return (
-    <div className={cn("flex items-center gap-3 text-[11px] uppercase tracking-wider text-fg-faint", className)}>
+    <div className={cn("ui-divider flex items-center gap-3 text-[11px] uppercase tracking-wider text-fg-faint", className)}>
       <span className="h-px flex-1 bg-line" />
       {label}
       <span className="h-px flex-1 bg-line" />
