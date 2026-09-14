@@ -559,12 +559,21 @@ const adminJar = { ...jar };
   userId = r.data?.id;
   const upd = await call("PUT", `/api/users/${userId}`, { body: { name: "Smoke User 2", avatar_color: "#10b981" } });
   check("PUT /api/users/:id", upd.data?.name === "Smoke User 2");
+  check("user rows carry sign-in method fields", upd.data?.passkey_count === 0 && !upd.data?.has_google);
+  const rmPk = await call("DELETE", `/api/users/${userId}/passkeys`);
+  check("admin removes passkeys (none yet) -> 200", rmPk.status === 200 && rmPk.data?.passkey_count === 0);
+  const rmG = await call("DELETE", `/api/users/${userId}/google`);
+  check("admin unlinks Google (not linked) -> 200", rmG.status === 200 && !rmG.data?.has_google);
+  const nf = await call("DELETE", "/api/users/999999/passkeys");
+  check("remove passkeys of an unknown user -> 404", nf.status === 404);
   // sign in as the new user in a separate cookie jar
   jar = {};
   const login = await call("POST", "/api/auth/login", { body: { email: `smoke.user.${suffix.toLowerCase()}@example.com`, password: "smoke123" }, noAuth: true });
   check("new user can log in", login.status === 200 && Boolean(jar.ap_session));
   const forbidden = await call("GET", "/api/users");
   check("role user -> 403 on /api/users", forbidden.status === 403);
+  const noAdmin = await call("DELETE", `/api/users/${userId}/passkeys`);
+  check("role user -> 403 on the admin passkey reset", noAdmin.status === 403);
   const projectsOk = await call("GET", "/api/projects");
   check("role user can read projects", projectsOk.status === 200);
 

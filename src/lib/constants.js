@@ -88,6 +88,7 @@ export const NOTIFICATION_TYPES = {
   user_updated: { category: "team", label: "Account changed", tone: "violet" },
   user_deleted: { category: "team", label: "Account removed", tone: "rose" },
   security_login: { category: "security", label: "New sign-in", tone: "amber" },
+  security_method: { category: "security", label: "Sign-in method changed", tone: "amber" },
 };
 
 export const USER_ROLES = {

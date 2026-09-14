@@ -44,7 +44,7 @@ Sign-in is required for every page and API route (a request proxy redirects to `
 
 | Role | Access |
 | --- | --- |
-| **admin** | Everything, plus the **Users** module: create accounts, set roles, disable, reset passwords, delete (the last active admin and your own account are protected) |
+| **admin** | Everything, plus the **Users** module: create accounts, set roles, disable, reset passwords, see each account's sign-in methods (passkeys, Google) and remove a lost passkey or unlink Google (the account keeps its password and is notified), delete (the last active admin and your own account are protected) |
 | **user** | Projects, employees and tasks |
 
 **Profiles.** Each user can have several profiles (Profiles page, or the switcher at the top of the sidebar); a profile is a separate set of projects, requirements, employees and tasks — switch any time, mark one as default, and delete a profile to remove everything inside it (the last one cannot be deleted). Project codes and employee emails are unique per profile. Notifications remember which profile a record belongs to and switch to it when opened.

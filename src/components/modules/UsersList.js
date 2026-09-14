@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, KeyRound, Briefcase } from "lucide-react";
+import { Plus, KeyRound, Briefcase, Fingerprint, Unlink } from "lucide-react";
 import { api } from "@/lib/api";
 import DataTable from "@/components/table/DataTable";
 import PageHeader from "@/components/ui/PageHeader";
@@ -10,6 +10,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Select } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/Misc";
+import GoogleMark from "@/components/ui/GoogleMark";
 import UserForm from "./UserForm";
 import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell } from "./shared";
 import { USER_ROLES, USER_STATUS, MODULE_MAP } from "@/lib/modules";
@@ -29,6 +30,23 @@ export default function UsersList() {
   useNewParam("/users", openNew);
   useNewShortcut(openNew);
   const del = useDeleteFlow("/api/users", { toast, label: "user", onDeleted: removeLocal });
+  // admin recovery actions: drop every passkey of an account or disconnect Google
+  const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" }
+  const [methodBusy, setMethodBusy] = useState(false);
+  const runMethodAction = async () => {
+    if (!methodTarget) return;
+    setMethodBusy(true);
+    try {
+      await api.del(`/api/users/${methodTarget.user.id}/${methodTarget.kind}`);
+      toast.success(methodTarget.kind === "google" ? tr("Google unlinked") : tr("Passkeys removed"), methodTarget.user.name);
+      setMethodTarget(null);
+      refetch();
+    } catch (e) {
+      toast.error(tr("Could not update sign-in methods"), e.message);
+    } finally {
+      setMethodBusy(false);
+    }
+  };
   const mod = MODULE_MAP.users;
 
   if (!isAdmin) {
@@ -48,6 +66,18 @@ export default function UsersList() {
           <span><b className="text-fg">{r.project_count}</b> projects</span>
           <span><b className="text-fg">{r.employee_count}</b> employees</span>
           <span><b className="text-fg">{r.task_count}</b> tasks</span>
+        </span>
+      ),
+    },
+    {
+      key: "signin", label: tr("Sign-in"), sortValue: (r) => (r.passkey_count > 0 ? 2 : 0) + (r.has_google ? 1 : 0),
+      render: (r) => (
+        <span className="inline-flex flex-wrap items-center gap-1">
+          {r.passkey_count > 0 ? (
+            <Badge tone="emerald" className="inline-flex items-center gap-1"><Fingerprint size={11} /> {r.passkey_count === 1 ? tr("1 passkey") : tr("{n} passkeys", { n: r.passkey_count })}</Badge>
+          ) : null}
+          {r.has_google ? <Badge tone="sky" className="inline-flex items-center gap-1"><GoogleMark size={10} /> Google</Badge> : null}
+          {!r.passkey_count && !r.has_google ? <span className="text-xs text-fg-faint">{tr("Password only")}</span> : null}
         </span>
       ),
     },
@@ -92,6 +122,12 @@ export default function UsersList() {
                 }}
               />
             ) : null}
+            {r.passkey_count > 0 ? (
+              <Button variant="ghost" size="iconXs" icon={Fingerprint} aria-label={tr("Remove passkeys")} data-tip={tr("Remove passkeys")} onClick={() => setMethodTarget({ user: r, kind: "passkeys" })} />
+            ) : null}
+            {r.has_google ? (
+              <Button variant="ghost" size="iconXs" icon={Unlink} aria-label={tr("Unlink Google")} data-tip={tr("Unlink Google")} onClick={() => setMethodTarget({ user: r, kind: "google" })} />
+            ) : null}
             <RowActions onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
           </>
         )}
@@ -105,6 +141,21 @@ export default function UsersList() {
         emptyAction={<Button icon={Plus} onClick={openNew}>{tr("New user")}</Button>}
       />
       <UserForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
+      <ConfirmDialog
+        open={!!methodTarget}
+        onClose={() => setMethodTarget(null)}
+        onConfirm={runMethodAction}
+        loading={methodBusy}
+        title={methodTarget?.kind === "google" ? tr("Unlink Google?") : tr("Remove passkeys?")}
+        confirmText={methodTarget?.kind === "google" ? tr("Unlink") : tr("Remove")}
+        description={
+          !methodTarget
+            ? ""
+            : methodTarget.kind === "google"
+              ? tr("{name} will no longer be able to sign in with Google until they connect it again. Their password keeps working.", { name: methodTarget.user.name })
+              : tr("All passkeys of {name} ({n}) are removed. Their password keeps working, and they can add a new passkey from their profile.", { name: methodTarget.user.name, n: methodTarget.user.passkey_count })
+        }
+      />
       <ConfirmDialog
         open={!!del.target}
         onClose={() => del.setTarget(null)}
