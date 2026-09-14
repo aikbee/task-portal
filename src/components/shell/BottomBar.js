@@ -65,17 +65,17 @@ export default function BottomBar() {
   const timerLabel = timer.running || timer.remaining != null ? fmt(timer.remaining ?? timerTotalSeconds(timer.mode, timerFocusMin, timerBreakMin)) : null;
 
   return (
-    <footer className="relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-1.5 glass border-t px-2 text-xs sm:gap-2 sm:px-3">
+    <footer className="app-bottombar relative z-30 flex h-[var(--bottombar-h)] shrink-0 items-center gap-1.5 glass border-t px-2 text-xs sm:gap-2 sm:px-3">
       {/* tool panel */}
       {tool && !expanded ? (
         <div
           ref={panelRef}
           className={cn(
-            "absolute bottom-[calc(100%+10px)] left-1/2 max-w-[calc(100vw-var(--sidebar-w)-40px)] -translate-x-1/2 overflow-hidden rounded-app-lg border border-line bg-surface shadow-app-lg anim-slide-up max-md:left-3 max-md:right-3 max-md:w-auto max-md:max-w-none max-md:translate-x-0",
+            "bb-panel absolute bottom-[calc(100%+10px)] left-1/2 max-w-[calc(100vw-var(--sidebar-w)-40px)] -translate-x-1/2 overflow-hidden rounded-app-lg border border-line bg-surface shadow-app-lg anim-slide-up max-md:left-3 max-md:right-3 max-md:w-auto max-md:max-w-none max-md:translate-x-0",
             tool.width
           )}
         >
-          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+          <div className="bb-panel-head flex items-center justify-between border-b border-line px-4 py-2.5">
             <span className="flex items-center gap-2 text-sm font-semibold">
               <tool.icon size={15} className="text-accent" /> {tool.label}
               {tool.key === "notes" ? <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] text-fg-muted">{tr(mod.label)}</span> : null}
@@ -107,7 +107,7 @@ export default function BottomBar() {
       </div>
 
       {/* center: tools */}
-      <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
+      <div className="bb-tools absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
         {TOOLS.map((t) => {
           const active = activeTool === t.key;
           const badge = t.key === "notes" ? moduleNotes : t.key === "timer" ? timerLabel : null;
@@ -116,8 +116,8 @@ export default function BottomBar() {
               key={t.key}
               onClick={() => toggleTool(t.key)}
               className={cn(
-                "flex items-center gap-1.5 rounded-app-sm px-2.5 py-1.5 font-medium transition",
-                active ? "bg-accent text-white shadow-[0_6px_14px_-6px_var(--accent)]" : "text-fg-muted hover:bg-surface-2 hover:text-fg"
+                "bb-tool flex items-center gap-1.5 rounded-app-sm px-2.5 py-1.5 font-medium transition",
+                active ? "is-active bg-accent text-white shadow-[0_6px_14px_-6px_var(--accent)]" : "text-fg-muted hover:bg-surface-2 hover:text-fg"
               )}
               data-tip={t.hint ? `${t.label} ${t.hint}` : t.label}
             >
@@ -143,16 +143,16 @@ export default function BottomBar() {
         </span>
         <button
           onClick={() => setPrefs({ density: density === "compact" ? "comfortable" : "compact" })}
-          className="hidden rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg sm:inline-flex"
+          className="bb-btn hidden rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg sm:inline-flex"
           data-tip={`Density: ${density}`}
         >
           {density === "compact" ? <Rows3 size={14} /> : <LayoutGrid size={14} />}
         </button>
-        <button onClick={scrollTop} className="rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg" data-tip={tr("Back to top")}>
+        <button onClick={scrollTop} className="bb-btn rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg" data-tip={tr("Back to top")}>
           <ArrowUp size={14} />
         </button>
         {canLock ? (
-          <button onClick={lock} className="rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg" data-tip={`Lock screen ⌘⇧L${autoLockMinutes ? ` · auto-lock ${autoLockMinutes}m` : ""}`} aria-label={tr("Lock screen")}>
+          <button onClick={lock} className="bb-btn rounded-app-sm p-1.5 hover:bg-surface-2 hover:text-fg" data-tip={`Lock screen ⌘⇧L${autoLockMinutes ? ` · auto-lock ${autoLockMinutes}m` : ""}`} aria-label={tr("Lock screen")}>
             <Lock size={14} />
           </button>
         ) : null}
