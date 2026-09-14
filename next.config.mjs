@@ -16,6 +16,11 @@ const nextConfig = {
   // swap it into place, so the running app never serves a half-written build.
   distDir: process.env.NEXT_DIST_DIR || ".next",
   env: { GIT_COMMIT: gitCommit() },
+  experimental: {
+    // src/proxy.js runs on every request, and Next buffers the body for it (10 MB by default,
+    // silently truncating larger uploads). Attachments go up to 50 MB, chat files to 25 MB per message.
+    proxyClientMaxBodySize: "60mb",
+  },
 };
 
 export default nextConfig;

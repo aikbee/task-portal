@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta, audioMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withExtras, messageById, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, PHOTOS_PER_MESSAGE, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
 
 /**
  * Messages of a conversation, oldest first: the newest page (?limit up to 100), earlier pages (?before=<id>),
@@ -28,10 +28,11 @@ export const GET = handler(async (request, params, user) => {
 });
 
 /**
- * Send a message. JSON { body }, or multipart with "body" (optional caption) and either up to 8 photo
- * "files" (JPEG, PNG, GIF or WebP, 10 MB each) or one voice note (WebM, Ogg or MP4 audio, 10 MB, up to
- * 5 minutes, with its "duration" in ms). Files are checked by content. Direct chats need an accepted
- * friendship; group chats need membership.
+ * Send a message. JSON { body }, or multipart with "body" (optional caption) plus attachments:
+ *  - "files": up to 8 photos (JPEG, PNG, GIF, WebP, 10 MB each, downscaled by the browser) and/or any
+ *    other files (20 MB each, 25 MB per message in total);
+ *  - "voice": one recorded note (WebM, Ogg or MP4 audio, up to 5 minutes) with its "duration" in ms.
+ * Photos and voice notes are checked by content. Direct chats need an accepted friendship; group chats need membership.
  */
 export const POST = handler(async (request, params, user) => {
   const id = requireId(params.id);
@@ -39,61 +40,64 @@ export const POST = handler(async (request, params, user) => {
   if (convo.kind === "direct") await assertFriends(user.id, convo.user_id);
 
   let text = "";
-  const photos = [];
-  let voice = null;
+  const items = []; // { buf, kind, name, mime, width, height, duration }
+  let total = 0;
   if ((request.headers.get("content-type") || "").includes("multipart/form-data")) {
+    // refuse oversized uploads before buffering them
+    if (Number(request.headers.get("content-length")) > MESSAGE_MAX_BYTES + 1024 * 1024) throw new HttpError("One message can carry up to 25 MB of files.", 413);
     const form = await request.formData();
     text = String(form.get("body") ?? "");
     const files = form.getAll("files").filter((f) => typeof f === "object" && f.size > 0);
-    if (files.length > PHOTOS_PER_MESSAGE) throw new HttpError(`Up to ${PHOTOS_PER_MESSAGE} photos per message.`, 400);
+    const voices = form.getAll("voice").filter((f) => typeof f === "object" && f.size > 0);
+    if (files.length > ATTACHMENTS_PER_MESSAGE) throw new HttpError(`Up to ${ATTACHMENTS_PER_MESSAGE} attachments per message.`, 400);
+    if (voices.length > 1) throw new HttpError("One voice message at a time.", 400);
+    if (voices.length && files.length) throw new HttpError("Send a voice message on its own.", 400);
     for (const file of files) {
-      if (file.size > PHOTO_MAX_BYTES) throw new HttpError(`${file.name} is larger than 10 MB.`, 413);
       const buf = Buffer.from(await file.arrayBuffer());
       const meta = imageMeta(buf);
       if (meta) {
-        photos.push({ buf, meta, name: file.name || `photo.${meta.type}` });
-        continue;
+        if (file.size > PHOTO_MAX_BYTES) throw new HttpError(`${file.name} is larger than 10 MB.`, 413);
+        items.push({ buf, kind: "image", name: file.name || `photo.${meta.type}`, mime: meta.mime, width: meta.width || null, height: meta.height || null });
+      } else {
+        if (file.size > FILE_MAX_BYTES) throw new HttpError(`${file.name} is larger than 20 MB.`, 413);
+        items.push({ buf, kind: "file", name: (file.name || "file").slice(0, 255), mime: cleanMime(file.type) });
       }
+      total += buf.length;
+      if (total > MESSAGE_MAX_BYTES) throw new HttpError("One message can carry up to 25 MB of files.", 413);
+    }
+    for (const file of voices) {
+      if (file.size > PHOTO_MAX_BYTES) throw new HttpError("Voice messages can be up to 10 MB.", 413);
+      const buf = Buffer.from(await file.arrayBuffer());
       const audio = audioMeta(buf);
-      if (!audio) throw new HttpError(`${file.name} is not a JPEG, PNG, GIF or WebP image, nor a voice recording.`, 400);
-      if (voice) throw new HttpError("One voice message at a time.", 400);
+      if (!audio) throw new HttpError("That is not a voice recording.", 400);
       const duration = Math.round(Number(form.get("duration")) || 0);
       if (duration > VOICE_MAX_MS) throw new HttpError("Voice messages can be up to 5 minutes.", 400);
-      voice = { buf, meta: audio, name: file.name || `voice.${audio.type}`, duration: duration > 0 ? duration : null };
+      items.push({ buf, kind: "audio", name: file.name || `voice.${audio.type}`, mime: audio.mime, duration: duration > 0 ? duration : null });
     }
-    if (voice && photos.length) throw new HttpError("Send photos and a voice message separately.", 400);
   } else {
     text = String((await readJson(request)).body ?? "");
   }
+  const photos = items.filter((i) => i.kind === "image");
+  const plain = items.filter((i) => i.kind === "file");
+  const voice = items.find((i) => i.kind === "audio") ?? null;
   const body = text.replace(/\r\n/g, "\n").trim();
-  if (!body && !photos.length && !voice) throw new HttpError("Message is empty.", 400);
+  if (!body && !items.length) throw new HttpError("Message is empty.", 400);
   if (body.length > MESSAGE_MAX) throw new HttpError(`Messages can be up to ${MESSAGE_MAX} characters.`, 400);
 
   const r = await execute("INSERT INTO messages (conversation_id, sender_id, body) VALUES (?, ?, ?)", [id, user.id, body]);
   let order = 1;
-  for (const p of photos) {
-    const { storedName, size } = await saveBuffer(p.buf, p.name);
+  for (const it of items) {
+    const { storedName, size } = await saveBuffer(it.buf, it.name);
     await execute(
-      "INSERT INTO message_attachments (message_id, stored_name, original_name, mime_type, size_bytes, width, height, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [r.insertId, storedName, p.name.slice(0, 255), p.meta.mime, size, p.meta.width || null, p.meta.height || null, order++]
+      "INSERT INTO message_attachments (message_id, kind, stored_name, original_name, mime_type, size_bytes, width, height, duration_ms, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [r.insertId, it.kind, storedName, it.name.slice(0, 255), it.mime, size, it.width ?? null, it.height ?? null, it.duration ?? null, order++]
     );
-  }
-  if (voice) {
-    const { storedName, size } = await saveBuffer(voice.buf, voice.name);
-    await execute("INSERT INTO message_attachments (message_id, stored_name, original_name, mime_type, size_bytes, duration_ms, sort_order) VALUES (?, ?, ?, ?, ?, ?, 1)", [
-      r.insertId,
-      storedName,
-      voice.name.slice(0, 255),
-      voice.meta.mime,
-      size,
-      voice.duration,
-    ]);
   }
   const message = await messageById(r.insertId);
   // the sender has read their own message
   await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [message.id, id, user.id]);
   const me = await queryOne(`SELECT ${PEER_FIELDS} FROM users u WHERE u.id = ?`, [user.id]);
   broadcast(convo, { type: "message", conversation_id: id, message, from: me });
-  for (const rid of recipientsOf(convo, user.id)) notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null).catch(() => {});
+  for (const rid of recipientsOf(convo, user.id)) notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "").catch(() => {});
   return ok(message, { status: 201 });
 });

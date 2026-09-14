@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -16,9 +16,9 @@ import Modal from "@/components/ui/Modal";
 import { Input, Checkbox, Field } from "@/components/ui/Controls";
 import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
-import { cn, relativeTime, formatDateTime } from "@/lib/utils";
+import { cn, relativeTime, formatDateTime, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { useClickOutside, useDebouncedValue } from "@/lib/hooks";
+import { useClickOutside, useDebouncedValue, useMediaQuery } from "@/lib/hooks";
 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 function dayLabel(iso, tr) {
@@ -749,6 +749,8 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
       <span className="truncate">{c.last_body}</span>
     ) : c.last_voice != null ? (
       <><Mic size={12} className="shrink-0" /> {tr("Voice message")} · {clock(c.last_voice)}</>
+    ) : c.last_files && !c.last_photos ? (
+      <><Paperclip size={12} className="shrink-0" /> <span className="truncate">{c.last_files > 1 ? tr("{n} files", { n: c.last_files }) : c.last_file_name}</span></>
     ) : (
       <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>
     );
@@ -994,6 +996,38 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
 const MAX_EDGE = 1920;
 const KEEP_BYTES = 3 * 1024 * 1024;
 const MAX_PHOTOS = 8;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "video/mp4", "video/webm", "application/pdf", "text/plain"]);
+/** An icon that fits the file's type or extension. */
+function FileGlyph({ name = "", mime = "", size = 18, className }) {
+  const ext = name.split(".").pop().toLowerCase();
+  const props = { size, className };
+  if (/pdf|msword|wordprocessing|rtf/.test(mime) || ["pdf", "doc", "docx", "rtf", "odt", "txt", "md"].includes(ext)) return <FileText {...props} />;
+  if (/spreadsheet|excel|csv/.test(mime) || ["xls", "xlsx", "csv", "ods", "numbers"].includes(ext)) return <FileSpreadsheet {...props} />;
+  if (/zip|compressed|tar|gzip|7z|rar/.test(mime) || ["zip", "tar", "gz", "7z", "rar"].includes(ext)) return <FileArchive {...props} />;
+  if (/javascript|json|xml|html|css|x-sh/.test(mime) || ["js", "ts", "jsx", "tsx", "json", "xml", "html", "css", "py", "sh", "sql", "yml", "yaml"].includes(ext)) return <FileCode {...props} />;
+  if (mime.startsWith("video/") || ["mp4", "mov", "webm", "mkv"].includes(ext)) return <FileVideo {...props} />;
+  if (mime.startsWith("audio/") || ["mp3", "wav", "m4a", "flac", "aac"].includes(ext)) return <FileAudio {...props} />;
+  return <File {...props} />;
+}
+/** A file attachment card: icon, name, size, open or download. */
+function FileCard({ tr, file, mine }) {
+  const inline = INLINE_MIMES.has(file.mime);
+  return (
+    <div className={cn("chat-file flex items-center gap-2.5 rounded-[10px] px-2.5 py-2", mine ? "bg-white/15" : "bg-fg/5")}>
+      <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-app-sm", mine ? "bg-white/20" : "bg-accent/12 text-accent")}>
+        <FileGlyph name={file.name} mime={file.mime} size={18} />
+      </span>
+      <a href={inline ? file.url : `${file.url}?download=1`} target={inline ? "_blank" : undefined} rel="noopener" className="min-w-0 flex-1 focus-ring rounded-sm" title={file.name}>
+        <span className="block truncate text-sm font-medium">{file.name}</span>
+        <span className={cn("block text-[11px]", mine ? "text-white/70" : "text-fg-muted")}>{formatBytes(file.size)}{file.mime && file.mime !== "application/octet-stream" ? ` · ${file.mime.split("/").pop().toUpperCase().slice(0, 12)}` : ""}</span>
+      </a>
+      <a href={`${file.url}?download=1`} className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full transition focus-ring", mine ? "hover:bg-white/20" : "hover:bg-surface-3")} aria-label={tr("Download {name}", { name: file.name })} data-tip={tr("Download")}>
+        <Download size={15} />
+      </a>
+    </div>
+  );
+}
 
 /** Downscale big photos in the browser (JPEG, longest edge 1920 px); GIFs and small images are sent as they are. */
 async function prepareImage(file) {
@@ -1031,6 +1065,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
   const [menu, setMenu] = useState(null); // message id with the edit/delete menu open
   const [receipts, setReceipts] = useState(null); // message id with the read-receipts popover open
+  const narrow = useMediaQuery("(max-width: 640px)"); // phones: compact composer buttons and a short placeholder
   const [editing, setEditing] = useState(null); // { id, text } while editing a message inline
   const [confirmDelete, setConfirmDelete] = useState(null); // message about to be deleted
   const [deleting, setDeleting] = useState(false);
@@ -1153,7 +1188,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       const fd = new FormData();
       fd.append("body", "");
       fd.append("duration", String(elapsed));
-      fd.append("files", blob, `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
+      fd.append("voice", blob, `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
       setSending(true);
       try {
         const m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
@@ -1229,6 +1264,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
+  const anyRef = useRef(null);
   // a photo that finishes loading while we sit near the bottom keeps the latest message in view
   const stickToBottom = () => {
     const el = scrollRef.current;
@@ -1239,7 +1275,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     pendingRef.current = pending;
   }, [pending]);
   // release preview URLs when leaving the thread
-  useEffect(() => () => pendingRef.current.forEach((p) => URL.revokeObjectURL(p.url)), []);
+  useEffect(() => () => pendingRef.current.forEach((p) => p.url && URL.revokeObjectURL(p.url)), []);
   const count = messages?.length ?? 0;
   useEffect(() => {
     if (focusId || detached) return; // a search jump positions the thread itself
@@ -1254,26 +1290,35 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const canChat = group || !convo.friend_status || convo.friend_status === "accepted";
 
   const addFiles = async (list) => {
-    const files = [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
+    const files = [...(list ?? [])].filter((f) => f && f.size > 0);
     if (!files.length) return;
     if (pendingRef.current.length + files.length > MAX_PHOTOS) {
-      toast.error(tr("Up to {n} photos per message", { n: MAX_PHOTOS }));
+      toast.error(tr("Up to {n} attachments per message", { n: MAX_PHOTOS }));
       return;
     }
     const prepared = [];
     for (const f of files) {
-      try {
-        const file = await prepareImage(f);
-        prepared.push({ key: `${Date.now()}-${Math.random().toString(36).slice(2)}`, file, url: URL.createObjectURL(file) });
-      } catch {
-        toast.error(tr("Could not read {name}", { name: f.name }));
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      if (f.type.startsWith("image/") && f.type !== "image/svg+xml") {
+        try {
+          const file = await prepareImage(f);
+          prepared.push({ key, kind: "image", file, url: URL.createObjectURL(file) });
+          continue;
+        } catch {
+          // not decodable as a picture: send it as a plain file below
+        }
       }
+      if (f.size > MAX_FILE_BYTES) {
+        toast.error(tr("{name} is larger than 20 MB", { name: f.name }));
+        continue;
+      }
+      prepared.push({ key, kind: "file", file: f, url: null });
     }
     if (prepared.length) setPending((cur) => [...cur, ...prepared]);
   };
   const removePending = (key) =>
     setPending((cur) => {
-      cur.filter((p) => p.key === key).forEach((p) => URL.revokeObjectURL(p.url));
+      cur.filter((p) => p.key === key && p.url).forEach((p) => URL.revokeObjectURL(p.url));
       return cur.filter((p) => p.key !== key);
     });
 
@@ -1292,7 +1337,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body });
       }
       setDraft("");
-      pending.forEach((p) => URL.revokeObjectURL(p.url));
+      pending.forEach((p) => p.url && URL.revokeObjectURL(p.url));
       setPending([]);
       clearTimeout(typingRef.current.timer);
       typingRef.current.on = false; // the message itself tells the others we stopped
@@ -1365,7 +1410,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       <div className="relative flex min-h-0 flex-1 flex-col" {...dropProps}>
         {dragging ? (
           <div className="chat-drop pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-app border-2 border-dashed border-accent bg-accent/10 text-sm font-medium text-accent">
-            <span className="flex items-center gap-2"><ImageIcon size={18} /> {tr("Drop photos to send")}</span>
+            <span className="flex items-center gap-2"><Paperclip size={18} /> {tr("Drop photos or files to send")}</span>
           </div>
         ) : null}
         <div ref={scrollRef} className="chat-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
@@ -1379,8 +1424,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
               {messages.length === 0 ? <p className="py-10 text-center text-xs text-fg-faint">{tr("Say hello — this is the start of your conversation.")}</p> : null}
               {messages.map((m, i) => {
                 const mine = m.sender_id === me?.id;
-                const photos = (m.attachments ?? []).filter((a) => a.kind !== "audio");
+                const photos = (m.attachments ?? []).filter((a) => a.kind === "image");
                 const voice = (m.attachments ?? []).find((a) => a.kind === "audio") ?? null;
+                const files = (m.attachments ?? []).filter((a) => a.kind === "file");
                 const prev = messages[i - 1];
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
                 if (m.kind === "system") {
@@ -1396,7 +1442,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const reactions = m.reactions ?? [];
                 const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
                 const deleted = Boolean(m.deleted_at);
-                const canEdit = mine && !deleted && (m.body || photos.length > 0) && !voice;
+                const canEdit = mine && !deleted && (m.body || photos.length > 0 || files.length > 0) && !voice;
                 const canDelete = !deleted && (mine || (group && convo.my_role === "owner"));
                 const menuBtn =
                   canEdit || canDelete ? (
@@ -1431,7 +1477,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : "sent";
                 const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
                 const time = (
-                  <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>
+                  <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice || files.length ? "ml-auto" : "ml-2")}>
                     {m.edited_at && !m.deleted_at ? <span className="chat-edited not-italic">{tr("edited")}</span> : null}
                     {timeOf(m.created_at)}
                     {rc ? <Ticks tr={tr} mine state={tickState} label={tickLabel} onClick={group ? () => setReceipts(receipts === m.id ? null : m.id) : undefined} /> : null}
@@ -1440,7 +1486,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
                 const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
-                const bubbleW = voice ? 272 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
+                const bubbleW = voice ? 272 : files.length && !photos.length ? 320 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
                 return (
                   <div key={m.id} id={`msg-${m.id}`} className="chat-msg rounded-app">
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
@@ -1498,7 +1544,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
-                          photos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : "px-3 py-2",
+                          photos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : files.length ? "chat-has-files p-1.5" : "px-3 py-2",
                           mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
                         )}
                         title={formatDateTime(m.created_at)}
@@ -1526,7 +1572,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           </div>
                         ) : null}
                         {voice ? <VoicePlayer tr={tr} src={voice.url} duration={voice.duration} mine={mine} /> : null}
-                        {photos.length || voice ? (
+                        {files.length ? (
+                          <div className={cn("chat-files flex flex-col gap-1", photos.length && "mt-1")}>
+                            {files.map((f) => (
+                              <FileCard key={f.id} tr={tr} file={f} mine={mine} />
+                            ))}
+                          </div>
+                        ) : null}
+                        {photos.length || voice || files.length ? (
                           <span className={cn("flex items-end gap-2 px-1.5", voice ? "pt-0.5" : "pt-1")}>
                             {m.body ? <span className="min-w-0">{renderBody(m.body)}</span> : null}
                             {time}
@@ -1595,16 +1648,30 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             <div className="mx-auto max-w-3xl">
               {pending.length ? (
                 <div className="chat-pending mb-2 flex flex-wrap items-center gap-2">
-                  {pending.map((p) => (
-                    <span key={p.key} className="relative">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.url} alt="" className="h-16 w-16 rounded-app-sm border border-line object-cover" />
-                      <button type="button" aria-label={tr("Remove photo")} onClick={() => removePending(p.key)} className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full bg-fg text-bg shadow focus-ring">
-                        <X size={11} />
-                      </button>
-                    </span>
-                  ))}
-                  <span className="text-[11px] text-fg-muted">{pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")}</span>
+                  {pending.map((p) => {
+                    return (
+                      <span key={p.key} className="relative">
+                        {p.kind === "image" ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img src={p.url} alt="" className="h-16 w-16 rounded-app-sm border border-line object-cover" />
+                        ) : (
+                          <span className="chat-pending-file flex h-16 max-w-48 items-center gap-2 rounded-app-sm border border-line bg-surface-2 px-2.5" title={p.file.name}>
+                            <FileGlyph name={p.file.name} mime={p.file.type} size={20} className="shrink-0 text-accent" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs font-medium">{p.file.name}</span>
+                              <span className="block text-[10px] text-fg-muted">{formatBytes(p.file.size)}</span>
+                            </span>
+                          </span>
+                        )}
+                        <button type="button" aria-label={tr("Remove attachment")} onClick={() => removePending(p.key)} className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full bg-fg text-bg shadow focus-ring">
+                          <X size={11} />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <span className="text-[11px] text-fg-muted">
+                    {pending.every((p) => p.kind === "image") ? (pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")) : pending.length > 1 ? tr("{n} attachments", { n: pending.length }) : tr("1 attachment")}
+                  </span>
                 </div>
               ) : null}
               {rec ? (
@@ -1633,8 +1700,19 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     e.target.value = "";
                   }}
                 />
-                <Button variant="ghost" size="icon" icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
-                {canRecord() && !draft.trim() && !pending.length ? <Button variant="ghost" size="icon" icon={Mic} onClick={startRecording} aria-label={tr("Record a voice message")} data-tip={tr("Voice message")} disabled={sending} className="chat-mic" /> : null}
+                <input
+                  ref={anyRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
+                <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Paperclip} onClick={() => anyRef.current?.click()} aria-label={tr("Attach files")} data-tip={tr("Attach files")} disabled={sending} className="chat-clip" />
+                {canRecord() && !draft.trim() && !pending.length ? <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Mic} onClick={startRecording} aria-label={tr("Record a voice message")} data-tip={tr("Voice message")} disabled={sending} className="chat-mic" /> : null}
                 <textarea
                   value={draft}
                   onChange={(e) => onDraftChange(e.target.value)}
@@ -1657,11 +1735,15 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     }
                   }}
                   rows={Math.min(6, Math.max(1, draft.split("\n").length))}
-                  placeholder={pending.length ? tr("Add a caption (optional)") : tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
+                  placeholder={pending.length ? tr("Add a caption (optional)") : narrow ? tr("Message…") : tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
                   className="control min-h-[42px] flex-1 resize-none py-2.5"
                   maxLength={4000}
                 />
-                <Button icon={Send} onClick={send} loading={sending} disabled={!draft.trim() && !pending.length} aria-label={tr("Send")}>{tr("Send")}</Button>
+                {narrow ? (
+                  <Button size="icon" icon={Send} onClick={send} loading={sending} disabled={!draft.trim() && !pending.length} aria-label={tr("Send")} />
+                ) : (
+                  <Button icon={Send} onClick={send} loading={sending} disabled={!draft.trim() && !pending.length} aria-label={tr("Send")}>{tr("Send")}</Button>
+                )}
               </div>
             </div>
           ) : (

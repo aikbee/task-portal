@@ -1,15 +1,18 @@
 import { handler, requireId } from "@/lib/api-utils";
 import { readStoredFile } from "@/lib/uploads";
-import { photoFor } from "@/lib/chat";
+import { photoFor, INLINE_MIMES } from "@/lib/chat";
 
-/** A chat photo or voice note, for members of its conversation. ?download=1 forces a download; byte ranges are honoured so audio can seek. */
+/** A chat photo, voice note or file, for members of its conversation. ?download=1 forces a download; byte ranges are honoured so audio can seek. */
 export const GET = handler(async (request, params, user) => {
   const file = await photoFor(requireId(params.id), user.id);
   const buf = await readStoredFile(file.stored_name);
-  const download = request.nextUrl.searchParams.get("download") === "1";
+  const mime = file.mime_type || "application/octet-stream";
+  // only well-known media, PDFs and plain text open in the tab; everything else (HTML, SVG, scripts…) downloads
+  const inline = request.nextUrl.searchParams.get("download") !== "1" && INLINE_MIMES.has(mime);
   const headers = {
-    "Content-Type": file.mime_type || "application/octet-stream",
-    "Content-Disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(file.original_name)}`,
+    "Content-Type": mime,
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.original_name)}`,
     // a sent file never changes, so the browser may keep it (private: per signed-in user)
     "Cache-Control": "private, max-age=31536000, immutable",
     "Accept-Ranges": "bytes",

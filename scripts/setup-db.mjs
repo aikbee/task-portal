@@ -121,6 +121,11 @@ async function migrate(db, adminId) {
     log("migrating: messages.edited_at + deleted_at");
     await db.query("ALTER TABLE messages ADD COLUMN edited_at DATETIME NULL AFTER created_at, ADD COLUMN deleted_at DATETIME NULL AFTER edited_at");
   }
+  if (!(await hasColumn(db, "message_attachments", "kind"))) {
+    log("migrating: message_attachments.kind (files in chat)");
+    await db.query("ALTER TABLE message_attachments ADD COLUMN kind ENUM('image','audio','file') NOT NULL DEFAULT 'file' AFTER message_id");
+    await db.query("UPDATE message_attachments SET kind = CASE WHEN mime_type LIKE 'audio/%' THEN 'audio' ELSE 'image' END");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes
