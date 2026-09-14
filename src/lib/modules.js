@@ -88,7 +88,7 @@ export const MODULES = [
     api: "/api/chat/conversations",
     icon: MessageCircle,
     color: "#0ea5e9",
-    description: "Add friends with a QR code and message them one to one.",
+    description: "Add friends with a QR code, then message them one to one or in groups.",
   },
   {
     key: "board",

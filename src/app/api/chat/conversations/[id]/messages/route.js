@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta } from "@/lib/images";
-import { conversationFor, assertFriends, publish, notifyMessage, withPhotos, messageById, MESSAGE_MAX, PHOTO_MAX_BYTES, PHOTOS_PER_MESSAGE, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withPhotos, messageById, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, PHOTOS_PER_MESSAGE, PEER_FIELDS } from "@/lib/chat";
 
 /** Messages of a conversation, oldest first (?before=<id> for earlier pages, ?limit up to 100). */
 export const GET = handler(async (request, params, user) => {
@@ -12,7 +12,7 @@ export const GET = handler(async (request, params, user) => {
   const limit = Math.min(100, Math.max(1, Number(sp.get("limit")) || 50));
   const before = Number(sp.get("before")) || null;
   const rows = await query(
-    `SELECT id, sender_id, body, created_at FROM messages WHERE conversation_id = ? ${before ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ${limit}`,
+    `SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? ${before ? "AND x.id < ?" : ""} ORDER BY x.id DESC LIMIT ${limit}`,
     before ? [id, before] : [id]
   );
   return ok(await withPhotos(rows.reverse()));
@@ -20,12 +20,13 @@ export const GET = handler(async (request, params, user) => {
 
 /**
  * Send a message. JSON { body }, or multipart with "body" (optional caption) and up to 8 "files"
- * (JPEG, PNG, GIF or WebP, 10 MB each, checked by content).
+ * (JPEG, PNG, GIF or WebP, 10 MB each, checked by content). Direct chats need an accepted friendship;
+ * group chats need membership.
  */
 export const POST = handler(async (request, params, user) => {
   const id = requireId(params.id);
   const convo = await conversationFor(id, user.id);
-  await assertFriends(user.id, convo.user_id);
+  if (convo.kind === "direct") await assertFriends(user.id, convo.user_id);
 
   let text = "";
   const photos = [];
@@ -61,8 +62,7 @@ export const POST = handler(async (request, params, user) => {
   // the sender has read their own message
   await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [message.id, id, user.id]);
   const me = await queryOne(`SELECT ${PEER_FIELDS} FROM users u WHERE u.id = ?`, [user.id]);
-  publish(convo.user_id, { type: "message", conversation_id: id, message, from: me });
-  publish(user.id, { type: "message", conversation_id: id, message, from: me });
-  notifyMessage(convo.user_id, me, id, body, photos.length).catch(() => {});
+  broadcast(convo, { type: "message", conversation_id: id, message, from: me });
+  for (const rid of recipientsOf(convo, user.id)) notifyMessage(rid, me, convo, body, photos.length).catch(() => {});
   return ok(message, { status: 201 });
 });

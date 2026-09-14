@@ -107,6 +107,12 @@ async function migrate(db, adminId) {
     log("migrating: users.friend_code (chat)");
     await db.query("ALTER TABLE users ADD COLUMN friend_code VARCHAR(16) NULL AFTER totp_last_step, ADD UNIQUE KEY uq_users_friend_code (friend_code)");
   }
+  if (!(await hasColumn(db, "conversations", "title"))) {
+    log("migrating: group chats (conversations.title, members.role, messages.kind)");
+    await db.query("ALTER TABLE conversations MODIFY kind ENUM('direct','group') NOT NULL DEFAULT 'direct', ADD COLUMN title VARCHAR(80) NULL AFTER kind, ADD COLUMN avatar_color VARCHAR(16) NOT NULL DEFAULT '#6366f1' AFTER title, ADD COLUMN created_by INT UNSIGNED NULL AFTER avatar_color");
+    await db.query("ALTER TABLE conversation_members ADD COLUMN role ENUM('owner','member') NOT NULL DEFAULT 'member' AFTER user_id");
+    await db.query("ALTER TABLE messages ADD COLUMN kind ENUM('text','system') NOT NULL DEFAULT 'text' AFTER sender_id");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

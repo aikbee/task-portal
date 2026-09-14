@@ -105,7 +105,12 @@ export function relationOf(f, me) {
   return f.requester_id === me ? "outgoing" : "incoming";
 }
 
-/* ---------- conversations ---------- */
+/* ---------- conversations (direct or group) ---------- */
+export const GROUP_MAX_MEMBERS = 50;
+export const GROUP_TITLE_MAX = 80;
+const GROUP_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6", "#f97316"];
+export const pickGroupColor = () => GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)];
+
 export async function directConversation(a, b, { create = false } = {}) {
   const row = await queryOne(
     `SELECT c.id FROM conversations c
@@ -120,41 +125,107 @@ export async function directConversation(a, b, { create = false } = {}) {
   await execute("INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?), (?, ?)", [r.insertId, a, r.insertId, b]);
   return r.insertId;
 }
-export async function conversationsOf(userId) {
+
+async function membersOf(ids) {
+  const map = new Map();
+  if (!ids.length) return map;
   const rows = await query(
-    `SELECT c.id, ${CONVO_PEER}, m.last_read_message_id, pm.last_read_message_id AS peer_last_read,
-       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
-       lm.id AS last_id, lm.body AS last_body, lm.sender_id AS last_sender_id, lm.created_at AS last_at,
-       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id) AS last_photos,
-       (SELECT f.status FROM friendships f WHERE (f.requester_id = ? AND f.addressee_id = u.id) OR (f.requester_id = u.id AND f.addressee_id = ?)) AS friend_status
-     FROM conversations c
-     JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
-     JOIN conversation_members pm ON pm.conversation_id = c.id AND pm.user_id <> ?
-     JOIN users u ON u.id = pm.user_id
-     LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
-     WHERE c.kind = 'direct'
-     ORDER BY COALESCE(lm.created_at, c.created_at) DESC`,
-    [userId, userId, userId, userId, userId]
+    `SELECT m.conversation_id, m.role, m.last_read_message_id, ${PEER_FIELDS}
+     FROM conversation_members m JOIN users u ON u.id = m.user_id
+     WHERE m.conversation_id IN (${ids.map(() => "?").join(",")}) ORDER BY m.joined_at, u.id`,
+    ids
   );
-  return rows.map((r) => ({ ...r, unread: Number(r.unread), last_photos: Number(r.last_photos) }));
+  for (const r of rows) map.set(r.conversation_id, [...(map.get(r.conversation_id) ?? []), r]);
+  return map;
 }
-export async function conversationFor(conversationId, userId) {
-  const row = await queryOne(
-    `SELECT c.id, ${CONVO_PEER}, m.last_read_message_id, pm.last_read_message_id AS peer_last_read
+async function friendStatuses(me, ids) {
+  const map = new Map();
+  if (!ids.length) return map;
+  const marks = ids.map(() => "?").join(",");
+  const rows = await query(
+    `SELECT requester_id, addressee_id, status FROM friendships WHERE (requester_id = ? AND addressee_id IN (${marks})) OR (addressee_id = ? AND requester_id IN (${marks}))`,
+    [me, ...ids, me, ...ids]
+  );
+  for (const r of rows) map.set(r.requester_id === me ? r.addressee_id : r.requester_id, r.status);
+  return map;
+}
+/** The row a client sees: `name` / `avatar_color` are the peer (direct) or the group title / colour. */
+function shapeConversation(row, members, statuses, me) {
+  const mine = members.find((x) => x.id === me);
+  const base = {
+    id: row.id,
+    kind: row.kind,
+    title: row.title,
+    my_role: mine?.role ?? "member",
+    members: members.map(({ id, name, avatar_color, email, role, last_read_message_id }) => ({ id, name, avatar_color, email, role, last_read_message_id })),
+    member_count: members.length,
+    last_read_message_id: row.last_read_message_id,
+    unread: Number(row.unread ?? 0),
+    last_id: row.last_id,
+    last_kind: row.last_kind,
+    last_body: row.last_body,
+    last_sender_id: row.last_sender_id,
+    last_sender_name: row.last_sender_name,
+    last_at: row.last_at,
+    last_photos: Number(row.last_photos ?? 0),
+  };
+  if (row.kind === "group") return { ...base, name: row.title, avatar_color: row.group_color, email: null, user_id: null, friend_status: null, peer_last_read: null };
+  const peer = members.find((x) => x.id !== me);
+  return {
+    ...base,
+    name: peer?.name ?? "Deleted account",
+    avatar_color: peer?.avatar_color ?? "#94a3b8",
+    email: peer?.email ?? null,
+    user_id: peer?.id ?? null,
+    friend_status: peer ? (statuses.get(peer.id) ?? null) : null,
+    peer_last_read: peer?.last_read_message_id ?? null,
+  };
+}
+async function loadConversations(userId, onlyId = null) {
+  const rows = await query(
+    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, m.last_read_message_id,
+       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+       lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
+       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id) AS last_photos
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
-     JOIN conversation_members pm ON pm.conversation_id = c.id AND pm.user_id <> ?
-     JOIN users u ON u.id = pm.user_id
-     WHERE c.id = ?`,
-    [userId, userId, conversationId]
+     LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
+     LEFT JOIN users ls ON ls.id = lm.sender_id
+     ${onlyId ? "WHERE c.id = ?" : ""}
+     ORDER BY COALESCE(lm.created_at, c.created_at) DESC`,
+    onlyId ? [userId, userId, onlyId] : [userId, userId]
   );
-  if (!row) throw new HttpError("Conversation not found.", 404);
-  return row;
+  const members = await membersOf(rows.map((r) => r.id));
+  const peerIds = rows.filter((r) => r.kind === "direct").flatMap((r) => (members.get(r.id) ?? []).filter((x) => x.id !== userId).map((x) => x.id));
+  const statuses = await friendStatuses(userId, peerIds);
+  return rows.map((r) => shapeConversation(r, members.get(r.id) ?? [], statuses, userId));
+}
+export const conversationsOf = (userId) => loadConversations(userId);
+/** A conversation the user belongs to (404 otherwise). */
+export async function conversationFor(conversationId, userId) {
+  const [c] = await loadConversations(userId, conversationId);
+  if (!c) throw new HttpError("Conversation not found.", 404);
+  return c;
+}
+export const recipientsOf = (convo, me) => convo.members.map((m) => m.id).filter((id) => id !== me);
+/** Send a live event to every member (optionally skipping one). */
+export function broadcast(convo, event, { except = null } = {}) {
+  for (const m of convo.members) if (m.id !== except) publish(m.id, event);
+}
+/** Which of `ids` are accepted friends of `userId`. */
+export async function friendIdsAmong(userId, ids) {
+  if (!ids.length) return new Set();
+  const marks = ids.map(() => "?").join(",");
+  const rows = await query(
+    `SELECT IF(requester_id = ?, addressee_id, requester_id) AS other FROM friendships WHERE status = 'accepted' AND ((requester_id = ? AND addressee_id IN (${marks})) OR (addressee_id = ? AND requester_id IN (${marks})))`,
+    [userId, userId, ...ids, userId, ...ids]
+  );
+  return new Set(rows.map((r) => r.other));
 }
 export async function chatBadge(userId) {
   const row = await queryOne(
     `SELECT
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
       (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS pending`,
     [userId, userId, userId]
   );
@@ -162,6 +233,8 @@ export async function chatBadge(userId) {
 }
 
 /* ---------- messages ---------- */
+export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, s.name AS sender_name, s.avatar_color AS sender_color";
+export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
 const photoOf = (a) => ({ id: a.id, url: `/api/chat/photos/${a.id}`, name: a.original_name, mime: a.mime_type, size: a.size_bytes, width: a.width, height: a.height });
 
 /** Attach each message's photos (attachments[]). */
@@ -176,8 +249,15 @@ export async function withPhotos(rows) {
   return rows.map((r) => ({ ...r, attachments: byMessage.get(r.id) ?? [] }));
 }
 export async function messageById(id) {
-  const row = await queryOne("SELECT id, conversation_id, sender_id, body, created_at FROM messages WHERE id = ?", [id]);
+  const row = await queryOne(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.id = ?`, [id]);
   return row ? (await withPhotos([row]))[0] : null;
+}
+/** A system line in a group ("added", "removed", "left", "renamed", "owner", "created") that every member sees live. */
+export async function systemMessage(convo, actorId, event, extra = {}) {
+  const r = await execute("INSERT INTO messages (conversation_id, sender_id, kind, body) VALUES (?, ?, 'system', ?)", [convo.id, actorId, JSON.stringify({ event, ...extra })]);
+  const message = await messageById(r.insertId);
+  broadcast(convo, { type: "message", conversation_id: convo.id, message });
+  return message;
 }
 /** A photo the user may see: they are a member of its conversation. */
 export async function photoFor(photoId, userId) {
@@ -197,30 +277,43 @@ export async function purgeMessagePhotos(whereSql, args) {
   return rows.length;
 }
 
-/** One unread bell entry per conversation: the newest message replaces the previous unread one. */
-export async function notifyMessage(peerId, sender, conversationId, body, photos = 0) {
-  await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'chat_message' AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [peerId, conversationId]);
+/** One unread bell entry per conversation and recipient: the newest message replaces the previous unread one. */
+export async function notifyMessage(recipientId, sender, convo, body, photos = 0) {
+  await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'chat_message' AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
   const text = body ? (body.length > 90 ? `${body.slice(0, 90)}…` : body) : photos > 1 ? `📷 ${photos} photos` : "📷 Photo";
   await notify({
-    userId: peerId,
+    userId: recipientId,
     type: "chat_message",
-    title: `${sender.name}: ${text}`,
+    title: convo.kind === "group" ? `${sender.name} · ${convo.title}: ${text}` : `${sender.name}: ${text}`,
     body: null,
-    href: `/chat?c=${conversationId}`,
+    href: `/chat?c=${convo.id}`,
     entityType: "conversation",
-    entityId: conversationId,
+    entityId: convo.id,
     actorId: sender.id,
-    tag: `chat-${conversationId}`,
+    tag: `chat-${convo.id}`,
   });
 }
 
-/** Direct conversations left with a single member (the other account was deleted) are removed. */
+/** Delete a conversation with its photo files. */
+export async function deleteConversation(id) {
+  await purgeMessagePhotos("m.conversation_id = ?", [id]);
+  await execute("DELETE FROM conversations WHERE id = ?", [id]);
+}
+/**
+ * After an account is deleted: direct chats left with one member and empty groups go,
+ * and a group whose owner is gone passes to its longest-standing member.
+ */
 export async function pruneOrphanConversations() {
-  const orphans = await query("SELECT c.id FROM conversations c LEFT JOIN conversation_members m ON m.conversation_id = c.id WHERE c.kind = 'direct' GROUP BY c.id HAVING COUNT(m.user_id) < 2");
-  if (!orphans.length) return 0;
-  const ids = orphans.map((r) => r.id);
-  const marks = ids.map(() => "?").join(",");
-  await purgeMessagePhotos(`m.conversation_id IN (${marks})`, ids);
-  await execute(`DELETE FROM conversations WHERE id IN (${marks})`, ids);
-  return ids.length;
+  const orphans = await query(
+    `SELECT c.id FROM conversations c LEFT JOIN conversation_members m ON m.conversation_id = c.id
+     GROUP BY c.id, c.kind HAVING COUNT(m.user_id) < IF(c.kind = 'direct', 2, 1)`
+  );
+  for (const r of orphans) await deleteConversation(r.id);
+  const ownerless = await query(
+    `SELECT c.id FROM conversations c WHERE c.kind = 'group'
+     AND NOT EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id AND m.role = 'owner')
+     AND EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id)`
+  );
+  for (const r of ownerless) await execute("UPDATE conversation_members SET role = 'owner' WHERE conversation_id = ? ORDER BY joined_at, user_id LIMIT 1", [r.id]);
+  return orphans.length;
 }

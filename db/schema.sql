@@ -442,16 +442,20 @@ CREATE TABLE IF NOT EXISTS friendships (
   CONSTRAINT fk_friendships_addressee FOREIGN KEY (addressee_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- One-to-one text conversations (kind is reserved for group chats later)
+-- Conversations: one-to-one ('direct') or a named group with an owner
 CREATE TABLE IF NOT EXISTS conversations (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  kind ENUM('direct') NOT NULL DEFAULT 'direct',
+  kind ENUM('direct','group') NOT NULL DEFAULT 'direct',
+  title VARCHAR(80) NULL, -- groups only
+  avatar_color VARCHAR(16) NOT NULL DEFAULT '#6366f1',
+  created_by INT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS conversation_members (
   conversation_id INT UNSIGNED NOT NULL,
   user_id INT UNSIGNED NOT NULL,
+  role ENUM('owner','member') NOT NULL DEFAULT 'member', -- the owner renames a group and removes people
   last_read_message_id INT UNSIGNED NULL, -- read receipts and unread counts
   joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (conversation_id, user_id),
@@ -464,6 +468,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   conversation_id INT UNSIGNED NOT NULL,
   sender_id INT UNSIGNED NOT NULL,
+  kind ENUM('text','system') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…)
   body TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_messages_conversation (conversation_id, id),

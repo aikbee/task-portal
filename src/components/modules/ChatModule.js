@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -12,7 +12,8 @@ import Button from "@/components/ui/Button";
 import Avatar from "@/components/ui/Avatar";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input } from "@/components/ui/Controls";
+import Modal from "@/components/ui/Modal";
+import { Input, Checkbox, Field } from "@/components/ui/Controls";
 import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime } from "@/lib/utils";
@@ -30,7 +31,45 @@ function dayLabel(iso, tr) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
-/** Friends (add by QR / code, requests, block) and one-to-one chat with live updates. */
+/** Text for a system line in a group ("Ann added Bob", "Ann renamed the group…"). */
+function systemText(m, tr) {
+  let ev = {};
+  try {
+    ev = JSON.parse(m.body);
+  } catch {}
+  const name = m.sender_name || tr("Someone");
+  const names = (ev.names ?? []).join(", ");
+  switch (ev.event) {
+    case "created":
+      return tr("{name} created the group", { name });
+    case "added":
+      return tr("{name} added {names}", { name, names });
+    case "removed":
+      return tr("{name} removed {names}", { name, names });
+    case "left":
+      return tr("{name} left the group", { name });
+    case "renamed":
+      return tr("{name} renamed the group to “{title}”", { name, title: ev.title ?? "" });
+    case "owner":
+      return tr("{names} is now the group owner", { names });
+    default:
+      return m.body;
+  }
+}
+const isGroup = (c) => c?.kind === "group";
+const memberCount = (n, tr) => (n === 1 ? tr("1 member") : tr("{n} members", { n }));
+/** Avatar for a conversation row: the person, or a coloured group badge. */
+function ConvoAvatar({ convo, size = "md" }) {
+  if (!isGroup(convo)) return <Avatar name={convo.name} color={convo.avatar_color} size={size} />;
+  const px = size === "sm" ? "h-7 w-7" : "h-9 w-9";
+  return (
+    <span className={cn("chat-group-avatar inline-grid shrink-0 place-items-center rounded-full text-white", px)} style={{ background: `linear-gradient(135deg, ${convo.avatar_color}, color-mix(in oklab, ${convo.avatar_color} 70%, black))` }} title={convo.name}>
+      <Users size={size === "sm" ? 13 : 16} />
+    </span>
+  );
+}
+
+/** Friends (add by QR / code, requests, block), one-to-one and group chat with live updates. */
 export default function ChatModule() {
   const tr = useT();
   const toast = useToast();
@@ -45,6 +84,7 @@ export default function ChatModule() {
   const [active, setActive] = useState(() => Number(sp.get("c")) || null);
   const [threads, setThreads] = useState({});
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
+  const [newGroup, setNewGroup] = useState(false);
   const activeRef = useRef(active);
   const toastRef = useRef(toast);
   useEffect(() => {
@@ -147,11 +187,29 @@ export default function ChatModule() {
       loadConvos();
     };
     const onRead = (ev) =>
-      setConvos((list) => (list ?? []).map((c) => (c.id === ev.conversation_id && ev.user_id !== user?.id ? { ...c, peer_last_read: Math.max(Number(c.peer_last_read) || 0, ev.last_read_message_id) } : c)));
+      setConvos((list) =>
+        (list ?? []).map((c) => {
+          if (c.id !== ev.conversation_id || ev.user_id === user?.id) return c;
+          const members = (c.members ?? []).map((m) => (m.id === ev.user_id ? { ...m, last_read_message_id: Math.max(Number(m.last_read_message_id) || 0, ev.last_read_message_id) } : m));
+          return { ...c, members, peer_last_read: c.kind === "direct" ? Math.max(Number(c.peer_last_read) || 0, ev.last_read_message_id) : c.peer_last_read };
+        })
+      );
+    const onConversation = (ev) => {
+      if (ev.action === "removed") {
+        setConvos((list) => (list ?? []).filter((c) => c.id !== ev.conversation_id));
+        if (activeRef.current === ev.conversation_id) {
+          setActive(null);
+          toastRef.current.info?.(tr("You were removed from “{title}”", { title: ev.title ?? "" })) ?? toastRef.current.success(tr("You were removed from “{title}”", { title: ev.title ?? "" }));
+        }
+        return;
+      }
+      loadConvos();
+    };
     try {
       es = new EventSource("/api/chat/stream");
       es.addEventListener("message", (e) => onMessage(JSON.parse(e.data)));
       es.addEventListener("read", (e) => onRead(JSON.parse(e.data)));
+      es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
       es.addEventListener("friends", () => {
         loadFriends();
         loadConvos();
@@ -171,7 +229,7 @@ export default function ChatModule() {
       es?.close();
       if (poll) clearInterval(poll);
     };
-  }, [user?.id, loadConvos, loadFriends, loadThread, markRead]);
+  }, [user?.id, loadConvos, loadFriends, loadThread, markRead, tr]);
 
   const openWith = async (friend) => {
     try {
@@ -183,6 +241,7 @@ export default function ChatModule() {
       toast.error(tr("Could not open the chat"), e.message);
     }
   };
+  const upsertConvo = (c) => setConvos((list) => (list && list.some((x) => x.id === c.id) ? list.map((x) => (x.id === c.id ? { ...x, ...c } : x)) : [{ unread: 0, ...c }, ...(list ?? [])]));
   const sendRequest = async (code) => {
     const r = await api.post("/api/chat/friends", { code });
     toast.success(r.status === "friends" ? tr("You are now friends with {name}", { name: r.user.name }) : tr("Friend request sent to {name}", { name: r.user.name }));
@@ -203,7 +262,7 @@ export default function ChatModule() {
             <TabButton active={tab === "friends"} icon={Users} label={tr("Friends")} count={pendingIn} onClick={() => setTab("friends")} />
           </div>
           {tab === "chats" ? (
-            <ConversationList tr={tr} me={user} convos={convos} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} />
+            <ConversationList tr={tr} me={user} convos={convos} active={active} onOpen={(id) => setActive(id)} onFindFriends={() => setTab("friends")} onNewGroup={() => setNewGroup(true)} />
           ) : (
             <FriendsPanel tr={tr} toast={toast} data={friends} reload={loadFriends} onMessage={openWith} onSendRequest={sendRequest} />
           )}
@@ -227,6 +286,12 @@ export default function ChatModule() {
                 const older = await api.get(`/api/chat/conversations/${active}/messages?before=${list[0].id}`);
                 setThreads((t) => ({ ...t, [active]: [...older, ...(t[active] ?? [])] }));
               }}
+              friends={friends?.friends ?? []}
+              onConvoChange={upsertConvo}
+              onLeft={(id) => {
+                setConvos((list) => (list ?? []).filter((c) => c.id !== id));
+                setActive(null);
+              }}
             />
           ) : (
             <div className="grid flex-1 place-items-center p-6">
@@ -235,6 +300,18 @@ export default function ChatModule() {
           )}
         </section>
       </div>
+      <GroupCreateModal
+        tr={tr}
+        open={newGroup}
+        friends={friends?.friends ?? []}
+        onClose={() => setNewGroup(false)}
+        onCreated={(c) => {
+          setNewGroup(false);
+          upsertConvo(c);
+          setActive(c.id);
+          setTab("chats");
+        }}
+      />
       <ConfirmDialog
         open={!!pendingAdd}
         onClose={() => setPendingAdd(null)}
@@ -280,45 +357,238 @@ function TabButton({ active, icon: Icon, label, count, onClick }) {
   );
 }
 
-function ConversationList({ tr, me, convos, active, onOpen, onFindFriends }) {
+function ConversationList({ tr, me, convos, active, onOpen, onFindFriends, onNewGroup }) {
   if (!convos) return <div className="grid flex-1 place-items-center"><Spinner className="text-fg-muted" /></div>;
-  if (!convos.length) {
+  const preview = (c) => {
+    if (!c.last_id) return tr("No messages yet");
+    if (c.last_kind === "system") return systemText({ body: c.last_body, sender_name: c.last_sender_name }, tr);
+    const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
+    const what = c.last_body ? <span className="truncate">{c.last_body}</span> : <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>;
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-        <EmptyState compact icon={MessageCircle} title={tr("No chats yet")} description={tr("Add a friend, then press Message to start.")} />
-        <Button variant="secondary" size="sm" icon={Users} onClick={onFindFriends}>{tr("Find friends")}</Button>
-      </div>
+      <>
+        {who ? `${who}: ` : ""}
+        {what}
+      </>
     );
-  }
+  };
   return (
-    <ul className="chat-list min-h-0 flex-1 overflow-y-auto p-2">
-      {convos.map((c) => (
-        <li key={c.id}>
-          <button type="button" onClick={() => onOpen(c.id)} className={cn("chat-list-item flex w-full items-center gap-3 rounded-app-sm px-2.5 py-2 text-left transition", active === c.id ? "is-active bg-accent/12" : "hover:bg-surface-2")}>
-            <Avatar name={c.name} color={c.avatar_color} size="md" />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-2">
-                <span className={cn("truncate text-sm", c.unread ? "font-semibold text-fg" : "font-medium")}>{c.name}</span>
-                {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
-              </span>
-              <span className="flex items-center gap-2">
-                <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>
-                  {c.last_id ? (
-                    <>
-                      {c.last_sender_id === me?.id ? `${tr("You")}: ` : ""}
-                      {c.last_body ? <span className="truncate">{c.last_body}</span> : <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>}
-                    </>
-                  ) : (
-                    tr("No messages yet")
-                  )}
+    <>
+      <div className="chat-list-head flex items-center justify-between gap-2 px-3 pt-2.5 pb-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Chats")}</span>
+        <Button size="xs" variant="outline" icon={Users} onClick={onNewGroup}>{tr("New group")}</Button>
+      </div>
+      {!convos.length ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <EmptyState compact icon={MessageCircle} title={tr("No chats yet")} description={tr("Add a friend, then press Message to start.")} />
+          <Button variant="secondary" size="sm" icon={Users} onClick={onFindFriends}>{tr("Find friends")}</Button>
+        </div>
+      ) : (
+        <ul className="chat-list min-h-0 flex-1 overflow-y-auto p-2">
+          {convos.map((c) => (
+            <li key={c.id}>
+              <button type="button" onClick={() => onOpen(c.id)} className={cn("chat-list-item flex w-full items-center gap-3 rounded-app-sm px-2.5 py-2 text-left transition", active === c.id ? "is-active bg-accent/12" : "hover:bg-surface-2")}>
+                <ConvoAvatar convo={c} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className={cn("truncate text-sm", c.unread ? "font-semibold text-fg" : "font-medium")}>{c.name}</span>
+                    {isGroup(c) ? <span className="shrink-0 text-[10px] text-fg-faint">{memberCount(c.member_count, tr)}</span> : null}
+                    {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
+                    {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white">{c.unread}</span> : null}
+                  </span>
                 </span>
-                {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white">{c.unread}</span> : null}
-              </span>
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** Pick friends for a group: a searchable checklist with avatars. */
+function FriendPicker({ tr, friends, selected, onChange, exclude = [] }) {
+  const [q, setQ] = useState("");
+  const list = friends.filter((f) => !exclude.includes(f.id) && (!q || `${f.name} ${f.email}`.toLowerCase().includes(q.toLowerCase())));
+  if (!friends.filter((f) => !exclude.includes(f.id)).length) return <p className="rounded-app border border-dashed border-line px-3 py-4 text-center text-xs text-fg-muted">{tr("Everyone you are friends with is already here. Add more friends on the Friends tab.")}</p>;
+  return (
+    <div className="chat-picker">
+      <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Search friends…")} className="mb-2" />
+      <ul className="max-h-64 space-y-0.5 overflow-y-auto">
+        {list.map((f) => {
+          const on = selected.includes(f.id);
+          return (
+            <li key={f.id}>
+              <label className={cn("chat-person flex cursor-pointer items-center gap-2.5 rounded-app-sm px-2 py-1.5", on && "bg-accent/10")}>
+                <Checkbox checked={on} onChange={(v) => onChange(v ? [...selected, f.id] : selected.filter((x) => x !== f.id))} />
+                <Avatar name={f.name} color={f.avatar_color} size="sm" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{f.name}</span>
+                  <span className="block truncate text-[11px] text-fg-muted">{f.email}</span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+        {!list.length ? <li className="px-2 py-3 text-center text-xs text-fg-faint">{tr("No matches")}</li> : null}
+      </ul>
+    </div>
+  );
+}
+
+function GroupCreateModal({ tr, open, friends, onClose, onCreated }) {
+  const toast = useToast();
+  const [title, setTitle] = useState("");
+  const [ids, setIds] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const reset = () => {
+    setTitle("");
+    setIds([]);
+  };
+  const create = async (e) => {
+    e?.preventDefault();
+    if (!title.trim() || !ids.length || busy) return;
+    setBusy(true);
+    try {
+      const c = await api.post("/api/chat/groups", { title: title.trim(), member_ids: ids });
+      toast.success(tr("Group “{title}” created", { title: c.title }));
+      reset();
+      onCreated(c);
+    } catch (err) {
+      toast.error(tr("Could not create the group"), err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open={open}
+      onClose={() => {
+        reset();
+        onClose();
+      }}
+      size="sm"
+      title={tr("New group")}
+      description={tr("Name the group and pick friends to start with. Members can add their own friends later.")}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>{tr("Cancel")}</Button>
+          <Button icon={Users} onClick={create} loading={busy} disabled={!title.trim() || !ids.length}>{tr("Create group")}</Button>
+        </>
+      }
+    >
+      <form onSubmit={create} className="space-y-4">
+        <Field label={tr("Group name")} required>
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} placeholder={tr("e.g. Weekend plans")} autoFocus />
+        </Field>
+        <Field label={tr("Members")} hint={ids.length ? tr("{n} selected", { n: ids.length }) : undefined}>
+          <FriendPicker tr={tr} friends={friends} selected={ids} onChange={setIds} />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+/** Group details: rename (owner), members with remove (owner), add friends (anyone), leave. */
+function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft }) {
+  const toast = useToast();
+  const owner = convo.my_role === "owner";
+  const [title, setTitle] = useState(convo.title ?? "");
+  const [adding, setAdding] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(null); // { kind: "leave" } | { kind: "remove", member }
+  const run = async (fn, okMsg) => {
+    setBusy(true);
+    try {
+      const r = await fn();
+      if (okMsg) toast.success(okMsg);
+      return r;
+    } catch (e) {
+      toast.error(tr("Something went wrong"), e.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const rename = async () => {
+    const t = title.trim();
+    if (!t || t === convo.title) return;
+    const c = await run(() => api.put(`/api/chat/conversations/${convo.id}`, { title: t }), tr("Group renamed"));
+    if (c) onChange(c);
+  };
+  const addMembers = async () => {
+    if (!adding.length) return;
+    const c = await run(() => api.post(`/api/chat/conversations/${convo.id}/members`, { user_ids: adding }), tr("{n} added", { n: adding.length }));
+    if (c) {
+      setAdding([]);
+      onChange(c);
+    }
+  };
+  const runConfirm = async () => {
+    const c = confirm;
+    setConfirm(null);
+    if (!c) return;
+    if (c.kind === "remove") {
+      const r = await run(() => api.del(`/api/chat/conversations/${convo.id}/members/${c.member.id}`), tr("Removed {name}", { name: c.member.name }));
+      if (r) onChange(r);
+    } else if (c.kind === "leave") {
+      const r = await run(() => api.del(`/api/chat/conversations/${convo.id}`), tr("You left “{title}”", { title: convo.title }));
+      if (r) onLeft(convo.id);
+    }
+  };
+  const memberIds = convo.members.map((m) => m.id);
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title={convo.title} description={memberCount(convo.member_count, tr)}>
+      <div className="space-y-5">
+        {owner ? (
+          <Field label={tr("Group name")}>
+            <div className="flex gap-2">
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} className="flex-1" />
+              <Button variant="secondary" icon={Pencil} onClick={rename} loading={busy} disabled={!title.trim() || title.trim() === convo.title}>{tr("Rename")}</Button>
+            </div>
+          </Field>
+        ) : null}
+        <section>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Members")}</p>
+          <ul className="space-y-0.5">
+            {convo.members.map((m) => (
+              <li key={m.id} className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-1.5">
+                <Avatar name={m.name} color={m.avatar_color} size="sm" />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-sm font-medium">
+                    <span className="truncate">{m.id === me?.id ? tr("You") : m.name}</span>
+                    {m.role === "owner" ? <Badge tone="amber" size="xs"><Crown size={10} /> {tr("Owner")}</Badge> : null}
+                  </span>
+                  <span className="block truncate text-[11px] text-fg-muted">{m.email}</span>
+                </span>
+                {owner && m.id !== me?.id ? <Button size="iconXs" variant="ghost" icon={UserMinus} aria-label={tr("Remove")} data-tip={tr("Remove from group")} onClick={() => setConfirm({ kind: "remove", member: m })} /> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+        <section>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Add friends")}</p>
+          <FriendPicker tr={tr} friends={friends} selected={adding} onChange={setAdding} exclude={memberIds} />
+          {adding.length ? <Button size="sm" icon={UserPlus} className="mt-2" onClick={addMembers} loading={busy}>{tr("Add {n} to the group", { n: adding.length })}</Button> : null}
+        </section>
+        <div className="ui-divider border-t border-line pt-4">
+          <Button variant="dangerGhost" icon={LogOut} onClick={() => setConfirm({ kind: "leave" })} disabled={busy}>{tr("Leave group")}</Button>
+          {owner && convo.member_count > 1 ? <p className="mt-1 text-[11px] text-fg-muted">{tr("As the owner, leaving hands the group to its longest-standing member.")}</p> : null}
+          {convo.member_count === 1 ? <p className="mt-1 text-[11px] text-fg-muted">{tr("You are the last member, so leaving deletes the group and its messages.")}</p> : null}
+        </div>
+      </div>
+      <ConfirmDialog
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        onConfirm={runConfirm}
+        loading={busy}
+        title={confirm?.kind === "remove" ? tr("Remove {name}?", { name: confirm.member.name }) : tr("Leave “{title}”?", { title: convo.title })}
+        confirmText={confirm?.kind === "remove" ? tr("Remove") : tr("Leave")}
+        description={confirm?.kind === "remove" ? tr("They will stop seeing new messages. A member can add them again.") : convo.member_count === 1 ? tr("The group and its messages will be deleted.") : tr("You will stop receiving messages from this group.")}
+      />
+    </Modal>
   );
 }
 
@@ -351,13 +621,15 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const [lightbox, setLightbox] = useState(null); // { photos, index }
+  const [panel, setPanel] = useState(false);
+  const group = isGroup(convo);
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
@@ -376,7 +648,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [convo.id, count]);
-  const canChat = !convo.friend_status || convo.friend_status === "accepted";
+  const canChat = group || !convo.friend_status || convo.friend_status === "accepted";
 
   const addFiles = async (list) => {
     const files = [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
@@ -426,8 +698,10 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
       setSending(false);
     }
   };
-  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id) : null;
-  const seen = lastMine && Number(convo.peer_last_read) >= lastMine.id;
+  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system") : null;
+  const seenBy = lastMine ? (convo.members ?? []).filter((m) => m.id !== me?.id && Number(m.last_read_message_id) >= lastMine.id) : [];
+  const seen = lastMine && (group ? seenBy.length > 0 : Number(convo.peer_last_read) >= lastMine.id);
+  const seenLabel = !group ? tr("Seen") : seenBy.length === (convo.members?.length ?? 1) - 1 ? tr("Seen by everyone") : tr("Seen by {names}", { names: seenBy.map((m) => m.name).join(", ") });
   const dropProps = canChat
     ? {
         onDragOver: (e) => {
@@ -451,12 +725,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
     <>
       <header className="chat-head flex items-center gap-3 border-b border-line px-4 py-3">
         <Button variant="ghost" size="iconSm" icon={ArrowLeft} className="md:hidden" onClick={onBack} aria-label={tr("Back")} />
-        <Avatar name={convo.name} color={convo.avatar_color} size="sm" />
+        <ConvoAvatar convo={convo} size="sm" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold">{convo.name}</span>
-          <span className="block truncate text-[11px] text-fg-muted">{convo.email}</span>
+          <span className="block truncate text-[11px] text-fg-muted">{group ? `${memberCount(convo.member_count, tr)} · ${convo.members.map((m) => (m.id === me?.id ? tr("You") : m.name)).join(", ")}` : convo.email}</span>
         </span>
+        {group ? <Button variant="ghost" size="iconSm" icon={Settings2} onClick={() => setPanel(true)} aria-label={tr("Group settings")} data-tip={tr("Group settings")} /> : null}
       </header>
+      {group && panel ? <GroupPanel tr={tr} me={me} convo={convo} friends={friends ?? []} open={panel} onClose={() => setPanel(false)} onChange={onConvoChange} onLeft={(id) => { setPanel(false); onLeft(id); }} /> : null}
       <div className="relative flex min-h-0 flex-1 flex-col" {...dropProps}>
         {dragging ? (
           <div className="chat-drop pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-app border-2 border-dashed border-accent bg-accent/10 text-sm font-medium text-accent">
@@ -477,7 +753,16 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
                 const photos = m.attachments ?? [];
                 const prev = messages[i - 1];
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-                const grouped = prev && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
+                if (m.kind === "system") {
+                  return (
+                    <div key={m.id}>
+                      {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
+                      <p className="chat-system my-1.5 text-center text-[11px] text-fg-muted" title={formatDateTime(m.created_at)}>{systemText(m, tr)}</p>
+                    </div>
+                  );
+                }
+                const grouped = prev && prev.kind !== "system" && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
+                const showSender = group && !mine && !grouped;
                 const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
@@ -486,10 +771,13 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
                 return (
                   <div key={m.id}>
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
-                    <div className={cn("flex", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
+                    <div className={cn("flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
+                      {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
+                      <div className={cn("flex min-w-0 flex-col", mine ? "items-end" : "items-start")} style={{ maxWidth: "78%" }}>
+                      {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
                       <div
                         className={cn(
-                          "chat-bubble max-w-[78%] whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
+                          "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
                           photos.length ? "chat-has-photos p-1.5" : "px-3 py-2",
                           mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
                         )}
@@ -528,8 +816,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
                           </>
                         )}
                       </div>
+                      </div>
                     </div>
-                    {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{tr("Seen")}</p> : null}
+                    {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{seenLabel}</p> : null}
                   </div>
                 );
               })}

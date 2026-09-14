@@ -24,6 +24,7 @@ const ICONS = {
   friend_request: UserPlus,
   friend_accepted: UserCheck,
   chat_message: MessageCircle,
+  chat_group: Users,
 };
 
 const TONE_CLASS = {

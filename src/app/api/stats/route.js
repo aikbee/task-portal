@@ -21,7 +21,7 @@ export const GET = handler(async (_request, _params, user) => {
       (SELECT COUNT(*) FROM users) AS users,
       (SELECT COUNT(*) FROM task_attachments a JOIN tasks t ON t.id = a.task_id WHERE t.profile_id = ?) AS attachments,
       (SELECT COUNT(*) FROM task_outputs x JOIN tasks t ON t.id = x.task_id WHERE t.profile_id = ?) AS outputs,
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.id > COALESCE(m.last_read_message_id, 0))
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0))
         + (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS chat`,
     [o, o, o, o, o, o, o, o, o, o, o, user.id, o, o, user.id, user.id, user.id]
   );

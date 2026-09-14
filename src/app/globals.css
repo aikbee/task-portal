@@ -1212,6 +1212,10 @@ body { -webkit-tap-highlight-color: transparent; }
   max-height: calc(100dvh - 7rem);
 }
 
+.chat-system {
+  overflow-wrap: anywhere;
+}
+
 /* Modern chat */
 [data-table-theme="modern"] .chat-shell {
   border-radius: 1.25rem;
@@ -1280,6 +1284,18 @@ body { -webkit-tap-highlight-color: transparent; }
 }
 [data-table-theme="modern"] .chat-composer .control {
   border-radius: 1.1rem;
+}
+[data-table-theme="modern"] .chat-system {
+  display: table;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+[data-table-theme="modern"] .chat-list-head {
+  padding-top: 0.7rem;
 }
 [data-table-theme="modern"] .chat-photo {
   border-radius: 0.8rem;
