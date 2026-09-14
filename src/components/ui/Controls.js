@@ -84,7 +84,7 @@ export function Field({ label, hint, error, required, children, className, htmlF
   return (
     <div className={cn("space-y-1.5", className)}>
       {label ? (
-        <label htmlFor={htmlFor} className="block text-xs font-medium text-fg-muted">
+        <label htmlFor={htmlFor} className="ui-label block text-xs font-medium text-fg-muted">
           {label}
           {required ? <span className="text-rose-500"> *</span> : null}
         </label>
@@ -98,7 +98,7 @@ export function Field({ label, hint, error, required, children, className, htmlF
 /** Segmented control: options [{value,label,icon}] */
 export function Segmented({ options, value, onChange, className, size = "md" }) {
   return (
-    <div className={cn("inline-flex rounded-app-sm border border-line bg-surface-2 p-0.5", className)}>
+    <div className={cn("ui-seg inline-flex rounded-app-sm border border-line bg-surface-2 p-0.5", className)}>
       {options.map((o) => {
         const active = o.value === value;
         const Icon = o.icon;
@@ -108,9 +108,9 @@ export function Segmented({ options, value, onChange, className, size = "md" }) 
             type="button"
             onClick={() => onChange(o.value)}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1.5 rounded-[calc(var(--radius)*0.5)] px-2.5 font-medium transition",
+              "ui-seg-btn flex flex-1 items-center justify-center gap-1.5 rounded-[calc(var(--radius)*0.5)] px-2.5 font-medium transition",
               size === "sm" ? "h-7 text-xs" : "h-8 text-xs",
-              active ? "bg-surface text-fg shadow-sm border border-line" : "text-fg-muted hover:text-fg"
+              active ? "is-active bg-surface text-fg shadow-sm border border-line" : "text-fg-muted hover:text-fg"
             )}
           >
             {Icon ? <Icon size={13} /> : null}

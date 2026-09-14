@@ -35,7 +35,9 @@ const Button = forwardRef(function Button(
       type={type}
       disabled={disabled || loading}
       className={cn(
-        "inline-flex items-center justify-center font-medium whitespace-nowrap select-none transition-all duration-150 focus-ring",
+        "btn inline-flex items-center justify-center font-medium whitespace-nowrap select-none transition-all duration-150 focus-ring",
+        `btn-${variant}`,
+        size.startsWith("icon") && "btn-icon",
         "disabled:opacity-60 disabled:pointer-events-none",
         variants[variant],
         sizes[size],
