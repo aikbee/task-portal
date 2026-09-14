@@ -111,6 +111,28 @@ console.log("auth");
   check("admin login 200 + cookie", r.status === 200 && r.data?.role === "admin" && Boolean(jar.ap_session), JSON.stringify(r.raw));
   const me = await call("GET", "/api/auth/me");
   check("GET /api/auth/me", me.data?.email === "admin@example.com" && !("password_hash" in (me.data || {})) && me.data?.has_google === false);
+  const sess = await call("GET", "/api/auth/sessions");
+  check("GET /api/auth/sessions lists the current session with device info", sess.status === 200 && sess.data?.some((s) => s.current) && sess.data.every((s) => typeof s.browser === "string" && typeof s.device === "string"), JSON.stringify(sess.raw).slice(0, 200));
+  const hist = await call("GET", "/api/auth/login-history");
+  check("login history has this sign-in and the failed attempt", hist.status === 200 && hist.data?.some((e) => e.success && e.method === "password" && e.current) && hist.data.some((e) => !e.success && e.reason === "wrong_password"), JSON.stringify(hist.data?.slice(0, 2)));
+  const mainJar = { ...jar };
+  jar = {};
+  const second = await call("POST", "/api/auth/login", { body: { email: "admin@example.com", password: "admin123" }, noAuth: true });
+  const secondId = second.data?.session_id;
+  jar = mainJar;
+  const list2 = await call("GET", "/api/auth/sessions");
+  check("a second sign-in shows up as another session", Boolean(secondId) && list2.data?.some((s) => s.id === secondId && !s.current));
+  const selfKill = await call("DELETE", `/api/auth/sessions/${list2.data.find((s) => s.current).id}`);
+  check("the current session cannot be terminated from the list", selfKill.status === 400);
+  const kill = await call("DELETE", `/api/auth/sessions/${secondId}`);
+  check("terminate another session", kill.status === 200 && !kill.data.some((s) => s.id === secondId));
+  const gone = await call("DELETE", `/api/auth/sessions/${secondId}`);
+  check("terminated session -> 404", gone.status === 404);
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: "admin@example.com", password: "admin123" }, noAuth: true });
+  jar = mainJar;
+  const others = await call("DELETE", "/api/auth/sessions");
+  check("sign out other sessions leaves only this one", others.status === 200 && others.data.length === 1 && others.data[0].current);
 }
 
 console.log("passkeys (signed in)");
@@ -568,6 +590,8 @@ const adminJar = { ...jar };
   check("remove passkeys of an unknown user -> 404", nf.status === 404);
   const rmTotp = await call("DELETE", `/api/users/${userId}/totp`);
   check("admin resets 2FA (not on) -> 200", rmTotp.status === 200 && !rmTotp.data?.has_totp);
+  const kickAll = await call("DELETE", `/api/users/${userId}/sessions`);
+  check("admin signs an account out everywhere -> 200", kickAll.status === 200 && kickAll.data?.active_sessions === 0);
   // sign in as the new user in a separate cookie jar
   jar = {};
   const login = await call("POST", "/api/auth/login", { body: { email: `smoke.user.${suffix.toLowerCase()}@example.com`, password: "smoke123" }, noAuth: true });

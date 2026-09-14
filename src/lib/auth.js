@@ -11,11 +11,11 @@ export const PROFILE_COOKIE = "ap_profile";
 export const PUBLIC_USER_FIELDS = "u.id, u.name, u.email, u.role, u.status, u.avatar_color, u.employee_id, u.notification_prefs, (u.pin_hash IS NOT NULL) AS has_pin, (u.google_sub IS NOT NULL) AS has_google, (u.totp_secret IS NOT NULL) AS has_totp, u.last_login_at, u.created_at, u.updated_at";
 
 /** Create a DB session for the user and set the signed cookie (on `response` when given, else via next/headers). */
-export async function createSession(userId, { remember = false, userAgent = "", response = null } = {}) {
+export async function createSession(userId, { remember = false, userAgent = "", response = null, ip = null } = {}) {
   const id = crypto.randomBytes(24).toString("hex");
   const expires = new Date(Date.now() + (remember ? 30 : 7) * DAY);
   // FROM_UNIXTIME keeps expires_at in the same time zone MySQL uses for NOW()
-  await execute("INSERT INTO sessions (id, user_id, expires_at, user_agent) VALUES (?, ?, FROM_UNIXTIME(?), ?)", [id, userId, Math.floor(expires.getTime() / 1000), userAgent.slice(0, 255) || null]);
+  await execute("INSERT INTO sessions (id, user_id, expires_at, user_agent, ip, last_seen_at) VALUES (?, ?, FROM_UNIXTIME(?), ?, ?, NOW())", [id, userId, Math.floor(expires.getTime() / 1000), userAgent.slice(0, 255) || null, ip]);
   const cookie = {
     name: SESSION_COOKIE,
     value: await signSessionId(id, sessionSecret()),
@@ -85,12 +85,16 @@ export async function getSessionUser(request) {
   const id = await sessionIdFrom(request);
   if (!id) return null;
   const row = await queryOne(
-    `SELECT ${PUBLIC_USER_FIELDS}, s.id AS session_id, s.expires_at, (s.unlocked_until IS NOT NULL AND s.unlocked_until > NOW()) AS secrets_unlocked
+    `SELECT ${PUBLIC_USER_FIELDS}, s.id AS session_id, s.expires_at, (s.unlocked_until IS NOT NULL AND s.unlocked_until > NOW()) AS secrets_unlocked,
+       (s.last_seen_at IS NULL OR s.last_seen_at < NOW() - INTERVAL 5 MINUTE) AS stale_seen
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.id = ? AND s.expires_at > NOW() AND u.status = 'active'`,
     [id]
   );
   if (!row) return null;
+  // "last active" on the Security page, refreshed at most every five minutes and never awaited
+  if (row.stale_seen) execute("UPDATE sessions SET last_seen_at = NOW() WHERE id = ?", [id]).catch(() => {});
+  delete row.stale_seen;
   let owner_id = row.id;
   let workspace = null;
   if (row.role === "admin") {
@@ -120,7 +124,8 @@ export function requireRole(user, role) {
   if (user?.role !== role) throw new HttpError("Admin access required.", 403);
 }
 
-/** Remove expired sessions (called opportunistically on login). */
+/** Remove expired sessions and old login history (called opportunistically on login). */
 export async function pruneSessions() {
   await execute("DELETE FROM sessions WHERE expires_at < NOW()");
+  await execute("DELETE FROM login_events WHERE created_at < NOW() - INTERVAL 180 DAY");
 }

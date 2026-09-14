@@ -34,10 +34,30 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at DATETIME NOT NULL,
   unlocked_until DATETIME NULL, -- secrets may be revealed without re-verifying until this time
   user_agent VARCHAR(255) NULL,
+  ip VARCHAR(45) NULL,
+  last_seen_at DATETIME NULL, -- refreshed at most every five minutes
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_sessions_user (user_id),
   KEY idx_sessions_expires (expires_at),
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Sign-in history (successful and failed attempts) shown on the Security page; pruned after 180 days
+CREATE TABLE IF NOT EXISTS login_events (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  session_id CHAR(48) NULL, -- the session a successful sign-in created (not a foreign key: sessions come and go)
+  method VARCHAR(16) NOT NULL, -- password | totp | passkey | google
+  success TINYINT(1) NOT NULL DEFAULT 1,
+  reason VARCHAR(40) NULL, -- wrong_password | wrong_code | passkey_failed | disabled
+  ip VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  browser VARCHAR(40) NULL,
+  os VARCHAR(40) NULL,
+  device VARCHAR(16) NULL, -- desktop | phone | tablet
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_login_events_user (user_id, id),
+  CONSTRAINT fk_login_events_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- WebAuthn passkeys (Touch ID, Face ID, Windows Hello, security keys) registered from Profile & password

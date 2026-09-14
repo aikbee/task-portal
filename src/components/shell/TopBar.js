@@ -9,7 +9,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush, Wallpaper,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush, Wallpaper, ShieldCheck,
 } from "lucide-react";
 import { moduleFromPath, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
@@ -238,6 +238,7 @@ export default function TopBar() {
           { divider: true },
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
+          { label: tr("Security & sessions"), icon: ShieldCheck, onClick: () => router.push("/security") },
           { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true), hint: "⌘⇧." },
           ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },

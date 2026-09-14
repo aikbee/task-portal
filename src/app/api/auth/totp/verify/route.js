@@ -3,7 +3,7 @@ import { queryOne } from "@/lib/db";
 import { handler, ok, readJson, HttpError } from "@/lib/api-utils";
 import { readSignedCookie, signedCookie, clearCookie } from "@/lib/auth-cookies";
 import { MFA_COOKIE, MFA_MAX_ATTEMPTS, checkSecondFactor, trustDevice } from "@/lib/mfa";
-import { finishLogin } from "@/lib/login";
+import { finishLogin, recordLoginEvent } from "@/lib/login";
 
 /**
  * Second step of a password sign-in (public): { code, trust }. The first step left a
@@ -18,6 +18,7 @@ export const POST = handler(
     try {
       await checkSecondFactor(user, body.code);
     } catch (err) {
+      await recordLoginEvent(request, user.id, { method: "totp", success: false, reason: "wrong_code" });
       const attempts = (saved.attempts ?? 0) + 1;
       if (attempts >= MFA_MAX_ATTEMPTS) {
         const res = NextResponse.json({ error: "Too many wrong codes. Enter your email and password again." }, { status: 429 });

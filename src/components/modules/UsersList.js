@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, KeyRound, Briefcase, Fingerprint, Unlink, ShieldCheck, ShieldOff } from "lucide-react";
+import { Plus, KeyRound, Briefcase, Fingerprint, Unlink, ShieldCheck, ShieldOff, LogOut } from "lucide-react";
 import { api } from "@/lib/api";
 import DataTable from "@/components/table/DataTable";
 import PageHeader from "@/components/ui/PageHeader";
@@ -31,14 +31,14 @@ export default function UsersList() {
   useNewShortcut(openNew);
   const del = useDeleteFlow("/api/users", { toast, label: "user", onDeleted: removeLocal });
   // admin recovery actions: drop every passkey of an account or disconnect Google
-  const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" | "totp" }
+  const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" | "totp" | "sessions" }
   const [methodBusy, setMethodBusy] = useState(false);
   const runMethodAction = async () => {
     if (!methodTarget) return;
     setMethodBusy(true);
     try {
       await api.del(`/api/users/${methodTarget.user.id}/${methodTarget.kind}`);
-      toast.success(methodTarget.kind === "google" ? tr("Google unlinked") : methodTarget.kind === "totp" ? tr("Two-factor authentication reset") : tr("Passkeys removed"), methodTarget.user.name);
+      toast.success(methodTarget.kind === "google" ? tr("Google unlinked") : methodTarget.kind === "totp" ? tr("Two-factor authentication reset") : methodTarget.kind === "sessions" ? tr("Signed out everywhere") : tr("Passkeys removed"), methodTarget.user.name);
       setMethodTarget(null);
       refetch();
     } catch (e) {
@@ -132,6 +132,9 @@ export default function UsersList() {
             {r.has_totp && r.id !== me?.id ? (
               <Button variant="ghost" size="iconXs" icon={ShieldOff} aria-label={tr("Reset 2FA")} data-tip={tr("Reset 2FA")} onClick={() => setMethodTarget({ user: r, kind: "totp" })} />
             ) : null}
+            {r.active_sessions > 0 && r.id !== me?.id ? (
+              <Button variant="ghost" size="iconXs" icon={LogOut} aria-label={tr("Sign out everywhere")} data-tip={tr("Sign out everywhere")} onClick={() => setMethodTarget({ user: r, kind: "sessions" })} />
+            ) : null}
             <RowActions onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
           </>
         )}
@@ -150,8 +153,8 @@ export default function UsersList() {
         onClose={() => setMethodTarget(null)}
         onConfirm={runMethodAction}
         loading={methodBusy}
-        title={methodTarget?.kind === "google" ? tr("Unlink Google?") : methodTarget?.kind === "totp" ? tr("Reset two-factor authentication?") : tr("Remove passkeys?")}
-        confirmText={methodTarget?.kind === "google" ? tr("Unlink") : methodTarget?.kind === "totp" ? tr("Reset") : tr("Remove")}
+        title={methodTarget?.kind === "google" ? tr("Unlink Google?") : methodTarget?.kind === "totp" ? tr("Reset two-factor authentication?") : methodTarget?.kind === "sessions" ? tr("Sign out everywhere?") : tr("Remove passkeys?")}
+        confirmText={methodTarget?.kind === "google" ? tr("Unlink") : methodTarget?.kind === "totp" ? tr("Reset") : methodTarget?.kind === "sessions" ? tr("Sign out") : tr("Remove")}
         description={
           !methodTarget
             ? ""
@@ -159,6 +162,8 @@ export default function UsersList() {
               ? tr("{name} will no longer be able to sign in with Google until they connect it again. Their password keeps working.", { name: methodTarget.user.name })
               : methodTarget.kind === "totp"
                 ? tr("{name} will sign in with their password alone until they set up an authenticator app again. Use this when they lost their phone and their recovery codes.", { name: methodTarget.user.name })
+                : methodTarget.kind === "sessions"
+                  ? tr("{name} is signed out of all {n} devices and browsers immediately. They can sign in again right away.", { name: methodTarget.user.name, n: methodTarget.user.active_sessions })
               : tr("All passkeys of {name} ({n}) are removed. Their password keeps working, and they can add a new passkey from their profile.", { name: methodTarget.user.name, n: methodTarget.user.passkey_count })
         }
       />

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { KeyRound, UserRound, Fingerprint, Plus, Trash2, ShieldCheck, ShieldOff, Copy, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -110,6 +111,10 @@ function ProfileModalInner({ onClose }) {
           <Button type="submit" variant="secondary" icon={KeyRound} loading={pwBusy}>Change password</Button>
         </div>
       </form>
+
+      <p className="mt-3 text-[11px] text-fg-faint">
+        <Link href="/security" onClick={onClose} className="text-accent hover:underline">{tr("Active sessions and login history")}</Link> {tr("are on the Security page.")}
+      </p>
 
       <Divider className="my-5" label={tr("Two-factor authentication")} />
       <TwoFactorSection tr={tr} toast={toast} setUser={setUser} />

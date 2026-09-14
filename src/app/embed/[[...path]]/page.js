@@ -8,6 +8,7 @@ import EmployeeDetail from "@/components/modules/EmployeeDetail";
 import TasksList from "@/components/modules/TasksList";
 import TaskDetail from "@/components/modules/TaskDetail";
 import UsersList from "@/components/modules/UsersList";
+import SecurityPage from "@/components/modules/SecurityPage";
 import RequirementsList from "@/components/modules/RequirementsList";
 import RequirementDetail from "@/components/modules/RequirementDetail";
 import NotificationsList from "@/components/modules/NotificationsList";
@@ -56,6 +57,8 @@ function pick(segments) {
       return id == null ? <NotificationsList /> : null;
     case "users":
       return id == null ? <UsersList /> : null;
+    case "security":
+      return id == null ? <SecurityPage /> : null;
     default:
       return null;
   }
