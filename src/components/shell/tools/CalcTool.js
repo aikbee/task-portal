@@ -45,7 +45,7 @@ function Keypad({ press, large }) {
   return (
     <div className={cn("grid grid-cols-4", large ? "gap-2" : "gap-1.5")}>
       {KEYS.map((k) => (
-        <button key={k} onClick={() => press(k)} className={cn("rounded-app-sm border border-line bg-surface-2 font-mono hover:bg-surface-3", large ? "h-14 text-lg" : "h-9 text-sm", k === "C" && "text-rose-500")}>
+        <button key={k} onClick={() => press(k)} className={cn("calc-key rounded-app-sm border border-line bg-surface-2 font-mono hover:bg-surface-3", large ? "h-14 text-lg" : "h-9 text-sm", k === "C" && "text-rose-500")}>
           {k}
         </button>
       ))}
@@ -57,14 +57,14 @@ function HistoryList({ history, onPick, onClear, className }) {
   const tr = useT();
   if (!history.length) return <p className={cn("text-xs text-fg-faint", className)}>{tr("No calculations yet")}</p>;
   return (
-    <div className={className}>
+    <div className={cn("calc-history", className)}>
       <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-fg-faint">
         {tr("History")}
         <button onClick={onClear} className="flex items-center gap-1 hover:text-fg"><Trash2 size={10} />{tr("clear")}</button>
       </div>
       <ul className="space-y-1 font-mono text-xs">
         {history.map((h, i) => (
-          <li key={i} className="flex justify-between gap-2 text-fg-muted">
+          <li key={i} className="calc-history-row flex justify-between gap-2 text-fg-muted">
             <button onClick={() => onPick(h.expr)} className="truncate hover:text-fg">{h.expr}</button>
             <span className="shrink-0 font-semibold text-fg">= {h.out}</span>
           </li>
@@ -96,12 +96,12 @@ export function CalcWorkspace() {
   const { expr, error, history, setExpr, run, press, backspace, clearHistory } = useCalc();
   return (
     <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-      <aside className="order-2 w-full shrink-0 overflow-y-auto border-t border-line bg-surface/60 p-4 md:order-1 md:w-80 md:border-r md:border-t-0">
+      <aside className="tool-aside order-2 w-full shrink-0 overflow-y-auto border-t border-line bg-surface/60 p-4 md:order-1 md:w-80 md:border-r md:border-t-0">
         <HistoryList history={history} onPick={setExpr} onClear={clearHistory} />
       </aside>
       <section className="order-1 flex min-h-0 flex-1 flex-col items-center justify-center p-6 md:order-2">
         <div className="w-full max-w-md space-y-3">
-          <div className="rounded-app border border-line bg-surface-2/60 p-4 text-right">
+          <div className="calc-display rounded-app border border-line bg-surface-2/60 p-4 text-right">
             <input
               autoFocus
               value={expr}

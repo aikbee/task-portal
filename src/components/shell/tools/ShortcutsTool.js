@@ -12,10 +12,10 @@ export default function ShortcutsTool({ wide = false }) {
     <div className={wide ? "mx-auto grid w-full max-w-4xl gap-6 p-6 md:grid-cols-2" : "space-y-4 p-4"}>
       {GROUPS.map((g) => (
         <div key={g.title}>
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{g.title}</p>
-          <ul className="divide-y divide-line rounded-app border border-line">
+          <p className="sc-title mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{g.title}</p>
+          <ul className="sc-list divide-y divide-line rounded-app border border-line">
             {g.items.map(([a, b, label]) => (
-              <li key={label} className="flex items-center justify-between px-3 py-2 text-xs">
+              <li key={label} className="sc-row flex items-center justify-between px-3 py-2 text-xs">
                 <span className="text-fg">{label}</span>
                 <span className="flex items-center gap-1">
                   <Kbd>{a}</Kbd>

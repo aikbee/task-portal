@@ -1188,6 +1188,83 @@ body { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 6px 14px -10px color-mix(in oklab, var(--accent) 70%, transparent);
 }
 
+/* Modern calculator and shortcuts tools */
+[data-table-theme="modern"] .calc-key {
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border-color: color-mix(in srgb, var(--line) 80%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent), 0 6px 14px -12px rgb(0 0 0 / 0.5);
+  transition: transform 0.1s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+[data-table-theme="modern"] .calc-key:hover {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent));
+  box-shadow: 0 10px 22px -14px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .calc-key:active {
+  transform: translateY(1px) scale(0.98);
+}
+[data-table-theme="modern"] .calc-display {
+  border-radius: 1rem;
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 55%),
+    color-mix(in srgb, var(--surface) 60%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--line));
+  box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.12), 0 14px 30px -26px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .calc-history {
+  position: relative;
+  border-top: 0;
+}
+[data-table-theme="modern"] .calc-history.border-t::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 55%, transparent), transparent 80%);
+}
+[data-table-theme="modern"] .calc-history-row {
+  border-radius: 0.5rem;
+  padding: 0.15rem 0.4rem;
+  margin: 0 -0.4rem;
+}
+[data-table-theme="modern"] .calc-history-row:hover {
+  background: color-mix(in oklab, var(--accent) 9%, transparent);
+}
+[data-table-theme="modern"] .sc-title {
+  color: color-mix(in oklab, var(--accent) 70%, var(--fg-muted));
+  letter-spacing: 0.14em;
+}
+[data-table-theme="modern"] .sc-list {
+  border-radius: 1rem;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 50%),
+    color-mix(in srgb, var(--surface) 60%, transparent);
+  box-shadow: 0 14px 32px -30px color-mix(in oklab, var(--accent) 60%, transparent);
+}
+[data-table-theme="modern"] .sc-row {
+  border-color: color-mix(in srgb, var(--line) 55%, transparent);
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+[data-table-theme="modern"] .sc-row:hover {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+[data-table-theme="modern"] .ui-kbd {
+  border-radius: 0.4rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 85%, white), var(--surface-2));
+  border-color: color-mix(in srgb, var(--line) 90%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 90%, transparent), inset 0 1px 0 color-mix(in srgb, white 25%, transparent);
+  color: color-mix(in oklab, var(--accent) 55%, var(--fg-muted));
+}
+[data-theme="dark"][data-table-theme="modern"] .ui-kbd {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-3) 80%, white 6%), var(--surface-2));
+}
+
 /* Modern page header: a band tinted with the module colour, bigger icon, pill actions */
 [data-table-theme="modern"] .page-header {
   position: relative;
