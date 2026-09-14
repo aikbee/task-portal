@@ -884,6 +884,34 @@ console.log("chat (friends by code, one-to-one messages)");
   const fakeAudio = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdFakeAudio }));
   check("a text file disguised as audio -> 400", fakeAudio.status === 400);
 
+  // editing and deleting
+  const editOther = await as(adminJar, () => call("PUT", `/api/chat/messages/${m1.data.id}`, { body: { body: "hijack" } }));
+  check("editing someone else's message -> 403", editOther.status === 403);
+  const editEmpty = await as(userJar, () => call("PUT", `/api/chat/messages/${m1.data.id}`, { body: { body: "  " } }));
+  check("editing a text message to nothing -> 400", editEmpty.status === 400);
+  const edited = await as(userJar, () => call("PUT", `/api/chat/messages/${m1.data.id}`, { body: { body: "Hello from the smoke test (edited)" } }));
+  check("PUT /api/chat/messages/:id edits your own text and stamps edited_at", edited.status === 200 && edited.data.body === "Hello from the smoke test (edited)" && edited.data.edited_at && !edited.data.deleted_at, JSON.stringify(edited.raw));
+  const editedSeen = await as(adminJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
+  check("the other member reads the edited text", editedSeen.data.find((m) => m.id === m1.data.id)?.body === "Hello from the smoke test (edited)");
+  const captionEdit = await as(userJar, () => call("PUT", `/api/chat/messages/${photoOnly.data.id}`, { body: { body: "now with a caption" } }));
+  check("a photo message can gain a caption", captionEdit.status === 200 && captionEdit.data.body === "now with a caption" && captionEdit.data.attachments.length === 1);
+  const delOther = await as(adminJar, () => call("DELETE", `/api/chat/messages/${photoMsg.data.id}`));
+  check("deleting someone else's message in a direct chat -> 403", delOther.status === 403);
+  const delPhoto = await as(userJar, () => call("DELETE", `/api/chat/messages/${photoMsg.data.id}`));
+  check("DELETE /api/chat/messages/:id soft-deletes: placeholder stays, content and files go", delPhoto.status === 200 && delPhoto.data.deleted_at && delPhoto.data.body === "" && delPhoto.data.attachments.length === 0, JSON.stringify(delPhoto.raw));
+  const gonePhoto = await as(adminJar, () => call("GET", `/api/chat/photos/${chatPhotoId}`));
+  check("its photo file is gone -> 404", gonePhoto.status === 404);
+  const editDeleted = await as(userJar, () => call("PUT", `/api/chat/messages/${photoMsg.data.id}`, { body: { body: "back?" } }));
+  check("a deleted message cannot be edited -> 400", editDeleted.status === 400);
+  const reactDeleted = await as(adminJar, () => call("POST", `/api/chat/messages/${photoMsg.data.id}/reactions`, { body: { emoji: "👍" } }));
+  check("a deleted message cannot be reacted to -> 400", reactDeleted.status === 400);
+  const delTwice = await as(userJar, () => call("DELETE", `/api/chat/messages/${photoMsg.data.id}`));
+  check("deleting again -> 400", delTwice.status === 400);
+  const searchDeleted = await as(adminJar, () => call("GET", "/api/chat/search?q=Look%20at%20this"));
+  check("deleted messages are not search hits", searchDeleted.status === 200 && searchDeleted.data.length === 0);
+  const previewDeleted = await as(adminJar, () => call("GET", "/api/chat/conversations"));
+  check("conversation rows carry last_deleted", previewDeleted.data.find((c) => c.id === convoId)?.last_deleted !== undefined);
+
   // reactions: toggle, validation, visibility to the other member, one notification per reaction
   const badEmoji = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "🦄" } }));
   check("an emoji outside the quick set -> 400", badEmoji.status === 400);
@@ -958,6 +986,11 @@ console.log("chat (friends by code, one-to-one messages)");
   await as(userJar, () => call("POST", `/api/chat/conversations/${gid}/read`, { body: { message_id: gm.data.id } }));
   const seenBy = await as(adminJar, () => call("GET", `/api/chat/conversations/${gid}`));
   check("members carry read positions (seen by)", Number(seenBy.data.members.find((m) => m.id === userId)?.last_read_message_id) === gm.data.id);
+  const ownerMsg = await as(userJar, () => call("POST", `/api/chat/conversations/${gid}/messages`, { body: { body: "owner speaking" } }));
+  const memberDeletesOwner = await as(adminJar, () => call("DELETE", `/api/chat/messages/${ownerMsg.data.id}`));
+  check("a member cannot delete the owner's message -> 403", memberDeletesOwner.status === 403);
+  const ownerDeletesMember = await as(userJar, () => call("DELETE", `/api/chat/messages/${gm.data.id}`));
+  check("the group owner can delete a member's message", ownerDeletesMember.status === 200 && ownerDeletesMember.data.deleted_at && ownerDeletesMember.data.sender_id === adminId);
   const cannotRemove = await as(adminJar, () => call("DELETE", `/api/chat/conversations/${gid}/members/${userId}`));
   check("a member cannot remove people -> 403", cannotRemove.status === 403);
   const selfRemove = await as(userJar, () => call("DELETE", `/api/chat/conversations/${gid}/members/${userId}`));
@@ -1012,6 +1045,16 @@ console.log("chat (friends by code, one-to-one messages)");
     const reactionLine = buf.split("\n").find((l) => l.startsWith("data:") && /"type":"reaction"/.test(l));
     const reactionEv = reactionLine ? JSON.parse(reactionLine.slice(5)) : null;
     check("reaction events reach the other member's stream", reactionEv?.message_id === m2.data.id && reactionEv?.reactions?.[0]?.emoji === "🎉");
+    await as(adminJar, () => call("PUT", `/api/chat/messages/${m2.data.id}`, { body: { body: "Hi back (edited)" } }));
+    const deadline3 = Date.now() + 4000;
+    while (!/"type":"message_updated"/.test(buf) && Date.now() < deadline3) {
+      const r = await Promise.race([reader.read(), new Promise((resolve) => setTimeout(() => resolve({ done: true }), Math.max(0, deadline3 - Date.now())))]);
+      if (r.done) break;
+      buf += dec.decode(r.value);
+    }
+    const updLine = buf.split("\n").find((l) => l.startsWith("data:") && /"type":"message_updated"/.test(l));
+    const updEv = updLine ? JSON.parse(updLine.slice(5)) : null;
+    check("edits reach the other member's stream as message_updated", updEv?.message?.id === m2.data.id && updEv?.message?.body === "Hi back (edited)" && Boolean(updEv?.message?.edited_at));
     ctrl.abort();
   } catch (e) {
     check("GET /api/chat/stream is an event stream that says hello", false, e.message);

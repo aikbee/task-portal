@@ -471,6 +471,8 @@ CREATE TABLE IF NOT EXISTS messages (
   kind ENUM('text','system') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…)
   body TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  edited_at DATETIME NULL,
+  deleted_at DATETIME NULL, -- soft delete: the row stays as a "message deleted" placeholder, content and files go
   KEY idx_messages_conversation (conversation_id, id),
   CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE

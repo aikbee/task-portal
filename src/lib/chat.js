@@ -165,6 +165,7 @@ function shapeConversation(row, members, statuses, me) {
     last_id: row.last_id,
     last_kind: row.last_kind,
     last_body: row.last_body,
+    last_deleted: row.last_deleted ?? null,
     last_sender_id: row.last_sender_id,
     last_sender_name: row.last_sender_name,
     last_at: row.last_at,
@@ -186,8 +187,8 @@ function shapeConversation(row, members, statuses, me) {
 async function loadConversations(userId, onlyId = null) {
   const rows = await query(
     `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, m.last_read_message_id,
-       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
-       lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
+       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+       lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.mime_type NOT LIKE 'audio/%') AS last_photos,
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.mime_type LIKE 'audio/%' LIMIT 1) AS last_voice
      FROM conversations c
@@ -235,7 +236,7 @@ export async function friendIdsAmong(userId, ids) {
 export async function chatBadge(userId) {
   const row = await queryOne(
     `SELECT
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
       (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS pending`,
     [userId, userId, userId]
   );
@@ -243,7 +244,7 @@ export async function chatBadge(userId) {
 }
 
 /* ---------- messages ---------- */
-export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, s.name AS sender_name, s.avatar_color AS sender_color";
+export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, x.edited_at, x.deleted_at, s.name AS sender_name, s.avatar_color AS sender_color";
 export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
 const photoOf = (a) => ({
   id: a.id,
@@ -306,6 +307,26 @@ export async function systemMessage(convo, actorId, event, extra = {}) {
   broadcast(convo, { type: "message", conversation_id: convo.id, message });
   return message;
 }
+/**
+ * A message the user may edit or delete: their own (any kind but system), or — for deleting only —
+ * any message in a group they own. Returns the row with `convo_kind`, `my_role`.
+ */
+export async function editableMessage(messageId, userId, { forDelete = false } = {}) {
+  const row = await queryOne(
+    `SELECT x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.deleted_at, c.kind AS convo_kind, m.role AS my_role
+     FROM messages x JOIN conversations c ON c.id = x.conversation_id
+     JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ?
+     WHERE x.id = ?`,
+    [userId, messageId]
+  );
+  if (!row) throw new HttpError("Message not found.", 404);
+  if (row.kind === "system") throw new HttpError("System lines cannot be changed.", 400);
+  if (row.deleted_at) throw new HttpError("This message was deleted.", 400);
+  const owner = row.convo_kind === "group" && row.my_role === "owner";
+  if (row.sender_id !== userId && !(forDelete && owner)) throw new HttpError(forDelete ? "You can only delete your own messages." : "You can only edit your own messages.", 403);
+  return row;
+}
+
 /** A photo the user may see: they are a member of its conversation. */
 export async function photoFor(photoId, userId) {
   const row = await queryOne(

@@ -117,6 +117,10 @@ async function migrate(db, adminId) {
     log("migrating: message_attachments.duration_ms (voice messages)");
     await db.query("ALTER TABLE message_attachments ADD COLUMN duration_ms INT UNSIGNED NULL AFTER height");
   }
+  if (!(await hasColumn(db, "messages", "edited_at"))) {
+    log("migrating: messages.edited_at + deleted_at");
+    await db.query("ALTER TABLE messages ADD COLUMN edited_at DATETIME NULL AFTER created_at, ADD COLUMN deleted_at DATETIME NULL AFTER edited_at");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

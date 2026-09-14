@@ -9,7 +9,7 @@ export const POST = handler(async (request, params, user) => {
   const emoji = String((await readJson(request)).emoji ?? "");
   if (!REACTIONS.includes(emoji)) throw new HttpError("Pick one of the quick reactions.", 400);
   const msg = await queryOne(
-    `SELECT x.id, x.conversation_id, x.sender_id, x.kind, x.body, c.title, c.kind AS convo_kind
+    `SELECT x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.deleted_at, c.title, c.kind AS convo_kind
      FROM messages x JOIN conversations c ON c.id = x.conversation_id
      JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ?
      WHERE x.id = ?`,
@@ -17,6 +17,7 @@ export const POST = handler(async (request, params, user) => {
   );
   if (!msg) throw new HttpError("Message not found.", 404);
   if (msg.kind === "system") throw new HttpError("System lines cannot be reacted to.", 400);
+  if (msg.deleted_at) throw new HttpError("This message was deleted.", 400);
   const existing = await queryOne("SELECT 1 AS x FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?", [id, user.id, emoji]);
   if (existing) await execute("DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?", [id, user.id, emoji]);
   else await execute("INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)", [id, user.id, emoji]);

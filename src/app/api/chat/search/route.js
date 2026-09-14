@@ -15,7 +15,7 @@ export const GET = handler(async (request, _params, user) => {
   const before = Number(sp.get("before")) || null;
   const limit = Math.min(50, Math.max(1, Number(sp.get("limit")) || 30));
   const args = [user.id, user.id, user.id, `%${escapeLike(q)}%`];
-  let where = "x.kind = 'text' AND x.body LIKE ?";
+  let where = "x.kind = 'text' AND x.deleted_at IS NULL AND x.body LIKE ?";
   if (conversationId) {
     where += " AND x.conversation_id = ?";
     args.push(conversationId);

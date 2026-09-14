@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -155,6 +155,31 @@ function VoicePlayer({ tr, src, duration, mine }) {
 function applyReactions(m, reactions, at) {
   if (at && m.reactions_at && at < m.reactions_at) return m;
   return { ...m, reactions, reactions_at: at ?? m.reactions_at };
+}
+
+/** Small menu with Edit / Delete for a message. */
+function MessageMenu({ tr, canEdit, canDelete, onEdit, onDelete, onClose, align }) {
+  const ref = useRef(null);
+  useClickOutside(ref, onClose);
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div ref={ref} className={cn("chat-menu absolute bottom-full z-20 mb-1 min-w-32 overflow-hidden rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="menu">
+      {canEdit ? (
+        <button type="button" role="menuitem" onClick={onEdit} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 focus-ring">
+          <Pencil size={14} /> {tr("Edit")}
+        </button>
+      ) : null}
+      {canDelete ? (
+        <button type="button" role="menuitem" onClick={onDelete} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm text-rose-500 hover:bg-rose-500/10 focus-ring">
+          <Trash2 size={14} /> {tr("Delete")}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 /** Floating row of quick reactions above a bubble. */
@@ -391,6 +416,14 @@ export default function ChatModule() {
         return next;
       });
     };
+    const onMessageUpdated = (ev) => {
+      setThreads((t) => {
+        const list = t[ev.conversation_id];
+        if (!list) return t;
+        return { ...t, [ev.conversation_id]: list.map((m) => (m.id === ev.message.id ? { ...m, ...ev.message } : m)) };
+      });
+      loadConvos();
+    };
     const onReaction = (ev) =>
       setThreads((t) => {
         const list = t[ev.conversation_id];
@@ -439,6 +472,7 @@ export default function ChatModule() {
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
       es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
       es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
+      es.addEventListener("message_updated", (e) => onMessageUpdated(JSON.parse(e.data)));
       es.addEventListener("friends", () => {
         loadFriends();
         loadConvos();
@@ -526,6 +560,10 @@ export default function ChatModule() {
               detached={Boolean(detached[active])}
               onJump={jumpTo}
               onJumpLatest={() => jumpToLatest(active)}
+              onMessageChange={(msg) => {
+                setThreads((t) => ({ ...t, [active]: (t[active] ?? []).map((m) => (m.id === msg.id ? { ...m, ...msg } : m)) }));
+                loadConvos();
+              }}
               onReactions={(messageId, reactions, at) => setThreads((t) => ({ ...t, [active]: (t[active] ?? []).map((m) => (m.id === messageId ? applyReactions(m, reactions, at) : m)) }))}
               onConvoChange={upsertConvo}
               onLeft={(id) => {
@@ -655,6 +693,7 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     }
     if (!c.last_id) return tr("No messages yet");
     if (c.last_kind === "system") return systemText({ body: c.last_body, sender_name: c.last_sender_name }, tr);
+    if (c.last_deleted) return <span className="pr-1 italic text-fg-faint">{tr("Message deleted")}</span>;
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
     const what = c.last_body ? (
       <span className="truncate">{c.last_body}</span>
@@ -931,7 +970,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, detached, onJump, onJumpLatest, onReactions, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, detached, onJump, onJumpLatest, onReactions, onMessageChange, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -940,6 +979,45 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
+  const [menu, setMenu] = useState(null); // message id with the edit/delete menu open
+  const [editing, setEditing] = useState(null); // { id, text } while editing a message inline
+  const [confirmDelete, setConfirmDelete] = useState(null); // message about to be deleted
+  const [deleting, setDeleting] = useState(false);
+  const editRef = useRef(null);
+  const startEdit = (m) => {
+    setMenu(null);
+    setEditing({ id: m.id, text: m.body });
+  };
+  const saveEdit = async () => {
+    if (!editing) return;
+    const text = editing.text.trim();
+    const original = messages?.find((m) => m.id === editing.id);
+    if (!original) return setEditing(null);
+    const hasFiles = (original.attachments ?? []).length > 0;
+    if (!text && !hasFiles) return; // an empty text message cannot be saved; delete it instead
+    if (text === original.body) return setEditing(null);
+    try {
+      const updated = await api.put(`/api/chat/messages/${editing.id}`, { body: text });
+      onMessageChange(updated);
+      setEditing(null);
+    } catch (e) {
+      toast.error(tr("Could not save the edit"), e.message);
+    }
+  };
+  const deleteMessage = async () => {
+    const m = confirmDelete;
+    if (!m) return;
+    setDeleting(true);
+    try {
+      const updated = await api.del(`/api/chat/messages/${m.id}`);
+      onMessageChange(updated);
+      setConfirmDelete(null);
+    } catch (e) {
+      toast.error(tr("Could not delete the message"), e.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
   const [find, setFind] = useState(null); // { q, results, idx } while searching inside this chat
   const findQ = useDebouncedValue(find?.q?.trim() ?? "", 300);
   const findInputRef = useRef(null);
@@ -1168,7 +1246,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       setSending(false);
     }
   };
-  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system") : null;
+  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && !m.deleted_at) : null;
   const seenBy = lastMine ? (convo.members ?? []).filter((m) => m.id !== me?.id && Number(m.last_read_message_id) >= lastMine.id) : [];
   const seen = lastMine && (group ? seenBy.length > 0 : Number(convo.peer_last_read) >= lastMine.id);
   const seenLabel = !group ? tr("Seen") : seenBy.length === (convo.members?.length ?? 1) - 1 ? tr("Seen by everyone") : tr("Seen by {names}", { names: seenBy.map((m) => m.name).join(", ") });
@@ -1260,10 +1338,31 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const showSender = group && !mine && !grouped;
                 const reactions = m.reactions ?? [];
                 const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
-                const reactBtn = (
+                const deleted = Boolean(m.deleted_at);
+                const canEdit = mine && !deleted && (m.body || photos.length > 0) && !voice;
+                const canDelete = !deleted && (mine || (group && convo.my_role === "owner"));
+                const menuBtn =
+                  canEdit || canDelete ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPicker(null);
+                        setMenu(menu === m.id ? null : m.id);
+                      }}
+                      className={cn("chat-more-btn grid h-7 w-7 shrink-0 place-items-center self-center rounded-full text-fg-faint transition hover:bg-surface-2 hover:text-fg focus-ring", menu === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                      aria-label={tr("Message options")}
+                      data-tip={tr("More")}
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  ) : null;
+                const reactBtn = deleted ? null : (
                   <button
                     type="button"
-                    onClick={() => setPicker(picker === m.id ? null : m.id)}
+                    onClick={() => {
+                      setMenu(null);
+                      setPicker(picker === m.id ? null : m.id);
+                    }}
                     className={cn("chat-react-btn grid h-7 w-7 shrink-0 place-items-center self-center rounded-full text-fg-faint transition hover:bg-surface-2 hover:text-fg focus-ring", picker === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
                     aria-label={tr("Add reaction")}
                     data-tip={tr("React")}
@@ -1271,7 +1370,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     <SmilePlus size={15} />
                   </button>
                 );
-                const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
+                const time = (
+                  <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>
+                    {m.edited_at && !m.deleted_at ? <span className="chat-edited mr-1 not-italic">{tr("edited")}</span> : null}
+                    {timeOf(m.created_at)}
+                  </span>
+                );
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
                 const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
@@ -1281,10 +1385,47 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
                     <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
                       {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
-                      {mine ? reactBtn : null}
-                      <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: "78%" }}>
+                      {mine ? (
+                        <>
+                          {menuBtn}
+                          {reactBtn}
+                        </>
+                      ) : null}
+                      <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: editing?.id === m.id ? "78%" : "78%", width: editing?.id === m.id ? "78%" : undefined }}>
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
                       {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
+                      {menu === m.id ? <MessageMenu tr={tr} canEdit={canEdit} canDelete={canDelete} align={mine ? "right" : "left"} onEdit={() => startEdit(m)} onDelete={() => { setMenu(null); setConfirmDelete(m); }} onClose={() => setMenu(null)} /> : null}
+                      {deleted ? (
+                        <div className={cn("chat-bubble chat-deleted flex items-center gap-1.5 rounded-app border border-dashed px-3 py-2 text-sm italic", mine ? "border-accent/50 text-fg-muted" : "border-line text-fg-muted")} title={formatDateTime(m.created_at)}>
+                          <Ban size={13} className="shrink-0 opacity-70" /> {tr("Message deleted")}
+                          {time}
+                        </div>
+                      ) : editing?.id === m.id ? (
+                        <div className="chat-edit w-full rounded-app border border-accent bg-surface p-2 shadow-app-lg" onKeyDown={(e) => e.key === "Escape" && setEditing(null)}>
+                          <textarea
+                            ref={editRef}
+                            autoFocus
+                            onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+                            value={editing.text}
+                            onChange={(e) => setEditing((ed) => ({ ...ed, text: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                                e.preventDefault();
+                                saveEdit();
+                              }
+                            }}
+                            rows={Math.min(8, Math.max(1, editing.text.split("\n").length))}
+                            maxLength={4000}
+                            className="control w-full resize-none py-2 text-sm"
+                            aria-label={tr("Edit message")}
+                          />
+                          <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                            <span className="mr-auto text-[10px] text-fg-faint">{tr("Enter saves · Esc cancels")}</span>
+                            <Button size="xs" variant="ghost" onClick={() => setEditing(null)}>{tr("Cancel")}</Button>
+                            <Button size="xs" icon={Check} onClick={saveEdit} disabled={!editing.text.trim() && !photos.length}>{tr("Save")}</Button>
+                          </div>
+                        </div>
+                      ) : (
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
@@ -1328,6 +1469,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           </>
                         )}
                       </div>
+                      )}
                       {reactions.length ? (
                         <div className={cn("chat-reactions absolute -bottom-3 flex flex-wrap gap-1", mine ? "right-1" : "left-1")}>
                           {reactions.map((r) => (
@@ -1346,7 +1488,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         </div>
                       ) : null}
                       </div>
-                      {!mine ? reactBtn : null}
+                      {!mine ? (
+                        <>
+                          {reactBtn}
+                          {menuBtn}
+                        </>
+                      ) : null}
                     </div>
                     {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{seenLabel}</p> : null}
                   </div>
@@ -1426,6 +1573,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       send();
+                    } else if (e.key === "ArrowUp" && !draft && !pending.length) {
+                      const last = [...(messages ?? [])].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && !m.deleted_at && m.body);
+                      if (last) {
+                        e.preventDefault();
+                        startEdit(last);
+                      }
                     }
                   }}
                   onPaste={(e) => {
@@ -1448,6 +1601,15 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         </div>
       </div>
       {lightbox ? <Lightbox tr={tr} photos={lightbox.photos} index={lightbox.index} onIndex={(index) => setLightbox({ ...lightbox, index })} onClose={() => setLightbox(null)} /> : null}
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={deleteMessage}
+        loading={deleting}
+        title={tr("Delete this message?")}
+        confirmText={tr("Delete")}
+        description={confirmDelete?.sender_id === me?.id ? tr("It is removed for everyone and replaced by a “message deleted” note.") : tr("As the group owner you are removing someone else’s message. It is replaced by a “message deleted” note for everyone.")}
+      />
     </>
   );
 }
