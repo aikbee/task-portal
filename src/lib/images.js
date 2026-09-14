@@ -45,3 +45,12 @@ export function imageMeta(buf) {
   }
   return null;
 }
+
+/** Container check for recorded voice notes: WebM/Opus (Chrome, Firefox, Android), MP4/AAC (Safari) or Ogg. */
+export function audioMeta(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return { type: "webm", mime: "audio/webm" };
+  if (buf.toString("latin1", 0, 4) === "OggS") return { type: "ogg", mime: "audio/ogg" };
+  if (buf.toString("latin1", 4, 8) === "ftyp") return { type: "m4a", mime: "audio/mp4" };
+  return null;
+}

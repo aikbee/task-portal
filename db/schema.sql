@@ -476,7 +476,7 @@ CREATE TABLE IF NOT EXISTS messages (
   CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Photos sent in chat (files live in the upload dir like other attachments)
+-- Photos and voice messages sent in chat (files live in the upload dir like other attachments)
 CREATE TABLE IF NOT EXISTS message_attachments (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   message_id INT UNSIGNED NOT NULL,
@@ -486,6 +486,7 @@ CREATE TABLE IF NOT EXISTS message_attachments (
   size_bytes INT UNSIGNED NOT NULL DEFAULT 0,
   width INT UNSIGNED NULL,
   height INT UNSIGNED NULL,
+  duration_ms INT UNSIGNED NULL, -- voice messages
   sort_order INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_message_attachments (message_id, sort_order),

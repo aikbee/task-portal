@@ -113,6 +113,10 @@ async function migrate(db, adminId) {
     await db.query("ALTER TABLE conversation_members ADD COLUMN role ENUM('owner','member') NOT NULL DEFAULT 'member' AFTER user_id");
     await db.query("ALTER TABLE messages ADD COLUMN kind ENUM('text','system') NOT NULL DEFAULT 'text' AFTER sender_id");
   }
+  if (!(await hasColumn(db, "message_attachments", "duration_ms"))) {
+    log("migrating: message_attachments.duration_ms (voice messages)");
+    await db.query("ALTER TABLE message_attachments ADD COLUMN duration_ms INT UNSIGNED NULL AFTER height");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

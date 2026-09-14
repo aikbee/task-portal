@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -60,6 +60,71 @@ function systemText(m, tr) {
 const isGroup = (c) => c?.kind === "group";
 const TYPING_TTL = 6000; // a typer is forgotten after this unless they ping again
 const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
+const VOICE_MAX_MS = 5 * 60 * 1000;
+const clock = (ms) => `${Math.floor((ms || 0) / 60000)}:${String(Math.floor(((ms || 0) % 60000) / 1000)).padStart(2, "0")}`;
+const RECORD_MIMES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+const canRecord = () => typeof window !== "undefined" && "MediaRecorder" in window && Boolean(navigator.mediaDevices?.getUserMedia);
+
+/** Play / pause, seekable progress, elapsed time and a speed toggle for a voice note. */
+function VoicePlayer({ tr, src, duration, mine }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [pos, setPos] = useState(0); // ms
+  const [rate, setRate] = useState(1);
+  const total = duration || 0;
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) a.play().catch(() => {});
+    else a.pause();
+  };
+  const seek = (e) => {
+    const a = audioRef.current;
+    if (!a || !total) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    a.currentTime = (ratio * total) / 1000;
+    setPos(ratio * total);
+  };
+  const cycleRate = () => {
+    const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1;
+    setRate(next);
+    if (audioRef.current) audioRef.current.playbackRate = next;
+  };
+  const pct = total ? Math.min(100, (pos / total) * 100) : 0;
+  const tone = mine ? "text-white" : "text-fg";
+  return (
+    <div className={cn("chat-voice flex items-center gap-2.5 px-1 py-0.5", tone)}>
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setPos(0);
+        }}
+        onTimeUpdate={(e) => setPos(e.currentTarget.currentTime * 1000)}
+      />
+      <button type="button" onClick={toggle} className={cn("chat-voice-btn grid h-9 w-9 shrink-0 place-items-center rounded-full transition focus-ring", mine ? "bg-white/20 hover:bg-white/30" : "bg-accent text-white hover:bg-accent-strong")} aria-label={playing ? tr("Pause") : tr("Play")}>
+        {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className={cn("chat-voice-track relative h-1.5 w-full cursor-pointer overflow-hidden rounded-full", mine ? "bg-white/30" : "bg-fg/15")} onClick={seek} role="slider" aria-valuemin={0} aria-valuemax={total} aria-valuenow={Math.round(pos)} aria-label={tr("Position")}>
+          <span className={cn("chat-voice-fill absolute inset-y-0 left-0 rounded-full", mine ? "bg-white" : "bg-accent")} style={{ width: `${pct}%` }} />
+        </div>
+        <div className={cn("mt-1 flex items-center gap-2 text-[10px] tabular-nums", mine ? "text-white/80" : "text-fg-muted")}>
+          <Mic size={10} />
+          <span>{playing || pos ? `${clock(pos)} / ${clock(total)}` : clock(total)}</span>
+          <button type="button" onClick={cycleRate} className={cn("ml-auto rounded-full px-1.5 py-px text-[10px] font-semibold transition focus-ring", mine ? "bg-white/20 hover:bg-white/30" : "bg-fg/10 hover:bg-fg/15")} aria-label={tr("Playback speed")}>
+            {rate}×
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 /** Newest server state wins: a toggle answer that arrives after a later live event is ignored. Optimistic updates carry no stamp. */
 function applyReactions(m, reactions, at) {
   if (at && m.reactions_at && at < m.reactions_at) return m;
@@ -459,7 +524,13 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     if (!c.last_id) return tr("No messages yet");
     if (c.last_kind === "system") return systemText({ body: c.last_body, sender_name: c.last_sender_name }, tr);
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
-    const what = c.last_body ? <span className="truncate">{c.last_body}</span> : <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>;
+    const what = c.last_body ? (
+      <span className="truncate">{c.last_body}</span>
+    ) : c.last_voice != null ? (
+      <><Mic size={12} className="shrink-0" /> {tr("Voice message")} · {clock(c.last_voice)}</>
+    ) : (
+      <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>
+    );
     return (
       <>
         {who ? `${who}: ` : ""}
@@ -726,7 +797,79 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
+  const [rec, setRec] = useState(null); // { elapsed, levels[] } while recording
+  const recRef = useRef(null); // { recorder, stream, chunks, mime, startedAt, timer, ctx, analyser, data, send }
   const group = isGroup(convo);
+  const stopRecording = ({ send }) => {
+    const r = recRef.current;
+    if (!r) return;
+    r.send = send;
+    clearInterval(r.timer);
+    if (r.recorder.state !== "inactive") r.recorder.stop();
+    else r.finish();
+  };
+  const startRecording = async () => {
+    if (recRef.current || sending) return;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      toast.error(tr("Microphone access was refused"), tr("Allow the microphone for this site to record a voice message."));
+      return;
+    }
+    const mime = RECORD_MIMES.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const r = { recorder, stream, chunks: [], mime: recorder.mimeType || mime || "audio/webm", startedAt: Date.now(), timer: null, send: false };
+    try {
+      r.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      r.analyser = r.ctx.createAnalyser();
+      r.analyser.fftSize = 256;
+      r.ctx.createMediaStreamSource(stream).connect(r.analyser);
+      r.data = new Uint8Array(r.analyser.fftSize);
+    } catch {}
+    r.finish = async () => {
+      recRef.current = null;
+      stream.getTracks().forEach((t) => t.stop());
+      r.ctx?.close().catch(() => {});
+      const elapsed = Math.min(VOICE_MAX_MS, Date.now() - r.startedAt);
+      setRec(null);
+      if (!r.send || !r.chunks.length || elapsed < 500) return;
+      const blob = new Blob(r.chunks, { type: r.mime });
+      const ext = r.mime.includes("mp4") ? "m4a" : r.mime.includes("ogg") ? "ogg" : "webm";
+      const fd = new FormData();
+      fd.append("body", "");
+      fd.append("duration", String(elapsed));
+      fd.append("files", blob, `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
+      setSending(true);
+      try {
+        const m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
+        onSent(m);
+      } catch (e) {
+        toast.error(tr("Could not send the voice message"), e.message);
+      } finally {
+        setSending(false);
+      }
+    };
+    recorder.ondataavailable = (e) => e.data.size && r.chunks.push(e.data);
+    recorder.onstop = () => r.finish();
+    recRef.current = r;
+    setRec({ elapsed: 0, levels: [] });
+    recorder.start(250);
+    r.timer = setInterval(() => {
+      const elapsed = Date.now() - r.startedAt;
+      let level = 0;
+      if (r.analyser) {
+        r.analyser.getByteTimeDomainData(r.data);
+        let sum = 0;
+        for (const v of r.data) sum += (v - 128) * (v - 128);
+        level = Math.min(1, Math.sqrt(sum / r.data.length) / 40);
+      }
+      setRec((cur) => ({ elapsed, levels: [...(cur?.levels ?? []).slice(-39), level] }));
+      if (elapsed >= VOICE_MAX_MS) stopRecording({ send: true });
+    }, 150);
+  };
+  // leaving the thread discards a recording in progress
+  useEffect(() => () => stopRecording({ send: false }), []);
   const toggleReaction = async (m, emoji) => {
     setPicker(null);
     // optimistic flip, then the server's answer (and the live event) settle it
@@ -891,7 +1034,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
               {messages.length === 0 ? <p className="py-10 text-center text-xs text-fg-faint">{tr("Say hello — this is the start of your conversation.")}</p> : null}
               {messages.map((m, i) => {
                 const mine = m.sender_id === me?.id;
-                const photos = m.attachments ?? [];
+                const photos = (m.attachments ?? []).filter((a) => a.kind !== "audio");
+                const voice = (m.attachments ?? []).find((a) => a.kind === "audio") ?? null;
                 const prev = messages[i - 1];
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
                 if (m.kind === "system") {
@@ -917,11 +1061,11 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     <SmilePlus size={15} />
                   </button>
                 );
-                const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
+                const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
                 const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
-                const bubbleW = photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
+                const bubbleW = voice ? 272 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
                 return (
                   <div key={m.id}>
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
@@ -934,7 +1078,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
-                          photos.length ? "chat-has-photos p-1.5" : "px-3 py-2",
+                          photos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : "px-3 py-2",
                           mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
                         )}
                         title={formatDateTime(m.created_at)}
@@ -961,8 +1105,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                             ))}
                           </div>
                         ) : null}
-                        {photos.length ? (
-                          <span className="flex items-end gap-2 px-1.5 pt-1">
+                        {voice ? <VoicePlayer tr={tr} src={voice.url} duration={voice.duration} mine={mine} /> : null}
+                        {photos.length || voice ? (
+                          <span className={cn("flex items-end gap-2 px-1.5", voice ? "pt-0.5" : "pt-1")}>
                             {m.body ? <span className="min-w-0">{m.body}</span> : null}
                             {time}
                           </span>
@@ -1031,7 +1176,21 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   <span className="text-[11px] text-fg-muted">{pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")}</span>
                 </div>
               ) : null}
-              <div className="flex items-end gap-2">
+              {rec ? (
+                <div className="chat-recording flex items-center gap-3 rounded-app border border-line bg-surface-2 px-3 py-2" role="status" aria-live="polite">
+                  <span className="chat-rec-dot h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500" />
+                  <span className="w-12 shrink-0 text-sm font-semibold tabular-nums">{clock(rec.elapsed)}</span>
+                  <span className="chat-rec-bars flex h-8 min-w-0 flex-1 items-center gap-px overflow-hidden" aria-hidden="true">
+                    {rec.levels.map((l, i) => (
+                      <i key={i} className="w-1 shrink-0 rounded-full bg-accent" style={{ height: `${Math.max(12, l * 100)}%`, opacity: 0.45 + l * 0.55 }} />
+                    ))}
+                  </span>
+                  <span className="hidden text-[11px] text-fg-muted sm:inline">{tr("Recording… up to 5 minutes")}</span>
+                  <Button variant="ghost" size="iconSm" icon={X} onClick={() => stopRecording({ send: false })} aria-label={tr("Discard recording")} data-tip={tr("Discard")} />
+                  <Button size="iconSm" icon={Check} onClick={() => stopRecording({ send: true })} aria-label={tr("Send voice message")} data-tip={tr("Send")} />
+                </div>
+              ) : null}
+              <div className={cn("flex items-end gap-2", rec && "hidden")}>
                 <input
                   ref={fileRef}
                   type="file"
@@ -1044,6 +1203,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   }}
                 />
                 <Button variant="ghost" size="icon" icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
+                {canRecord() && !draft.trim() && !pending.length ? <Button variant="ghost" size="icon" icon={Mic} onClick={startRecording} aria-label={tr("Record a voice message")} data-tip={tr("Voice message")} disabled={sending} className="chat-mic" /> : null}
                 <textarea
                   value={draft}
                   onChange={(e) => onDraftChange(e.target.value)}

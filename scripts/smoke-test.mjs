@@ -845,6 +845,45 @@ console.log("chat (friends by code, one-to-one messages)");
   const nPhoto = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
   check("a photo-only message notifies as a photo", nPhoto.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && /📷/.test(n.title)));
 
+  // voice messages: a WebM container with a duration, byte-range playback, validation
+  const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]), Buffer.alloc(200, 7)]);
+  const fdVoice = new FormData();
+  fdVoice.append("duration", "4200");
+  fdVoice.append("files", new Blob([webm], { type: "audio/webm" }), "voice-1.webm");
+  const voiceMsg = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdVoice }));
+  const va = voiceMsg.data?.attachments?.[0];
+  check("multipart voice note -> 201 with kind audio and duration", voiceMsg.status === 201 && voiceMsg.data.body === "" && va && va.kind === "audio" && va.mime === "audio/webm" && va.duration === 4200, JSON.stringify(voiceMsg.raw));
+  const full = await as(adminJar, () => call("GET", `/api/chat/photos/${va.id}`));
+  check("the other member streams it with Accept-Ranges", full.status === 200 && full.headers.get("content-type") === "audio/webm" && full.headers.get("accept-ranges") === "bytes" && full.raw.byteLength === webm.length);
+  const partial = await fetch(`${BASE}/api/chat/photos/${va.id}`, { headers: { cookie: Object.entries(adminJar).map(([k, v]) => `${k}=${v}`).join("; "), range: "bytes=0-9" } });
+  check("byte ranges -> 206 with Content-Range", partial.status === 206 && partial.headers.get("content-range") === `bytes 0-9/${webm.length}` && (await partial.arrayBuffer()).byteLength === 10);
+  const badRange = await fetch(`${BASE}/api/chat/photos/${va.id}`, { headers: { cookie: Object.entries(adminJar).map(([k, v]) => `${k}=${v}`).join("; "), range: "bytes=9999-" } });
+  check("an unsatisfiable range -> 416", badRange.status === 416);
+  await badRange.body?.cancel();
+  const listVoice = await as(adminJar, () => call("GET", "/api/chat/conversations"));
+  check("conversation preview carries the voice duration", listVoice.data.find((c) => c.id === convoId)?.last_voice === 4200 && listVoice.data.find((c) => c.id === convoId)?.last_photos === 0);
+  const nVoice = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  check("a voice message notifies with its length", nVoice.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && /🎤 Voice message \(0:04\)/.test(n.title)));
+  const fdLong = new FormData();
+  fdLong.append("duration", String(6 * 60 * 1000));
+  fdLong.append("files", new Blob([webm], { type: "audio/webm" }), "long.webm");
+  const tooLong = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdLong }));
+  check("a voice note over 5 minutes -> 400", tooLong.status === 400);
+  const fdMix = new FormData();
+  fdMix.append("files", new Blob([png], { type: "image/png" }), "a.png");
+  fdMix.append("files", new Blob([webm], { type: "audio/webm" }), "b.webm");
+  const mixed = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdMix }));
+  check("photos and a voice note in one message -> 400", mixed.status === 400);
+  const fdTwo = new FormData();
+  fdTwo.append("files", new Blob([webm], { type: "audio/webm" }), "a.webm");
+  fdTwo.append("files", new Blob([webm], { type: "audio/webm" }), "b.webm");
+  const two = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdTwo }));
+  check("two voice notes in one message -> 400", two.status === 400);
+  const fdFakeAudio = new FormData();
+  fdFakeAudio.append("files", new Blob(["not audio at all"], { type: "audio/webm" }), "fake.webm");
+  const fakeAudio = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdFakeAudio }));
+  check("a text file disguised as audio -> 400", fakeAudio.status === 400);
+
   // reactions: toggle, validation, visibility to the other member, one notification per reaction
   const badEmoji = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "🦄" } }));
   check("an emoji outside the quick set -> 400", badEmoji.status === 400);
@@ -1000,7 +1039,7 @@ console.log("chat (friends by code, one-to-one messages)");
   const afterUnfriend = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "?" } }));
   check("no messages after unfriending -> 403", afterUnfriend.status === 403);
   const keepsHistory = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
-  check("history is still readable", keepsHistory.status === 200 && keepsHistory.data.length === 5);
+  check("history is still readable", keepsHistory.status === 200 && keepsHistory.data.length === 6);
   const notFriends = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
   check("unfriending again -> 404", notFriends.status === 404);
 

@@ -35,6 +35,7 @@ export const CONVO_PEER = "u.id AS user_id, u.name, u.avatar_color, u.email";
 export const MESSAGE_MAX = 4000;
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 export const PHOTOS_PER_MESSAGE = 8;
+export const VOICE_MAX_MS = 5 * 60 * 1000;
 
 /* ---------- friend codes ---------- */
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
@@ -168,6 +169,7 @@ function shapeConversation(row, members, statuses, me) {
     last_sender_name: row.last_sender_name,
     last_at: row.last_at,
     last_photos: Number(row.last_photos ?? 0),
+    last_voice: row.last_voice ?? null,
   };
   if (row.kind === "group") return { ...base, name: row.title, avatar_color: row.group_color, email: null, user_id: null, friend_status: null, peer_last_read: null };
   const peer = members.find((x) => x.id !== me);
@@ -186,7 +188,8 @@ async function loadConversations(userId, onlyId = null) {
     `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, m.last_read_message_id,
        (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
-       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id) AS last_photos
+       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.mime_type NOT LIKE 'audio/%') AS last_photos,
+       (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.mime_type LIKE 'audio/%' LIMIT 1) AS last_voice
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
      LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
@@ -242,7 +245,17 @@ export async function chatBadge(userId) {
 /* ---------- messages ---------- */
 export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, s.name AS sender_name, s.avatar_color AS sender_color";
 export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
-const photoOf = (a) => ({ id: a.id, url: `/api/chat/photos/${a.id}`, name: a.original_name, mime: a.mime_type, size: a.size_bytes, width: a.width, height: a.height });
+const photoOf = (a) => ({
+  id: a.id,
+  kind: (a.mime_type || "").startsWith("audio/") ? "audio" : "image",
+  url: `/api/chat/photos/${a.id}`,
+  name: a.original_name,
+  mime: a.mime_type,
+  size: a.size_bytes,
+  width: a.width,
+  height: a.height,
+  duration: a.duration_ms,
+});
 
 export const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
 
@@ -274,7 +287,7 @@ export async function withExtras(rows) {
   if (!rows.length) return rows;
   const ids = rows.map((r) => r.id);
   const photos = await query(
-    `SELECT id, message_id, original_name, mime_type, size_bytes, width, height FROM message_attachments WHERE message_id IN (${ids.map(() => "?").join(",")}) ORDER BY message_id, sort_order, id`,
+    `SELECT id, message_id, original_name, mime_type, size_bytes, width, height, duration_ms FROM message_attachments WHERE message_id IN (${ids.map(() => "?").join(",")}) ORDER BY message_id, sort_order, id`,
     ids
   );
   const byMessage = new Map();
@@ -312,9 +325,10 @@ export async function purgeMessagePhotos(whereSql, args) {
 }
 
 /** One unread bell entry per conversation and recipient: the newest message replaces the previous unread one. */
-export async function notifyMessage(recipientId, sender, convo, body, photos = 0) {
+export const clockOf = (ms) => `${Math.floor((ms || 0) / 60000)}:${String(Math.floor(((ms || 0) % 60000) / 1000)).padStart(2, "0")}`;
+export async function notifyMessage(recipientId, sender, convo, body, photos = 0, voiceMs = null) {
   await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'chat_message' AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
-  const text = body ? (body.length > 90 ? `${body.slice(0, 90)}…` : body) : photos > 1 ? `📷 ${photos} photos` : "📷 Photo";
+  const text = body ? (body.length > 90 ? `${body.slice(0, 90)}…` : body) : voiceMs != null ? `🎤 Voice message (${clockOf(voiceMs)})` : photos > 1 ? `📷 ${photos} photos` : "📷 Photo";
   await notify({
     userId: recipientId,
     type: "chat_message",
