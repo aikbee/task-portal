@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2 } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -157,6 +157,50 @@ function applyReactions(m, reactions, at) {
   return { ...m, reactions, reactions_at: at ?? m.reactions_at };
 }
 
+/** Who (other than me and the sender) has read a message: their read pointer is at or past it. */
+function readersOf(m, convo, me) {
+  const others = (convo.members ?? []).filter((u) => u.id !== me?.id && u.id !== m.sender_id);
+  const read = others.filter((u) => Number(u.last_read_message_id) >= m.id);
+  return { read, pending: others.filter((u) => !read.includes(u)), others };
+}
+/** ✓ sent · ✓✓ muted: read by some · ✓✓ accent: read by everyone. */
+function Ticks({ tr, state, onClick, mine, label }) {
+  const cls = cn("chat-ticks inline-flex shrink-0 items-center", mine ? (state === "all" ? "text-white" : "text-white/60") : state === "all" ? "text-accent" : "text-fg-faint");
+  const icon = state === "sent" ? <Check size={12} strokeWidth={2.5} /> : <CheckCheck size={13} strokeWidth={2.5} />;
+  if (!onClick) return <span className={cls} title={label} aria-label={label}>{icon}</span>;
+  return (
+    <button type="button" onClick={onClick} className={cn(cls, "rounded-full hover:opacity-100 focus-ring")} title={label} aria-label={tr("Who has read this")}>
+      {icon}
+    </button>
+  );
+}
+/** Popover listing who has read a group message and who has not yet. */
+function ReceiptsPopover({ tr, read, pending, onClose, align }) {
+  const ref = useRef(null);
+  useClickOutside(ref, onClose);
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const Row = ({ u, done }) => (
+    <li className="flex items-center gap-2 px-2 py-1 text-xs">
+      <Avatar name={u.name} color={u.avatar_color} size="xs" />
+      <span className="min-w-0 flex-1 truncate">{u.name}</span>
+      {done ? <CircleCheck size={13} className="shrink-0 text-accent" /> : <Circle size={13} className="shrink-0 text-fg-faint" />}
+    </li>
+  );
+  return (
+    <div ref={ref} className={cn("chat-receipts absolute bottom-full z-20 mb-1 w-56 rounded-app border border-line bg-surface p-1.5 text-fg shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="dialog" aria-label={tr("Read receipts")}>
+      <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{read.length ? tr("Read by {n} of {m}", { n: read.length, m: read.length + pending.length }) : tr("Not read yet")}</p>
+      <ul className="max-h-48 overflow-y-auto">
+        {read.map((u) => <Row key={u.id} u={u} done />)}
+        {pending.map((u) => <Row key={u.id} u={u} done={false} />)}
+      </ul>
+    </div>
+  );
+}
+
 /** Small menu with Edit / Delete for a message. */
 function MessageMenu({ tr, canEdit, canDelete, onEdit, onDelete, onClose, align }) {
   const ref = useRef(null);
@@ -246,6 +290,7 @@ export default function ChatModule() {
   const [newGroup, setNewGroup] = useState(false);
   const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
   const [focusId, setFocusId] = useState(null); // message to scroll to and flash after a search jump
+  const [unreadFrom, setUnreadFrom] = useState({}); // conversation id -> first message id that was unread when it was opened
   const [detached, setDetached] = useState({}); // conversation id -> true while the loaded window stops before the newest message
   const jumpRef = useRef(null); // { cid, mid } consumed by the thread-loading effect
   const onFocused = useCallback(() => setFocusId(null), []);
@@ -345,6 +390,9 @@ export default function ChatModule() {
           if (list.length) markRead(active, list[list.length - 1].id);
         } else {
           setDetached((d) => (d[active] ? { ...d, [active]: false } : d));
+          const lastRead = Number(convosRef.current?.find((c) => c.id === active)?.last_read_message_id) || 0;
+          const first = list.find((m) => m.id > lastRead && m.sender_id !== user?.id && m.kind !== "system");
+          setUnreadFrom((u) => ({ ...u, [active]: first?.id ?? null }));
           if (list.length) markRead(active, list[list.length - 1].id);
         }
       })
@@ -352,7 +400,7 @@ export default function ChatModule() {
     return () => {
       alive = false;
     };
-  }, [active, markRead]);
+  }, [active, markRead, user?.id]);
   /** Open a conversation at one message (from search). */
   const jumpTo = (cid, mid) => {
     jumpRef.current = { cid, mid };
@@ -539,6 +587,7 @@ export default function ChatModule() {
               messages={threads[active]}
               onBack={() => setActive(null)}
               onSent={(m) => {
+                setUnreadFrom((u) => (u[active] ? { ...u, [active]: null } : u)); // replying ends the "unread" marker
                 if (detached[active]) {
                   jumpToLatest(active);
                   return;
@@ -557,6 +606,7 @@ export default function ChatModule() {
               typers={Object.values(typing[active] ?? {})}
               focusId={focusId}
               onFocused={onFocused}
+              unreadFrom={unreadFrom[active] ?? null}
               detached={Boolean(detached[active])}
               onJump={jumpTo}
               onJumpLatest={() => jumpToLatest(active)}
@@ -970,7 +1020,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, detached, onJump, onJumpLatest, onReactions, onMessageChange, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onReactions, onMessageChange, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -980,6 +1030,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [panel, setPanel] = useState(false);
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
   const [menu, setMenu] = useState(null); // message id with the edit/delete menu open
+  const [receipts, setReceipts] = useState(null); // message id with the read-receipts popover open
   const [editing, setEditing] = useState(null); // { id, text } while editing a message inline
   const [confirmDelete, setConfirmDelete] = useState(null); // message about to be deleted
   const [deleting, setDeleting] = useState(false);
@@ -1194,6 +1245,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     if (focusId || detached) return; // a search jump positions the thread itself
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [convo.id, count]); // eslint-disable-line react-hooks/exhaustive-deps
+  // when a chat opens with unread messages, start at the "Unread messages" line instead of the bottom
+  useEffect(() => {
+    if (!unreadFrom) return;
+    const el = document.getElementById(`unread-${convo.id}`);
+    if (el) el.scrollIntoView({ block: "center" });
+  }, [convo.id, unreadFrom]);
   const canChat = group || !convo.friend_status || convo.friend_status === "accepted";
 
   const addFiles = async (list) => {
@@ -1370,10 +1427,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     <SmilePlus size={15} />
                   </button>
                 );
+                const rc = mine && !deleted ? readersOf(m, convo, me) : null;
+                const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : "sent";
+                const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
                 const time = (
-                  <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>
-                    {m.edited_at && !m.deleted_at ? <span className="chat-edited mr-1 not-italic">{tr("edited")}</span> : null}
+                  <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice ? "ml-auto" : "ml-2")}>
+                    {m.edited_at && !m.deleted_at ? <span className="chat-edited not-italic">{tr("edited")}</span> : null}
                     {timeOf(m.created_at)}
+                    {rc ? <Ticks tr={tr} mine state={tickState} label={tickLabel} onClick={group ? () => setReceipts(receipts === m.id ? null : m.id) : undefined} /> : null}
                   </span>
                 );
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
@@ -1383,6 +1444,13 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 return (
                   <div key={m.id} id={`msg-${m.id}`} className="chat-msg rounded-app">
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
+                    {unreadFrom === m.id ? (
+                      <p id={`unread-${convo.id}`} className="chat-unread my-3 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wider text-accent">
+                        <span className="h-px flex-1 bg-accent/40" />
+                        {tr("Unread messages")}
+                        <span className="h-px flex-1 bg-accent/40" />
+                      </p>
+                    ) : null}
                     <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
                       {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
                       {mine ? (
@@ -1395,6 +1463,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
                       {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
                       {menu === m.id ? <MessageMenu tr={tr} canEdit={canEdit} canDelete={canDelete} align={mine ? "right" : "left"} onEdit={() => startEdit(m)} onDelete={() => { setMenu(null); setConfirmDelete(m); }} onClose={() => setMenu(null)} /> : null}
+                      {receipts === m.id && rc ? <ReceiptsPopover tr={tr} read={rc.read} pending={rc.pending} align="right" onClose={() => setReceipts(null)} /> : null}
                       {deleted ? (
                         <div className={cn("chat-bubble chat-deleted flex items-center gap-1.5 rounded-app border border-dashed px-3 py-2 text-sm italic", mine ? "border-accent/50 text-fg-muted" : "border-line text-fg-muted")} title={formatDateTime(m.created_at)}>
                           <Ban size={13} className="shrink-0 opacity-70" /> {tr("Message deleted")}

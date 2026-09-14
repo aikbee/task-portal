@@ -1315,6 +1315,13 @@ body { -webkit-tap-highlight-color: transparent; }
   opacity: 0.8;
 }
 
+.chat-ticks svg {
+  display: block;
+}
+.chat-unread {
+  scroll-margin-top: 3rem;
+}
+
 /* Modern chat */
 [data-table-theme="modern"] .chat-shell {
   border-radius: 1.25rem;
@@ -1446,6 +1453,12 @@ body { -webkit-tap-highlight-color: transparent; }
 }
 [data-table-theme="modern"] .chat-deleted {
   border-radius: 1.1rem;
+}
+[data-table-theme="modern"] .chat-receipts {
+  border-radius: 0.9rem;
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(12px);
 }
 [data-table-theme="modern"] .chat-typing {
   color: color-mix(in oklab, var(--accent) 65%, var(--fg-muted));
