@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2 } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -301,7 +302,16 @@ function ConversationList({ tr, me, convos, active, onOpen, onFindFriends }) {
                 {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
               </span>
               <span className="flex items-center gap-2">
-                <span className={cn("truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>{c.last_body ? `${c.last_sender_id === me?.id ? `${tr("You")}: ` : ""}${c.last_body}` : tr("No messages yet")}</span>
+                <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>
+                  {c.last_id ? (
+                    <>
+                      {c.last_sender_id === me?.id ? `${tr("You")}: ` : ""}
+                      {c.last_body ? <span className="truncate">{c.last_body}</span> : <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>}
+                    </>
+                  ) : (
+                    tr("No messages yet")
+                  )}
+                </span>
                 {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white">{c.unread}</span> : null}
               </span>
             </span>
@@ -312,24 +322,103 @@ function ConversationList({ tr, me, convos, active, onOpen, onFindFriends }) {
   );
 }
 
+const MAX_EDGE = 1920;
+const KEEP_BYTES = 3 * 1024 * 1024;
+const MAX_PHOTOS = 8;
+
+/** Downscale big photos in the browser (JPEG, longest edge 1920 px); GIFs and small images are sent as they are. */
+async function prepareImage(file) {
+  if (file.type === "image/gif") return file;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("unsupported");
+  }
+  const { width, height } = bitmap;
+  const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
+  if (scale === 1 && file.size <= KEEP_BYTES && ["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    bitmap.close?.();
+    return file;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
+  if (!blob) throw new Error("unsupported");
+  return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
+}
+
 function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
+  const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
+  const [lightbox, setLightbox] = useState(null); // { photos, index }
   const bottomRef = useRef(null);
+  const scrollRef = useRef(null);
+  const fileRef = useRef(null);
+  // a photo that finishes loading while we sit near the bottom keeps the latest message in view
+  const stickToBottom = () => {
+    const el = scrollRef.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 480) bottomRef.current?.scrollIntoView({ block: "end" });
+  };
+  const pendingRef = useRef(pending);
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
+  // release preview URLs when leaving the thread
+  useEffect(() => () => pendingRef.current.forEach((p) => URL.revokeObjectURL(p.url)), []);
   const count = messages?.length ?? 0;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [convo.id, count]);
   const canChat = !convo.friend_status || convo.friend_status === "accepted";
 
+  const addFiles = async (list) => {
+    const files = [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    if (pendingRef.current.length + files.length > MAX_PHOTOS) {
+      toast.error(tr("Up to {n} photos per message", { n: MAX_PHOTOS }));
+      return;
+    }
+    const prepared = [];
+    for (const f of files) {
+      try {
+        const file = await prepareImage(f);
+        prepared.push({ key: `${Date.now()}-${Math.random().toString(36).slice(2)}`, file, url: URL.createObjectURL(file) });
+      } catch {
+        toast.error(tr("Could not read {name}", { name: f.name }));
+      }
+    }
+    if (prepared.length) setPending((cur) => [...cur, ...prepared]);
+  };
+  const removePending = (key) =>
+    setPending((cur) => {
+      cur.filter((p) => p.key === key).forEach((p) => URL.revokeObjectURL(p.url));
+      return cur.filter((p) => p.key !== key);
+    });
+
   const send = async () => {
     const body = draft.trim();
-    if (!body || sending) return;
+    if ((!body && !pending.length) || sending) return;
     setSending(true);
     try {
-      const m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body });
+      let m;
+      if (pending.length) {
+        const fd = new FormData();
+        fd.append("body", body);
+        for (const p of pending) fd.append("files", p.file, p.file.name);
+        m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
+      } else {
+        m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body });
+      }
       setDraft("");
+      pending.forEach((p) => URL.revokeObjectURL(p.url));
+      setPending([]);
       onSent(m);
     } catch (e) {
       toast.error(tr("Could not send"), e.message);
@@ -339,6 +428,24 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
   };
   const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id) : null;
   const seen = lastMine && Number(convo.peer_last_read) >= lastMine.id;
+  const dropProps = canChat
+    ? {
+        onDragOver: (e) => {
+          if ([...e.dataTransfer.types].includes("Files")) {
+            e.preventDefault();
+            setDragging(true);
+          }
+        },
+        onDragLeave: (e) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false);
+        },
+        onDrop: (e) => {
+          e.preventDefault();
+          setDragging(false);
+          addFiles(e.dataTransfer.files);
+        },
+      }
+    : {};
 
   return (
     <>
@@ -350,67 +457,193 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier }) {
           <span className="block truncate text-[11px] text-fg-muted">{convo.email}</span>
         </span>
       </header>
-      <div className="chat-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {!messages ? (
-          <div className="grid h-full place-items-center"><Spinner className="text-fg-muted" /></div>
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
-            {messages.length >= 50 ? (
-              <button type="button" onClick={onLoadEarlier} className="mx-auto mb-2 rounded-full border border-line px-3 py-1 text-[11px] text-fg-muted hover:text-fg">{tr("Load earlier messages")}</button>
-            ) : null}
-            {messages.length === 0 ? <p className="py-10 text-center text-xs text-fg-faint">{tr("Say hello — this is the start of your conversation.")}</p> : null}
-            {messages.map((m, i) => {
-              const mine = m.sender_id === me?.id;
-              const prev = messages[i - 1];
-              const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-              const grouped = prev && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
-              return (
-                <div key={m.id}>
-                  {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
-                  <div className={cn("flex", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
-                    <div
-                      className={cn(
-                        "chat-bubble max-w-[78%] whitespace-pre-wrap break-words rounded-app px-3 py-2 text-sm leading-relaxed",
-                        mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
-                      )}
-                      title={formatDateTime(m.created_at)}
-                    >
-                      {m.body}
-                      <span className={cn("ml-2 inline-block align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint")}>{timeOf(m.created_at)}</span>
+      <div className="relative flex min-h-0 flex-1 flex-col" {...dropProps}>
+        {dragging ? (
+          <div className="chat-drop pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-app border-2 border-dashed border-accent bg-accent/10 text-sm font-medium text-accent">
+            <span className="flex items-center gap-2"><ImageIcon size={18} /> {tr("Drop photos to send")}</span>
+          </div>
+        ) : null}
+        <div ref={scrollRef} className="chat-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {!messages ? (
+            <div className="grid h-full place-items-center"><Spinner className="text-fg-muted" /></div>
+          ) : (
+            <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
+              {messages.length >= 50 ? (
+                <button type="button" onClick={onLoadEarlier} className="mx-auto mb-2 rounded-full border border-line px-3 py-1 text-[11px] text-fg-muted hover:text-fg">{tr("Load earlier messages")}</button>
+              ) : null}
+              {messages.length === 0 ? <p className="py-10 text-center text-xs text-fg-faint">{tr("Say hello — this is the start of your conversation.")}</p> : null}
+              {messages.map((m, i) => {
+                const mine = m.sender_id === me?.id;
+                const photos = m.attachments ?? [];
+                const prev = messages[i - 1];
+                const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
+                const grouped = prev && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
+                const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
+                // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
+                const single = photos.length === 1 ? photos[0] : null;
+                const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
+                const bubbleW = photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
+                return (
+                  <div key={m.id}>
+                    {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
+                    <div className={cn("flex", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
+                      <div
+                        className={cn(
+                          "chat-bubble max-w-[78%] whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
+                          photos.length ? "chat-has-photos p-1.5" : "px-3 py-2",
+                          mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
+                        )}
+                        title={formatDateTime(m.created_at)}
+                        style={bubbleW ? { width: bubbleW } : undefined}
+                      >
+                        {photos.length ? (
+                          <div className={cn("chat-photos", photos.length > 1 && "grid grid-cols-2 gap-1")}>
+                            {photos.map((p, pi) => (
+                              <button type="button" key={p.id} onClick={() => setLightbox({ photos, index: pi })} className={cn("chat-photo block overflow-hidden rounded-[10px] focus-ring", photos.length > 1 && "aspect-square")} aria-label={p.name}>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={p.url}
+                                  alt={p.name}
+                                  width={p.width || undefined}
+                                  height={p.height || undefined}
+                                  loading="lazy"
+                                  onLoad={stickToBottom}
+                                  className={photos.length > 1 ? "aspect-square h-full w-full object-cover" : "mx-auto h-auto max-w-full object-contain"}
+                                  // reserve the final box before the bytes arrive
+                                  style={imgW ? { width: imgW, aspectRatio: `${p.width} / ${p.height}` } : undefined}
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {photos.length ? (
+                          <span className="flex items-end gap-2 px-1.5 pt-1">
+                            {m.body ? <span className="min-w-0">{m.body}</span> : null}
+                            {time}
+                          </span>
+                        ) : (
+                          <>
+                            {m.body}
+                            {time}
+                          </>
+                        )}
+                      </div>
                     </div>
+                    {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{tr("Seen")}</p> : null}
                   </div>
-                  {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{tr("Seen")}</p> : null}
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </div>
+        <div className="chat-composer border-t border-line p-3">
+          {canChat ? (
+            <div className="mx-auto max-w-3xl">
+              {pending.length ? (
+                <div className="chat-pending mb-2 flex flex-wrap items-center gap-2">
+                  {pending.map((p) => (
+                    <span key={p.key} className="relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={p.url} alt="" className="h-16 w-16 rounded-app-sm border border-line object-cover" />
+                      <button type="button" aria-label={tr("Remove photo")} onClick={() => removePending(p.key)} className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full bg-fg text-bg shadow focus-ring">
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="text-[11px] text-fg-muted">{pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")}</span>
                 </div>
-              );
-            })}
-            <div ref={bottomRef} />
-          </div>
-        )}
+              ) : null}
+              <div className="flex items-end gap-2">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <Button variant="ghost" size="icon" icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  onPaste={(e) => {
+                    if (e.clipboardData?.files?.length) {
+                      e.preventDefault();
+                      addFiles(e.clipboardData.files);
+                    }
+                  }}
+                  rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+                  placeholder={pending.length ? tr("Add a caption (optional)") : tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
+                  className="control min-h-[42px] flex-1 resize-none py-2.5"
+                  maxLength={4000}
+                />
+                <Button icon={Send} onClick={send} loading={sending} disabled={!draft.trim() && !pending.length} aria-label={tr("Send")}>{tr("Send")}</Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-center text-xs text-fg-muted">{tr("You are no longer friends, so new messages are off. Send a new friend request to reconnect.")}</p>
+          )}
+        </div>
       </div>
-      <div className="chat-composer border-t border-line p-3">
-        {canChat ? (
-          <div className="mx-auto flex max-w-3xl items-end gap-2">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              rows={Math.min(6, Math.max(1, draft.split("\n").length))}
-              placeholder={tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
-              className="control min-h-[42px] flex-1 resize-none py-2.5"
-              maxLength={4000}
-            />
-            <Button icon={Send} onClick={send} loading={sending} disabled={!draft.trim()} aria-label={tr("Send")}>{tr("Send")}</Button>
-          </div>
-        ) : (
-          <p className="text-center text-xs text-fg-muted">{tr("You are no longer friends, so new messages are off. Send a new friend request to reconnect.")}</p>
-        )}
-      </div>
+      {lightbox ? <Lightbox tr={tr} photos={lightbox.photos} index={lightbox.index} onIndex={(index) => setLightbox({ ...lightbox, index })} onClose={() => setLightbox(null)} /> : null}
     </>
+  );
+}
+
+/** Full-screen photo viewer with keyboard navigation and download. */
+function Lightbox({ tr, photos, index, onIndex, onClose }) {
+  const photo = photos[index];
+  const hasPrev = index > 0;
+  const hasNext = index < photos.length - 1;
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight" && hasNext) onIndex(index + 1);
+      else if (e.key === "ArrowLeft" && hasPrev) onIndex(index - 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, hasPrev, hasNext, onClose, onIndex]);
+  if (!photo) return null;
+  const navBtn = "absolute top-1/2 -translate-y-1/2 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20 focus-ring";
+  return createPortal(
+    <div className="chat-lightbox fixed inset-0 z-[110] flex flex-col bg-black/92 text-white" role="dialog" aria-modal="true" aria-label={photo.name} onClick={onClose}>
+      <div className="flex items-center gap-3 px-4 py-3" onClick={(e) => e.stopPropagation()}>
+        <span className="min-w-0 flex-1 truncate text-sm">{photo.name}</span>
+        <span className="shrink-0 text-xs text-white/60 tabular-nums">{index + 1} / {photos.length}</span>
+        <a href={`${photo.url}?download=1`} className="grid h-9 w-9 place-items-center rounded-full hover:bg-white/15 focus-ring" aria-label={tr("Download")} data-tip={tr("Download")}>
+          <Download size={18} />
+        </a>
+        <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full hover:bg-white/15 focus-ring" aria-label={tr("Close")}>
+          <X size={20} />
+        </button>
+      </div>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center p-3 sm:p-6">
+        {hasPrev ? (
+          <button type="button" className={`${navBtn} left-3`} aria-label={tr("Previous")} onClick={(e) => { e.stopPropagation(); onIndex(index - 1); }}>
+            <ChevronLeft size={22} />
+          </button>
+        ) : null}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={photo.url} alt={photo.name} className="max-h-full max-w-full rounded-app object-contain shadow-2xl" onClick={(e) => e.stopPropagation()} />
+        {hasNext ? (
+          <button type="button" className={`${navBtn} right-3`} aria-label={tr("Next")} onClick={(e) => { e.stopPropagation(); onIndex(index + 1); }}>
+            <ChevronRight size={22} />
+          </button>
+        ) : null}
+      </div>
+    </div>,
+    document.body
   );
 }
 

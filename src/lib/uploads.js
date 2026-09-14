@@ -19,10 +19,14 @@ export function safeStoredName(originalName = "file") {
 
 /** Persist a Web File object to the upload dir; returns { storedName, size }. */
 export async function saveFile(file) {
+  return saveBuffer(Buffer.from(await file.arrayBuffer()), file.name);
+}
+
+/** Persist bytes already in memory under a safe generated name; returns { storedName, size }. */
+export async function saveBuffer(buf, originalName) {
   const dir = uploadDir();
   await fs.mkdir(dir, { recursive: true });
-  const storedName = safeStoredName(file.name);
-  const buf = Buffer.from(await file.arrayBuffer());
+  const storedName = safeStoredName(originalName);
   await fs.writeFile(path.join(/* turbopackIgnore: true */ dir, storedName), buf);
   return { storedName, size: buf.length };
 }

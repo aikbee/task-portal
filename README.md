@@ -167,7 +167,8 @@ All endpoints return `{ data }` or `{ error }`.
 `/chat` is a one-to-one text chat between friends.
 
 - **Friends by QR code.** Every account gets a friend code (`XXXX-XXXX-XXXX`, shown as a QR code on the Friends tab). Scanning it opens `/chat?add=CODE`, which previews the person and asks before sending the request; the code can also be typed in. Requests must be accepted before either side can message; you can cancel, decline, unfriend or block, and regenerate your code so old QR codes stop working.
-- **Messages.** Text only (up to 4000 characters), Enter to send, Shift+Enter for a new line, day separators, "Seen" read receipts and unread counts. The sidebar badge counts unread messages plus requests waiting for you.
+- **Messages.** Text (up to 4000 characters), Enter to send, Shift+Enter for a new line, day separators, "Seen" read receipts and unread counts. The sidebar badge counts unread messages plus requests waiting for you.
+- **Photos.** Up to 8 per message with an optional caption, picked with the photo button, pasted, or dropped onto the thread. Big pictures are downscaled in the browser (longest edge 1920 px, JPEG) before upload; the server checks the bytes are a JPEG, PNG, GIF or WebP (10 MB each) and records the pixel size. Photos open in a full-screen viewer with keyboard navigation and download, and only the two members of the conversation can load them. Files live in the upload directory and are removed with the account.
 - **Live updates** come over Server-Sent Events (`/api/chat/stream`, events `message`, `read`, `friends`); if the stream cannot connect the page polls every 5 seconds. New messages and friend requests also raise notifications (and pushes) in the **Chat** category, one bell entry per conversation.
 
 Endpoints:
@@ -181,7 +182,8 @@ Endpoints:
 | DELETE | `/api/chat/friends/:userId` | unfriend (history stays, no new messages) |
 | POST/DELETE | `/api/chat/friends/:userId/block` | block / unblock |
 | GET/POST | `/api/chat/conversations` | my chats with unread counts / `{ user_id }` opens the direct chat with a friend |
-| GET/POST | `/api/chat/conversations/:id/messages` | `?before=&limit=` pages backwards / `{ body }` |
+| GET/POST | `/api/chat/conversations/:id/messages` | `?before=&limit=` pages backwards / JSON `{ body }` or multipart `body` + `files[]` (photos); messages carry `attachments[]` |
+| GET | `/api/chat/photos/:id` | a photo, for members of its conversation (`?download=1`) |
 | POST | `/api/chat/conversations/:id/read` | `{ message_id }` marks read up to that message |
 | GET | `/api/chat/stream` | Server-Sent Events for the signed-in user |
 

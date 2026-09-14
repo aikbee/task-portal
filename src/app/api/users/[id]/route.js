@@ -5,7 +5,7 @@ import { USER_ROLES, USER_STATUS } from "@/lib/constants";
 import { USER_SELECT } from "../route";
 import { notifyAdmins } from "@/lib/notifications";
 import { purgeFiles } from "@/lib/attachments";
-import { pruneOrphanConversations } from "@/lib/chat";
+import { pruneOrphanConversations, purgeMessagePhotos } from "@/lib/chat";
 
 async function find(id) {
   const row = await queryOne(`${USER_SELECT} WHERE u.id = ?`, [id]);
@@ -60,6 +60,7 @@ export const DELETE = handler(
     if (existing.role === "admin") await assertNotLastAdmin(id);
     await purgeFiles("task", "p.user_id = ?", [id]);
     await purgeFiles("requirement", "p.user_id = ?", [id]);
+    await purgeMessagePhotos("m.sender_id = ?", [id]).catch(() => {});
     await execute("DELETE FROM users WHERE id = ?", [id]);
     await pruneOrphanConversations().catch(() => {});
     notifyAdmins(me, { type: "user_deleted", title: `Account removed: ${existing.name}`, body: existing.email, href: "/users", entityType: "user", entityId: id });

@@ -708,6 +708,7 @@ const adminJar = { ...jar };
   check("cannot delete own account", self.status === 400);
 }
 
+let chatPhotoId;
 console.log("chat (friends by code, one-to-one messages)");
 {
   const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
@@ -803,6 +804,47 @@ console.log("chat (friends by code, one-to-one messages)");
   const n5 = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
   check("your own message does not notify you", !n5.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && n.actor_id === adminId));
 
+  // photos: multipart with an optional caption, files checked by content
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAADklEQVQIW2NkYGD4DwABBAEAX+XyrwAAAABJRU5ErkJggg==", "base64"); // 2 x 3 px
+  const fdPhoto = new FormData();
+  fdPhoto.append("body", "Look at this");
+  fdPhoto.append("files", new Blob([png], { type: "image/png" }), "tiny.png");
+  const photoMsg = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdPhoto }));
+  const att = photoMsg.data?.attachments?.[0];
+  check("multipart message with a photo -> 201, size read from the bytes", photoMsg.status === 201 && photoMsg.data.body === "Look at this" && att && att.width === 2 && att.height === 3 && att.mime === "image/png" && att.url === `/api/chat/photos/${att.id}`, JSON.stringify(photoMsg.raw));
+  chatPhotoId = att?.id;
+  const fdOnly = new FormData();
+  fdOnly.append("files", new Blob([png], { type: "image/png" }), "only.png");
+  const photoOnly = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdOnly }));
+  check("photo without text -> 201 with an empty body", photoOnly.status === 201 && photoOnly.data.body === "" && photoOnly.data.attachments.length === 1);
+  const fdFake = new FormData();
+  fdFake.append("files", new Blob(["hello"], { type: "image/png" }), "fake.png");
+  const fake = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdFake }));
+  check("a text file disguised as a PNG -> 400", fake.status === 400);
+  const fdBlank = new FormData();
+  fdBlank.append("body", "   ");
+  const blank = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdBlank }));
+  check("multipart with neither text nor files -> 400", blank.status === 400);
+  const fdMany = new FormData();
+  for (let i = 0; i < 9; i++) fdMany.append("files", new Blob([png], { type: "image/png" }), `p${i}.png`);
+  const many = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { form: fdMany }));
+  check("nine photos in one message -> 400", many.status === 400);
+  const img = await as(adminJar, () => call("GET", `/api/chat/photos/${chatPhotoId}`));
+  check("the other member can load the photo", img.status === 200 && img.headers.get("content-type") === "image/png" && img.raw.byteLength === png.length && /immutable/.test(img.headers.get("cache-control") || ""));
+  const dl = await as(adminJar, () => call("GET", `/api/chat/photos/${chatPhotoId}?download=1`));
+  check("?download=1 sends it as an attachment", dl.status === 200 && /^attachment/.test(dl.headers.get("content-disposition") || ""));
+  const anonImg = await fetch(`${BASE}/api/chat/photos/${chatPhotoId}`);
+  check("photos require a session", anonImg.status === 401);
+  await anonImg.body?.cancel();
+  const noImg = await as(adminJar, () => call("GET", "/api/chat/photos/999999"));
+  check("unknown photo -> 404", noImg.status === 404);
+  const withPhotos = await as(adminJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
+  check("messages carry their photos", withPhotos.data.find((m) => m.id === photoMsg.data.id)?.attachments?.[0]?.id === chatPhotoId && withPhotos.data.find((m) => m.id === m2.data.id)?.attachments?.length === 0);
+  const listPhoto = await as(adminJar, () => call("GET", "/api/chat/conversations"));
+  check("conversation preview counts the last message's photos", listPhoto.data.find((c) => c.id === convoId)?.last_photos === 1);
+  const nPhoto = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+  check("a photo-only message notifies as a photo", nPhoto.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && /📷/.test(n.title)));
+
   // live stream says hello
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 4000);
@@ -853,7 +895,7 @@ console.log("chat (friends by code, one-to-one messages)");
   const afterUnfriend = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "?" } }));
   check("no messages after unfriending -> 403", afterUnfriend.status === 403);
   const keepsHistory = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
-  check("history is still readable", keepsHistory.status === 200 && keepsHistory.data.length === 3);
+  check("history is still readable", keepsHistory.status === 200 && keepsHistory.data.length === 5);
   const notFriends = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
   check("unfriending again -> 404", notFriends.status === 404);
 
@@ -867,6 +909,8 @@ console.log("cleanup");
 {
   const u = await call("DELETE", `/api/users/${userId}`);
   check("DELETE user (cascades their workspace)", u.status === 200);
+  const gonePhoto = await call("GET", `/api/chat/photos/${chatPhotoId}`);
+  check("their chat photos are gone with the account", gonePhoto.status === 404);
 }
 {
   const t = await call("DELETE", `/api/tasks/${taskId}`);

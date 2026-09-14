@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { deleteStoredFile } from "./uploads";
 import QRCode from "qrcode";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
@@ -32,6 +33,8 @@ export const PEER_FIELDS = "u.id, u.name, u.avatar_color, u.email";
 /** Same person columns for conversation rows, where `id` is the conversation and the person is `user_id`. */
 export const CONVO_PEER = "u.id AS user_id, u.name, u.avatar_color, u.email";
 export const MESSAGE_MAX = 4000;
+export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+export const PHOTOS_PER_MESSAGE = 8;
 
 /* ---------- friend codes ---------- */
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
@@ -122,6 +125,7 @@ export async function conversationsOf(userId) {
     `SELECT c.id, ${CONVO_PEER}, m.last_read_message_id, pm.last_read_message_id AS peer_last_read,
        (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
        lm.id AS last_id, lm.body AS last_body, lm.sender_id AS last_sender_id, lm.created_at AS last_at,
+       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id) AS last_photos,
        (SELECT f.status FROM friendships f WHERE (f.requester_id = ? AND f.addressee_id = u.id) OR (f.requester_id = u.id AND f.addressee_id = ?)) AS friend_status
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
@@ -132,7 +136,7 @@ export async function conversationsOf(userId) {
      ORDER BY COALESCE(lm.created_at, c.created_at) DESC`,
     [userId, userId, userId, userId, userId]
   );
-  return rows.map((r) => ({ ...r, unread: Number(r.unread) }));
+  return rows.map((r) => ({ ...r, unread: Number(r.unread), last_photos: Number(r.last_photos) }));
 }
 export async function conversationFor(conversationId, userId) {
   const row = await queryOne(
@@ -157,13 +161,50 @@ export async function chatBadge(userId) {
   return { unread: Number(row?.unread ?? 0), pending: Number(row?.pending ?? 0) };
 }
 
+/* ---------- messages ---------- */
+const photoOf = (a) => ({ id: a.id, url: `/api/chat/photos/${a.id}`, name: a.original_name, mime: a.mime_type, size: a.size_bytes, width: a.width, height: a.height });
+
+/** Attach each message's photos (attachments[]). */
+export async function withPhotos(rows) {
+  if (!rows.length) return rows;
+  const photos = await query(
+    `SELECT id, message_id, original_name, mime_type, size_bytes, width, height FROM message_attachments WHERE message_id IN (${rows.map(() => "?").join(",")}) ORDER BY message_id, sort_order, id`,
+    rows.map((r) => r.id)
+  );
+  const byMessage = new Map();
+  for (const a of photos) byMessage.set(a.message_id, [...(byMessage.get(a.message_id) ?? []), photoOf(a)]);
+  return rows.map((r) => ({ ...r, attachments: byMessage.get(r.id) ?? [] }));
+}
+export async function messageById(id) {
+  const row = await queryOne("SELECT id, conversation_id, sender_id, body, created_at FROM messages WHERE id = ?", [id]);
+  return row ? (await withPhotos([row]))[0] : null;
+}
+/** A photo the user may see: they are a member of its conversation. */
+export async function photoFor(photoId, userId) {
+  const row = await queryOne(
+    `SELECT a.* FROM message_attachments a JOIN messages x ON x.id = a.message_id
+     JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ?
+     WHERE a.id = ?`,
+    [userId, photoId]
+  );
+  if (!row) throw new HttpError("Photo not found.", 404);
+  return row;
+}
+/** Remove photo files for messages matched by a WHERE clause on messages m (rows go via FK cascade). */
+export async function purgeMessagePhotos(whereSql, args) {
+  const rows = await query(`SELECT a.stored_name FROM message_attachments a JOIN messages m ON m.id = a.message_id WHERE ${whereSql}`, args);
+  await Promise.all(rows.map((r) => deleteStoredFile(r.stored_name).catch(() => {})));
+  return rows.length;
+}
+
 /** One unread bell entry per conversation: the newest message replaces the previous unread one. */
-export async function notifyMessage(peerId, sender, conversationId, body) {
+export async function notifyMessage(peerId, sender, conversationId, body, photos = 0) {
   await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'chat_message' AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [peerId, conversationId]);
+  const text = body ? (body.length > 90 ? `${body.slice(0, 90)}…` : body) : photos > 1 ? `📷 ${photos} photos` : "📷 Photo";
   await notify({
     userId: peerId,
     type: "chat_message",
-    title: `${sender.name}: ${body.length > 90 ? `${body.slice(0, 90)}…` : body}`,
+    title: `${sender.name}: ${text}`,
     body: null,
     href: `/chat?c=${conversationId}`,
     entityType: "conversation",
@@ -175,8 +216,11 @@ export async function notifyMessage(peerId, sender, conversationId, body) {
 
 /** Direct conversations left with a single member (the other account was deleted) are removed. */
 export async function pruneOrphanConversations() {
-  await execute(
-    `DELETE FROM conversations WHERE kind = 'direct' AND id IN (
-       SELECT id FROM (SELECT c.id FROM conversations c LEFT JOIN conversation_members m ON m.conversation_id = c.id GROUP BY c.id HAVING COUNT(m.user_id) < 2) x)`
-  );
+  const orphans = await query("SELECT c.id FROM conversations c LEFT JOIN conversation_members m ON m.conversation_id = c.id WHERE c.kind = 'direct' GROUP BY c.id HAVING COUNT(m.user_id) < 2");
+  if (!orphans.length) return 0;
+  const ids = orphans.map((r) => r.id);
+  const marks = ids.map(() => "?").join(",");
+  await purgeMessagePhotos(`m.conversation_id IN (${marks})`, ids);
+  await execute(`DELETE FROM conversations WHERE id IN (${marks})`, ids);
+  return ids.length;
 }
