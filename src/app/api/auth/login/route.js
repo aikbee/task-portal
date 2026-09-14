@@ -3,6 +3,8 @@ import { handler, ok, readJson, HttpError } from "@/lib/api-utils";
 import { verifyPassword } from "@/lib/password";
 import { getSessionUser } from "@/lib/auth";
 import { finishLogin } from "@/lib/login";
+import { signedCookie } from "@/lib/auth-cookies";
+import { MFA_COOKIE, isTrustedDevice } from "@/lib/mfa";
 
 export const POST = handler(
   async (request) => {
@@ -17,10 +19,18 @@ export const POST = handler(
     const user = await queryOne("SELECT * FROM users WHERE email = ?", [email]);
     if (!user || !verifyPassword(password, user.password_hash)) throw new HttpError("Invalid email or password.", 401);
 
+    // two-factor authentication: no session yet, the code step follows (unless this browser is trusted)
+    if (user.totp_secret && !(await isTrustedDevice(request, user.id))) {
+      if (user.status !== "active") throw new HttpError("This account is disabled.", 403);
+      const res = ok({ mfa_required: true });
+      res.cookies.set(signedCookie(MFA_COOKIE, { u: user.id, remember: Boolean(body.remember), attempts: 0 }, 300));
+      return res;
+    }
+
     await finishLogin(request, user, { remember: Boolean(body.remember), method: "password" });
     const me = await getSessionUser(request).catch(() => null);
-    const { password_hash, google_sub, ...safe } = user;
-    return ok({ ...safe, has_google: Boolean(google_sub), session_id: me?.session_id ?? null });
+    const { password_hash, google_sub, totp_secret, totp_last_step, ...safe } = user;
+    return ok({ ...safe, has_google: Boolean(google_sub), has_totp: Boolean(totp_secret), session_id: me?.session_id ?? null });
   },
   { auth: false }
 );

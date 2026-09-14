@@ -12,7 +12,8 @@ export const USER_SELECT = `
     (SELECT COUNT(*) FROM employees x WHERE x.user_id = u.id) AS employee_count,
     (SELECT COUNT(*) FROM tasks t WHERE t.user_id = u.id) AS task_count,
     (SELECT COUNT(*) FROM passkeys k WHERE k.user_id = u.id) AS passkey_count,
-    (u.google_sub IS NOT NULL) AS has_google
+    (u.google_sub IS NOT NULL) AS has_google,
+    (u.totp_secret IS NOT NULL) AS has_totp
   FROM users u LEFT JOIN employees e ON e.id = u.employee_id`;
 
 export const GET = handler(async () => ok(await query(`${USER_SELECT} ORDER BY u.role = 'admin' DESC, u.name`)), { role: "admin" });

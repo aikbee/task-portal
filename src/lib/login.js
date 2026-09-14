@@ -3,7 +3,7 @@ import { HttpError } from "./http-error";
 import { createSession, pruneSessions } from "./auth";
 import { notify } from "./notifications";
 
-const METHOD_LABEL = { password: "", passkey: " with a passkey", google: " with Google" };
+const METHOD_LABEL = { password: "", passkey: " with a passkey", google: " with Google", totp: " with a two-factor code" };
 
 /** "Chrome on macOS" style description of a user agent. */
 export function describeUserAgent(ua = "") {

@@ -8,7 +8,7 @@ const DAY = 86_400_000;
 export const WORKSPACE_COOKIE = "ap_workspace";
 export const PROFILE_COOKIE = "ap_profile";
 
-export const PUBLIC_USER_FIELDS = "u.id, u.name, u.email, u.role, u.status, u.avatar_color, u.employee_id, u.notification_prefs, (u.pin_hash IS NOT NULL) AS has_pin, (u.google_sub IS NOT NULL) AS has_google, u.last_login_at, u.created_at, u.updated_at";
+export const PUBLIC_USER_FIELDS = "u.id, u.name, u.email, u.role, u.status, u.avatar_color, u.employee_id, u.notification_prefs, (u.pin_hash IS NOT NULL) AS has_pin, (u.google_sub IS NOT NULL) AS has_google, (u.totp_secret IS NOT NULL) AS has_totp, u.last_login_at, u.created_at, u.updated_at";
 
 /** Create a DB session for the user and set the signed cookie (on `response` when given, else via next/headers). */
 export async function createSession(userId, { remember = false, userAgent = "", response = null } = {}) {
@@ -107,7 +107,7 @@ export async function getSessionUser(request) {
   const profiles = await profilesOf(owner_id);
   const wantedProfile = Number(await cookieValue(request, PROFILE_COOKIE));
   const profile = profiles.find((p) => p.id === wantedProfile) ?? profiles.find((p) => p.is_default) ?? profiles[0];
-  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), secrets_unlocked: Boolean(row.secrets_unlocked), owner_id, workspace, profile_id: profile.id, profile, profiles };
+  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: Boolean(row.secrets_unlocked), owner_id, workspace, profile_id: profile.id, profile, profiles };
 }
 
 export async function requireUser(request) {

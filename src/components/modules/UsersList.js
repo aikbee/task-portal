@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, KeyRound, Briefcase, Fingerprint, Unlink } from "lucide-react";
+import { Plus, KeyRound, Briefcase, Fingerprint, Unlink, ShieldCheck, ShieldOff } from "lucide-react";
 import { api } from "@/lib/api";
 import DataTable from "@/components/table/DataTable";
 import PageHeader from "@/components/ui/PageHeader";
@@ -31,14 +31,14 @@ export default function UsersList() {
   useNewShortcut(openNew);
   const del = useDeleteFlow("/api/users", { toast, label: "user", onDeleted: removeLocal });
   // admin recovery actions: drop every passkey of an account or disconnect Google
-  const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" }
+  const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" | "totp" }
   const [methodBusy, setMethodBusy] = useState(false);
   const runMethodAction = async () => {
     if (!methodTarget) return;
     setMethodBusy(true);
     try {
       await api.del(`/api/users/${methodTarget.user.id}/${methodTarget.kind}`);
-      toast.success(methodTarget.kind === "google" ? tr("Google unlinked") : tr("Passkeys removed"), methodTarget.user.name);
+      toast.success(methodTarget.kind === "google" ? tr("Google unlinked") : methodTarget.kind === "totp" ? tr("Two-factor authentication reset") : tr("Passkeys removed"), methodTarget.user.name);
       setMethodTarget(null);
       refetch();
     } catch (e) {
@@ -70,14 +70,15 @@ export default function UsersList() {
       ),
     },
     {
-      key: "signin", label: tr("Sign-in"), sortValue: (r) => (r.passkey_count > 0 ? 2 : 0) + (r.has_google ? 1 : 0),
+      key: "signin", label: tr("Sign-in"), sortValue: (r) => (r.has_totp ? 4 : 0) + (r.passkey_count > 0 ? 2 : 0) + (r.has_google ? 1 : 0),
       render: (r) => (
         <span className="inline-flex flex-wrap items-center gap-1">
           {r.passkey_count > 0 ? (
             <Badge tone="emerald" className="inline-flex items-center gap-1"><Fingerprint size={11} /> {r.passkey_count === 1 ? tr("1 passkey") : tr("{n} passkeys", { n: r.passkey_count })}</Badge>
           ) : null}
           {r.has_google ? <Badge tone="sky" className="inline-flex items-center gap-1"><GoogleMark size={10} /> Google</Badge> : null}
-          {!r.passkey_count && !r.has_google ? <span className="text-xs text-fg-faint">{tr("Password only")}</span> : null}
+          {r.has_totp ? <Badge tone="violet" className="inline-flex items-center gap-1"><ShieldCheck size={11} /> 2FA</Badge> : null}
+          {!r.passkey_count && !r.has_google && !r.has_totp ? <span className="text-xs text-fg-faint">{tr("Password only")}</span> : null}
         </span>
       ),
     },
@@ -128,6 +129,9 @@ export default function UsersList() {
             {r.has_google ? (
               <Button variant="ghost" size="iconXs" icon={Unlink} aria-label={tr("Unlink Google")} data-tip={tr("Unlink Google")} onClick={() => setMethodTarget({ user: r, kind: "google" })} />
             ) : null}
+            {r.has_totp && r.id !== me?.id ? (
+              <Button variant="ghost" size="iconXs" icon={ShieldOff} aria-label={tr("Reset 2FA")} data-tip={tr("Reset 2FA")} onClick={() => setMethodTarget({ user: r, kind: "totp" })} />
+            ) : null}
             <RowActions onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
           </>
         )}
@@ -146,13 +150,15 @@ export default function UsersList() {
         onClose={() => setMethodTarget(null)}
         onConfirm={runMethodAction}
         loading={methodBusy}
-        title={methodTarget?.kind === "google" ? tr("Unlink Google?") : tr("Remove passkeys?")}
-        confirmText={methodTarget?.kind === "google" ? tr("Unlink") : tr("Remove")}
+        title={methodTarget?.kind === "google" ? tr("Unlink Google?") : methodTarget?.kind === "totp" ? tr("Reset two-factor authentication?") : tr("Remove passkeys?")}
+        confirmText={methodTarget?.kind === "google" ? tr("Unlink") : methodTarget?.kind === "totp" ? tr("Reset") : tr("Remove")}
         description={
           !methodTarget
             ? ""
             : methodTarget.kind === "google"
               ? tr("{name} will no longer be able to sign in with Google until they connect it again. Their password keeps working.", { name: methodTarget.user.name })
+              : methodTarget.kind === "totp"
+                ? tr("{name} will sign in with their password alone until they set up an authenticator app again. Use this when they lost their phone and their recovery codes.", { name: methodTarget.user.name })
               : tr("All passkeys of {name} ({n}) are removed. Their password keeps working, and they can add a new passkey from their profile.", { name: methodTarget.user.name, n: methodTarget.user.passkey_count })
         }
       />

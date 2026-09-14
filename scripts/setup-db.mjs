@@ -95,6 +95,10 @@ async function migrate(db, adminId) {
     log("migrating: users.google_sub");
     await db.query("ALTER TABLE users ADD COLUMN google_sub VARCHAR(64) NULL AFTER pin_hash, ADD UNIQUE KEY uq_users_google_sub (google_sub)");
   }
+  if (!(await hasColumn(db, "users", "totp_secret"))) {
+    log("migrating: users.totp_* (two-factor authentication)");
+    await db.query("ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) NULL AFTER google_sub, ADD COLUMN totp_enabled_at DATETIME NULL AFTER totp_secret, ADD COLUMN totp_last_step BIGINT UNSIGNED NULL AFTER totp_enabled_at");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

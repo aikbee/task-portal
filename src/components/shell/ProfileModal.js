@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { KeyRound, UserRound, Fingerprint, Plus, Trash2 } from "lucide-react";
+import { KeyRound, UserRound, Fingerprint, Plus, Trash2, ShieldCheck, ShieldOff, Copy, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { USER_ROLES } from "@/lib/modules";
@@ -111,12 +111,186 @@ function ProfileModalInner({ onClose }) {
         </div>
       </form>
 
+      <Divider className="my-5" label={tr("Two-factor authentication")} />
+      <TwoFactorSection tr={tr} toast={toast} setUser={setUser} />
+
       <Divider className="my-5" label={tr("Passkeys")} />
       <PasskeysSection tr={tr} toast={toast} />
 
       <Divider className="my-5" label={tr("Google account")} />
       <GoogleSection tr={tr} toast={toast} user={user} setUser={setUser} />
     </Modal>
+  );
+}
+
+/** Authenticator-app (TOTP) second factor: set up with a QR code, recovery codes, trusted browsers, turn off. */
+function TwoFactorSection({ tr, toast, setUser }) {
+  const [status, setStatus] = useState(null);
+  const [stage, setStage] = useState("idle"); // idle | setup | codes | regen | disable
+  const [setup, setSetup] = useState(null); // { secret, otpauth, qr }
+  const [codes, setCodes] = useState(null); // freshly issued recovery codes (shown once)
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    api.get("/api/auth/totp").then(setStatus).catch(() => setStatus({ enabled: false, recovery_codes_left: 0, trusted_devices: 0 }));
+  }, []);
+
+  const run = async (fn) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const begin = () =>
+    run(async () => {
+      setSetup(await api.post("/api/auth/totp/setup"));
+      setCode("");
+      setStage("setup");
+    });
+  const enable = (e) => {
+    e.preventDefault();
+    return run(async () => {
+      const r = await api.post("/api/auth/totp/enable", { code });
+      setCodes(r.recovery_codes);
+      setStatus(r);
+      setStage("codes");
+      setCode("");
+      setUser((u) => ({ ...u, has_totp: true }));
+      toast.success(tr("Two-factor authentication is on"), tr("Save your recovery codes now."));
+    });
+  };
+  const regen = (e) => {
+    e.preventDefault();
+    return run(async () => {
+      const r = await api.post("/api/auth/totp/recovery-codes", { password });
+      setCodes(r.recovery_codes);
+      setStatus(r);
+      setPassword("");
+      setStage("codes");
+    });
+  };
+  const disable = (e) => {
+    e.preventDefault();
+    return run(async () => {
+      setStatus(await api.post("/api/auth/totp/disable", { password, code }));
+      setPassword("");
+      setCode("");
+      setStage("idle");
+      setUser((u) => ({ ...u, has_totp: false }));
+      toast.success(tr("Two-factor authentication is off"));
+    });
+  };
+  const forget = () =>
+    run(async () => {
+      setStatus(await api.del("/api/auth/totp/trusted"));
+      toast.success(tr("Trusted browsers forgotten"));
+    });
+  const copyCodes = async () => {
+    try {
+      await navigator.clipboard.writeText(codes.join("\n"));
+      toast.success(tr("Copied"));
+    } catch {
+      toast.error(tr("Could not copy"));
+    }
+  };
+  const cancel = () => { setStage("idle"); setCode(""); setPassword(""); setErr(null); };
+  const codeInput = (
+    <Input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123 456" required className="text-center tracking-[0.3em] tabular-nums" />
+  );
+
+  if (status === null) return <p className="text-xs text-fg-faint">{tr("Loading…")}</p>;
+
+  if (stage === "setup" && setup) {
+    return (
+      <form onSubmit={enable} className="space-y-3">
+        <p className="text-xs text-fg-muted">{tr("Scan this QR code with Google Authenticator, Authy, 1Password or any authenticator app, then enter the 6-digit code it shows.")}</p>
+        <div className="flex flex-col items-center gap-3 rounded-app border border-line bg-white p-3 sm:flex-row sm:items-start">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={setup.qr} alt="QR code for the authenticator app" width={160} height={160} className="shrink-0 rounded" />
+          <div className="min-w-0 flex-1 text-xs text-slate-600">
+            <p className="font-medium text-slate-800">{tr("Can't scan? Enter this key by hand:")}</p>
+            <p className="mt-1 break-all font-mono text-[11px] tracking-wider text-slate-800">{setup.secret.match(/.{1,4}/g).join(" ")}</p>
+            <p className="mt-2">{tr("Time-based, 6 digits, 30 seconds.")}</p>
+          </div>
+        </div>
+        <Field label={tr("Code from the app")}>{codeInput}</Field>
+        {err ? <p className="text-xs text-rose-500">{err}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={cancel}>{tr("Cancel")}</Button>
+          <Button type="submit" icon={ShieldCheck} loading={busy}>{tr("Turn on")}</Button>
+        </div>
+      </form>
+    );
+  }
+
+  if (stage === "codes" && codes) {
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-fg-muted">{tr("Recovery codes let you sign in if you lose your phone. Each one works once. Store them somewhere safe — they are not shown again.")}</p>
+        <ul className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-app border border-line bg-surface-2 p-3 font-mono text-sm tabular-nums">
+          {codes.map((c) => <li key={c}>{c}</li>)}
+        </ul>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" icon={Copy} onClick={copyCodes}>{tr("Copy")}</Button>
+          <Button type="button" onClick={() => { setCodes(null); setStage("idle"); }}>{tr("I saved them")}</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (stage === "regen" || stage === "disable") {
+    const off = stage === "disable";
+    return (
+      <form onSubmit={off ? disable : regen} className="space-y-3">
+        <p className="text-xs text-fg-muted">{tr(off ? "Confirm with your password and a current code (or a recovery code) to turn two-factor authentication off." : "Confirm with your password to get new recovery codes. The old ones stop working.")}</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label={tr("Password")}>
+            <Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          </Field>
+          {off ? <Field label={tr("Code")}>{codeInput}</Field> : null}
+        </div>
+        {err ? <p className="text-xs text-rose-500">{err}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={cancel}>{tr("Cancel")}</Button>
+          <Button type="submit" variant={off ? "danger" : "secondary"} icon={off ? ShieldOff : RefreshCw} loading={busy}>{tr(off ? "Turn off" : "New recovery codes")}</Button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 rounded-app border border-line bg-surface-2 p-3">
+        {status.enabled ? <ShieldCheck size={18} className="shrink-0 text-emerald-500" /> : <ShieldOff size={18} className="shrink-0 text-fg-faint" />}
+        <span className="min-w-0 flex-1 text-sm">
+          <span className="block font-medium">{status.enabled ? tr("On") : tr("Off")}</span>
+          <span className="block text-[11px] text-fg-muted">
+            {status.enabled
+              ? tr("{n} recovery codes left · {d} trusted browsers", { n: status.recovery_codes_left, d: status.trusted_devices })
+              : tr("Ask for a code from an authenticator app whenever you sign in with your password.")}
+          </span>
+        </span>
+        {status.enabled ? (
+          <Button size="sm" variant="secondary" icon={ShieldOff} onClick={() => setStage("disable")}>{tr("Turn off")}</Button>
+        ) : (
+          <Button size="sm" icon={ShieldCheck} loading={busy} onClick={begin}>{tr("Set up")}</Button>
+        )}
+      </div>
+      {status.enabled ? (
+        <div className="flex flex-wrap gap-2">
+          <Button size="xs" variant="outline" icon={RefreshCw} onClick={() => setStage("regen")}>{tr("New recovery codes")}</Button>
+          {status.trusted_devices > 0 ? <Button size="xs" variant="outline" loading={busy} onClick={forget}>{tr("Forget trusted browsers")}</Button> : null}
+        </div>
+      ) : null}
+      {err ? <p className="text-xs text-rose-500">{err}</p> : null}
+    </div>
   );
 }
 

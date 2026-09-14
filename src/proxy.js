@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { verifySessionToken, SESSION_COOKIE, sessionSecret } from "@/lib/session-token";
 
 const PUBLIC = new Set([
-  "/login", "/api/auth/login", "/api/auth/methods", "/api/auth/passkeys/login/options", "/api/auth/passkeys/login/verify", "/api/auth/google", "/api/auth/google/callback",
+  "/login", "/api/auth/login", "/api/auth/methods", "/api/auth/passkeys/login/options", "/api/auth/passkeys/login/verify", "/api/auth/google", "/api/auth/google/callback", "/api/auth/totp/verify",
   "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds",
 ]);
 

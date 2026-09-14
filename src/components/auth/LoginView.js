@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User, Fingerprint } from "lucide-react";
+import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User, Fingerprint, ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePrefs } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -44,6 +44,10 @@ function LoginCard({ demo }) {
   const paramError = PARAM_ERRORS[sp.get("error")] ? tr(PARAM_ERRORS[sp.get("error")], { email: sp.get("email") || "" }) : null;
   const [methods, setMethods] = useState(null);
   const [pkBusy, setPkBusy] = useState(false);
+  const [mfa, setMfa] = useState(false); // password accepted, authenticator code pending
+  const [code, setCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [trust, setTrust] = useState(false);
   // WebAuthn availability is read after mount so the server and first client render agree
   const passkeys = mounted && typeof window !== "undefined" && Boolean(window.PublicKeyCredential);
   const [email, setEmail] = useState("");
@@ -74,11 +78,35 @@ function LoginCard({ demo }) {
     setBusy(true);
     setError(null);
     try {
-      await api.post("/api/auth/login", { email, password, remember });
+      const r = await api.post("/api/auth/login", { email, password, remember });
+      if (r?.mfa_required) {
+        setMfa(true);
+        setCode("");
+        setBusy(false);
+        return;
+      }
       enter();
     } catch (err) {
       setError(err.message);
       setBusy(false);
+    }
+  };
+
+  const verifyCode = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/auth/totp/verify", { code, trust });
+      enter();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+      setCode("");
+      if (/expired|Too many/i.test(err.message)) {
+        setMfa(false);
+        setPassword("");
+      }
     }
   };
 
@@ -116,6 +144,41 @@ function LoginCard({ demo }) {
           </span>
         </div>
 
+        {mfa ? (
+          <form onSubmit={verifyCode} className="glass rounded-app-lg p-6 shadow-app-lg anim-pop">
+            <h1 className="text-xl font-semibold tracking-tight">{tr("Two-step verification")}</h1>
+            <p className="mt-1 text-sm text-fg-muted">
+              {tr(useRecovery ? "Enter one of the recovery codes you saved when you turned on two-factor authentication." : "Enter the 6-digit code from your authenticator app.")}
+            </p>
+            <div className="mt-5 space-y-4">
+              <Field label={tr(useRecovery ? "Recovery code" : "Authenticator code")}>
+                <Input
+                  autoFocus
+                  required
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  inputMode={useRecovery ? "text" : "numeric"}
+                  autoComplete="one-time-code"
+                  placeholder={useRecovery ? "xxxxx-xxxxx" : "123 456"}
+                  className="text-center text-lg tracking-[0.3em] tabular-nums"
+                />
+              </Field>
+              <Checkbox checked={trust} onChange={setTrust} label={tr("Trust this browser for 30 days")} />
+              {error ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500 anim-pop">{error}</p> : null}
+              <Button type="submit" size="lg" className="w-full" icon={ShieldCheck} loading={busy}>
+                {tr("Verify")}
+              </Button>
+              <div className="flex items-center justify-between text-xs">
+                <button type="button" className="text-fg-muted hover:text-fg" onClick={() => { setUseRecovery((v) => !v); setCode(""); setError(null); }}>
+                  {tr(useRecovery ? "Use the authenticator app" : "Use a recovery code instead")}
+                </button>
+                <button type="button" className="inline-flex items-center gap-1 text-fg-muted hover:text-fg" onClick={() => { setMfa(false); setPassword(""); setError(null); }}>
+                  <ArrowLeft size={12} /> {tr("Back")}
+                </button>
+              </div>
+            </div>
+          </form>
+        ) : (
         <form onSubmit={submit} className="glass rounded-app-lg p-6 shadow-app-lg">
           <h1 className="text-xl font-semibold tracking-tight">{tr("Sign in")}</h1>
           <p className="mt-1 text-sm text-fg-muted">
@@ -164,6 +227,7 @@ function LoginCard({ demo }) {
             ) : null}
           </div>
         </form>
+        )}
 
         <p className="mt-4 flex items-center justify-center gap-2 text-xs text-fg-muted">
           {Object.entries(LOCALES).map(([code, name], i) => (

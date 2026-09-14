@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS users (
   notification_prefs JSON NULL, -- { muted: ["tasks", ...] }
   pin_hash VARCHAR(255) NULL, -- lock-screen PIN (scrypt) so secrets can be re-verified server-side
   google_sub VARCHAR(64) NULL, -- Google account id once "Continue with Google" has been used or connected
+  totp_secret VARCHAR(255) NULL, -- encrypted authenticator secret while two-factor authentication is on
+  totp_enabled_at DATETIME NULL,
+  totp_last_step BIGINT UNSIGNED NULL, -- last accepted 30 s time step, so a code cannot be replayed
   last_login_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -51,6 +54,31 @@ CREATE TABLE IF NOT EXISTS passkeys (
   last_used_at DATETIME NULL,
   KEY idx_passkeys_user (user_id),
   CONSTRAINT fk_passkeys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One-time recovery codes for two-factor authentication (SHA-256 of the code; ten per user)
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_recovery_user (user_id),
+  CONSTRAINT fk_recovery_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Browsers remembered for 30 days after a second-factor sign-in ("trust this browser")
+CREATE TABLE IF NOT EXISTS trusted_devices (
+  id CHAR(48) NOT NULL PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME NULL,
+  expires_at DATETIME NOT NULL,
+  KEY idx_trusted_user (user_id),
+  KEY idx_trusted_expires (expires_at),
+  CONSTRAINT fk_trusted_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- A user can have several profiles; each one is a separate set of projects / requirements / employees / tasks
