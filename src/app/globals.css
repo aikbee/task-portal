@@ -363,14 +363,18 @@ body { -webkit-tap-highlight-color: transparent; }
   background: color-mix(in srgb, var(--surface) 92%, var(--accent));
 }
 [data-table-theme="modern"] .dt-body {
-  padding: 0.15rem 0.25rem 0.35rem;
+  padding: 0 0.25rem 0.35rem;
 }
 [data-table-theme="modern"] .data-table {
   border-collapse: separate;
   border-spacing: 0 0.45rem;
 }
 [data-table-theme="modern"] .data-table thead th {
-  background: transparent;
+  /* sticky: rows scroll underneath, so it keeps a frosted background; the box-shadows paint the
+     same colour over the border-spacing gap above and below the header row */
+  --dt-head: color-mix(in srgb, var(--bg) 88%, var(--surface));
+  background: var(--dt-head);
+  box-shadow: 0 -0.6rem 0 0 var(--dt-head), 0 0.5rem 0 0 var(--dt-head);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   border-bottom: 0;
@@ -379,6 +383,14 @@ body { -webkit-tap-highlight-color: transparent; }
   letter-spacing: 0.12em;
   padding-top: 0.55rem;
   padding-bottom: 0.2rem;
+}
+[data-table-theme="modern"] .data-table thead th:first-child {
+  border-top-left-radius: 999px;
+  border-bottom-left-radius: 999px;
+}
+[data-table-theme="modern"] .data-table thead th:last-child {
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
 }
 [data-table-theme="modern"] .data-table tbody tr.dt-row td {
   background: color-mix(in srgb, var(--surface) 80%, transparent);
@@ -439,6 +451,95 @@ body { -webkit-tap-highlight-color: transparent; }
 [data-table-theme="modern"] .dt-footer button:hover:not(:disabled) {
   border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
   color: var(--accent);
+}
+
+/* Modern cards (detail pages, dashboard): softer gradient surface, top highlight, accent section labels */
+[data-table-theme="modern"] .ui-card {
+  border-radius: calc(var(--radius) + 4px);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--surface) 10%, transparent), transparent 45%),
+    color-mix(in srgb, var(--surface) 68%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 7%, transparent), 0 18px 40px -32px color-mix(in oklab, var(--accent) 45%, transparent);
+}
+[data-theme="light"] [data-table-theme="modern"] .ui-card,
+[data-table-theme="modern"][data-theme="light"] .ui-card {
+  box-shadow: 0 18px 40px -30px color-mix(in oklab, var(--accent) 35%, transparent);
+}
+[data-glass="off"][data-table-theme="modern"] .ui-card {
+  background: var(--surface);
+}
+[data-table-theme="modern"] .ui-card-hover:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+  box-shadow: 0 24px 48px -28px color-mix(in oklab, var(--accent) 60%, transparent);
+}
+[data-table-theme="modern"] .ui-card > p.uppercase:first-child,
+[data-table-theme="modern"] .ui-card > div > p.uppercase:first-child {
+  position: relative;
+  padding-left: 0.7rem;
+  color: color-mix(in oklab, var(--accent) 70%, var(--fg-muted));
+  letter-spacing: 0.14em;
+}
+[data-table-theme="modern"] .ui-card > p.uppercase:first-child::before,
+[data-table-theme="modern"] .ui-card > div > p.uppercase:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.1em;
+  bottom: 0.1em;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), color-mix(in oklab, var(--accent) 40%, transparent));
+}
+[data-table-theme="modern"] .ui-card-header {
+  position: relative;
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.1rem;
+}
+[data-table-theme="modern"] .ui-card-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 50%, transparent), transparent 70%);
+}
+[data-table-theme="modern"] .ui-card-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.8rem;
+  background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 22%, transparent), color-mix(in oklab, var(--accent) 8%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+[data-table-theme="modern"] .ui-card-header h3 {
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+/* Modern tabs: a pill switcher instead of an underlined row */
+[data-table-theme="modern"] .ui-tabs {
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-bottom: 0;
+  border-radius: 999px;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 80%, transparent);
+}
+[data-table-theme="modern"] .ui-tab {
+  margin-bottom: 0;
+  border-radius: 999px;
+  padding: 0.5rem 0.95rem;
+  white-space: nowrap;
+}
+[data-table-theme="modern"] .ui-tab.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  box-shadow: 0 6px 16px -10px color-mix(in oklab, var(--accent) 70%, transparent), inset 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+[data-table-theme="modern"] .ui-tab-bar {
+  display: none;
 }
 
 /* Modern page header: a band tinted with the module colour, bigger icon, pill actions */

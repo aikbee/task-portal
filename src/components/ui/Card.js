@@ -4,9 +4,9 @@ export default function Card({ className, children, padding = true, hover = fals
   return (
     <div
       className={cn(
-        "card",
+        "ui-card card",
         padding && "p-5",
-        hover && "transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-app-lg",
+        hover && "ui-card-hover transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-app-lg",
         className
       )}
       {...props}
@@ -18,10 +18,10 @@ export default function Card({ className, children, padding = true, hover = fals
 
 export function CardHeader({ title, description, icon: Icon, actions, className }) {
   return (
-    <div className={cn("mb-4 flex flex-wrap items-start justify-between gap-x-4 gap-y-2", className)}>
+    <div className={cn("ui-card-header mb-4 flex flex-wrap items-start justify-between gap-x-4 gap-y-2", className)}>
       <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
         {Icon ? (
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-app-sm bg-accent/12 text-accent">
+          <span className="ui-card-icon grid h-9 w-9 shrink-0 place-items-center rounded-app-sm bg-accent/12 text-accent">
             <Icon size={17} />
           </span>
         ) : null}

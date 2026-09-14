@@ -5,7 +5,7 @@ import { useT } from "@/lib/i18n";
 export default function Tabs({ tabs, value, onChange, className }) {
   const tr = useT();
   return (
-    <div className={cn("flex items-center gap-1 border-b border-line", className)}>
+    <div className={cn("ui-tabs flex items-center gap-1 border-b border-line", className)}>
       {tabs.map((t) => {
         const Icon = t.icon;
         const active = t.key === value;
@@ -15,8 +15,8 @@ export default function Tabs({ tabs, value, onChange, className }) {
             type="button"
             onClick={() => onChange(t.key)}
             className={cn(
-              "relative -mb-px flex items-center gap-2 px-3.5 py-2.5 text-sm font-medium transition",
-              active ? "text-accent" : "text-fg-muted hover:text-fg"
+              "ui-tab relative -mb-px flex items-center gap-2 px-3.5 py-2.5 text-sm font-medium transition",
+              active ? "is-active text-accent" : "text-fg-muted hover:text-fg"
             )}
           >
             {Icon ? <Icon size={15} /> : null}
@@ -26,7 +26,7 @@ export default function Tabs({ tabs, value, onChange, className }) {
                 {t.count}
               </span>
             ) : null}
-            {active ? <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" /> : null}
+            {active ? <span className="ui-tab-bar absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" /> : null}
           </button>
         );
       })}
