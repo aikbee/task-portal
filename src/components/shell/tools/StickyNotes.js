@@ -70,7 +70,7 @@ export default function StickyNotes({ module, onOpen }) {
               <button
                 key={m.key}
                 onClick={() => setScope(m.key)}
-                className={cn("flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition", active ? "bg-accent text-white" : "bg-surface-2 text-fg-muted hover:text-fg")}
+                className={cn("tool-chip flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition", active ? "is-active bg-accent text-white" : "bg-surface-2 text-fg-muted hover:text-fg")}
               >
                 <m.icon size={12} /> {tr(m.label)}
                 {n ? <span className={cn("rounded-full px-1 text-[10px]", active ? "bg-white/25" : "bg-surface-3")}>{n}</span> : null}

@@ -1100,6 +1100,94 @@ body { -webkit-tap-highlight-color: transparent; }
   border-radius: 1rem;
 }
 
+/* Modern notes and timer tools */
+[data-table-theme="modern"] .tool-chip {
+  padding: 0.35rem 0.8rem;
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 75%, transparent);
+}
+[data-table-theme="modern"] .tool-chip.is-active {
+  background: linear-gradient(180deg, color-mix(in srgb, white 14%, var(--accent)), var(--accent));
+  box-shadow: 0 8px 18px -10px var(--accent);
+}
+[data-table-theme="modern"] .sticky-note {
+  border-radius: 14px;
+  box-shadow: 0 18px 38px -22px rgb(0 0 0 / 0.5), 0 1px 0 rgb(255 255 255 / 0.5) inset;
+}
+[data-table-theme="modern"] .sticky-note:hover {
+  box-shadow: 0 26px 46px -22px rgb(0 0 0 / 0.55);
+}
+[data-table-theme="modern"] .tool-aside {
+  border-color: transparent;
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 40%);
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--line) 70%, transparent);
+}
+[data-table-theme="modern"] .tool-aside-head {
+  position: relative;
+  border-bottom: 0;
+}
+[data-table-theme="modern"] .tool-aside-head::after,
+[data-table-theme="modern"] .tool-divider::before {
+  content: "";
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 55%, transparent), transparent 80%);
+  pointer-events: none;
+}
+[data-table-theme="modern"] .tool-aside-head::after {
+  bottom: 0;
+}
+[data-table-theme="modern"] .tool-divider {
+  position: relative;
+  border-top: 0;
+}
+[data-table-theme="modern"] .tool-divider::before {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+[data-table-theme="modern"] .tool-search .control {
+  border-radius: 999px;
+  padding-left: 2.3rem;
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+}
+[data-table-theme="modern"] .tool-search > svg:first-child {
+  left: 0.9rem;
+  color: var(--accent);
+}
+[data-table-theme="modern"] .tool-list-item {
+  border-radius: 0.8rem;
+}
+[data-table-theme="modern"] .tool-list-item.is-active {
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 18%, transparent), color-mix(in oklab, var(--accent) 5%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 25%, transparent);
+}
+[data-table-theme="modern"] .tool-seg {
+  padding: 3px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 80%, transparent);
+}
+[data-table-theme="modern"] .tool-seg-btn.is-active {
+  background: linear-gradient(180deg, color-mix(in srgb, white 14%, var(--accent)), var(--accent));
+  box-shadow: 0 8px 18px -10px var(--accent);
+}
+[data-table-theme="modern"] .timer-ring {
+  filter: drop-shadow(0 0 14px color-mix(in oklab, var(--accent) 45%, transparent));
+}
+[data-table-theme="modern"] .tool-step {
+  border-radius: 999px;
+}
+[data-table-theme="modern"] .tool-preset {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+[data-table-theme="modern"] .tool-preset.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  box-shadow: 0 6px 14px -10px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+
 /* Modern page header: a band tinted with the module colour, bigger icon, pill actions */
 [data-table-theme="modern"] .page-header {
   position: relative;

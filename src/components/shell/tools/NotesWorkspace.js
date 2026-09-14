@@ -37,9 +37,9 @@ export default function NotesWorkspace({ module }) {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className={cn("flex w-full shrink-0 flex-col border-r border-line bg-surface/60 md:w-80", current && "hidden md:flex")}>
-        <div className="space-y-2 border-b border-line p-3">
-          <div className="relative">
+      <aside className={cn("tool-aside flex w-full shrink-0 flex-col border-r border-line bg-surface/60 md:w-80", current && "hidden md:flex")}>
+        <div className="tool-aside-head space-y-2 border-b border-line p-3">
+          <div className="tool-search relative">
             <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-faint" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Search notes…")} className="control h-9 pl-8 pr-8 text-sm" />
             {q ? <button onClick={() => setQ("")} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-fg-faint hover:text-fg" aria-label={tr("Clear")}><X size={13} /></button> : null}
@@ -50,7 +50,7 @@ export default function NotesWorkspace({ module }) {
               if (m.key !== "all" && !n) return null;
               const active = scope === m.key;
               return (
-                <button key={m.key} onClick={() => setScope(m.key)} className={cn("flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition", active ? "bg-accent text-white" : "bg-surface-2 text-fg-muted hover:text-fg")}>
+                <button key={m.key} onClick={() => setScope(m.key)} className={cn("tool-chip flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition", active ? "is-active bg-accent text-white" : "bg-surface-2 text-fg-muted hover:text-fg")}>
                   {m.icon ? <m.icon size={11} /> : null} {m.key === "all" ? m.label : tr(m.label)}
                   <span className={cn("rounded-full px-1 text-[10px]", active ? "bg-white/25" : "bg-surface-3")}>{n}</span>
                 </button>
@@ -69,7 +69,7 @@ export default function NotesWorkspace({ module }) {
               <li key={n.id}>
                 <button
                   onClick={() => setSelected(n.id)}
-                  className={cn("flex w-full items-start gap-2.5 rounded-app-sm px-2.5 py-2 text-left transition", selected === n.id ? "bg-accent/12" : "hover:bg-surface-2")}
+                  className={cn("tool-list-item flex w-full items-start gap-2.5 rounded-app-sm px-2.5 py-2 text-left transition", selected === n.id ? "is-active bg-accent/12" : "hover:bg-surface-2")}
                 >
                   <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full border border-black/10" style={{ background: col.bg }} />
                   <span className="min-w-0 flex-1">

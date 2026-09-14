@@ -51,7 +51,7 @@ const fmt2 = (n) => String(n).padStart(2, "0");
 export function ModeSwitch({ mode, onChange, size = "sm" }) {
   const tr = useT();
   return (
-    <div className="flex gap-1 rounded-full bg-surface-2 p-0.5">
+    <div className="tool-seg flex gap-1 rounded-full bg-surface-2 p-0.5">
       {[
         { v: "work", label: tr("Focus"), icon: Briefcase },
         { v: "break", label: tr("Cooldown"), icon: Coffee },
@@ -59,7 +59,7 @@ export function ModeSwitch({ mode, onChange, size = "sm" }) {
         <button
           key={o.v}
           onClick={() => onChange(o.v)}
-          className={cn("flex items-center gap-1.5 rounded-full font-medium transition", size === "lg" ? "px-4 py-1.5 text-sm" : "px-3 py-1 text-xs", mode === o.v ? "bg-accent text-white" : "text-fg-muted")}
+          className={cn("tool-seg-btn flex items-center gap-1.5 rounded-full font-medium transition", size === "lg" ? "px-4 py-1.5 text-sm" : "px-3 py-1 text-xs", mode === o.v ? "is-active bg-accent text-white" : "text-fg-muted")}
         >
           <o.icon size={size === "lg" ? 14 : 12} /> {o.label}
         </button>
@@ -74,7 +74,7 @@ export function TimerRing({ size = 140, stroke = 8, remaining, pct, textClass = 
   const circ = 2 * Math.PI * r;
   return (
     <div className="relative grid place-items-center">
-      <svg width={size} height={size} className="-rotate-90">
+      <svg width={size} height={size} className="timer-ring -rotate-90">
         <circle cx={size / 2} cy={size / 2} r={r} stroke="var(--surface-3)" strokeWidth={stroke} fill="none" />
         <circle
           cx={size / 2} cy={size / 2} r={r}
@@ -116,11 +116,11 @@ export default function TimerTool() {
       <TimerRing remaining={remaining} pct={pct} />
       <div className="mt-4"><TimerButtons running={timer.running} atStart={remaining === total} onStart={start} onPause={pause} onReset={() => reset()} /></div>
 
-      <div className="mt-5 w-full space-y-3 border-t border-line pt-4">
+      <div className="tool-divider mt-5 w-full space-y-3 border-t border-line pt-4">
         <DurationRow label={tr("Focus length")} icon={Briefcase} value={focusMin} presets={FOCUS_PRESETS} onChange={(v) => setDuration("timerFocusMin", v)} />
         <DurationRow label={tr("Cooldown length")} icon={Coffee} value={breakMin} presets={BREAK_PRESETS} onChange={(v) => setDuration("timerBreakMin", v)} />
       </div>
-      <div className="mt-4 w-full border-t border-line pt-4">
+      <div className="tool-divider mt-4 w-full border-t border-line pt-4">
         <TimerAlertSettings />
       </div>
       <p className="mt-3 text-center text-[11px] text-fg-muted">{tr("Settings are saved. The timer keeps running while the panel is closed.")}</p>
@@ -134,10 +134,10 @@ export function TimerWorkspace() {
   const { timer, focusMin, breakMin, total, remaining, pct, start, pause, reset, setDuration } = useTimerControls();
   return (
     <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-      <aside className="order-2 w-full shrink-0 space-y-4 overflow-y-auto border-t border-line bg-surface/60 p-4 md:order-1 md:w-80 md:border-r md:border-t-0">
+      <aside className="tool-aside order-2 w-full shrink-0 space-y-4 overflow-y-auto border-t border-line bg-surface/60 p-4 md:order-1 md:w-80 md:border-r md:border-t-0">
         <DurationRow label={tr("Focus length")} icon={Briefcase} value={focusMin} presets={FOCUS_PRESETS} onChange={(v) => setDuration("timerFocusMin", v)} />
         <DurationRow label={tr("Cooldown length")} icon={Coffee} value={breakMin} presets={BREAK_PRESETS} onChange={(v) => setDuration("timerBreakMin", v)} />
-        <div className="border-t border-line pt-4"><TimerAlertSettings /></div>
+        <div className="tool-divider border-t border-line pt-4"><TimerAlertSettings /></div>
         <p className="text-[11px] text-fg-muted">{tr("Settings are saved. The timer keeps running while the panel is closed.")}</p>
       </aside>
       <section className="order-1 flex min-h-0 flex-1 flex-col items-center justify-center gap-8 p-6 md:order-2">
@@ -156,7 +156,7 @@ function DurationRow({ label, icon: Icon, value, presets, onChange }) {
       <div className="mb-1.5 flex items-center justify-between text-xs">
         <span className="flex items-center gap-1.5 font-medium text-fg-muted"><Icon size={12} /> {label}</span>
         <span className="flex items-center gap-1">
-          <button onClick={() => onChange(value - 1)} className="grid h-6 w-6 place-items-center rounded-md border border-line hover:bg-surface-2" aria-label="Decrease"><Minus size={11} /></button>
+          <button onClick={() => onChange(value - 1)} className="tool-step grid h-6 w-6 place-items-center rounded-md border border-line hover:bg-surface-2" aria-label="Decrease"><Minus size={11} /></button>
           <input
             type="number"
             min={1}
@@ -167,7 +167,7 @@ function DurationRow({ label, icon: Icon, value, presets, onChange }) {
             aria-label={`${label} in minutes`}
           />
           <span className="text-[11px] text-fg-faint">{tr("min")}</span>
-          <button onClick={() => onChange(value + 1)} className="grid h-6 w-6 place-items-center rounded-md border border-line hover:bg-surface-2" aria-label="Increase"><Plus size={11} /></button>
+          <button onClick={() => onChange(value + 1)} className="tool-step grid h-6 w-6 place-items-center rounded-md border border-line hover:bg-surface-2" aria-label="Increase"><Plus size={11} /></button>
         </span>
       </div>
       <div className="flex gap-1">
@@ -175,7 +175,7 @@ function DurationRow({ label, icon: Icon, value, presets, onChange }) {
           <button
             key={p}
             onClick={() => onChange(p)}
-            className={cn("flex-1 rounded-md border px-2 py-1 text-[11px] font-medium transition", value === p ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:bg-surface-2")}
+            className={cn("tool-preset flex-1 rounded-md border px-2 py-1 text-[11px] font-medium transition", value === p ? "is-active border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:bg-surface-2")}
           >
             {p}m
           </button>
