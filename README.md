@@ -53,7 +53,11 @@ Sign-in is required for every page and API route (a request proxy redirects to `
 
 Default accounts created by `npm run db:setup`: `admin@example.com / admin123` (admin) and `user@example.com / user123` (user). Change them from **Profile & password** in the account menu. Sticky notes are private per user. Sign out from the account menu or from the lock screen (which also clears the PIN lock, since signing back in requires the password).
 
-Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign everyone out); `DATA_KEY` encrypts Info secrets (keep it stable — changing it makes stored secrets unreadable); `COOKIE_SECURE=1` when serving over HTTPS.
+**Passkeys.** Any user can add passkeys (Touch ID, Face ID, Windows Hello, a phone, or a security key) from **Profile & password → Passkeys** and then use **Sign in with a passkey** on the login page, with or without typing the email first. Passkeys are WebAuthn credentials (`@simplewebauthn`); the server stores only the public key, a signature counter and a name, and the challenge for each ceremony travels in a short-lived signed cookie. The relying party is the hostname of `APP_URL` (override with `WEBAUTHN_RP_ID`); passkeys need HTTPS except on `localhost`. Removing a passkey or changing the password does not affect the other.
+
+**Continue with Google.** When `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set (an OAuth 2.0 web client whose authorised redirect URI is `APP_URL/api/auth/google/callback`), the login page shows a Google button. It never creates accounts: the Google identity is matched to an existing user by its stored id, or the first time by the verified Google email, which links the two. Users can also connect or disconnect Google from **Profile & password → Google account**. Every sign-in method ends in the same server-side session and sends the "new sign-in" security notification, which names the method.
+
+Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign everyone out); `DATA_KEY` encrypts Info secrets (keep it stable — changing it makes stored secrets unreadable); `COOKIE_SECURE=1` when serving over HTTPS; `APP_URL` is the public URL used for passkeys and the Google redirect.
 
 ## Layout
 

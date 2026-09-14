@@ -1,7 +1,7 @@
 "use client";
-import { useEffect } from "react";
-import { usePathname } from "next/navigation";
-import { ToastProvider } from "@/components/ui/Toast";
+import { Suspense, useEffect, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { ToastProvider, useToast } from "@/components/ui/Toast";
 import ThemeApplier from "./ThemeApplier";
 import AnimatedBackground from "./AnimatedBackground";
 import Sidebar from "./Sidebar";
@@ -19,6 +19,25 @@ import { usePrefs, useUI } from "@/lib/store";
 import { api } from "@/lib/api";
 import { useMounted } from "@/lib/hooks";
 import { AuthProvider } from "@/lib/auth-context";
+
+/** The Google callback lands on /?google=linked|taken after connecting an account: show the result once. */
+function GoogleLinkNotice() {
+  const result = useSearchParams().get("google");
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  useEffect(() => {
+    toastRef.current = toast;
+  });
+  useEffect(() => {
+    if (!result) return;
+    if (result === "linked") toastRef.current.success("Google account connected", "You can now sign in with Google.");
+    else if (result === "taken") toastRef.current.error("Google account not connected", "That Google account is already linked to another user.");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("google");
+    window.history.replaceState(null, "", url.pathname + url.search);
+  }, [result]);
+  return null;
+}
 
 function isTyping(e) {
   const t = e.target;
@@ -88,6 +107,9 @@ export default function AppShell({ user, children }) {
       <TimerEngine />
       <LockScreen />
       <BackgroundOnly />
+      <Suspense fallback={null}>
+        <GoogleLinkNotice />
+      </Suspense>
     </ToastProvider>
     </AuthProvider>
   );

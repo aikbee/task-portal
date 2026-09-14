@@ -44,6 +44,27 @@ console.log("health");
   check("GET /api/health 200 (public)", r.status === 200 && r.data.status === "ok", JSON.stringify(r.raw));
 }
 
+console.log("sign-in methods");
+{
+  const m = await call("GET", "/api/auth/methods", { noAuth: true });
+  check("GET /api/auth/methods (public)", m.status === 200 && m.data?.passkeys === true && typeof m.data?.google === "boolean");
+  const opts = await call("POST", "/api/auth/passkeys/login/options", { body: {}, noAuth: true });
+  check("passkey login options (discoverable)", opts.status === 200 && typeof opts.data?.challenge === "string" && typeof opts.data?.rpId === "string" && Boolean(jar.ap_passkey), JSON.stringify(opts.raw).slice(0, 200));
+  const byMail = await call("POST", "/api/auth/passkeys/login/options", { body: { email: "admin@example.com" }, noAuth: true });
+  check("passkey login options with email", byMail.status === 200 && typeof byMail.data?.challenge === "string" && (byMail.data.allowCredentials === undefined || Array.isArray(byMail.data.allowCredentials)));
+  const junk = await call("POST", "/api/auth/passkeys/login/verify", { body: { response: { id: "not-a-real-credential-id", rawId: "x", response: {}, type: "public-key" } }, noAuth: true });
+  check("passkey login verify rejects an unknown credential", junk.status === 400 && !jar.ap_session, JSON.stringify(junk.raw));
+  const expired = await call("POST", "/api/auth/passkeys/login/verify", { body: { response: { id: "not-a-real-credential-id" } }, noAuth: true });
+  check("passkey login verify without a challenge -> 400", expired.status === 400);
+  const g = await fetch(BASE + "/api/auth/google", { redirect: "manual" });
+  const googleOn = m.data?.google;
+  const isRedirect = (res) => [302, 307, 308].includes(res.status);
+  check(googleOn ? "GET /api/auth/google redirects to Google" : "GET /api/auth/google -> 404 when not configured", googleOn ? isRedirect(g) && /accounts\.google\.com/.test(g.headers.get("location") || "") : g.status === 404);
+  const cb = await fetch(BASE + "/api/auth/google/callback?code=x&state=y", { redirect: "manual" });
+  check("google callback without state cookie -> back to /login with an error", isRedirect(cb) && /\/login\?error=/.test(cb.headers.get("location") || ""), `${cb.status} ${cb.headers.get("location")}`);
+  jar = {};
+}
+
 console.log("table detection (lib)");
 {
   const lib = await import(new URL("../src/lib/text-tables.js", import.meta.url));
@@ -89,7 +110,23 @@ console.log("auth");
   const r = await call("POST", "/api/auth/login", { body: { email: "admin@example.com", password: "admin123" }, noAuth: true });
   check("admin login 200 + cookie", r.status === 200 && r.data?.role === "admin" && Boolean(jar.ap_session), JSON.stringify(r.raw));
   const me = await call("GET", "/api/auth/me");
-  check("GET /api/auth/me", me.data?.email === "admin@example.com" && !("password_hash" in (me.data || {})));
+  check("GET /api/auth/me", me.data?.email === "admin@example.com" && !("password_hash" in (me.data || {})) && me.data?.has_google === false);
+}
+
+console.log("passkeys (signed in)");
+{
+  const list = await call("GET", "/api/auth/passkeys");
+  check("GET /api/auth/passkeys -> array", list.status === 200 && Array.isArray(list.data));
+  const opts = await call("POST", "/api/auth/passkeys/register/options");
+  check("register options carry the account", opts.status === 200 && typeof opts.data?.challenge === "string" && opts.data?.user?.name === "admin@example.com" && opts.data?.rp?.name === "Task Portal");
+  const bad = await call("POST", "/api/auth/passkeys/register/verify", { body: { response: { id: "nope", rawId: "nope", type: "public-key", response: { clientDataJSON: "e30", attestationObject: "e30" } } } });
+  check("register verify rejects a bogus attestation", bad.status === 400, JSON.stringify(bad.raw));
+  const missing = await call("DELETE", "/api/auth/passkeys/AAAAAAAAAAAAAAAAAAAAAAAA");
+  check("DELETE unknown passkey -> 404", missing.status === 404);
+  const badId = await call("DELETE", "/api/auth/passkeys/x");
+  check("DELETE malformed passkey id -> 400", badId.status === 400);
+  const unlink = await call("DELETE", "/api/auth/google");
+  check("DELETE /api/auth/google (no-op when not linked)", unlink.status === 200);
 }
 
 console.log("projects");

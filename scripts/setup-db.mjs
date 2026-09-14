@@ -91,6 +91,10 @@ const hasFk = async (db, table, name) =>
 
 /** Incremental changes for databases created by earlier versions of the schema. */
 async function migrate(db, adminId) {
+  if (!(await hasColumn(db, "users", "google_sub"))) {
+    log("migrating: users.google_sub");
+    await db.query("ALTER TABLE users ADD COLUMN google_sub VARCHAR(64) NULL AFTER pin_hash, ADD UNIQUE KEY uq_users_google_sub (google_sub)");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

@@ -11,6 +11,8 @@
     "db:reset": "node --env-file=.env.local scripts/setup-db.mjs --reset"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.0.2",
     "fabric": "^7.4.0",
     "lucide-react": "^1.39.0",
     "mysql2": "^3.24.2",

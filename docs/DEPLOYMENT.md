@@ -100,7 +100,7 @@ The server also holds a read-only **deploy key** so it can pull the private repo
 
 ## Push notifications
 
-`.env` also carries `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `CRON_SECRET`.
+`.env` also carries `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `CRON_SECRET`, plus `APP_URL` (the public site URL; passkeys use its hostname as the relying party) and, to enable **Continue with Google**, `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` from an OAuth 2.0 web client whose authorised redirect URI is `APP_URL/api/auth/google/callback`. After editing `.env` run `pm2 restart task-portal --update-env`.
 Generate the key pair once with `npx web-push generate-vapid-keys`; rotating it silently
 invalidates every device's subscription, so treat it like `DATA_KEY`. The crontab entry:
 

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User } from "lucide-react";
+import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User, Fingerprint } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePrefs } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,8 @@ import { ToastProvider } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import { Input, Field, Checkbox } from "@/components/ui/Controls";
 import Logo from "@/components/ui/Logo";
+import GoogleMark from "@/components/ui/GoogleMark";
+import { useMounted } from "@/lib/hooks";
 import {LOCALES, switchLocale, useLocale, useT } from "@/lib/i18n";
 
 export default function LoginView({ demo = false }) {
@@ -23,11 +25,27 @@ export default function LoginView({ demo = false }) {
   );
 }
 
+/** Messages for the ?error= codes the Google callback redirects back with. */
+const PARAM_ERRORS = {
+  google_no_account: "No account matches {email}. Ask an admin to create one, then try again.",
+  google_denied: "Google sign-in was cancelled.",
+  google_failed: "Google sign-in failed. Please try again.",
+  google_unverified: "That Google account's email address is not verified.",
+  google_unavailable: "Sign in with Google is not set up on this server.",
+  disabled: "This account is disabled.",
+};
+
 function LoginCard({ demo }) {
   const tr = useT();
   const sp = useSearchParams();
+  const mounted = useMounted();
   const next = sp.get("next");
   const reason = sp.get("reason");
+  const paramError = PARAM_ERRORS[sp.get("error")] ? tr(PARAM_ERRORS[sp.get("error")], { email: sp.get("email") || "" }) : null;
+  const [methods, setMethods] = useState(null);
+  const [pkBusy, setPkBusy] = useState(false);
+  // WebAuthn availability is read after mount so the server and first client render agree
+  const passkeys = mounted && typeof window !== "undefined" && Boolean(window.PublicKeyCredential);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -41,6 +59,15 @@ function LoginCard({ demo }) {
   useEffect(() => {
     document.documentElement.dataset.locked = "false";
   }, []);
+  useEffect(() => {
+    api.get("/api/auth/methods").then(setMethods).catch(() => setMethods({ google: false }));
+  }, []);
+
+  const enter = () => {
+    setPrefs({ locked: false });
+    const target = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    window.location.href = new URL(target, window.location.origin).href; // full reload so the server layout sees the session
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -48,14 +75,29 @@ function LoginCard({ demo }) {
     setError(null);
     try {
       await api.post("/api/auth/login", { email, password, remember });
-      setPrefs({ locked: false });
-      const target = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
-      window.location.href = new URL(target, window.location.origin).href; // full reload so the server layout sees the session
+      enter();
     } catch (err) {
       setError(err.message);
       setBusy(false);
     }
   };
+
+  const signInWithPasskey = async () => {
+    setPkBusy(true);
+    setError(null);
+    try {
+      const { startAuthentication } = await import("@simplewebauthn/browser");
+      const options = await api.post("/api/auth/passkeys/login/options", { email: email.trim() || undefined });
+      const response = await startAuthentication({ optionsJSON: options });
+      await api.post("/api/auth/passkeys/login/verify", { response, remember });
+      enter();
+    } catch (err) {
+      setError(err?.name === "NotAllowedError" ? tr("Passkey sign-in was cancelled.") : err.message);
+      setPkBusy(false);
+    }
+  };
+
+  const googleHref = `/api/auth/google?remember=${remember ? 1 : 0}${next ? `&next=${encodeURIComponent(next)}` : ""}`;
 
   const fill = (mail, pw) => {
     setEmail(mail);
@@ -97,10 +139,29 @@ function LoginCard({ demo }) {
               </div>
             </Field>
             <Checkbox checked={remember} onChange={setRemember} label={tr("Keep me signed in for 30 days")} />
-            {error ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500 anim-pop">{error}</p> : null}
+            {error || paramError ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500 anim-pop">{error || paramError}</p> : null}
             <Button type="submit" size="lg" className="w-full" icon={LogIn} loading={busy}>
               {tr("Sign in")}
             </Button>
+            {passkeys || methods?.google ? (
+              <>
+                <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-fg-faint" aria-hidden>
+                  <span className="h-px flex-1 bg-line" />
+                  {tr("or")}
+                  <span className="h-px flex-1 bg-line" />
+                </div>
+                {passkeys ? (
+                  <Button type="button" variant="secondary" size="lg" className="w-full" icon={Fingerprint} loading={pkBusy} onClick={signInWithPasskey}>
+                    {tr("Sign in with a passkey")}
+                  </Button>
+                ) : null}
+                {methods?.google ? (
+                  <Button type="button" variant="outline" size="lg" className="w-full" onClick={() => window.location.assign(new URL(googleHref, window.location.origin).href)}>
+                    <GoogleMark size={16} /> {tr("Continue with Google")}
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </form>
 

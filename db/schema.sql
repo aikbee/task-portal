@@ -14,10 +14,12 @@ CREATE TABLE IF NOT EXISTS users (
   employee_id INT UNSIGNED NULL,
   notification_prefs JSON NULL, -- { muted: ["tasks", ...] }
   pin_hash VARCHAR(255) NULL, -- lock-screen PIN (scrypt) so secrets can be re-verified server-side
+  google_sub VARCHAR(64) NULL, -- Google account id once "Continue with Google" has been used or connected
   last_login_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email (email),
+  UNIQUE KEY uq_users_google_sub (google_sub),
   KEY idx_users_role (role),
   KEY idx_users_employee (employee_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -33,6 +35,22 @@ CREATE TABLE IF NOT EXISTS sessions (
   KEY idx_sessions_user (user_id),
   KEY idx_sessions_expires (expires_at),
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- WebAuthn passkeys (Touch ID, Face ID, Windows Hello, security keys) registered from Profile & password
+CREATE TABLE IF NOT EXISTS passkeys (
+  id VARCHAR(255) NOT NULL PRIMARY KEY, -- credential id (base64url)
+  user_id INT UNSIGNED NOT NULL,
+  public_key VARBINARY(1024) NOT NULL,
+  counter BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  transports VARCHAR(120) NULL, -- comma-separated hints (internal, hybrid, usb, ...)
+  device_type VARCHAR(32) NULL, -- singleDevice | multiDevice
+  backed_up TINYINT(1) NOT NULL DEFAULT 0,
+  name VARCHAR(80) NOT NULL DEFAULT 'Passkey',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME NULL,
+  KEY idx_passkeys_user (user_id),
+  CONSTRAINT fk_passkeys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- A user can have several profiles; each one is a separate set of projects / requirements / employees / tasks
