@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withPhotos, messageById, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, PHOTOS_PER_MESSAGE, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withExtras, messageById, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, PHOTOS_PER_MESSAGE, PEER_FIELDS } from "@/lib/chat";
 
 /** Messages of a conversation, oldest first (?before=<id> for earlier pages, ?limit up to 100). */
 export const GET = handler(async (request, params, user) => {
@@ -15,7 +15,7 @@ export const GET = handler(async (request, params, user) => {
     `SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? ${before ? "AND x.id < ?" : ""} ORDER BY x.id DESC LIMIT ${limit}`,
     before ? [id, before] : [id]
   );
-  return ok(await withPhotos(rows.reverse()));
+  return ok(await withExtras(rows.reverse()));
 });
 
 /**

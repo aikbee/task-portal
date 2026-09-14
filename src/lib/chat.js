@@ -244,20 +244,47 @@ export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.b
 export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
 const photoOf = (a) => ({ id: a.id, url: `/api/chat/photos/${a.id}`, name: a.original_name, mime: a.mime_type, size: a.size_bytes, width: a.width, height: a.height });
 
-/** Attach each message's photos (attachments[]). */
-export async function withPhotos(rows) {
+export const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
+
+/** Reactions per message: [{ emoji, count, user_ids, names }] in the order they first appeared. */
+export async function reactionsOf(messageIds) {
+  const map = new Map();
+  if (!messageIds.length) return map;
+  const rows = await query(
+    `SELECT r.message_id, r.emoji, r.user_id, u.name FROM message_reactions r JOIN users u ON u.id = r.user_id
+     WHERE r.message_id IN (${messageIds.map(() => "?").join(",")}) ORDER BY r.created_at, r.user_id`,
+    messageIds
+  );
+  for (const r of rows) {
+    const list = map.get(r.message_id) ?? [];
+    let entry = list.find((e) => e.emoji === r.emoji);
+    if (!entry) {
+      entry = { emoji: r.emoji, count: 0, user_ids: [], names: [] };
+      list.push(entry);
+    }
+    entry.count++;
+    entry.user_ids.push(r.user_id);
+    entry.names.push(r.name);
+    map.set(r.message_id, list);
+  }
+  return map;
+}
+/** Attach each message's photos (attachments[]) and reactions[]. */
+export async function withExtras(rows) {
   if (!rows.length) return rows;
+  const ids = rows.map((r) => r.id);
   const photos = await query(
-    `SELECT id, message_id, original_name, mime_type, size_bytes, width, height FROM message_attachments WHERE message_id IN (${rows.map(() => "?").join(",")}) ORDER BY message_id, sort_order, id`,
-    rows.map((r) => r.id)
+    `SELECT id, message_id, original_name, mime_type, size_bytes, width, height FROM message_attachments WHERE message_id IN (${ids.map(() => "?").join(",")}) ORDER BY message_id, sort_order, id`,
+    ids
   );
   const byMessage = new Map();
   for (const a of photos) byMessage.set(a.message_id, [...(byMessage.get(a.message_id) ?? []), photoOf(a)]);
-  return rows.map((r) => ({ ...r, attachments: byMessage.get(r.id) ?? [] }));
+  const reactions = await reactionsOf(ids);
+  return rows.map((r) => ({ ...r, attachments: byMessage.get(r.id) ?? [], reactions: reactions.get(r.id) ?? [] }));
 }
 export async function messageById(id) {
   const row = await queryOne(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.id = ?`, [id]);
-  return row ? (await withPhotos([row]))[0] : null;
+  return row ? (await withExtras([row]))[0] : null;
 }
 /** A system line in a group ("added", "removed", "left", "renamed", "owner", "created") that every member sees live. */
 export async function systemMessage(convo, actorId, event, extra = {}) {

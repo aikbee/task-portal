@@ -845,6 +845,27 @@ console.log("chat (friends by code, one-to-one messages)");
   const nPhoto = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
   check("a photo-only message notifies as a photo", nPhoto.data.items.some((n) => n.type === "chat_message" && n.entity_id === convoId && /📷/.test(n.title)));
 
+  // reactions: toggle, validation, visibility to the other member, one notification per reaction
+  const badEmoji = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "🦄" } }));
+  check("an emoji outside the quick set -> 400", badEmoji.status === 400);
+  const react = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "👍" } }));
+  check("POST /api/chat/messages/:id/reactions adds 👍", react.status === 200 && react.data.added === true && react.data.reactions.length === 1 && react.data.reactions[0].emoji === "👍" && react.data.reactions[0].count === 1 && react.data.reactions[0].user_ids[0] === adminId && react.data.reactions[0].names[0] === "Admin User", JSON.stringify(react.raw));
+  const react2 = await as(userJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "👍" } }));
+  check("a second person on the same emoji makes count 2", react2.data.reactions[0].count === 2 && react2.data.reactions[0].user_ids.includes(userId));
+  const heart = await as(userJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "❤️" } }));
+  check("a different emoji becomes a second chip", heart.data.reactions.length === 2 && heart.data.reactions[1].emoji === "❤️");
+  const withReactions = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
+  check("messages carry reactions[]", withReactions.data.find((m) => m.id === m1.data.id)?.reactions?.length === 2 && withReactions.data.find((m) => m.id === m2.data.id)?.reactions?.length === 0);
+  const nReact = await as(userJar, () => call("GET", "/api/notifications?limit=30"));
+  check("the author was told about the admin's 👍 (not about their own reactions)", nReact.data.items.filter((n) => n.type === "chat_reaction" && n.entity_id === convoId).length === 1 && /Admin User reacted 👍/.test(nReact.data.items.find((n) => n.type === "chat_reaction").title));
+  const untoggle = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "👍" } }));
+  check("toggling again removes it", untoggle.data.added === false && untoggle.data.reactions.find((r) => r.emoji === "👍")?.count === 1);
+  const retoggle = await as(adminJar, () => call("POST", `/api/chat/messages/${m1.data.id}/reactions`, { body: { emoji: "👍" } }));
+  const nReact2 = await as(userJar, () => call("GET", "/api/notifications?limit=30"));
+  check("re-adding the same reaction does not notify twice", retoggle.data.added === true && nReact2.data.items.filter((n) => n.type === "chat_reaction" && n.entity_id === convoId).length === 1);
+  const noMsg = await as(adminJar, () => call("POST", "/api/chat/messages/999999/reactions", { body: { emoji: "👍" } }));
+  check("reacting to an unknown message -> 404", noMsg.status === 404);
+
   // group chat: created by the user with the admin, owner-only actions, system lines, seen-by, leaving
   const noName = await as(userJar, () => call("POST", "/api/chat/groups", { body: { title: "  ", member_ids: [adminId] } }));
   check("group without a name -> 400", noName.status === 400);
@@ -859,6 +880,8 @@ console.log("chat (friends by code, one-to-one messages)");
   check("the added member sees the group with role member", adminView.status === 200 && adminView.data.my_role === "member" && adminView.data.avatar_color);
   const sysLines = await as(adminJar, () => call("GET", `/api/chat/conversations/${gid}/messages`));
   check("creation wrote system lines (created + added) with the sender's name", sysLines.data.filter((m) => m.kind === "system").length === 2 && sysLines.data[0].sender_name === "Smoke User 2" && JSON.parse(sysLines.data[1].body).names.includes("Admin User"));
+  const sysReact = await as(adminJar, () => call("POST", `/api/chat/messages/${sysLines.data[0].id}/reactions`, { body: { emoji: "👍" } }));
+  check("system lines cannot be reacted to -> 400", sysReact.status === 400);
   const nGroup = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
   check("the added member got a chat_group notification", nGroup.data.items.some((n) => n.type === "chat_group" && n.entity_id === gid && /Smoke crew/.test(n.title)));
   const notOwner = await as(adminJar, () => call("PUT", `/api/chat/conversations/${gid}`, { body: { title: "Hijacked" } }));
@@ -923,6 +946,16 @@ console.log("chat (friends by code, one-to-one messages)");
     const typingLine = buf.split("\n").find((l) => l.startsWith("data:") && /"type":"typing"/.test(l));
     const typingEv = typingLine ? JSON.parse(typingLine.slice(5)) : null;
     check("typing events reach the other member's stream with the typer's name", typingEv?.typing === true && typingEv?.user_id === adminId && typingEv?.name === "Admin User" && typingEv?.conversation_id === convoId, buf.slice(0, 300));
+    await as(adminJar, () => call("POST", `/api/chat/messages/${m2.data.id}/reactions`, { body: { emoji: "🎉" } }));
+    const deadline2 = Date.now() + 4000;
+    while (!/"type":"reaction"/.test(buf) && Date.now() < deadline2) {
+      const r = await Promise.race([reader.read(), new Promise((resolve) => setTimeout(() => resolve({ done: true }), Math.max(0, deadline2 - Date.now())))]);
+      if (r.done) break;
+      buf += dec.decode(r.value);
+    }
+    const reactionLine = buf.split("\n").find((l) => l.startsWith("data:") && /"type":"reaction"/.test(l));
+    const reactionEv = reactionLine ? JSON.parse(reactionLine.slice(5)) : null;
+    check("reaction events reach the other member's stream", reactionEv?.message_id === m2.data.id && reactionEv?.reactions?.[0]?.emoji === "🎉");
     ctrl.abort();
   } catch (e) {
     check("GET /api/chat/stream is an event stream that says hello", false, e.message);

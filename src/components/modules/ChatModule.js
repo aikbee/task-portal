@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -18,6 +18,7 @@ import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { useClickOutside } from "@/lib/hooks";
 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 function dayLabel(iso, tr) {
@@ -58,6 +59,32 @@ function systemText(m, tr) {
 }
 const isGroup = (c) => c?.kind === "group";
 const TYPING_TTL = 6000; // a typer is forgotten after this unless they ping again
+const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
+/** Newest server state wins: a toggle answer that arrives after a later live event is ignored. Optimistic updates carry no stamp. */
+function applyReactions(m, reactions, at) {
+  if (at && m.reactions_at && at < m.reactions_at) return m;
+  return { ...m, reactions, reactions_at: at ?? m.reactions_at };
+}
+
+/** Floating row of quick reactions above a bubble. */
+function ReactionPicker({ tr, mine, onPick, onClose, align }) {
+  const ref = useRef(null);
+  useClickOutside(ref, onClose);
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div ref={ref} className={cn("chat-picker-pop absolute bottom-full z-20 mb-1 flex gap-0.5 rounded-full border border-line bg-surface p-1 shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="menu" aria-label={tr("Add reaction")}>
+      {REACTIONS.map((e) => (
+        <button key={e} type="button" role="menuitemcheckbox" onClick={() => onPick(e)} className={cn("chat-picker-emoji grid h-8 w-8 place-items-center rounded-full text-lg transition hover:scale-125 hover:bg-surface-2", mine.includes(e) && "is-mine bg-accent/15")} aria-label={e} aria-checked={mine.includes(e)}>
+          {e}
+        </button>
+      ))}
+    </div>
+  );
+}
 /** "Ann is typing" / "Ann and Bob are typing" / "3 people are typing". */
 function typingText(typers, tr) {
   const names = typers.map((t) => t.name);
@@ -225,6 +252,12 @@ export default function ChatModule() {
         return next;
       });
     };
+    const onReaction = (ev) =>
+      setThreads((t) => {
+        const list = t[ev.conversation_id];
+        if (!list) return t;
+        return { ...t, [ev.conversation_id]: list.map((m) => (m.id === ev.message_id ? applyReactions(m, ev.reactions, ev.at) : m)) };
+      });
     const onMessage = (ev) => {
       const { conversation_id, message } = ev;
       onTyping({ conversation_id, user_id: message.sender_id, typing: false });
@@ -261,6 +294,7 @@ export default function ChatModule() {
       es.addEventListener("read", (e) => onRead(JSON.parse(e.data)));
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
       es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
+      es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
       es.addEventListener("friends", () => {
         loadFriends();
         loadConvos();
@@ -339,6 +373,7 @@ export default function ChatModule() {
               }}
               friends={friends?.friends ?? []}
               typers={Object.values(typing[active] ?? {})}
+              onReactions={(messageId, reactions, at) => setThreads((t) => ({ ...t, [active]: (t[active] ?? []).map((m) => (m.id === messageId ? applyReactions(m, reactions, at) : m)) }))}
               onConvoChange={upsertConvo}
               onLeft={(id) => {
                 setConvos((list) => (list ?? []).filter((c) => c.id !== id));
@@ -682,7 +717,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], onReactions, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -690,7 +725,25 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [sending, setSending] = useState(false);
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
+  const [picker, setPicker] = useState(null); // message id with the reaction picker open
   const group = isGroup(convo);
+  const toggleReaction = async (m, emoji) => {
+    setPicker(null);
+    // optimistic flip, then the server's answer (and the live event) settle it
+    const had = (m.reactions ?? []).some((r) => r.emoji === emoji && r.user_ids.includes(me?.id));
+    const next = (m.reactions ?? [])
+      .map((r) => (r.emoji !== emoji ? r : had ? { ...r, count: r.count - 1, user_ids: r.user_ids.filter((x) => x !== me?.id), names: r.names.filter((n) => n !== me?.name) } : { ...r, count: r.count + 1, user_ids: [...r.user_ids, me?.id], names: [...r.names, me?.name] }))
+      .filter((r) => r.count > 0);
+    if (!had && !next.some((r) => r.emoji === emoji)) next.push({ emoji, count: 1, user_ids: [me?.id], names: [me?.name] });
+    onReactions(m.id, next);
+    try {
+      const r = await api.post(`/api/chat/messages/${m.id}/reactions`, { emoji });
+      onReactions(m.id, r.reactions, r.at);
+    } catch (e) {
+      onReactions(m.id, m.reactions ?? []);
+      toast.error(tr("Could not react"), e.message);
+    }
+  };
   // "typing" pings: at most one every 2.5 s while the draft changes, "stopped" after 4 s of quiet or when leaving
   const typingRef = useRef({ on: false, sentAt: 0, timer: null, id: convo.id });
   const signalTyping = (on) => {
@@ -851,6 +904,19 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 }
                 const grouped = prev && prev.kind !== "system" && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
                 const showSender = group && !mine && !grouped;
+                const reactions = m.reactions ?? [];
+                const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
+                const reactBtn = (
+                  <button
+                    type="button"
+                    onClick={() => setPicker(picker === m.id ? null : m.id)}
+                    className={cn("chat-react-btn grid h-7 w-7 shrink-0 place-items-center self-center rounded-full text-fg-faint transition hover:bg-surface-2 hover:text-fg focus-ring", picker === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                    aria-label={tr("Add reaction")}
+                    data-tip={tr("React")}
+                  >
+                    <SmilePlus size={15} />
+                  </button>
+                );
                 const time = <span className={cn("inline-block shrink-0 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length ? "ml-auto" : "ml-2")}>{timeOf(m.created_at)}</span>;
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
@@ -859,10 +925,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 return (
                   <div key={m.id}>
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
-                    <div className={cn("flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
+                    <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
                       {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
-                      <div className={cn("flex min-w-0 flex-col", mine ? "items-end" : "items-start")} style={{ maxWidth: "78%" }}>
+                      {mine ? reactBtn : null}
+                      <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: "78%" }}>
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
+                      {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
@@ -871,6 +939,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         )}
                         title={formatDateTime(m.created_at)}
                         style={bubbleW ? { width: bubbleW } : undefined}
+                        onDoubleClick={photos.length ? undefined : () => toggleReaction(m, "❤️")}
                       >
                         {photos.length ? (
                           <div className={cn("chat-photos", photos.length > 1 && "grid grid-cols-2 gap-1")}>
@@ -904,7 +973,25 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           </>
                         )}
                       </div>
+                      {reactions.length ? (
+                        <div className={cn("chat-reactions absolute -bottom-3 flex flex-wrap gap-1", mine ? "right-1" : "left-1")}>
+                          {reactions.map((r) => (
+                            <button
+                              key={r.emoji}
+                              type="button"
+                              onClick={() => toggleReaction(m, r.emoji)}
+                              className={cn("chat-reaction flex items-center gap-1 rounded-full border px-1.5 py-px text-[11px] leading-5 shadow-sm transition focus-ring", r.user_ids.includes(me?.id) ? "is-mine border-accent bg-accent/15 text-fg" : "border-line bg-surface text-fg-muted hover:bg-surface-2")}
+                              title={tr("Reacted by {names}", { names: r.names.map((n, i) => (r.user_ids[i] === me?.id ? tr("You") : n)).join(", ") })}
+                              aria-label={`${r.emoji} ${r.count}`}
+                            >
+                              <span>{r.emoji}</span>
+                              {r.count > 1 ? <span className="tabular-nums">{r.count}</span> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                       </div>
+                      {!mine ? reactBtn : null}
                     </div>
                     {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{seenLabel}</p> : null}
                   </div>

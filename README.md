@@ -170,8 +170,9 @@ All endpoints return `{ data }` or `{ error }`.
 - **Messages.** Text (up to 4000 characters), Enter to send, Shift+Enter for a new line, day separators, "Seen" read receipts and unread counts. The sidebar badge counts unread messages plus requests waiting for you.
 - **Photos.** Up to 8 per message with an optional caption, picked with the photo button, pasted, or dropped onto the thread. Big pictures are downscaled in the browser (longest edge 1920 px, JPEG) before upload; the server checks the bytes are a JPEG, PNG, GIF or WebP (10 MB each) and records the pixel size. Photos open in a full-screen viewer with keyboard navigation and download, and only the two members of the conversation can load them. Files live in the upload directory and are removed with the account.
 - **Groups.** "New group" on the Chats tab names a group and picks friends; any member can add their own friends later, the owner can rename the group and remove people, and anyone can leave (the owner hands over to the longest-standing member; the last member leaving deletes the group). Messages show the sender's name and avatar, system lines record joins, removals and renames, and "Seen by …" lists who has read your latest message.
+- **Reactions.** Hover a bubble (or tap it on a phone) and press the smiley to pick one of eight quick reactions (👍 ❤️ 😂 😮 😢 🙏 🎉 🔥); double-click a text bubble for a quick ❤️. Reactions show as chips under the bubble with counts and who reacted, toggle off on a second click, update live for everyone, and notify the message's author once per reaction.
 - **Typing indicators.** While someone writes, the thread shows "Ann is typing" with animated dots and the chat list shows "typing…" in place of the last message. Clients ping `/api/chat/conversations/:id/typing` at most every 2.5 seconds and send "stopped" after 4 seconds of quiet; nothing is stored, and a typer fades out after 6 seconds without a ping.
-- **Live updates** come over Server-Sent Events (`/api/chat/stream`, events `message`, `read`, `friends`, `conversation`, `typing`); if the stream cannot connect the page polls every 5 seconds. New messages and friend requests also raise notifications (and pushes) in the **Chat** category, one bell entry per conversation.
+- **Live updates** come over Server-Sent Events (`/api/chat/stream`, events `message`, `read`, `friends`, `conversation`, `typing`, `reaction`); if the stream cannot connect the page polls every 5 seconds. New messages and friend requests also raise notifications (and pushes) in the **Chat** category, one bell entry per conversation.
 
 Endpoints:
 
@@ -191,6 +192,7 @@ Endpoints:
 | GET/POST | `/api/chat/conversations/:id/messages` | `?before=&limit=` pages backwards / JSON `{ body }` or multipart `body` + `files[]` (photos); messages carry `attachments[]` |
 | GET | `/api/chat/photos/:id` | a photo, for members of its conversation (`?download=1`) |
 | POST | `/api/chat/conversations/:id/read` | `{ message_id }` marks read up to that message |
+| POST | `/api/chat/messages/:id/reactions` | `{ emoji }` toggles one of the quick reactions; messages carry `reactions[]` (`emoji`, `count`, `user_ids`, `names`) |
 | POST | `/api/chat/conversations/:id/typing` | `{ typing: true|false }` relayed live to the other members, never stored |
 | GET | `/api/chat/stream` | Server-Sent Events for the signed-in user |
 

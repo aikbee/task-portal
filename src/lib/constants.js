@@ -94,6 +94,7 @@ export const NOTIFICATION_TYPES = {
   friend_accepted: { category: "chat", label: "Friend accepted", tone: "emerald" },
   chat_message: { category: "chat", label: "New message", tone: "indigo" },
   chat_group: { category: "chat", label: "Group chat", tone: "violet" },
+  chat_reaction: { category: "chat", label: "Reaction", tone: "rose" },
 };
 
 export const USER_ROLES = {
