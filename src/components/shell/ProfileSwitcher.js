@@ -26,7 +26,7 @@ export default function ProfileSwitcher({ collapsed = false }) {
           data-tip={collapsed ? `Profile: ${profile.name}` : undefined}
           data-tip-pos="right"
           className={cn(
-            "flex items-center gap-2 rounded-app-sm border border-line bg-surface/60 text-left transition hover:bg-surface-2",
+            "sb-profile flex items-center gap-2 rounded-app-sm border border-line bg-surface/60 text-left transition hover:bg-surface-2",
             collapsed ? "h-9 w-9 justify-center" : "w-full px-2 py-1.5",
             open && "border-accent/40"
           )}

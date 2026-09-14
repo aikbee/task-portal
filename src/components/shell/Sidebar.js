@@ -38,13 +38,13 @@ export default function Sidebar() {
       {mobileNav ? <div className="fixed inset-0 z-40 bg-black/45 backdrop-blur-[2px] md:hidden anim-fade" onClick={closeNav} aria-hidden /> : null}
     <aside
       className={cn(
-        "fixed inset-y-0 left-0 z-50 flex h-dvh shrink-0 flex-col glass border-r transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] md:static md:z-20 md:translate-x-0 md:transition-[width]",
+        "app-sidebar fixed inset-y-0 left-0 z-50 flex h-dvh shrink-0 flex-col glass border-r transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] md:static md:z-20 md:translate-x-0 md:transition-[width]",
         mobileNav ? "translate-x-0 shadow-app-lg" : "-translate-x-full",
         collapsed ? "w-[var(--sidebar-w-collapsed)]" : "w-[var(--sidebar-w)]"
       )}
     >
       {/* brand banner */}
-      <div className={cn("relative overflow-hidden border-b border-line", collapsed ? "px-3 py-3" : "px-4 py-4")}>
+      <div className={cn("sb-brand relative overflow-hidden border-b border-line", collapsed ? "px-3 py-3" : "px-4 py-4")}>
         <div className="pointer-events-none absolute inset-0 opacity-60">
           <span className="absolute -left-10 -top-10 h-32 w-32 rounded-full bg-accent/40 blur-2xl" />
           <span className="absolute -right-6 top-4 h-20 w-20 rounded-full bg-cyan-400/30 blur-2xl" />
@@ -63,14 +63,14 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div className={cn("border-b border-line", collapsed ? "px-2.5 py-2" : "px-3 py-2.5")}>
+      <div className={cn("sb-profile-wrap border-b border-line", collapsed ? "px-2.5 py-2" : "px-3 py-2.5")}>
         <ProfileSwitcher collapsed={collapsed} />
       </div>
 
       {/* nav */}
       <nav className={cn("flex-1 overflow-y-auto py-3", collapsed ? "px-2.5" : "px-3")}>
         {!collapsed ? <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-faint">{tr("Modules")}</p> : null}
-        <ul className="space-y-1">
+        <ul className="sb-nav space-y-1">
           {modules.map((m) => {
             const active = m.href === "/" ? pathname === "/" : pathname.startsWith(m.href);
             const Icon = m.icon;
@@ -83,15 +83,15 @@ export default function Sidebar() {
                   data-tip={collapsed ? tr(m.label) : undefined}
                   data-tip-pos="right"
                   className={cn(
-                    "group relative flex items-center gap-3 rounded-app-sm py-2 text-sm font-medium transition-all",
+                    "sb-item group relative flex items-center gap-3 rounded-app-sm py-2 text-sm font-medium transition-all",
                     collapsed ? "justify-center px-0" : "px-2.5",
-                    active ? "bg-accent/12 text-accent" : "text-fg-muted hover:bg-surface-2 hover:text-fg"
+                    active ? "is-active bg-accent/12 text-accent" : "text-fg-muted hover:bg-surface-2 hover:text-fg"
                   )}
                 >
-                  {active ? <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-accent" /> : null}
+                  {active ? <span className="sb-bar absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-accent" /> : null}
                   <span
                     className={cn(
-                      "grid h-8 w-8 shrink-0 place-items-center rounded-app-sm transition",
+                      "sb-icon grid h-8 w-8 shrink-0 place-items-center rounded-app-sm transition",
                       active ? "bg-accent text-white shadow-[0_6px_14px_-6px_var(--accent)]" : "bg-surface-2 text-fg-muted group-hover:text-fg"
                     )}
                   >
@@ -101,7 +101,7 @@ export default function Sidebar() {
                     <>
                       <span className="flex-1 truncate">{tr(m.label)}</span>
                       {count != null ? (
-                        <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums", m.key === "notifications" ? "bg-amber-500 text-white" : active ? "bg-accent/15 text-accent" : "bg-surface-3 text-fg-muted")}>
+                        <span className={cn("sb-count rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums", m.key === "notifications" ? "bg-amber-500 text-white" : active ? "bg-accent/15 text-accent" : "bg-surface-3 text-fg-muted")}>
                           {count}
                         </span>
                       ) : null}
@@ -115,7 +115,7 @@ export default function Sidebar() {
       </nav>
 
       {/* bottom banner */}
-      <div className={cn("border-t border-line", collapsed ? "p-2.5" : "p-3")}>
+      <div className={cn("sb-foot border-t border-line", collapsed ? "p-2.5" : "p-3")}>
         {!collapsed && !promoDismissed ? (
           <div className="relative overflow-hidden rounded-app bg-gradient-to-br from-accent to-accent-strong p-3.5 text-white shadow-app anim-pop">
             <span className="pointer-events-none absolute -right-6 -bottom-8 h-24 w-24 rounded-full bg-white/20 blur-xl" />
@@ -144,7 +144,7 @@ export default function Sidebar() {
         ) : null}
         {user ? (
           <div
-            className={cn("mt-2 flex items-center gap-2.5 rounded-app-sm px-1.5 py-1.5", collapsed ? "justify-center" : "")}
+            className={cn("sb-user mt-2 flex items-center gap-2.5 rounded-app-sm px-1.5 py-1.5", collapsed ? "justify-center" : "")}
             data-tip={collapsed ? `${user.name} · ${USER_ROLES[user.role]?.label ?? user.role}` : undefined}
             data-tip-pos="right"
           >
@@ -160,7 +160,7 @@ export default function Sidebar() {
         <button
           onClick={toggleSidebar}
           className={cn(
-            "mt-1 hidden w-full items-center justify-center gap-2 rounded-app-sm py-2 text-xs text-fg-muted transition hover:bg-surface-2 hover:text-fg md:flex",
+            "sb-collapse mt-1 hidden w-full items-center justify-center gap-2 rounded-app-sm py-2 text-xs text-fg-muted transition hover:bg-surface-2 hover:text-fg md:flex",
             collapsed && "mt-0"
           )}
           data-tip={collapsed ? "Expand" : undefined}

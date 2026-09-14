@@ -893,6 +893,112 @@ body { -webkit-tap-highlight-color: transparent; }
   background-image: linear-gradient(200deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 40%);
 }
 
+/* Modern sidebar and top bar */
+[data-table-theme="modern"] .app-sidebar {
+  border-right-color: color-mix(in srgb, var(--accent) 18%, var(--line));
+  background-image:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 34%),
+    linear-gradient(0deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent 30%);
+}
+[data-table-theme="modern"] .sb-brand,
+[data-table-theme="modern"] .sb-profile-wrap {
+  position: relative;
+  border-bottom: 0;
+}
+[data-table-theme="modern"] .sb-brand::after,
+[data-table-theme="modern"] .sb-profile-wrap::after,
+[data-table-theme="modern"] .sb-foot::before {
+  content: "";
+  position: absolute;
+  left: 0.85rem;
+  right: 0.85rem;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 55%, transparent), transparent 85%);
+  pointer-events: none;
+}
+[data-table-theme="modern"] .sb-brand::after,
+[data-table-theme="modern"] .sb-profile-wrap::after {
+  bottom: 0;
+}
+[data-table-theme="modern"] .sb-foot {
+  position: relative;
+  border-top: 0;
+}
+[data-table-theme="modern"] .sb-foot::before {
+  top: 0;
+}
+[data-table-theme="modern"] .sb-profile {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border-color: color-mix(in srgb, var(--line) 80%, transparent);
+  box-shadow: 0 8px 20px -18px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-table-theme="modern"] .sb-profile > span:first-child {
+  border-radius: 999px;
+}
+[data-table-theme="modern"] .sb-item {
+  border-radius: 0.8rem;
+}
+[data-table-theme="modern"] .sb-item.is-active {
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 18%, transparent), color-mix(in oklab, var(--accent) 5%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 25%, transparent), 0 10px 24px -20px color-mix(in oklab, var(--accent) 80%, transparent);
+}
+[data-table-theme="modern"] .sb-bar {
+  display: none;
+}
+[data-table-theme="modern"] .sb-icon {
+  border-radius: 0.65rem;
+}
+[data-table-theme="modern"] .sb-item.is-active .sb-icon {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 10px 20px -8px var(--accent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+[data-table-theme="modern"] .sb-item:not(.is-active):hover .sb-icon {
+  background: color-mix(in oklab, var(--accent) 12%, var(--surface-2));
+  color: var(--accent);
+}
+[data-table-theme="modern"] .sb-count:not(.bg-amber-500) {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: color-mix(in oklab, var(--accent) 70%, var(--fg-muted));
+}
+[data-table-theme="modern"] .sb-user {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+}
+[data-table-theme="modern"] .sb-collapse {
+  border-radius: 999px;
+}
+[data-table-theme="modern"] .app-topbar {
+  border-bottom-color: transparent;
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 45%);
+}
+[data-table-theme="modern"] .app-topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 60%, transparent), color-mix(in srgb, var(--line) 70%, transparent) 40%, transparent);
+  pointer-events: none;
+}
+[data-table-theme="modern"] .tb-search .control {
+  border-radius: 999px;
+  padding-left: 2.5rem;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.05);
+}
+[data-table-theme="modern"] .tb-search > div > svg:first-child {
+  left: 1rem;
+  color: var(--accent);
+}
+[data-table-theme="modern"] .tb-results {
+  border-radius: calc(var(--radius) + 6px);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--line));
+  box-shadow: 0 30px 70px -30px rgb(0 0 0 / 0.6), 0 20px 50px -34px color-mix(in oklab, var(--accent) 60%, transparent);
+}
+
 /* Modern page header: a band tinted with the module colour, bigger icon, pill actions */
 [data-table-theme="modern"] .page-header {
   position: relative;

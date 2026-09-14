@@ -72,7 +72,7 @@ export default function TopBar() {
   const ThemeIcon = !mounted ? Monitor : theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
 
   return (
-    <header className="relative z-30 flex h-[var(--topbar-h)] shrink-0 items-center gap-2 glass border-b px-4">
+    <header className="app-topbar relative z-30 flex h-[var(--topbar-h)] shrink-0 items-center gap-2 glass border-b px-4">
       <Button variant="ghost" size="icon" icon={PanelLeft} onClick={() => (window.matchMedia("(max-width: 767px)").matches ? toggleMobileNav() : toggleSidebar())} aria-label={tr("Toggle sidebar")} data-tip="Toggle sidebar ⌘B" data-tip-pos="bottom" />
       <div className="hidden items-center gap-0.5 sm:flex">
         <Button variant="ghost" size="iconSm" icon={ArrowLeft} onClick={() => router.back()} aria-label={tr("Back")} />
@@ -397,7 +397,7 @@ function GlobalSearch() {
           <div className="min-h-0 flex-1 overflow-y-auto">{q.trim() ? resultList : <p className="px-4 py-8 text-center text-xs text-fg-muted">{tr("Search projects, people, tasks…")}</p>}</div>
         </div>
       ) : null}
-    <div ref={wrapRef} className="relative hidden md:block">
+    <div ref={wrapRef} className="tb-search relative hidden md:block">
       <div className="relative">
         <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
         <input ref={inputRef} {...inputProps} onFocus={() => setOpen(true)} className="control h-9 w-64 pl-9 pr-16 lg:w-80" />
@@ -407,7 +407,7 @@ function GlobalSearch() {
         </span>
       </div>
       {open && q.trim() ? (
-        <div className="absolute right-0 top-full z-[80] mt-2 w-[420px] overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop">
+        <div className="tb-results absolute right-0 top-full z-[80] mt-2 w-[420px] overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop">
           {resultList}
         </div>
       ) : null}
