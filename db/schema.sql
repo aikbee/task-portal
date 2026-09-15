@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('admin','user') NOT NULL DEFAULT 'user',
   status ENUM('active','disabled') NOT NULL DEFAULT 'active',
   avatar_color VARCHAR(16) NOT NULL DEFAULT '#6366f1',
+  avatar VARCHAR(255) NULL, -- NULL = the default "pro" icon · 'initials' · 'preset:<key>' · 'upload:user:<id>:<stored file>'
   employee_id INT UNSIGNED NULL,
   notification_prefs JSON NULL, -- { muted: ["tasks", ...] }
   pin_hash VARCHAR(255) NULL, -- lock-screen PIN (scrypt) so secrets can be re-verified server-side
@@ -448,6 +449,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   kind ENUM('direct','group') NOT NULL DEFAULT 'direct',
   title VARCHAR(80) NULL, -- groups only
   avatar_color VARCHAR(16) NOT NULL DEFAULT '#6366f1',
+  avatar VARCHAR(255) NULL, -- group picture: 'preset:<key>' or 'upload:group:<id>:<stored file>'; NULL = coloured badge
   created_by INT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

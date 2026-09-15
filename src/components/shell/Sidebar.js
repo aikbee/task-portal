@@ -148,7 +148,7 @@ export default function Sidebar() {
             data-tip={collapsed ? `${user.name} · ${USER_ROLES[user.role]?.label ?? user.role}` : undefined}
             data-tip-pos="right"
           >
-            <Avatar name={user.name} color={user.avatar_color} size="sm" />
+            <Avatar name={user.name} color={user.avatar_color} avatar={user.avatar} size="sm" />
             {!collapsed ? (
               <span className="min-w-0 leading-tight">
                 <span className="block truncate text-xs font-medium">{user.name}</span>

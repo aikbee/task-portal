@@ -6,7 +6,7 @@ export const POST = handler(async (request, params, user) => {
   const id = requireId(params.id);
   const ids = await memberIdsOf(id, user.id);
   const typing = Boolean((await readJson(request)).typing);
-  const event = { type: "typing", conversation_id: id, user_id: user.id, name: user.name, avatar_color: user.avatar_color, typing, at: Date.now() };
+  const event = { type: "typing", conversation_id: id, user_id: user.id, name: user.name, avatar_color: user.avatar_color, avatar: user.avatar, typing, at: Date.now() };
   for (const uid of ids) if (uid !== user.id) publish(uid, event);
   return ok({ typing });
 });

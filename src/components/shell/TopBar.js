@@ -226,7 +226,7 @@ export default function TopBar() {
         width="w-52"
         trigger={({ toggle }) => (
           <button onClick={toggle} className="ml-1 flex items-center gap-2 rounded-full p-0.5 pr-2 transition hover:bg-surface-2" aria-label={tr("Account menu")}>
-            <Avatar name={user?.name ?? "?"} color={user?.avatar_color ?? "var(--accent)"} size="sm" />
+            <Avatar name={user?.name ?? "?"} color={user?.avatar_color ?? "var(--accent)"} avatar={user?.avatar} size="sm" />
             <span className="hidden max-w-[140px] text-left leading-tight md:block">
               <span className="block truncate text-xs font-medium">{user?.name ?? "Account"}</span>
               <span className="block text-[10px] text-fg-muted">{USER_ROLES[user?.role]?.label ?? ""}</span>

@@ -10,6 +10,7 @@ import { MODULE_MAP } from "@/lib/modules";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Avatar from "@/components/ui/Avatar";
+import AvatarPicker, { prepareAvatar } from "@/components/ui/AvatarPicker";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Modal from "@/components/ui/Modal";
@@ -53,6 +54,8 @@ function systemText(m, tr) {
       return tr("{name} renamed the group to “{title}”", { name, title: ev.title ?? "" });
     case "owner":
       return tr("{names} is now the group owner", { names });
+    case "image":
+      return tr("{name} changed the group picture", { name });
     default:
       return m.body;
   }
@@ -185,7 +188,7 @@ function ReceiptsPopover({ tr, read, pending, onClose, align }) {
   }, [onClose]);
   const Row = ({ u, done }) => (
     <li className="flex items-center gap-2 px-2 py-1 text-xs">
-      <Avatar name={u.name} color={u.avatar_color} size="xs" />
+      <Avatar name={u.name} color={u.avatar_color} avatar={u.avatar} size="xs" />
       <span className="min-w-0 flex-1 truncate">{u.name}</span>
       {done ? <CircleCheck size={13} className="shrink-0 text-accent" /> : <Circle size={13} className="shrink-0 text-fg-faint" />}
     </li>
@@ -262,14 +265,9 @@ const Dots = () => (
 );
 const memberCount = (n, tr) => (n === 1 ? tr("1 member") : tr("{n} members", { n }));
 /** Avatar for a conversation row: the person, or a coloured group badge. */
-function ConvoAvatar({ convo, size = "md" }) {
-  if (!isGroup(convo)) return <Avatar name={convo.name} color={convo.avatar_color} size={size} />;
-  const px = size === "sm" ? "h-7 w-7" : "h-9 w-9";
-  return (
-    <span className={cn("chat-group-avatar inline-grid shrink-0 place-items-center rounded-full text-white", px)} style={{ background: `linear-gradient(135deg, ${convo.avatar_color}, color-mix(in oklab, ${convo.avatar_color} 70%, black))` }} title={convo.name}>
-      <Users size={size === "sm" ? 13 : 16} />
-    </span>
-  );
+function ConvoAvatar({ convo, size = "md", className }) {
+  if (!isGroup(convo)) return <Avatar name={convo.name} color={convo.avatar_color} avatar={convo.avatar ?? "initials"} size={size} className={className} />;
+  return <Avatar name={convo.name} color={convo.avatar_color} avatar={convo.avatar ?? null} fallback="group" size={size} className={cn("chat-group-avatar", className)} />;
 }
 
 /** Friends (add by QR / code, requests, block), one-to-one and group chat with live updates. */
@@ -455,7 +453,7 @@ export default function ChatModule() {
       if (ev.user_id === user?.id) return;
       setTyping((t) => {
         const cur = { ...(t[ev.conversation_id] ?? {}) };
-        if (ev.typing) cur[ev.user_id] = { name: ev.name, avatar_color: ev.avatar_color, until: Date.now() + TYPING_TTL };
+        if (ev.typing) cur[ev.user_id] = { name: ev.name, avatar_color: ev.avatar_color, avatar: ev.avatar, until: Date.now() + TYPING_TTL };
         else delete cur[ev.user_id];
         const next = { ...t };
         if (Object.keys(cur).length) next[ev.conversation_id] = cur;
@@ -693,11 +691,7 @@ function SearchResults({ tr, me, q, results, onPick, activeId, compact = false }
       {results.map((r) => (
         <li key={r.id}>
           <button type="button" onClick={() => onPick(r)} className={cn("chat-result flex w-full items-start gap-2.5 rounded-app-sm px-2.5 py-2 text-left transition hover:bg-surface-2", activeId === r.id && "is-active bg-accent/12")}>
-            {compact ? null : r.conversation_kind === "group" ? (
-              <span className="chat-group-avatar inline-grid h-8 w-8 shrink-0 place-items-center rounded-full text-white" style={{ background: r.conversation_color }}><Users size={14} /></span>
-            ) : (
-              <Avatar name={r.conversation_name} color={r.conversation_color} size="sm" className="mt-0.5" />
-            )}
+            {compact ? null : <ConvoAvatar convo={{ kind: r.conversation_kind, name: r.conversation_name, avatar_color: r.conversation_color, avatar: r.conversation_avatar }} size="sm" className="mt-0.5" />}
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-2 text-[11px] text-fg-muted">
                 {compact ? null : <span className="truncate font-semibold text-fg">{r.conversation_name}</span>}
@@ -823,7 +817,7 @@ function FriendPicker({ tr, friends, selected, onChange, exclude = [] }) {
             <li key={f.id}>
               <label className={cn("chat-person flex cursor-pointer items-center gap-2.5 rounded-app-sm px-2 py-1.5", on && "bg-accent/10")}>
                 <Checkbox checked={on} onChange={(v) => onChange(v ? [...selected, f.id] : selected.filter((x) => x !== f.id))} />
-                <Avatar name={f.name} color={f.avatar_color} size="sm" />
+                <Avatar name={f.name} color={f.avatar_color} avatar={f.avatar} size="sm" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{f.name}</span>
                   <span className="block truncate text-[11px] text-fg-muted">{f.email}</span>
@@ -939,9 +933,43 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
     }
   };
   const memberIds = convo.members.map((m) => m.id);
+  const [picBusy, setPicBusy] = useState(false);
+  const savePicture = async (fn) => {
+    setPicBusy(true);
+    try {
+      const c = await fn();
+      onChange(c);
+      toast.success(tr("Picture updated"));
+    } catch (e) {
+      toast.error(tr("Could not update the picture"), e.message);
+    } finally {
+      setPicBusy(false);
+    }
+  };
   return (
     <Modal open={open} onClose={onClose} size="sm" title={convo.title} description={memberCount(convo.member_count, tr)}>
       <div className="space-y-5">
+        {owner ? (
+          <section>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Group picture")}</p>
+            <AvatarPicker
+              value={convo.avatar ?? null}
+              color={convo.avatar_color}
+              name={convo.title}
+              owner="group"
+              busy={picBusy}
+              onPick={(v) => savePicture(() => api.put(`/api/chat/conversations/${convo.id}/avatar`, { avatar: v }))}
+              onUpload={(file) =>
+                savePicture(async () => {
+                  const fd = new FormData();
+                  fd.append("file", await prepareAvatar(file));
+                  return api.upload(`/api/chat/conversations/${convo.id}/avatar`, fd);
+                })
+              }
+              onClear={() => savePicture(() => api.del(`/api/chat/conversations/${convo.id}/avatar`))}
+            />
+          </section>
+        ) : null}
         {owner ? (
           <Field label={tr("Group name")}>
             <div className="flex gap-2">
@@ -955,7 +983,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
           <ul className="space-y-0.5">
             {convo.members.map((m) => (
               <li key={m.id} className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-1.5">
-                <Avatar name={m.name} color={m.avatar_color} size="sm" />
+                <Avatar name={m.name} color={m.avatar_color} avatar={m.avatar} size="sm" />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5 text-sm font-medium">
                     <span className="truncate">{m.id === me?.id ? tr("You") : m.name}</span>
@@ -1499,7 +1527,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       </p>
                     ) : null}
                     <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
-                      {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} size="xs" />}</span> : null}
+                      {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} avatar={m.sender_avatar ?? "initials"} size="xs" />}</span> : null}
                       {mine ? (
                         <>
                           {menuBtn}
@@ -1638,7 +1666,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             <>
               <span className="flex -space-x-1.5">
                 {typers.slice(0, 3).map((t) => (
-                  <Avatar key={t.name} name={t.name} color={t.avatar_color} size="xs" ring />
+                  <Avatar key={t.name} name={t.name} color={t.avatar_color} avatar={t.avatar} size="xs" ring />
                 ))}
               </span>
               <span>{typingText(typers, tr)}</span>
@@ -1865,7 +1893,7 @@ function FriendsPanel({ tr, toast, data, reload, onMessage, onSendRequest }) {
 
   const Person = ({ u, children }) => (
     <li className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-2">
-      <Avatar name={u.name} color={u.avatar_color} size="sm" />
+      <Avatar name={u.name} color={u.avatar_color} avatar={u.avatar} size="sm" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{u.name}</span>
         <span className="block truncate text-[11px] text-fg-muted">{u.email}</span>

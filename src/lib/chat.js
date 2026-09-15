@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { deleteStoredFile } from "./uploads";
+import { uploadedFileOf } from "./avatar-presets";
 import QRCode from "qrcode";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
@@ -29,9 +30,9 @@ export function publish(userId, event) {
   }
 }
 
-export const PEER_FIELDS = "u.id, u.name, u.avatar_color, u.email";
+export const PEER_FIELDS = "u.id, u.name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.email";
 /** Same person columns for conversation rows, where `id` is the conversation and the person is `user_id`. */
-export const CONVO_PEER = "u.id AS user_id, u.name, u.avatar_color, u.email";
+export const CONVO_PEER = "u.id AS user_id, u.name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.email";
 export const MESSAGE_MAX = 4000;
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 export const PHOTOS_PER_MESSAGE = 8;
@@ -164,7 +165,7 @@ function shapeConversation(row, members, statuses, me) {
     kind: row.kind,
     title: row.title,
     my_role: mine?.role ?? "member",
-    members: members.map(({ id, name, avatar_color, email, role, last_read_message_id }) => ({ id, name, avatar_color, email, role, last_read_message_id })),
+    members: members.map(({ id, name, avatar_color, avatar, email, role, last_read_message_id }) => ({ id, name, avatar_color, avatar, email, role, last_read_message_id })),
     member_count: members.length,
     last_read_message_id: row.last_read_message_id,
     unread: Number(row.unread ?? 0),
@@ -180,12 +181,13 @@ function shapeConversation(row, members, statuses, me) {
     last_files: Number(row.last_files ?? 0),
     last_file_name: row.last_file_name ?? null,
   };
-  if (row.kind === "group") return { ...base, name: row.title, avatar_color: row.group_color, email: null, user_id: null, friend_status: null, peer_last_read: null };
+  if (row.kind === "group") return { ...base, name: row.title, avatar_color: row.group_color, avatar: row.group_avatar ?? null, email: null, user_id: null, friend_status: null, peer_last_read: null };
   const peer = members.find((x) => x.id !== me);
   return {
     ...base,
     name: peer?.name ?? "Deleted account",
     avatar_color: peer?.avatar_color ?? "#94a3b8",
+    avatar: peer?.avatar ?? "initials",
     email: peer?.email ?? null,
     user_id: peer?.id ?? null,
     friend_status: peer ? (statuses.get(peer.id) ?? null) : null,
@@ -194,7 +196,7 @@ function shapeConversation(row, members, statuses, me) {
 }
 async function loadConversations(userId, onlyId = null) {
   const rows = await query(
-    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, m.last_read_message_id,
+    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, m.last_read_message_id,
        (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
@@ -254,7 +256,7 @@ export async function chatBadge(userId) {
 }
 
 /* ---------- messages ---------- */
-export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, x.edited_at, x.deleted_at, s.name AS sender_name, s.avatar_color AS sender_color";
+export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, x.edited_at, x.deleted_at, s.name AS sender_name, s.avatar_color AS sender_color, COALESCE(s.avatar, 'preset:pro') AS sender_avatar";
 export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
 const photoOf = (a) => ({
   id: a.id,
@@ -380,6 +382,9 @@ export async function notifyMessage(recipientId, sender, convo, body, photos = 0
 /** Delete a conversation with its photo files. */
 export async function deleteConversation(id) {
   await purgeMessagePhotos("m.conversation_id = ?", [id]);
+  const row = await queryOne("SELECT avatar FROM conversations WHERE id = ?", [id]);
+  const pic = uploadedFileOf(row?.avatar);
+  if (pic) await deleteStoredFile(pic).catch(() => {});
   await execute("DELETE FROM conversations WHERE id = ?", [id]);
 }
 /**

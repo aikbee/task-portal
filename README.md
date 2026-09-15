@@ -38,6 +38,10 @@ Environment variables (`.env.local`): `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSW
 
 The bell in the top bar shows unread notifications (polled every 30 s and on focus), with a toast, optional chime and optional desktop notification for new arrivals; the **Notifications** page lists everything grouped by day with unread / category filters, mark read/unread, delete, mark-all-read and clear-read. Notifications are generated server-side for: task created / assigned / status changed / completed, attachments added, requirement created / status / delivered, project created / status / completed / team changes (only when someone else — e.g. an admin in your workspace — made the change, except milestones like *completed* which you also see for your own actions), due-today / due-tomorrow / overdue task reminders (generated on demand, never duplicated), account changes (admins), and every sign-in to your account. Preferences → Notifications lets you mute categories (saved on your account) and choose chime / desktop alerts (this browser).
 
+## Profile pictures
+
+Every account has a picture: by default the "pro" badge (a crown tinted with the user's own colour, so people still differ at a glance), or one of 24 preset icons, plain initials, or an uploaded photo. Pictures are chosen in **Profile & password**: photos are square-cropped and resized to 256 px in the browser, checked by content on the server (2 MB) and served to signed-in users from `/api/avatars/user/:id`. Group chats get a picture the same way (owner only, `/api/avatars/group/:id`, members only); the old file is removed whenever a picture changes and when an account or group is deleted.
+
 ## Accounts & roles
 
 Sign-in is required for every page and API route (a request proxy redirects to `/login`). Sessions are server-side rows in the `sessions` table referenced by a signed, httpOnly cookie; passwords are hashed with scrypt.
@@ -154,6 +158,8 @@ All endpoints return `{ data }` or `{ error }`.
 | POST | `/api/auth/logout` | ends the session |
 | GET | `/api/auth/me` | current user |
 | PUT | `/api/auth/profile` | own name / avatar colour |
+| PUT/POST/DELETE | `/api/auth/avatar` | `{ avatar: "preset:<key>" \| "initials" }` / multipart `file` photo / back to the default badge |
+| GET | `/api/avatars/user/:id` · `/api/avatars/group/:id` | an uploaded picture (group pictures for members only) |
 | PUT | `/api/auth/password` | `{ current_password, new_password }` |
 | PUT | `/api/auth/workspace` | admin only: `{ user_id }` to work inside that user's workspace, `{ user_id: null }` to return |
 | GET/POST | `/api/profiles` | your profiles with counts (`active_id` = current) / create |
@@ -192,6 +198,7 @@ Endpoints:
 | GET/POST | `/api/chat/conversations` | my chats (direct and group) with members, unread counts and last message / `{ user_id }` opens the direct chat with a friend |
 | POST | `/api/chat/groups` | `{ title, member_ids[] }` creates a group with you as owner (members must be your friends) |
 | GET/PUT/DELETE | `/api/chat/conversations/:id` | details with `members[]` / rename a group (owner) / leave a group |
+| PUT/POST/DELETE | `/api/chat/conversations/:id/avatar` | group picture: preset / multipart `file` / remove (owner) |
 | POST | `/api/chat/conversations/:id/members` | `{ user_ids[] }` adds your friends to a group |
 | DELETE | `/api/chat/conversations/:id/members/:userId` | remove someone from a group (owner) |
 | GET/POST | `/api/chat/conversations/:id/messages` | `?before=&limit=` pages backwards, `?around=<id>` loads a window round one message / JSON `{ body }` or multipart `body` + `files[]` (photos and other files) or `voice` + `duration` (ms); messages carry `attachments[]` (`kind` image/audio/file) |

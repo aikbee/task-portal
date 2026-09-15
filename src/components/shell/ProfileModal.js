@@ -9,6 +9,7 @@ import { PASSWORD_MIN } from "@/lib/password";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Avatar from "@/components/ui/Avatar";
+import AvatarPicker, { prepareAvatar } from "@/components/ui/AvatarPicker";
 import { StatusBadge } from "@/components/ui/Badge";
 import { Input, Field } from "@/components/ui/Controls";
 import ColorPicker from "@/components/ui/ColorPicker";
@@ -36,6 +37,19 @@ function ProfileModalInner({ onClose }) {
   const [confirm, setConfirm] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
   const [pwError, setPwError] = useState(null);
+  const [picBusy, setPicBusy] = useState(false);
+  const savePicture = async (fn) => {
+    setPicBusy(true);
+    try {
+      const saved = await fn();
+      setUser((u) => ({ ...u, ...saved }));
+      toast.success(tr("Picture updated"));
+    } catch (err) {
+      toast.error(tr("Could not update the picture"), err.message === "too-large" ? tr("Choose a picture under 15 MB.") : err.message);
+    } finally {
+      setPicBusy(false);
+    }
+  };
 
   const saveProfile = async (e) => {
     e.preventDefault();
@@ -74,7 +88,7 @@ function ProfileModalInner({ onClose }) {
     <Modal open onClose={onClose} title="Your profile" description={user?.email} size="md">
       <form onSubmit={saveProfile} className="space-y-4">
         <div className="flex items-center gap-4 rounded-app border border-line bg-surface-2 p-3">
-          <Avatar name={name || user?.name} color={color} size="xl" />
+          <Avatar name={name || user?.name} color={color} avatar={user?.avatar} size="xl" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{name || user?.name}</p>
             <div className="mt-1 flex items-center gap-2 text-xs text-fg-muted">
@@ -83,6 +97,25 @@ function ProfileModalInner({ onClose }) {
             </div>
             <ColorPicker value={color} onChange={setColor} className="mt-2" />
           </div>
+        </div>
+        <div className="rounded-app border border-line p-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Profile picture")}</p>
+          <AvatarPicker
+            value={user?.avatar}
+            color={color}
+            name={name || user?.name}
+            owner="user"
+            busy={picBusy}
+            onPick={(v) => savePicture(() => api.put("/api/auth/avatar", { avatar: v }))}
+            onUpload={(file) =>
+              savePicture(async () => {
+                const fd = new FormData();
+                fd.append("file", await prepareAvatar(file));
+                return api.upload("/api/auth/avatar", fd);
+              })
+            }
+            onClear={() => savePicture(() => api.del("/api/auth/avatar"))}
+          />
         </div>
         <Field label="Display name" required>
           <Input value={name} onChange={(e) => setName(e.target.value)} required />

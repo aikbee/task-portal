@@ -6,6 +6,8 @@ import { USER_SELECT } from "../route";
 import { notifyAdmins } from "@/lib/notifications";
 import { purgeFiles } from "@/lib/attachments";
 import { pruneOrphanConversations, purgeMessagePhotos } from "@/lib/chat";
+import { uploadedFileOf } from "@/lib/avatar-presets";
+import { deleteStoredFile } from "@/lib/uploads";
 
 async function find(id) {
   const row = await queryOne(`${USER_SELECT} WHERE u.id = ?`, [id]);
@@ -61,6 +63,8 @@ export const DELETE = handler(
     await purgeFiles("task", "p.user_id = ?", [id]);
     await purgeFiles("requirement", "p.user_id = ?", [id]);
     await purgeMessagePhotos("m.sender_id = ?", [id]).catch(() => {});
+    const pic = uploadedFileOf((await queryOne("SELECT avatar FROM users WHERE id = ?", [id]))?.avatar);
+    if (pic) await deleteStoredFile(pic).catch(() => {});
     await execute("DELETE FROM users WHERE id = ?", [id]);
     await pruneOrphanConversations().catch(() => {});
     notifyAdmins(me, { type: "user_deleted", title: `Account removed: ${existing.name}`, body: existing.email, href: "/users", entityType: "user", entityId: id });

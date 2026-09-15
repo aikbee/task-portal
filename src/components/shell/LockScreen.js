@@ -208,7 +208,7 @@ function LockOverlay({ pinHash, pinSalt, pinLength, onUnlock }) {
       <div className="glass w-[340px] max-w-full rounded-app-lg p-7 text-center shadow-app-lg anim-pop">
         <span className="relative mx-auto block h-16 w-16">
           {user ? (
-            <Avatar name={user.name} color={user.avatar_color} size="xl" className="h-16 w-16 text-xl" />
+            <Avatar name={user.name} color={user.avatar_color} avatar={user.avatar} size="xl" className="h-16 w-16 text-xl" />
           ) : (
             <span className="grid h-16 w-16 place-items-center rounded-full bg-gradient-to-br from-accent to-accent-strong text-white"><Lock size={26} /></span>
           )}

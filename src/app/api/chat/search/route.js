@@ -14,7 +14,7 @@ export const GET = handler(async (request, _params, user) => {
   const conversationId = Number(sp.get("c")) || null;
   const before = Number(sp.get("before")) || null;
   const limit = Math.min(50, Math.max(1, Number(sp.get("limit")) || 30));
-  const args = [user.id, user.id, user.id, `%${escapeLike(q)}%`];
+  const args = [user.id, user.id, user.id, user.id, `%${escapeLike(q)}%`];
   let where = "x.kind = 'text' AND x.deleted_at IS NULL AND x.body LIKE ?";
   if (conversationId) {
     where += " AND x.conversation_id = ?";
@@ -26,7 +26,8 @@ export const GET = handler(async (request, _params, user) => {
   }
   const rows = await query(
     `SELECT x.id, x.conversation_id, x.sender_id, x.body, x.created_at, s.name AS sender_name, s.avatar_color AS sender_color,
-       c.kind AS conversation_kind, c.title, c.avatar_color AS group_color,
+       c.kind AS conversation_kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar,
+       (SELECT COALESCE(u.avatar, 'preset:pro') FROM conversation_members pm JOIN users u ON u.id = pm.user_id WHERE pm.conversation_id = c.id AND pm.user_id <> ? LIMIT 1) AS peer_avatar,
        (SELECT u.name FROM conversation_members pm JOIN users u ON u.id = pm.user_id WHERE pm.conversation_id = c.id AND pm.user_id <> ? LIMIT 1) AS peer_name,
        (SELECT u.avatar_color FROM conversation_members pm JOIN users u ON u.id = pm.user_id WHERE pm.conversation_id = c.id AND pm.user_id <> ? LIMIT 1) AS peer_color
      FROM messages x
@@ -44,6 +45,7 @@ export const GET = handler(async (request, _params, user) => {
       conversation_kind: r.conversation_kind,
       conversation_name: r.conversation_kind === "group" ? r.title : r.peer_name ?? "Deleted account",
       conversation_color: r.conversation_kind === "group" ? r.group_color : r.peer_color ?? "#94a3b8",
+      conversation_avatar: r.conversation_kind === "group" ? r.group_avatar ?? null : r.peer_avatar ?? "initials",
       sender_id: r.sender_id,
       sender_name: r.sender_name,
       sender_color: r.sender_color,

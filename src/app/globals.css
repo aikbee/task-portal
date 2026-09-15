@@ -1346,6 +1346,18 @@ body { -webkit-tap-highlight-color: transparent; }
   }
 }
 
+.avatar-preset svg {
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.25));
+}
+.avatar-choice.is-on {
+  transform: scale(1.08);
+}
+[data-table-theme="modern"] .avatar-picker .avatar-grid {
+  padding: 0.5rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+}
+
 /* Modern chat */
 [data-table-theme="modern"] .chat-shell {
   border-radius: 1.25rem;

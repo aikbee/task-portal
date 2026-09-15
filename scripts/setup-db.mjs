@@ -126,6 +126,11 @@ async function migrate(db, adminId) {
     await db.query("ALTER TABLE message_attachments ADD COLUMN kind ENUM('image','audio','file') NOT NULL DEFAULT 'file' AFTER message_id");
     await db.query("UPDATE message_attachments SET kind = CASE WHEN mime_type LIKE 'audio/%' THEN 'audio' ELSE 'image' END");
   }
+  if (!(await hasColumn(db, "users", "avatar"))) {
+    log("migrating: users.avatar + conversations.avatar (profile and group pictures)");
+    await db.query("ALTER TABLE users ADD COLUMN avatar VARCHAR(255) NULL AFTER avatar_color");
+    await db.query("ALTER TABLE conversations ADD COLUMN avatar VARCHAR(255) NULL AFTER avatar_color");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

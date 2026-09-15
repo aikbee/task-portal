@@ -72,12 +72,12 @@ export function ProjectChip({ id, name, code, color, link = true }) {
   return link && id ? <Link href={`/projects/${id}`} onClick={(e) => e.stopPropagation()} className="hover:opacity-80">{inner}</Link> : inner;
 }
 
-export function PersonCell({ id, name, color, sub, link = true, size = "sm" }) {
+export function PersonCell({ id, name, color, avatar, sub, link = true, size = "sm" }) {
   const tr = useT();
   if (!name) return <span className="text-fg-faint">{tr("Unassigned")}</span>;
   const inner = (
     <span className="inline-flex items-center gap-2">
-      <Avatar name={name} color={color} size={size} />
+      <Avatar name={name} color={color} avatar={avatar} size={size} />
       <span className="min-w-0 leading-tight">
         <span className="block truncate text-sm font-medium">{name}</span>
         {sub ? <span className="block truncate text-[11px] text-fg-muted">{sub}</span> : null}
