@@ -22,11 +22,21 @@ export const PUT = handler(async (request, params, user) => {
   return ok(await conversationFor(id, user.id));
 });
 
-/** Leave a group. The owner hands the group to its longest-standing member; the last member leaving deletes it. */
+/**
+ * Leave a group (the owner hands it to the longest-standing member; the last member leaving deletes it),
+ * or — for a direct chat — delete it on your side only: the history up to now disappears for you, the
+ * other person keeps theirs, and the chat comes back if either of you sends a new message.
+ */
 export const DELETE = handler(async (_request, params, user) => {
   const id = requireId(params.id);
   const convo = await conversationFor(id, user.id);
-  if (convo.kind !== "group") throw new HttpError("Direct chats cannot be left.", 400);
+  if (convo.kind === "direct") {
+    await execute(
+      "UPDATE conversation_members SET hidden_before_id = (SELECT COALESCE(MAX(id), 0) FROM messages WHERE conversation_id = ?), archived_at = NULL, pinned_at = NULL WHERE conversation_id = ? AND user_id = ?",
+      [id, id, user.id]
+    );
+    return ok({ id, hidden: true });
+  }
   const others = convo.members.filter((m) => m.id !== user.id);
   if (!others.length) {
     await deleteConversation(id);

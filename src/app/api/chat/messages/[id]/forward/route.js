@@ -1,6 +1,6 @@
 import { queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, messageById, copyAttachments, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, messageById, copyAttachments, mutedMemberIds, unarchiveFor, PEER_FIELDS } from "@/lib/chat";
 
 const MAX_TARGETS = 5;
 
@@ -29,11 +29,13 @@ export const POST = handler(async (request, params, user) => {
     const copied = await copyAttachments(id, r.insertId);
     await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [r.insertId, cid, user.id]);
     const message = await messageById(r.insertId);
+    await unarchiveFor(cid, user.id);
     broadcast(convo, { type: "message", conversation_id: cid, message, from: me });
     const photos = copied.filter((a) => a.kind === "image").length;
     const voice = copied.find((a) => a.kind === "audio");
     const files = copied.filter((a) => a.kind === "file");
-    for (const rid of recipientsOf(convo, user.id)) notifyMessage(rid, me, convo, msg.body, photos, voice ? voice.duration_ms ?? 0 : null, files.length, files[0]?.original_name ?? "").catch(() => {});
+    const muted = new Set(await mutedMemberIds(cid));
+    for (const rid of recipientsOf(convo, user.id).filter((x) => !muted.has(x))) notifyMessage(rid, me, convo, msg.body, photos, voice ? voice.duration_ms ?? 0 : null, files.length, files[0]?.original_name ?? "").catch(() => {});
     created.push(message);
   }
   return ok(created, { status: 201 });

@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta, audioMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, mutedMemberIds, unarchiveFor, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
 
 /**
  * Messages of a conversation, oldest first: the newest page (?limit up to 100), earlier pages (?before=<id>),
@@ -10,19 +10,20 @@ import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage,
  */
 export const GET = handler(async (request, params, user) => {
   const id = requireId(params.id);
-  await conversationFor(id, user.id);
+  const convo = await conversationFor(id, user.id);
+  const floor = Number(convo.hidden_before_id) || 0; // "delete chat" on my side hides everything up to here
   const sp = request.nextUrl.searchParams;
   const around = Number(sp.get("around")) || null;
   if (around) {
-    const older = await query(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? AND x.id <= ? ORDER BY x.id DESC LIMIT 31`, [id, around]);
-    const newer = await query(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? AND x.id > ? ORDER BY x.id ASC LIMIT 30`, [id, around]);
+    const older = await query(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? AND x.id > ? AND x.id <= ? ORDER BY x.id DESC LIMIT 31`, [id, floor, around]);
+    const newer = await query(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? AND x.id > ? ORDER BY x.id ASC LIMIT 30`, [id, Math.max(floor, around)]);
     return ok(await withExtras([...older.reverse(), ...newer]));
   }
   const limit = Math.min(100, Math.max(1, Number(sp.get("limit")) || 50));
   const before = Number(sp.get("before")) || null;
   const rows = await query(
-    `SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? ${before ? "AND x.id < ?" : ""} ORDER BY x.id DESC LIMIT ${limit}`,
-    before ? [id, before] : [id]
+    `SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.conversation_id = ? AND x.id > ? ${before ? "AND x.id < ?" : ""} ORDER BY x.id DESC LIMIT ${limit}`,
+    before ? [id, floor, before] : [id, floor]
   );
   return ok(await withExtras(rows.reverse()));
 });
@@ -112,9 +113,12 @@ export const POST = handler(async (request, params, user) => {
   // the sender has read their own message
   await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [message.id, id, user.id]);
   const me = await queryOne(`SELECT ${PEER_FIELDS} FROM users u WHERE u.id = ?`, [user.id]);
+  await unarchiveFor(id, user.id);
   broadcast(convo, { type: "message", conversation_id: id, message, from: me });
   const mentioned = new Set(mentionIds);
+  const muted = new Set(await mutedMemberIds(id));
   for (const rid of recipientsOf(convo, user.id)) {
+    if (muted.has(rid)) continue;
     if (mentioned.has(rid)) notifyMention(rid, me, convo, body).catch(() => {});
     else notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "").catch(() => {});
   }

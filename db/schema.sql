@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   totp_last_step BIGINT UNSIGNED NULL, -- last accepted 30 s time step, so a code cannot be replayed
   friend_code VARCHAR(16) NULL, -- XXXX-XXXX-XXXX shown as a QR code so friends can add you in Chat
   last_login_at DATETIME NULL,
+  last_seen_at DATETIME NULL, -- presence: stamped when the chat stream connects and when it drops
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email (email),
@@ -459,6 +460,11 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   user_id INT UNSIGNED NOT NULL,
   role ENUM('owner','member') NOT NULL DEFAULT 'member', -- the owner renames a group and removes people
   last_read_message_id INT UNSIGNED NULL, -- read receipts and unread counts
+  delivered_message_id INT UNSIGNED NULL, -- the newest message this member's device has received
+  muted TINYINT(1) NOT NULL DEFAULT 0, -- no bell or push from this chat, and it stays out of the sidebar badge
+  pinned_at DATETIME NULL, -- pinned chats sort first
+  archived_at DATETIME NULL, -- tucked away under "Archived" until a new message arrives
+  hidden_before_id INT UNSIGNED NULL, -- "delete chat" on my side: messages up to here are not shown to me
   joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (conversation_id, user_id),
   KEY idx_conversation_members_user (user_id),

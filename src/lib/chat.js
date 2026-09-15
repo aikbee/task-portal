@@ -8,6 +8,43 @@ import { notify } from "./notifications";
 
 /* ---------- live events: one in-process bus per user (a single pm2 process serves the app) ---------- */
 const bus = globalThis.__chatBus ?? (globalThis.__chatBus = new Map());
+/* presence: a user is online while at least one live stream is open; offline 30 s after the last one drops */
+const presence = globalThis.__chatPresence ?? (globalThis.__chatPresence = new Map()); // userId -> { count, timer }
+const OFFLINE_GRACE_MS = 30000;
+export const isOnline = (userId) => (presence.get(userId)?.count ?? 0) > 0;
+async function contactsOf(userId) {
+  const rows = await query("SELECT DISTINCT m2.user_id FROM conversation_members m1 JOIN conversation_members m2 ON m2.conversation_id = m1.conversation_id AND m2.user_id <> m1.user_id WHERE m1.user_id = ?", [userId]);
+  return rows.map((r) => r.user_id);
+}
+async function announcePresence(userId, online) {
+  const at = new Date().toISOString();
+  for (const id of await contactsOf(userId).catch(() => [])) publish(id, { type: "presence", user_id: userId, online, last_seen_at: at });
+}
+function presenceConnect(userId) {
+  const st = presence.get(userId) ?? { count: 0, timer: null };
+  if (st.timer) {
+    clearTimeout(st.timer);
+    st.timer = null;
+  }
+  st.count += 1;
+  presence.set(userId, st);
+  if (st.count === 1) {
+    execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
+    announcePresence(userId, true).catch(() => {});
+  }
+}
+function presenceDisconnect(userId) {
+  const st = presence.get(userId);
+  if (!st) return;
+  st.count = Math.max(0, st.count - 1);
+  if (st.count > 0) return;
+  st.timer = setTimeout(() => {
+    if (st.count > 0) return;
+    presence.delete(userId);
+    execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
+    announcePresence(userId, false).catch(() => {});
+  }, OFFLINE_GRACE_MS);
+}
 export function subscribe(userId, fn) {
   let set = bus.get(userId);
   if (!set) {
@@ -15,9 +52,11 @@ export function subscribe(userId, fn) {
     bus.set(userId, set);
   }
   set.add(fn);
+  presenceConnect(userId);
   return () => {
     set.delete(fn);
     if (!set.size) bus.delete(userId);
+    presenceDisconnect(userId);
   };
 }
 export function publish(userId, event) {
@@ -138,7 +177,7 @@ async function membersOf(ids) {
   const map = new Map();
   if (!ids.length) return map;
   const rows = await query(
-    `SELECT m.conversation_id, m.role, m.last_read_message_id, ${PEER_FIELDS}
+    `SELECT m.conversation_id, m.role, m.last_read_message_id, m.delivered_message_id, u.last_seen_at, ${PEER_FIELDS}
      FROM conversation_members m JOIN users u ON u.id = m.user_id
      WHERE m.conversation_id IN (${ids.map(() => "?").join(",")}) ORDER BY m.joined_at, u.id`,
     ids
@@ -165,8 +204,13 @@ function shapeConversation(row, members, statuses, me) {
     kind: row.kind,
     title: row.title,
     my_role: mine?.role ?? "member",
-    members: members.map(({ id, name, avatar_color, avatar, email, role, last_read_message_id }) => ({ id, name, avatar_color, avatar, email, role, last_read_message_id })),
+    members: members.map(({ id, name, avatar_color, avatar, email, role, last_read_message_id, delivered_message_id, last_seen_at }) => ({ id, name, avatar_color, avatar, email, role, last_read_message_id, delivered_message_id, online: isOnline(id), last_seen_at })),
     member_count: members.length,
+    online_count: members.filter((x) => x.id !== me && isOnline(x.id)).length,
+    muted: Boolean(row.muted),
+    pinned_at: row.pinned_at ?? null,
+    archived_at: row.archived_at ?? null,
+    hidden_before_id: row.hidden_before_id ?? null,
     last_read_message_id: row.last_read_message_id,
     unread: Number(row.unread ?? 0),
     last_id: row.last_id,
@@ -193,24 +237,27 @@ function shapeConversation(row, members, statuses, me) {
     user_id: peer?.id ?? null,
     friend_status: peer ? (statuses.get(peer.id) ?? null) : null,
     peer_last_read: peer?.last_read_message_id ?? null,
+    peer_delivered: peer?.delivered_message_id ?? null,
+    online: peer ? isOnline(peer.id) : false,
+    last_seen_at: peer?.last_seen_at ?? null,
   };
 }
-async function loadConversations(userId, onlyId = null) {
+async function loadConversations(userId, onlyId = null, { includeHidden = false } = {}) {
   const rows = await query(
-    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, m.last_read_message_id,
-       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, m.last_read_message_id, m.muted, m.pinned_at, m.archived_at, m.hidden_before_id,
+       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'audio' LIMIT 1) AS last_voice,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file') AS last_files,
        (SELECT a.original_name FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file' ORDER BY a.sort_order, a.id LIMIT 1) AS last_file_name,
-       (SELECT COUNT(*) FROM message_mentions mm JOIN messages x ON x.id = mm.message_id WHERE x.conversation_id = c.id AND mm.user_id = ? AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS mention_unread
+       (SELECT COUNT(*) FROM message_mentions mm JOIN messages x ON x.id = mm.message_id WHERE x.conversation_id = c.id AND mm.user_id = ? AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS mention_unread
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
-     LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
+     LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id AND id > COALESCE(m.hidden_before_id, 0))
      LEFT JOIN users ls ON ls.id = lm.sender_id
-     ${onlyId ? "WHERE c.id = ?" : ""}
-     ORDER BY COALESCE(lm.created_at, c.created_at) DESC`,
+     WHERE ${includeHidden ? "1 = 1" : "(m.hidden_before_id IS NULL OR lm.id IS NOT NULL)"} ${onlyId ? "AND c.id = ?" : ""}
+     ORDER BY (m.pinned_at IS NULL), m.pinned_at DESC, COALESCE(lm.created_at, c.created_at) DESC`,
     onlyId ? [userId, userId, userId, onlyId] : [userId, userId, userId]
   );
   const members = await membersOf(rows.map((r) => r.id));
@@ -219,13 +266,21 @@ async function loadConversations(userId, onlyId = null) {
   return rows.map((r) => shapeConversation(r, members.get(r.id) ?? [], statuses, userId));
 }
 export const conversationsOf = (userId) => loadConversations(userId);
-/** A conversation the user belongs to (404 otherwise). */
+/** A conversation the user belongs to (404 otherwise) — even one they "deleted" on their side. */
 export async function conversationFor(conversationId, userId) {
-  const [c] = await loadConversations(userId, conversationId);
+  const [c] = await loadConversations(userId, conversationId, { includeHidden: true });
   if (!c) throw new HttpError("Conversation not found.", 404);
   return c;
 }
 export const recipientsOf = (convo, me) => convo.members.map((m) => m.id).filter((id) => id !== me);
+/** Members who muted this chat: they still get live events, but no bell or push. */
+export async function mutedMemberIds(conversationId) {
+  return (await query("SELECT user_id FROM conversation_members WHERE conversation_id = ? AND muted = 1", [conversationId])).map((r) => r.user_id);
+}
+/** A new message brings an archived chat back for everyone else. */
+export function unarchiveFor(conversationId, senderId) {
+  return execute("UPDATE conversation_members SET archived_at = NULL WHERE conversation_id = ? AND user_id <> ? AND archived_at IS NOT NULL", [conversationId, senderId]);
+}
 /** Member ids of a conversation the user belongs to (one query; 404 otherwise). */
 export async function memberIdsOf(conversationId, userId) {
   const rows = await query("SELECT user_id FROM conversation_members WHERE conversation_id = ?", [conversationId]);
@@ -250,7 +305,7 @@ export async function friendIdsAmong(userId, ids) {
 export async function chatBadge(userId) {
   const row = await queryOne(
     `SELECT
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS unread,
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE m.muted = 0 AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
       (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS pending`,
     [userId, userId, userId]
   );

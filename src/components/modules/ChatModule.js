@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -230,9 +230,10 @@ function applyReactions(m, reactions, at) {
 function readersOf(m, convo, me) {
   const others = (convo.members ?? []).filter((u) => u.id !== me?.id && u.id !== m.sender_id);
   const read = others.filter((u) => Number(u.last_read_message_id) >= m.id);
-  return { read, pending: others.filter((u) => !read.includes(u)), others };
+  const delivered = others.filter((u) => Number(u.delivered_message_id) >= m.id || Number(u.last_read_message_id) >= m.id);
+  return { read, delivered, pending: others.filter((u) => !read.includes(u)), others };
 }
-/** ✓ sent · ✓✓ muted: read by some · ✓✓ accent: read by everyone. */
+/** ✓ sent · ✓✓ muted: delivered / read by some · ✓✓ accent: read by everyone. */
 function Ticks({ tr, state, onClick, mine, label }) {
   const cls = cn("chat-ticks inline-flex shrink-0 items-center", mine ? (state === "all" ? "text-white" : "text-white/60") : state === "all" ? "text-accent" : "text-fg-faint");
   const icon = state === "sent" ? <Check size={12} strokeWidth={2.5} /> : <CheckCheck size={13} strokeWidth={2.5} />;
@@ -408,10 +409,46 @@ const Dots = () => (
   </span>
 );
 const memberCount = (n, tr) => (n === 1 ? tr("1 member") : tr("{n} members", { n }));
-/** Avatar for a conversation row: the person, or a coloured group badge. */
+/** A green dot on an avatar while that person has the app open. */
+function Presence({ online, children, size = "md" }) {
+  if (!online) return children;
+  return (
+    <span className="relative inline-flex shrink-0">
+      {children}
+      <span className={cn("chat-online absolute rounded-full bg-emerald-500 ring-2 ring-surface", size === "xs" ? "-bottom-px -right-px h-2 w-2" : "-bottom-0.5 -right-0.5 h-2.5 w-2.5")} aria-label="online" />
+    </span>
+  );
+}
+/** Avatar for a conversation row: the person (with presence), or a coloured group badge. */
 function ConvoAvatar({ convo, size = "md", className }) {
-  if (!isGroup(convo)) return <Avatar name={convo.name} color={convo.avatar_color} avatar={convo.avatar ?? "initials"} size={size} className={className} />;
+  if (!isGroup(convo)) return <Presence online={convo.online} size={size}><Avatar name={convo.name} color={convo.avatar_color} avatar={convo.avatar ?? "initials"} size={size} className={className} /></Presence>;
   return <Avatar name={convo.name} color={convo.avatar_color} avatar={convo.avatar ?? null} fallback="group" size={size} className={cn("chat-group-avatar", className)} />;
+}
+/** One row of the chat menu. */
+function ChatMenuItem({ icon: Icon, label, onClick, danger }) {
+  return (
+    <button type="button" role="menuitem" onClick={onClick} className={cn("flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm focus-ring", danger ? "text-rose-500 hover:bg-rose-500/10" : "hover:bg-surface-2")}>
+      <Icon size={14} /> {label}
+    </button>
+  );
+}
+/** Menu for one chat: pin, mute, archive, and (direct chats) delete on my side. */
+function ChatMenu({ tr, convo, onClose, onSetting, onDelete }) {
+  const ref = useRef(null);
+  useClickOutside(ref, onClose);
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div ref={ref} className="chat-menu absolute right-0 top-full z-20 mt-1 min-w-44 overflow-hidden rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop" role="menu">
+      <ChatMenuItem icon={convo.pinned_at ? PinOff : Pin} label={convo.pinned_at ? tr("Unpin") : tr("Pin")} onClick={() => onSetting({ pinned: !convo.pinned_at })} />
+      <ChatMenuItem icon={convo.muted ? Bell : BellOff} label={convo.muted ? tr("Unmute") : tr("Mute")} onClick={() => onSetting({ muted: !convo.muted })} />
+      <ChatMenuItem icon={convo.archived_at ? ArchiveRestore : Archive} label={convo.archived_at ? tr("Unarchive") : tr("Archive")} onClick={() => onSetting({ archived: !convo.archived_at })} />
+      {!isGroup(convo) ? <ChatMenuItem icon={Trash2} label={tr("Delete chat")} onClick={onDelete} danger /> : null}
+    </div>
+  );
 }
 
 /** Friends (add by QR / code, requests, block), one-to-one and group chat with live updates. */
@@ -470,6 +507,13 @@ export default function ChatModule() {
       return null;
     }
   }, []);
+  // "delivered": my browser has this message now (the sender's tick turns double); read implies it
+  const deliveredRef = useRef({});
+  const markDelivered = useCallback((id, messageId) => {
+    if (!messageId || (deliveredRef.current[id] ?? 0) >= messageId) return;
+    deliveredRef.current[id] = messageId;
+    api.post(`/api/chat/conversations/${id}/delivered`, { message_id: messageId }).catch(() => {});
+  }, []);
   const markRead = useCallback(async (id, messageId) => {
     if (!messageId) return;
     try {
@@ -490,7 +534,7 @@ export default function ChatModule() {
   // sidebar badge: unread messages + requests waiting for me
   useEffect(() => {
     if (!convos && !friends) return;
-    const n = (convos ?? []).reduce((s, c) => s + (c.unread || 0), 0) + (friends?.incoming?.length ?? 0);
+    const n = (convos ?? []).filter((c) => !c.muted).reduce((s, c) => s + (c.unread || 0), 0) + (friends?.incoming?.length ?? 0);
     setCounts({ ...(useUI.getState().counts ?? {}), chat: n || null });
   }, [convos, friends, setCounts]);
 
@@ -632,15 +676,35 @@ export default function ChatModule() {
         if (!list || list.some((m) => m.id === message.id)) return t;
         return { ...t, [conversation_id]: [...list, message] };
       });
-      if (message.sender_id !== user?.id && activeRef.current === conversation_id && document.visibilityState === "visible") markRead(conversation_id, message.id);
+      if (message.sender_id !== user?.id) {
+        if (activeRef.current === conversation_id && document.visibilityState === "visible") markRead(conversation_id, message.id);
+        else markDelivered(conversation_id, message.id);
+      }
       loadConvos();
     };
+    const onDelivered = (ev) =>
+      setConvos((list) =>
+        (list ?? []).map((c) => {
+          if (c.id !== ev.conversation_id || ev.user_id === user?.id) return c;
+          const members = (c.members ?? []).map((m) => (m.id === ev.user_id ? { ...m, delivered_message_id: Math.max(Number(m.delivered_message_id) || 0, ev.delivered_message_id) } : m));
+          return { ...c, members, peer_delivered: c.kind === "direct" ? Math.max(Number(c.peer_delivered) || 0, ev.delivered_message_id) : c.peer_delivered };
+        })
+      );
+    const onPresence = (ev) =>
+      setConvos((list) =>
+        (list ?? []).map((c) => {
+          const members = (c.members ?? []).map((m) => (m.id === ev.user_id ? { ...m, online: ev.online, last_seen_at: ev.last_seen_at } : m));
+          const online_count = members.filter((m) => m.id !== user?.id && m.online).length;
+          if (c.kind === "direct" && c.user_id === ev.user_id) return { ...c, members, online_count, online: ev.online, last_seen_at: ev.last_seen_at };
+          return { ...c, members, online_count };
+        })
+      );
     const onRead = (ev) =>
       setConvos((list) =>
         (list ?? []).map((c) => {
           if (c.id !== ev.conversation_id || ev.user_id === user?.id) return c;
-          const members = (c.members ?? []).map((m) => (m.id === ev.user_id ? { ...m, last_read_message_id: Math.max(Number(m.last_read_message_id) || 0, ev.last_read_message_id) } : m));
-          return { ...c, members, peer_last_read: c.kind === "direct" ? Math.max(Number(c.peer_last_read) || 0, ev.last_read_message_id) : c.peer_last_read };
+          const members = (c.members ?? []).map((m) => (m.id === ev.user_id ? { ...m, last_read_message_id: Math.max(Number(m.last_read_message_id) || 0, ev.last_read_message_id), delivered_message_id: Math.max(Number(m.delivered_message_id) || 0, ev.last_read_message_id) } : m));
+          return { ...c, members, peer_last_read: c.kind === "direct" ? Math.max(Number(c.peer_last_read) || 0, ev.last_read_message_id) : c.peer_last_read, peer_delivered: c.kind === "direct" ? Math.max(Number(c.peer_delivered) || 0, ev.last_read_message_id) : c.peer_delivered };
         })
       );
     const onConversation = (ev) => {
@@ -658,6 +722,8 @@ export default function ChatModule() {
       es = new EventSource("/api/chat/stream");
       es.addEventListener("message", (e) => onMessage(JSON.parse(e.data)));
       es.addEventListener("read", (e) => onRead(JSON.parse(e.data)));
+      es.addEventListener("delivered", (e) => onDelivered(JSON.parse(e.data)));
+      es.addEventListener("presence", (e) => onPresence(JSON.parse(e.data)));
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
       es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
       es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
@@ -681,7 +747,7 @@ export default function ChatModule() {
       es?.close();
       if (poll) clearInterval(poll);
     };
-  }, [user?.id, loadConvos, loadFriends, loadThread, markRead, tr]);
+  }, [user?.id, loadConvos, loadFriends, loadThread, markRead, markDelivered, tr]);
 
   const openWith = async (friend) => {
     try {
@@ -761,6 +827,13 @@ export default function ChatModule() {
               onConvoChange={upsertConvo}
               onLeft={(id) => {
                 setConvos((list) => (list ?? []).filter((c) => c.id !== id));
+                // forget the cached thread too, so a chat deleted on my side never flashes its old history when it comes back
+                setThreads((t) => {
+                  const next = { ...t };
+                  delete next[id];
+                  return next;
+                });
+                setDetached((d) => (d[id] ? { ...d, [id]: false } : d));
                 setActive(null);
               }}
             />
@@ -868,8 +941,32 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
       alive = false;
     };
   }, [dq]);
+  const [showArchived, setShowArchived] = useState(false);
   if (!convos) return <div className="grid flex-1 place-items-center"><Spinner className="text-fg-muted" /></div>;
   const searching = dq.length >= 2;
+  const live = convos.filter((c) => !c.archived_at);
+  const archived = convos.filter((c) => c.archived_at);
+  const Row = ({ c }) => (
+    <li key={c.id}>
+      <button type="button" onClick={() => onOpen(c.id)} className={cn("chat-list-item flex w-full items-center gap-3 rounded-app-sm px-2.5 py-2 text-left transition", active === c.id ? "is-active bg-accent/12" : "hover:bg-surface-2")}>
+        <ConvoAvatar convo={c} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className={cn("truncate text-sm", c.unread && !c.muted ? "font-semibold text-fg" : "font-medium")}>{c.name}</span>
+            {c.pinned_at ? <Pin size={11} className="shrink-0 text-fg-faint" aria-label={tr("Pinned")} /> : null}
+            {c.muted ? <BellOff size={11} className="shrink-0 text-fg-faint" aria-label={tr("Muted")} /> : null}
+            {isGroup(c) ? <span className="shrink-0 text-[10px] text-fg-faint">{memberCount(c.member_count, tr)}</span> : null}
+            {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
+          </span>
+          <span className="flex items-center gap-2">
+            <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread && !c.muted ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
+            {c.mention_unread ? <span className="chat-mention-badge ml-auto shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold" title={tr("You were mentioned")}>@</span> : null}
+            {c.unread ? <span className={cn("shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold", c.muted ? "bg-surface-3 text-fg-muted" : "bg-accent text-white", !c.mention_unread && "ml-auto")}>{c.unread}</span> : null}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
   const preview = (c) => {
     const typers = Object.values(typing?.[c.id] ?? {});
     if (typers.length) {
@@ -924,25 +1021,23 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
         </div>
       ) : (
         <ul className="chat-list min-h-0 flex-1 overflow-y-auto p-2">
-          {convos.map((c) => (
-            <li key={c.id}>
-              <button type="button" onClick={() => onOpen(c.id)} className={cn("chat-list-item flex w-full items-center gap-3 rounded-app-sm px-2.5 py-2 text-left transition", active === c.id ? "is-active bg-accent/12" : "hover:bg-surface-2")}>
-                <ConvoAvatar convo={c} />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className={cn("truncate text-sm", c.unread ? "font-semibold text-fg" : "font-medium")}>{c.name}</span>
-                    {isGroup(c) ? <span className="shrink-0 text-[10px] text-fg-faint">{memberCount(c.member_count, tr)}</span> : null}
-                    {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
-                    {c.mention_unread ? <span className={cn("chat-mention-badge shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold", c.unread ? "ml-auto" : "ml-auto")} title={tr("You were mentioned")}>@</span> : null}
-                    {c.unread ? <span className={cn("shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white", !c.mention_unread && "ml-auto")}>{c.unread}</span> : null}
-                  </span>
-                </span>
-              </button>
-            </li>
+          {live.map((c) => (
+            <Row key={c.id} c={c} />
           ))}
+          {archived.length ? (
+            <li className="pt-2">
+              <button type="button" onClick={() => setShowArchived((v) => !v)} className="chat-archived-toggle flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted hover:bg-surface-2 focus-ring">
+                <Archive size={12} /> {showArchived ? tr("Hide archived") : tr("Show archived ({n})", { n: archived.length })}
+              </button>
+              {showArchived ? (
+                <ul className="mt-1 space-y-0.5 opacity-80">
+                  {archived.map((c) => (
+                    <Row key={c.id} c={c} />
+                  ))}
+                </ul>
+              ) : null}
+            </li>
+          ) : null}
         </ul>
       )}
     </>
@@ -1130,7 +1225,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
           <ul className="space-y-0.5">
             {convo.members.map((m) => (
               <li key={m.id} className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-1.5">
-                <Avatar name={m.name} color={m.avatar_color} avatar={m.avatar} size="sm" />
+                <Presence online={m.online} size="sm"><Avatar name={m.name} color={m.avatar_color} avatar={m.avatar} size="sm" /></Presence>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5 text-sm font-medium">
                     <span className="truncate">{m.id === me?.id ? tr("You") : m.name}</span>
@@ -1236,6 +1331,35 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [sending, setSending] = useState(false);
   const [lightbox, setLightbox] = useState(null); // { photos, index }
   const [panel, setPanel] = useState(false);
+  const [chatMenu, setChatMenu] = useState(false);
+  const [confirmDeleteChat, setConfirmDeleteChat] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
+  const changeSetting = async (patch) => {
+    setChatMenu(false);
+    setChatBusy(true);
+    try {
+      const c = await api.put(`/api/chat/conversations/${convo.id}/settings`, patch);
+      onConvoChange(c);
+      toast.success(patch.pinned !== undefined ? (patch.pinned ? tr("Chat pinned") : tr("Chat unpinned")) : patch.muted !== undefined ? (patch.muted ? tr("Chat muted") : tr("Chat unmuted")) : patch.archived ? tr("Chat archived") : tr("Chat restored"));
+    } catch (e) {
+      toast.error(tr("Could not update the chat"), e.message);
+    } finally {
+      setChatBusy(false);
+    }
+  };
+  const deleteChat = async () => {
+    setChatBusy(true);
+    try {
+      await api.del(`/api/chat/conversations/${convo.id}`);
+      toast.success(tr("Chat deleted"));
+      setConfirmDeleteChat(false);
+      onLeft(convo.id);
+    } catch (e) {
+      toast.error(tr("Could not update the chat"), e.message);
+    } finally {
+      setChatBusy(false);
+    }
+  };
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
   const [menu, setMenu] = useState(null); // message id with the edit/delete menu open
   const [receipts, setReceipts] = useState(null); // message id with the read-receipts popover open
@@ -1620,12 +1744,37 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         <Button variant="ghost" size="iconSm" icon={ArrowLeft} className="md:hidden" onClick={onBack} aria-label={tr("Back")} />
         <ConvoAvatar convo={convo} size="sm" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold">{convo.name}</span>
-          <span className="block truncate text-[11px] text-fg-muted">{group ? `${memberCount(convo.member_count, tr)} · ${convo.members.map((m) => (m.id === me?.id ? tr("You") : m.name)).join(", ")}` : convo.email}</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold">
+            <span className="truncate">{convo.name}</span>
+            {convo.muted ? <BellOff size={12} className="shrink-0 text-fg-faint" aria-label={tr("Muted")} /> : null}
+            {convo.pinned_at ? <Pin size={12} className="shrink-0 text-fg-faint" aria-label={tr("Pinned")} /> : null}
+          </span>
+          <span className={cn("chat-presence block truncate text-[11px]", !group && convo.online ? "text-emerald-600" : "text-fg-muted")}>
+            {group
+              ? `${memberCount(convo.member_count, tr)} · ${tr("{n} online", { n: convo.online_count ?? 0 })} · ${convo.members.map((m) => (m.id === me?.id ? tr("You") : m.name)).join(", ")}`
+              : convo.online
+                ? tr("Online")
+                : convo.last_seen_at
+                  ? tr("Last seen {when}", { when: relativeTime(convo.last_seen_at) })
+                  : convo.email}
+          </span>
         </span>
         <Button variant="ghost" size="iconSm" icon={Search} onClick={() => { setFind((f) => (f ? null : { q: "", results: null, idx: -1 })); setTimeout(() => findInputRef.current?.focus(), 50); }} aria-label={tr("Search in this chat")} data-tip={tr("Search in this chat")} className={cn(find && "text-accent")} />
         {group ? <Button variant="ghost" size="iconSm" icon={Settings2} onClick={() => setPanel(true)} aria-label={tr("Group settings")} data-tip={tr("Group settings")} /> : null}
+        <span className="relative">
+          <Button variant="ghost" size="iconSm" icon={EllipsisVertical} onClick={() => setChatMenu((v) => !v)} aria-label={tr("Chat options")} data-tip={tr("Chat options")} loading={chatBusy} />
+          {chatMenu ? <ChatMenu tr={tr} convo={convo} onClose={() => setChatMenu(false)} onSetting={changeSetting} onDelete={() => { setChatMenu(false); setConfirmDeleteChat(true); }} /> : null}
+        </span>
       </header>
+      <ConfirmDialog
+        open={confirmDeleteChat}
+        onClose={() => setConfirmDeleteChat(false)}
+        onConfirm={deleteChat}
+        loading={chatBusy}
+        title={tr("Delete this chat?")}
+        confirmText={tr("Delete chat")}
+        description={tr("This clears the conversation on your side only. {name} keeps their copy, and the chat reappears if either of you sends a new message.", { name: convo.name })}
+      />
       {find ? (
         <div className="chat-find flex items-center gap-2 border-b border-line px-3 py-2" onKeyDown={(e) => e.key === "Escape" && setFind(null)}>
           <Search size={14} className="shrink-0 text-fg-faint" />
@@ -1719,8 +1868,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   </button>
                 );
                 const rc = mine && !deleted ? readersOf(m, convo, me) : null;
-                const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : "sent";
-                const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
+                const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : rc.delivered.length ? "delivered" : "sent";
+                const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : tickState === "delivered" ? tr("Delivered") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
                 const time = (
                   <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice || files.length ? "ml-auto" : "ml-2")}>
                     {m.edited_at && !m.deleted_at ? <span className="chat-edited not-italic">{tr("edited")}</span> : null}

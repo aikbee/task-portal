@@ -142,6 +142,14 @@ async function migrate(db, adminId) {
   } catch (e) {
     if (e?.code !== "ER_CANT_DROP_FIELD_OR_KEY") throw e;
   }
+  if (!(await hasColumn(db, "conversation_members", "muted"))) {
+    log("migrating: per-chat settings and delivered pointer");
+    await db.query("ALTER TABLE conversation_members ADD COLUMN delivered_message_id INT UNSIGNED NULL AFTER last_read_message_id, ADD COLUMN muted TINYINT(1) NOT NULL DEFAULT 0 AFTER delivered_message_id, ADD COLUMN pinned_at DATETIME NULL AFTER muted, ADD COLUMN archived_at DATETIME NULL AFTER pinned_at, ADD COLUMN hidden_before_id INT UNSIGNED NULL AFTER archived_at");
+  }
+  if (!(await hasColumn(db, "users", "last_seen_at"))) {
+    log("migrating: users.last_seen_at (presence)");
+    await db.query("ALTER TABLE users ADD COLUMN last_seen_at DATETIME NULL AFTER last_login_at");
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes
