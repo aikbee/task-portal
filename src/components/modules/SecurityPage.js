@@ -3,7 +3,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { ShieldCheck, Monitor, Smartphone, Tablet, LogOut, KeyRound, Fingerprint, CheckCircle2, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
-import { useFetch } from "@/lib/hooks";
+import { useFetch, useMediaQuery } from "@/lib/hooks";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -25,6 +25,7 @@ const REASON = { wrong_password: "Wrong password", wrong_code: "Wrong code", dis
 
 /** Account security: active sessions (terminate them) and the sign-in history with device details. */
 export default function SecurityPage() {
+  const narrow = useMediaQuery("(max-width: 767px)"); // phones: one card per sign-in instead of a five-column table
   const tr = useT();
   const toast = useToast();
   const sessions = useFetch("/api/auth/sessions");
@@ -109,6 +110,40 @@ export default function SecurityPage() {
             <p className="text-sm text-rose-500">{history.error.message}</p>
           ) : !history.data?.length ? (
             <EmptyState icon={ShieldCheck} title={tr("No sign-ins recorded yet")} description={tr("Sign-ins from now on will appear here.")} compact />
+          ) : narrow ? (
+            <ul className="divide-y divide-line rounded-app border border-line">
+              {history.data.map((e) => {
+                const m = METHOD[e.method] ?? { label: e.method, icon: KeyRound };
+                const MIcon = m.icon;
+                const DIcon = DEVICE_ICON[e.device] ?? Monitor;
+                return (
+                  <li key={e.id} className={`flex items-start gap-3 px-3 py-2.5 ${e.success ? "" : "bg-rose-500/[0.04]"}`}>
+                    <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-app bg-surface-2 text-fg-muted"><DIcon size={15} /></span>
+                    <span className="min-w-0 flex-1 text-sm">
+                      <span className="flex items-start justify-between gap-2">
+                        {e.success ? (
+                          <span className="inline-flex min-w-0 items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={14} className="shrink-0" /> <span className="truncate">{tr("Signed in")}{e.current ? ` · ${tr("this session")}` : e.session_active ? ` · ${tr("still active")}` : ""}</span></span>
+                        ) : (
+                          <span className="inline-flex min-w-0 items-center gap-1 font-medium text-rose-500"><XCircle size={14} className="shrink-0" /> <span className="truncate">{tr("Failed")}{e.reason ? ` · ${tr(REASON[e.reason] ?? e.reason)}` : ""}</span></span>
+                        )}
+                        <span className="shrink-0 text-[11px] text-fg-faint" title={formatDateTime(e.created_at)}>{relativeTime(e.created_at)}</span>
+                      </span>
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-fg-muted">
+                        <span className="inline-flex items-center gap-1"><MIcon size={12} /> {tr(m.label)}</span>
+                        <span>·</span>
+                        <span className="min-w-0 truncate">{e.browser}{e.os ? ` ${tr("on")} ${e.os}` : ""}</span>
+                        {e.ip ? (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono text-[11px]">{e.ip}</span>
+                          </>
+                        ) : null}
+                      </span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
           ) : (
             <div className="overflow-x-auto rounded-app border border-line">
               <table className="w-full text-sm">
