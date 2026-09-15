@@ -1,8 +1,8 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -79,6 +79,71 @@ function highlight(text, q) {
   if (i < text.length) parts.push(text.slice(i));
   return parts;
 }
+const escapeRe = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** One regex that finds @Name for the given members (longest names first) and @everyone. */
+function buildMentionRe(names) {
+  const alts = [...new Set(names.filter(Boolean))].sort((a, b) => b.length - a.length).map(escapeRe);
+  return new RegExp(`@(${[...alts, "everyone"].join("|")})(?![\\w])`, "i");
+}
+/** Text a person typed → nodes: code blocks, inline code, **bold**, *italic*, ~~strike~~, links, @mentions; search hits marked. */
+const INLINE_RE = /(`[^`\n]+`)|(\*\*[^*\n]+?\*\*)|(~~[^~\n]+?~~)|((?<![\w*])\*(?!\s)[^*\n]+?(?<!\s)\*(?![\w*]))|(\b_[^_\n]+?_\b)|((?:https?:\/\/|www\.)[^\s<>"']+)/i;
+function splitTrailing(url) {
+  let trail = "";
+  for (;;) {
+    if (/[.,;:!?]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); continue; }
+    if (url.endsWith(")") && !url.includes("(")) { trail = ")" + trail; url = url.slice(0, -1); continue; }
+    break;
+  }
+  return [url, trail];
+}
+function renderRich(text, o = {}) {
+  let k = 0;
+  const key = () => `r${k++}`;
+  const plain = (str) => (o.q ? <Fragment key={key()}>{highlight(str, o.q)}</Fragment> : <Fragment key={key()}>{str}</Fragment>);
+  const inline = (str, depth) => {
+    const nodes = [];
+    let rest = str;
+    while (rest) {
+      const fm = INLINE_RE.exec(rest);
+      const mm = o.mentionRe ? o.mentionRe.exec(rest) : null;
+      let m = fm;
+      let isMention = false;
+      if (mm && (!fm || mm.index < fm.index)) { m = mm; isMention = true; }
+      if (!m) { nodes.push(plain(rest)); break; }
+      if (m.index > 0) nodes.push(plain(rest.slice(0, m.index)));
+      const tok = m[0];
+      if (isMention) {
+        const name = m[1];
+        const all = name.toLowerCase() === "everyone";
+        const who = all ? null : (o.members ?? []).find((u) => u.name.toLowerCase() === name.toLowerCase());
+        const isMe = all || (who && who.id === o.meId);
+        nodes.push(<span key={key()} className={cn("chat-mention rounded-md px-1 font-semibold", isMe && !o.mine && "is-me")}>@{all ? "everyone" : who?.name ?? name}</span>);
+      } else if (m[1]) nodes.push(<code key={key()} className="chat-code rounded px-1 py-px font-mono text-[0.92em]">{tok.slice(1, -1)}</code>);
+      else if (m[2]) nodes.push(<strong key={key()}>{depth < 1 ? inline(tok.slice(2, -2), depth + 1) : tok.slice(2, -2)}</strong>);
+      else if (m[3]) nodes.push(<s key={key()}>{depth < 1 ? inline(tok.slice(2, -2), depth + 1) : tok.slice(2, -2)}</s>);
+      else if (m[4] || m[5]) nodes.push(<em key={key()}>{depth < 1 ? inline(tok.slice(1, -1), depth + 1) : tok.slice(1, -1)}</em>);
+      else if (m[6]) {
+        const [url, trail] = splitTrailing(tok);
+        nodes.push(<a key={key()} href={/^https?:\/\//i.test(url) ? url : `https://${url}`} target="_blank" rel="noopener noreferrer" className="chat-link underline decoration-current/50 underline-offset-2 break-all hover:decoration-current">{url}</a>);
+        if (trail) nodes.push(plain(trail));
+      }
+      rest = rest.slice(m.index + tok.length);
+    }
+    return nodes;
+  };
+  const out = [];
+  for (const part of String(text ?? "").split(/(```[\s\S]*?```)/g)) {
+    if (!part) continue;
+    if (part.length >= 6 && part.startsWith("```") && part.endsWith("```")) {
+      out.push(<pre key={key()} className="chat-pre my-1 overflow-x-auto whitespace-pre-wrap rounded-app-sm px-2 py-1.5 font-mono text-[0.85em] leading-snug">{plain(part.slice(3, -3).replace(/^\n|\n$/g, ""))}</pre>);
+    } else out.push(...inline(part, 0));
+  }
+  return out;
+}
+
+/** Previews and quotes show the text without formatting markers. */
+const stripMarkers = (text) => String(text ?? "").replace(/```[^`]*```|`([^`\n]+)`/g, "$1").replace(/\*\*([^*\n]+?)\*\*|~~([^~\n]+?)~~|(?<![\w*])\*((?!\s)[^*\n]+?(?<!\s))\*(?![\w*])|\b_([^_\n]+?)_\b/g, (m, a, b, c, d) => a ?? b ?? c ?? d ?? "");
+
 /** A short window of text around the first match. */
 function snippet(text, q, span = 60) {
   const at = text.toLowerCase().indexOf(q.toLowerCase());
@@ -88,6 +153,7 @@ function snippet(text, q, span = 60) {
   return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 const TYPING_TTL = 6000; // a typer is forgotten after this unless they ping again
+const nowMs = () => Date.now(); // read the clock inside event handlers without tripping the render-purity lint
 const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥"];
 const VOICE_MAX_MS = 5 * 60 * 1000;
 const clock = (ms) => `${Math.floor((ms || 0) / 60000)}:${String(Math.floor(((ms || 0) % 60000) / 1000)).padStart(2, "0")}`;
@@ -208,7 +274,7 @@ function ReceiptsPopover({ tr, read, pending, onClose, align }) {
 function quoteText(q, tr) {
   if (!q) return "";
   if (q.deleted) return tr("Message deleted");
-  if (q.body) return q.body;
+  if (q.body) return stripMarkers(q.body);
   const a = q.attachment;
   if (!a) return "";
   if (a.kind === "image") return a.count > 1 ? tr("{n} photos", { n: a.count }) : tr("Photo");
@@ -408,7 +474,7 @@ export default function ChatModule() {
     if (!messageId) return;
     try {
       const c = await api.post(`/api/chat/conversations/${id}/read`, { message_id: messageId });
-      setConvos((list) => (list ?? []).map((x) => (x.id === id ? { ...x, unread: 0, last_read_message_id: c.last_read_message_id } : x)));
+      setConvos((list) => (list ?? []).map((x) => (x.id === id ? { ...x, unread: 0, mention_unread: 0, last_read_message_id: c.last_read_message_id } : x)));
     } catch {}
   }, []);
 
@@ -819,7 +885,7 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     if (c.last_deleted) return <span className="pr-1 italic text-fg-faint">{tr("Message deleted")}</span>;
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
     const what = c.last_body ? (
-      <span className="truncate">{c.last_body}</span>
+      <span className="truncate">{stripMarkers(c.last_body)}</span>
     ) : c.last_voice != null ? (
       <><Mic size={12} className="shrink-0" /> {tr("Voice message")} · {clock(c.last_voice)}</>
     ) : c.last_files && !c.last_photos ? (
@@ -870,7 +936,8 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
                   </span>
                   <span className="flex items-center gap-2">
                     <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
-                    {c.unread ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white">{c.unread}</span> : null}
+                    {c.mention_unread ? <span className={cn("chat-mention-badge shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold", c.unread ? "ml-auto" : "ml-auto")} title={tr("You were mentioned")}>@</span> : null}
+                    {c.unread ? <span className={cn("shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-semibold text-white", !c.mention_unread && "ml-auto")}>{c.unread}</span> : null}
                   </span>
                 </span>
               </button>
@@ -1202,7 +1269,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     if (!text && !hasFiles) return; // an empty text message cannot be saved; delete it instead
     if (text === original.body) return setEditing(null);
     try {
-      const updated = await api.put(`/api/chat/messages/${editing.id}`, { body: text });
+      const updated = await api.put(`/api/chat/messages/${editing.id}`, { body: text, ...mentionPayload(text) });
       onMessageChange(updated);
       setEditing(null);
     } catch (e) {
@@ -1264,7 +1331,54 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     };
   }, [focusId, onFocused]);
   const activeQ = find && findQ.length >= 2 ? findQ : "";
-  const renderBody = (text) => (activeQ ? highlight(text, activeQ) : text);
+  const mentionRe = useMemo(() => (isGroup(convo) ? buildMentionRe((convo.members ?? []).map((u) => u.name)) : null), [convo]);
+  const renderBody = (text, mine) => renderRich(text, { q: activeQ, mentionRe, members: convo.members, meId: me?.id, mine });
+  /** The people a text mentions (@Name of a member, or @everyone), for the server to record. */
+  const mentionPayload = (text) => {
+    if (!isGroup(convo)) return {};
+    const others = (convo.members ?? []).filter((u) => u.id !== me?.id);
+    const ids = others.filter((u) => new RegExp(`@${escapeRe(u.name)}(?![\\w])`, "i").test(text)).map((u) => u.id);
+    return { mentions: ids, mention_all: /@everyone(?![\w])/i.test(text) };
+  };
+  // @-autocomplete in groups: { start, query, idx } while the caret sits in an "@word"
+  const [mentionPop, setMentionPop] = useState(null);
+  const composerRef = useRef(null);
+  const mentionChoices = useMemo(() => {
+    if (!isGroup(convo) || !mentionPop) return [];
+    const q = mentionPop.query.toLowerCase();
+    const people = (convo.members ?? []).filter((u) => u.id !== me?.id && (!q || u.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(q)) || u.name.toLowerCase().startsWith(q)));
+    const all = !q || "everyone".startsWith(q) ? [{ id: "all", name: "everyone" }] : [];
+    return [...people, ...all].slice(0, 6);
+  }, [convo, mentionPop, me?.id]);
+  const pickMention = (choice) => {
+    if (!mentionPop) return;
+    const end = mentionPop.start + 1 + mentionPop.query.length;
+    const insert = `@${choice.name} `;
+    const next = draft.slice(0, mentionPop.start) + insert + draft.slice(end);
+    onDraftChange(next);
+    setMentionPop(null);
+    const pos = mentionPop.start + insert.length;
+    requestAnimationFrame(() => {
+      const el = composerRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      }
+    });
+  };
+  const trackMention = (value) => {
+    if (!isGroup(convo)) return;
+    const caret = composerRef.current?.selectionStart ?? value.length;
+    const mm = /(^|\s)@([^\s@]*)$/.exec(value.slice(0, caret));
+    setMentionPop(mm ? { start: caret - mm[2].length - 1, query: mm[2], idx: 0 } : null);
+  };
+  /** ⌘B / ⌘I / ⌘E wrap the selection in **, * or backticks. */
+  const wrapSelection = (el, marker) => {
+    const st = el.selectionStart, en = el.selectionEnd;
+    const next = draft.slice(0, st) + marker + draft.slice(st, en) + marker + draft.slice(en);
+    onDraftChange(next);
+    requestAnimationFrame(() => el.setSelectionRange(st + marker.length, en + marker.length));
+  };
   const [rec, setRec] = useState(null); // { elapsed, levels[] } while recording
   const recRef = useRef(null); // { recorder, stream, chunks, mime, startedAt, timer, ctx, analyser, data, send }
   const group = isGroup(convo);
@@ -1362,15 +1476,16 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const signalTyping = (on) => {
     const st = typingRef.current;
     st.on = on;
-    st.sentAt = Date.now();
+    st.sentAt = nowMs();
     fetch(`/api/chat/conversations/${st.id}/typing`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ typing: on }), keepalive: true }).catch(() => {});
   };
   const onDraftChange = (value) => {
     setDraft(value);
+    trackMention(value);
     const st = typingRef.current;
     clearTimeout(st.timer);
     if (value.trim()) {
-      if (!st.on || Date.now() - st.sentAt > 2500) signalTyping(true);
+      if (!st.on || nowMs() - st.sentAt > 2500) signalTyping(true);
       st.timer = setTimeout(() => signalTyping(false), 4000);
     } else if (st.on) signalTyping(false);
   };
@@ -1453,10 +1568,15 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         const fd = new FormData();
         fd.append("body", body);
         if (replyTo) fd.append("reply_to", String(replyTo.id));
+        if (isGroup(convo)) {
+          const mp = mentionPayload(body);
+          fd.append("mentions", JSON.stringify(mp.mentions));
+          fd.append("mention_all", mp.mention_all ? "1" : "0");
+        }
         for (const p of pending) fd.append("files", p.file, p.file.name);
         m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
       } else {
-        m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body, reply_to: replyTo?.id ?? undefined });
+        m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body, reply_to: replyTo?.id ?? undefined, ...mentionPayload(body) });
       }
       setReplyTo(null);
       setDraft("");
@@ -1736,12 +1856,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         ) : null}
                         {photos.length || voice || files.length ? (
                           <span className={cn("flex items-end gap-2 px-1.5", voice ? "pt-0.5" : "pt-1")}>
-                            {m.body ? <span className="min-w-0">{renderBody(m.body)}</span> : null}
+                            {m.body ? <span className="min-w-0">{renderBody(m.body, mine)}</span> : null}
                             {time}
                           </span>
                         ) : (
                           <>
-                            {renderBody(m.body)}
+                            {renderBody(m.body, mine)}
                             {time}
                           </>
                         )}
@@ -1798,9 +1918,22 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             </>
           ) : null}
         </div>
-        <div className="chat-composer border-t border-line p-2.5 md:p-3">
+        <div className="chat-composer relative border-t border-line p-2.5 md:p-3">
           {canChat ? (
-            <div className="mx-auto max-w-3xl">
+            <div className="relative mx-auto max-w-3xl">
+              {mentionPop && mentionChoices.length ? (
+                <ul className="chat-mention-pop absolute bottom-full left-0 z-20 mb-1 w-64 rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop" role="listbox" aria-label={tr("Mention someone")}>
+                  {mentionChoices.map((c, i) => (
+                    <li key={c.id}>
+                      <button type="button" role="option" aria-selected={i === mentionPop.idx} onMouseDown={(e) => e.preventDefault()} onClick={() => pickMention(c)} className={cn("flex w-full items-center gap-2 rounded-app-sm px-2 py-1.5 text-left text-sm", i === mentionPop.idx ? "bg-accent/12 text-fg" : "hover:bg-surface-2")}>
+                        {c.id === "all" ? <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-400/25 text-amber-600"><AtSign size={13} /></span> : <Avatar name={c.name} color={c.avatar_color} avatar={c.avatar} size="xs" />}
+                        <span className="min-w-0 flex-1 truncate">{c.id === "all" ? tr("Everyone in the group") : c.name}</span>
+                        <span className="text-[10px] text-fg-faint">@{c.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {replyTo ? (
                 <div className="chat-reply-bar mb-2 flex items-center gap-2 rounded-app border-l-[3px] border-accent bg-accent/8 px-3 py-1.5 text-xs">
                   <Reply size={13} className="shrink-0 text-accent" />
@@ -1879,9 +2012,33 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Paperclip} onClick={() => anyRef.current?.click()} aria-label={tr("Attach files")} data-tip={tr("Attach files")} disabled={sending} className="chat-clip" />
                 {canRecord() && !draft.trim() && !pending.length ? <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Mic} onClick={startRecording} aria-label={tr("Record a voice message")} data-tip={tr("Voice message")} disabled={sending} className="chat-mic" /> : null}
                 <textarea
+                  ref={composerRef}
                   value={draft}
                   onChange={(e) => onDraftChange(e.target.value)}
+                  onClick={(e) => trackMention(e.currentTarget.value)}
                   onKeyDown={(e) => {
+                    if (mentionPop && mentionChoices.length) {
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setMentionPop((p) => ({ ...p, idx: (p.idx + (e.key === "ArrowDown" ? 1 : mentionChoices.length - 1)) % mentionChoices.length }));
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        e.preventDefault();
+                        pickMention(mentionChoices[mentionPop.idx]);
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setMentionPop(null);
+                        return;
+                      }
+                    }
+                    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && ["b", "i", "e"].includes(e.key.toLowerCase())) {
+                      e.preventDefault();
+                      wrapSelection(e.currentTarget, { b: "**", i: "*", e: "`" }[e.key.toLowerCase()]);
+                      return;
+                    }
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       send();

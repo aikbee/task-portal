@@ -179,6 +179,7 @@ function shapeConversation(row, members, statuses, me) {
     last_photos: Number(row.last_photos ?? 0),
     last_voice: row.last_voice ?? null,
     last_files: Number(row.last_files ?? 0),
+    mention_unread: Number(row.mention_unread ?? 0),
     last_file_name: row.last_file_name ?? null,
   };
   if (row.kind === "group") return { ...base, name: row.title, avatar_color: row.group_color, avatar: row.group_avatar ?? null, email: null, user_id: null, friend_status: null, peer_last_read: null };
@@ -202,14 +203,15 @@ async function loadConversations(userId, onlyId = null) {
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'audio' LIMIT 1) AS last_voice,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file') AS last_files,
-       (SELECT a.original_name FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file' ORDER BY a.sort_order, a.id LIMIT 1) AS last_file_name
+       (SELECT a.original_name FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file' ORDER BY a.sort_order, a.id LIMIT 1) AS last_file_name,
+       (SELECT COUNT(*) FROM message_mentions mm JOIN messages x ON x.id = mm.message_id WHERE x.conversation_id = c.id AND mm.user_id = ? AND x.deleted_at IS NULL AND x.id > COALESCE(m.last_read_message_id, 0)) AS mention_unread
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
      LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
      LEFT JOIN users ls ON ls.id = lm.sender_id
      ${onlyId ? "WHERE c.id = ?" : ""}
      ORDER BY COALESCE(lm.created_at, c.created_at) DESC`,
-    onlyId ? [userId, userId, onlyId] : [userId, userId]
+    onlyId ? [userId, userId, userId, onlyId] : [userId, userId, userId]
   );
   const members = await membersOf(rows.map((r) => r.id));
   const peerIds = rows.filter((r) => r.kind === "direct").flatMap((r) => (members.get(r.id) ?? []).filter((x) => x.id !== userId).map((x) => x.id));
@@ -307,7 +309,51 @@ export async function withExtras(rows) {
   for (const a of photos) byMessage.set(a.message_id, [...(byMessage.get(a.message_id) ?? []), photoOf(a)]);
   const reactions = await reactionsOf(ids);
   const quotes = await quotesOf([...new Set(rows.map((r) => r.reply_to_id).filter(Boolean))]);
-  return rows.map((r) => ({ ...r, forwarded: Boolean(r.forwarded), attachments: byMessage.get(r.id) ?? [], reactions: reactions.get(r.id) ?? [], reply_to: r.reply_to_id ? quotes.get(r.reply_to_id) ?? null : null }));
+  const mentionRows = await query(`SELECT message_id, user_id FROM message_mentions WHERE message_id IN (${ids.map(() => "?").join(",")})`, ids);
+  const mentions = new Map();
+  for (const r of mentionRows) mentions.set(r.message_id, [...(mentions.get(r.message_id) ?? []), r.user_id]);
+  return rows.map((r) => ({ ...r, forwarded: Boolean(r.forwarded), attachments: byMessage.get(r.id) ?? [], reactions: reactions.get(r.id) ?? [], reply_to: r.reply_to_id ? quotes.get(r.reply_to_id) ?? null : null, mentions: mentions.get(r.id) ?? [] }));
+}
+
+/* ---------- mentions (groups only) ---------- */
+/** Parse { mentions: [ids], mention_all } from JSON or form fields. */
+export function readMentions(src) {
+  let ids = src.mentions;
+  if (typeof ids === "string") {
+    try { ids = JSON.parse(ids); } catch { ids = []; }
+  }
+  const list = [...new Set((Array.isArray(ids) ? ids : []).map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+  const all = src.mention_all === true || src.mention_all === "1" || src.mention_all === "true";
+  return { ids: list, all };
+}
+/** The member ids a message mentions (everyone but the sender for @everyone); 400 when an id is not a member. */
+export function mentionTargets(convo, senderId, { ids, all }) {
+  if (convo.kind !== "group") return [];
+  const memberIds = new Set(convo.members.map((m) => m.id));
+  if (all) return convo.members.map((m) => m.id).filter((id) => id !== senderId);
+  const stranger = ids.find((id) => !memberIds.has(id));
+  if (stranger != null) throw new HttpError("You can only mention members of this group.", 400);
+  return ids.filter((id) => id !== senderId);
+}
+export async function saveMentions(messageId, ids) {
+  await execute("DELETE FROM message_mentions WHERE message_id = ?", [messageId]);
+  if (ids.length) await execute(`INSERT INTO message_mentions (message_id, user_id) VALUES ${ids.map(() => "(?, ?)").join(", ")}`, ids.flatMap((id) => [messageId, id]));
+}
+/** "Ann mentioned you in Group: …" — replaces the plain new-message entry for that chat. */
+export async function notifyMention(recipientId, sender, convo, body) {
+  await execute("DELETE FROM notifications WHERE user_id = ? AND type IN ('chat_message', 'chat_mention') AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
+  const text = body ? (body.length > 90 ? `${body.slice(0, 90)}…` : body) : "";
+  await notify({
+    userId: recipientId,
+    type: "chat_mention",
+    title: `${sender.name} mentioned you in ${convo.title}${text ? `: ${text}` : ""}`,
+    body: null,
+    href: `/chat?c=${convo.id}`,
+    entityType: "conversation",
+    entityId: convo.id,
+    actorId: sender.id,
+    tag: `chat-${convo.id}`,
+  });
 }
 /** Short quotes of the messages being replied to: who wrote it, a snippet, or what kind of attachment it was. */
 export async function quotesOf(ids) {
@@ -401,7 +447,7 @@ export async function purgeMessagePhotos(whereSql, args) {
 /** One unread bell entry per conversation and recipient: the newest message replaces the previous unread one. */
 export const clockOf = (ms) => `${Math.floor((ms || 0) / 60000)}:${String(Math.floor(((ms || 0) % 60000) / 1000)).padStart(2, "0")}`;
 export async function notifyMessage(recipientId, sender, convo, body, photos = 0, voiceMs = null, files = 0, fileName = "") {
-  await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'chat_message' AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
+  await execute("DELETE FROM notifications WHERE user_id = ? AND type IN ('chat_message', 'chat_mention') AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
   const text = body
     ? body.length > 90 ? `${body.slice(0, 90)}…` : body
     : voiceMs != null ? `🎤 Voice message (${clockOf(voiceMs)})`

@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta, audioMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
 
 /**
  * Messages of a conversation, oldest first: the newest page (?limit up to 100), earlier pages (?before=<id>),
@@ -28,7 +28,7 @@ export const GET = handler(async (request, params, user) => {
 });
 
 /**
- * Send a message. JSON { body, reply_to? }, or multipart with "body" (optional caption), "reply_to" and attachments:
+ * Send a message. JSON { body, reply_to?, mentions?, mention_all? }, or multipart with "body", "reply_to", "mentions" (JSON), "mention_all" and attachments:
  *  - "files": up to 8 photos (JPEG, PNG, GIF, WebP, 10 MB each, downscaled by the browser) and/or any
  *    other files (20 MB each, 25 MB per message in total);
  *  - "voice": one recorded note (WebM, Ogg or MP4 audio, up to 5 minutes) with its "duration" in ms.
@@ -41,6 +41,7 @@ export const POST = handler(async (request, params, user) => {
 
   let text = "";
   let replyTo = 0;
+  let mentionInput = { ids: [], all: false };
   const items = []; // { buf, kind, name, mime, width, height, duration }
   let total = 0;
   if ((request.headers.get("content-type") || "").includes("multipart/form-data")) {
@@ -49,6 +50,7 @@ export const POST = handler(async (request, params, user) => {
     const form = await request.formData();
     text = String(form.get("body") ?? "");
     replyTo = Number(form.get("reply_to")) || 0;
+    mentionInput = readMentions({ mentions: form.get("mentions"), mention_all: form.get("mention_all") });
     const files = form.getAll("files").filter((f) => typeof f === "object" && f.size > 0);
     const voices = form.getAll("voice").filter((f) => typeof f === "object" && f.size > 0);
     if (files.length > ATTACHMENTS_PER_MESSAGE) throw new HttpError(`Up to ${ATTACHMENTS_PER_MESSAGE} attachments per message.`, 400);
@@ -80,7 +82,9 @@ export const POST = handler(async (request, params, user) => {
     const json = await readJson(request);
     text = String(json.body ?? "");
     replyTo = Number(json.reply_to) || 0;
+    mentionInput = readMentions(json);
   }
+  const mentionIds = mentionTargets(convo, user.id, mentionInput);
   if (replyTo) {
     const quoted = await queryOne("SELECT id, kind, deleted_at FROM messages WHERE id = ? AND conversation_id = ?", [replyTo, id]);
     if (!quoted) throw new HttpError("That message is not in this conversation.", 400);
@@ -103,11 +107,16 @@ export const POST = handler(async (request, params, user) => {
       [r.insertId, it.kind, storedName, it.name.slice(0, 255), it.mime, size, it.width ?? null, it.height ?? null, it.duration ?? null, order++]
     );
   }
+  await saveMentions(r.insertId, mentionIds);
   const message = await messageById(r.insertId);
   // the sender has read their own message
   await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [message.id, id, user.id]);
   const me = await queryOne(`SELECT ${PEER_FIELDS} FROM users u WHERE u.id = ?`, [user.id]);
   broadcast(convo, { type: "message", conversation_id: id, message, from: me });
-  for (const rid of recipientsOf(convo, user.id)) notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "").catch(() => {});
+  const mentioned = new Set(mentionIds);
+  for (const rid of recipientsOf(convo, user.id)) {
+    if (mentioned.has(rid)) notifyMention(rid, me, convo, body).catch(() => {});
+    else notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "").catch(() => {});
+  }
   return ok(message, { status: 201 });
 });

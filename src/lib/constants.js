@@ -95,6 +95,7 @@ export const NOTIFICATION_TYPES = {
   chat_message: { category: "chat", label: "New message", tone: "indigo" },
   chat_group: { category: "chat", label: "Group chat", tone: "violet" },
   chat_reaction: { category: "chat", label: "Reaction", tone: "rose" },
+  chat_mention: { category: "chat", label: "Mention", tone: "amber" },
 };
 
 export const USER_ROLES = {

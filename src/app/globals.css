@@ -1358,6 +1358,35 @@ body { -webkit-tap-highlight-color: transparent; }
   background: color-mix(in srgb, var(--surface-2) 60%, transparent);
 }
 
+.chat-code {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.chat-pre {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.chat-mention {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+.chat-mine .chat-mention {
+  background: rgb(255 255 255 / 0.22);
+  color: #fff;
+}
+.chat-mention.is-me {
+  background: color-mix(in oklab, #f59e0b 28%, transparent);
+  color: #b45309;
+}
+[data-theme="dark"] .chat-mention.is-me {
+  color: #fcd34d;
+}
+.chat-mention-badge {
+  background: color-mix(in oklab, #f59e0b 28%, transparent);
+  color: #b45309;
+}
+[data-theme="dark"] .chat-mention-badge {
+  color: #fcd34d;
+}
+
 /* Modern chat */
 [data-table-theme="modern"] .chat-shell {
   border-radius: 1.25rem;
@@ -1528,6 +1557,11 @@ body { -webkit-tap-highlight-color: transparent; }
 [data-table-theme="modern"] .chat-quote,
 [data-table-theme="modern"] .chat-reply-bar {
   border-radius: 0.7rem;
+}
+[data-table-theme="modern"] .chat-mention-pop {
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(12px);
 }
 [data-table-theme="modern"] .chat-typing {
   color: color-mix(in oklab, var(--accent) 65%, var(--fg-muted));
