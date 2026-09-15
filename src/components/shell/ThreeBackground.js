@@ -1137,7 +1137,291 @@ function orbits(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits };
+
+/* ---------- Meadow: a quiet grassland — wind in the grass, clouds drifting, cows grazing and wandering ---------- */
+function meadow(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const groundH = (x, z) => 0.9 * Math.sin(x * 0.09 + 0.5) * Math.cos(z * 0.07) + 0.45 * Math.sin(x * 0.23 + z * 0.11) + 0.2 * Math.cos(x * 0.4 - z * 0.3);
+  const skyStops = (dark) => (dark ? ["#0b1230", "#16204a", "#3b3f7a", "#6b5a8a"] : ["#6fb8ff", "#a9d8ff", "#dff0ff", "#f6e7c8"]);
+  const grassTint = (dark) => (dark ? "#6f8f5a" : "#ffffff");
+  const groundLow = (dark) => new THREE.Color(dark ? "#17361c" : "#3f8b3a");
+  const groundHigh = (dark) => new THREE.Color(dark ? "#2d6a34" : "#86c95c");
+
+  // sky dome + sun (moon on the dark theme)
+  let skyTex = bandTexture(THREE, skyStops(pal.dark));
+  const skyMat = new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false });
+  const skyGeo = new THREE.SphereGeometry(140, 24, 16);
+  scene.add(new THREE.Mesh(skyGeo, skyMat));
+  const sunTex = glowTexture(THREE, "rgba(255,246,220,1)", "rgba(255,246,220,0)");
+  const sunMat = new THREE.SpriteMaterial({ map: sunTex, transparent: true, opacity: pal.dark ? 0.7 : 0.95, depthWrite: false, fog: false });
+  const sun = new THREE.Sprite(sunMat);
+  sun.scale.setScalar(pal.dark ? 26 : 46);
+  sun.position.set(-48, 42, -96);
+  scene.add(sun);
+  disposables.push(skyMat, skyGeo, sunTex, sunMat);
+
+  // clouds drifting with the wind
+  const cloudTex = cloudTexture(THREE);
+  const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: pal.dark ? 0.28 : 0.9, color: new THREE.Color(pal.dark ? "#8b93c7" : "#ffffff"), depthWrite: false, fog: false });
+  const cloudGeo = new THREE.PlaneGeometry(30, 13);
+  const clouds = [];
+  for (let i = 0; i < (preview ? 3 : 7); i++) {
+    const m = new THREE.Mesh(cloudGeo, cloudMat);
+    m.position.set(rand(-90, 90), rand(22, 40), rand(-95, -55));
+    m.scale.set(rand(0.9, 2), rand(0.7, 1.3), 1);
+    scene.add(m);
+    clouds.push({ m, speed: rand(0.35, 0.8) });
+  }
+  disposables.push(cloudTex, cloudMat, cloudGeo);
+
+  // rolling ground with height-tinted vertex colours
+  const gSeg = preview ? 40 : 90;
+  const groundGeo = new THREE.PlaneGeometry(220, 220, gSeg, gSeg);
+  const gp = groundGeo.attributes.position;
+  const gCol = new Float32Array(gp.count * 3);
+  const lo = groundLow(pal.dark), hi = groundHigh(pal.dark), tmp = new THREE.Color();
+  for (let i = 0; i < gp.count; i++) {
+    const x = gp.getX(i), z = -gp.getY(i);
+    const h = groundH(x, z);
+    gp.setZ(i, h);
+    tmp.copy(lo).lerp(hi, THREE.MathUtils.clamp((h + 1.2) / 2.6, 0, 1));
+    gCol.set([tmp.r, tmp.g, tmp.b], i * 3);
+  }
+  groundGeo.setAttribute("color", new THREE.BufferAttribute(gCol, 3));
+  groundGeo.computeVertexNormals();
+  const groundMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+  disposables.push(groundGeo, groundMat);
+
+  // grass: instanced tapered blades, swayed by a travelling wind field in the vertex shader
+  const bladeH = 0.7;
+  const bladeGeo = new THREE.PlaneGeometry(0.14, bladeH, 1, 3);
+  bladeGeo.translate(0, bladeH / 2, 0);
+  const bp = bladeGeo.attributes.position;
+  const bCol = new Float32Array(bp.count * 3);
+  const bBase = new THREE.Color("#2f6a25"), bTip = new THREE.Color("#a3d86a");
+  for (let i = 0; i < bp.count; i++) {
+    const k = bp.getY(i) / bladeH;
+    bp.setX(i, bp.getX(i) * (1 - k * 0.85));
+    tmp.copy(bBase).lerp(bTip, k);
+    bCol.set([tmp.r, tmp.g, tmp.b], i * 3);
+  }
+  bladeGeo.setAttribute("color", new THREE.BufferAttribute(bCol, 3));
+  const grassMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, color: new THREE.Color(grassTint(pal.dark)) });
+  grassMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uWind = { value: 1 };
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nuniform float uTime;\nuniform float uWind;")
+      .replace(
+        "#include <begin_vertex>",
+        `vec3 transformed = vec3(position);
+        #ifdef USE_INSTANCING
+          vec3 ip = instanceMatrix[3].xyz;
+          float k = clamp(position.y / ${bladeH.toFixed(2)}, 0.0, 1.0);
+          float wave = sin(uTime * 1.7 + ip.x * 0.32 + ip.z * 0.21) * 0.55 + sin(uTime * 0.8 - ip.x * 0.12 + ip.z * 0.16) * 0.45;
+          float gust = 0.5 + 0.5 * sin(uTime * 0.37 + ip.x * 0.045 - ip.z * 0.03);
+          float sway = (wave * 0.3 + gust * 0.32) * uWind * k * k;
+          transformed.x += sway;
+          transformed.z += sway * 0.4;
+          transformed.y -= abs(sway) * 0.25;
+        #endif`
+      );
+    grassMat.userData.shader = shader;
+  };
+  grassMat.customProgramCacheKey = () => "meadow-grass";
+  const blades = preview ? 1400 : 9000;
+  const grass = new THREE.InstancedMesh(bladeGeo, grassMat, blades);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v3 = new THREE.Vector3(), sc = new THREE.Vector3();
+  for (let i = 0; i < blades; i++) {
+    const x = rand(-42, 42), z = rand(-50, 8);
+    e.set(0, rand(0, Math.PI), 0);
+    q.setFromEuler(e);
+    v3.set(x, groundH(x, z) - 0.02, z);
+    sc.set(rand(0.8, 1.4), rand(0.55, 1.25), 1);
+    m4.compose(v3, q, sc);
+    grass.setMatrixAt(i, m4);
+    grass.setColorAt(i, tmp.setScalar(rand(0.8, 1.1)));
+  }
+  grass.instanceMatrix.needsUpdate = true;
+  grass.instanceColor.needsUpdate = true;
+  scene.add(grass);
+  disposables.push(bladeGeo, grassMat);
+
+  // a scattering of small flowers
+  const flowerGeo = new THREE.CircleGeometry(0.11, 6);
+  const flowerMat = new THREE.MeshLambertMaterial({ vertexColors: false, side: THREE.DoubleSide });
+  const flowers = new THREE.InstancedMesh(flowerGeo, flowerMat, preview ? 60 : 320);
+  const petals = ["#fef3c7", "#fde047", "#fbcfe8", "#ffffff", "#c4b5fd"];
+  for (let i = 0; i < flowers.count; i++) {
+    const x = rand(-40, 40), z = rand(-46, 7);
+    e.set(-Math.PI / 2 + rand(-0.4, 0.4), rand(0, 6.28), 0);
+    q.setFromEuler(e);
+    v3.set(x, groundH(x, z) + rand(0.25, 0.5), z);
+    sc.setScalar(rand(0.7, 1.3));
+    m4.compose(v3, q, sc);
+    flowers.setMatrixAt(i, m4);
+    flowers.setColorAt(i, tmp.set(petals[i % petals.length]));
+  }
+  flowers.instanceMatrix.needsUpdate = true;
+  flowers.instanceColor.needsUpdate = true;
+  scene.add(flowers);
+  disposables.push(flowerGeo, flowerMat);
+
+  // cows: box-built, grazing then wandering to a fresh patch
+  const white = new THREE.MeshStandardMaterial({ color: new THREE.Color("#f8fafc"), flatShading: true, roughness: 0.9 });
+  const black = new THREE.MeshStandardMaterial({ color: new THREE.Color("#1f2937"), flatShading: true, roughness: 0.9 });
+  const brown = new THREE.MeshStandardMaterial({ color: new THREE.Color("#8b5a2b"), flatShading: true, roughness: 0.9 });
+  const pink = new THREE.MeshStandardMaterial({ color: new THREE.Color("#f9a8d4"), flatShading: true, roughness: 0.9 });
+  const horn = new THREE.MeshStandardMaterial({ color: new THREE.Color("#e7e5e4"), flatShading: true, roughness: 0.8 });
+  const bodyGeo = new THREE.BoxGeometry(1.7, 0.95, 0.85);
+  const headGeo = new THREE.BoxGeometry(0.62, 0.52, 0.5);
+  const snoutGeo = new THREE.BoxGeometry(0.28, 0.26, 0.42);
+  const earGeo = new THREE.BoxGeometry(0.1, 0.16, 0.3);
+  const hornGeo = new THREE.ConeGeometry(0.06, 0.24, 5);
+  const legGeo = new THREE.BoxGeometry(0.22, 0.62, 0.22);
+  legGeo.translate(0, -0.31, 0);
+  const tailGeo = new THREE.BoxGeometry(0.06, 0.55, 0.06);
+  tailGeo.translate(0, -0.27, 0);
+  const patchGeo = new THREE.BoxGeometry(0.55, 0.42, 0.05);
+  const eyeGeo = new THREE.SphereGeometry(0.045, 6, 5);
+  disposables.push(white, black, brown, pink, horn, bodyGeo, headGeo, snoutGeo, earGeo, hornGeo, legGeo, tailGeo, patchGeo, eyeGeo);
+  const cows = [];
+  const inField = (x, z) => x > -15 && x < 15 && z > -18 && z < 3;
+  const makeCow = (x, z) => {
+    const g = new THREE.Group();
+    const coat = Math.random() < 0.3 ? brown : white;
+    const patch = coat === brown ? white : black;
+    const body = new THREE.Mesh(bodyGeo, coat);
+    body.position.y = 1.02;
+    g.add(body);
+    for (let i = 0; i < 3; i++) {
+      const p = new THREE.Mesh(patchGeo, patch);
+      const side = i % 2 ? 1 : -1;
+      p.position.set(rand(-0.55, 0.55), 1.02 + rand(-0.2, 0.25), side * 0.44);
+      p.scale.set(rand(0.6, 1.3), rand(0.7, 1.4), 1);
+      g.add(p);
+    }
+    const neck = new THREE.Group();
+    neck.position.set(0.85, 1.25, 0);
+    const head = new THREE.Mesh(headGeo, coat);
+    head.position.set(0.3, 0, 0);
+    const snout = new THREE.Mesh(snoutGeo, pink);
+    snout.position.set(0.5, -0.12, 0);
+    const earL = new THREE.Mesh(earGeo, coat), earR = new THREE.Mesh(earGeo, coat);
+    earL.position.set(0.15, 0.18, 0.3);
+    earR.position.set(0.15, 0.18, -0.3);
+    const hornL = new THREE.Mesh(hornGeo, horn), hornR = new THREE.Mesh(hornGeo, horn);
+    hornL.position.set(0.2, 0.36, 0.16);
+    hornR.position.set(0.2, 0.36, -0.16);
+    const eyeL = new THREE.Mesh(eyeGeo, black), eyeR = new THREE.Mesh(eyeGeo, black);
+    eyeL.position.set(0.5, 0.1, 0.26);
+    eyeR.position.set(0.5, 0.1, -0.26);
+    neck.add(head, snout, earL, earR, hornL, hornR, eyeL, eyeR);
+    g.add(neck);
+    const legs = [[0.6, 0.3], [0.6, -0.3], [-0.6, 0.3], [-0.6, -0.3]].map(([lx, lz]) => {
+      const l = new THREE.Mesh(legGeo, coat);
+      l.position.set(lx, 0.62, lz);
+      g.add(l);
+      return l;
+    });
+    const tail = new THREE.Mesh(tailGeo, coat);
+    tail.position.set(-0.85, 1.35, 0);
+    g.add(tail);
+    g.position.set(x, groundH(x, z), z);
+    g.rotation.y = rand(0, 6.28);
+    g.scale.setScalar(rand(0.85, 1.1));
+    scene.add(g);
+    return { g, neck, legs, tail, state: "graze", timer: rand(4, 12), target: null, phase: rand(0, 6.28), yaw: g.rotation.y, speed: rand(0.55, 0.85) };
+  };
+  const spots = preview ? [[-2, -7], [3.5, -3]] : [[-6, -9], [2, -12], [7, -5], [-2.5, -3.5], [10, -13], [-10, -6]];
+  for (const [x, z] of spots) cows.push(makeCow(x + rand(-1, 1), z + rand(-1, 1)));
+
+  // light, fog, camera
+  const hemi = new THREE.HemisphereLight(new THREE.Color(pal.dark ? "#3b4a8a" : "#bfe3ff"), new THREE.Color(pal.dark ? "#1a2e1c" : "#4d8a3c"), pal.dark ? 0.7 : 1.4);
+  const key = new THREE.DirectionalLight(new THREE.Color(pal.dark ? "#c7d2fe" : "#fff3d6"), pal.dark ? 0.9 : 1.9);
+  key.position.set(-24, 38, 30);
+  scene.add(hemi, key);
+  scene.fog = new THREE.Fog(new THREE.Color(pal.dark ? "#2a2f5a" : "#dfeffb"), 28, 95);
+  const camY = groundH(0, 14) + 3.4;
+  camera.position.set(0, camY, 14);
+  camera.lookAt(0, 0.9, -10);
+
+  const wrapAngle = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  return {
+    update(dt, t) {
+      const wind = 0.75 + 0.35 * Math.sin(t * 0.21) + 0.2 * Math.sin(t * 0.83 + 1.7);
+      const sh = grassMat.userData.shader;
+      if (sh) {
+        sh.uniforms.uTime.value = t;
+        sh.uniforms.uWind.value = wind;
+      }
+      for (const c of clouds) {
+        c.m.position.x += dt * c.speed * (0.6 + wind * 0.5);
+        if (c.m.position.x > 120) c.m.position.x = -120;
+      }
+      for (const c of cows) {
+        c.timer -= dt;
+        if (c.state === "graze") {
+          // head down, slow chewing, the odd look up
+          const lift = Math.sin(t * 0.23 + c.phase) > 0.93 ? 0.5 : 0;
+          c.neck.rotation.z = THREE.MathUtils.lerp(c.neck.rotation.z, -(0.95 - lift) + Math.sin(t * 3.2 + c.phase) * 0.04, dt * 2.5);
+          c.legs.forEach((l) => (l.rotation.z = THREE.MathUtils.lerp(l.rotation.z, 0, dt * 4)));
+          if (c.timer <= 0) {
+            let tx, tz, tries = 0;
+            do { tx = c.g.position.x + rand(-7, 7); tz = c.g.position.z + rand(-6, 6); } while (!inField(tx, tz) && ++tries < 8);
+            if (inField(tx, tz)) { c.target = [tx, tz]; c.state = "walk"; }
+            else c.timer = rand(3, 6);
+          }
+        } else {
+          const dx = c.target[0] - c.g.position.x, dz = c.target[1] - c.g.position.z;
+          const dist = Math.hypot(dx, dz);
+          const want = Math.atan2(-dz, dx);
+          c.yaw += wrapAngle(want - c.yaw) * Math.min(1, dt * 1.6);
+          c.g.rotation.y = c.yaw;
+          const step = Math.min(dist, c.speed * dt);
+          c.g.position.x += Math.cos(c.yaw) * step;
+          c.g.position.z += -Math.sin(c.yaw) * step;
+          c.g.position.y = groundH(c.g.position.x, c.g.position.z) + Math.abs(Math.sin(t * 5 + c.phase)) * 0.03;
+          const swing = Math.sin(t * 5 + c.phase) * 0.45;
+          c.legs[0].rotation.z = swing; c.legs[3].rotation.z = swing;
+          c.legs[1].rotation.z = -swing; c.legs[2].rotation.z = -swing;
+          c.neck.rotation.z = THREE.MathUtils.lerp(c.neck.rotation.z, -0.2 + Math.sin(t * 5 + c.phase) * 0.05, dt * 3);
+          if (dist < 0.25) { c.state = "graze"; c.timer = rand(6, 16); }
+        }
+        c.tail.rotation.x = Math.sin(t * 1.3 + c.phase) * 0.35 + Math.sin(t * 4.1 + c.phase) * 0.1;
+      }
+      camera.position.x = Math.sin(t * 0.07) * 0.8;
+      camera.position.y = camY + Math.sin(t * 0.11) * 0.12;
+      camera.lookAt(Math.sin(t * 0.05) * 1.5, 0.9, -10);
+    },
+    setPalette(p) {
+      skyTex.dispose();
+      skyTex = bandTexture(THREE, skyStops(p.dark));
+      skyMat.map = skyTex;
+      skyMat.needsUpdate = true;
+      sunMat.opacity = p.dark ? 0.7 : 0.95;
+      sun.scale.setScalar(p.dark ? 26 : 46);
+      cloudMat.opacity = p.dark ? 0.28 : 0.9;
+      cloudMat.color.set(p.dark ? "#8b93c7" : "#ffffff");
+      grassMat.color.set(grassTint(p.dark));
+      const l = groundLow(p.dark), h = groundHigh(p.dark), col = groundGeo.attributes.color;
+      for (let i = 0; i < gp.count; i++) {
+        tmp.copy(l).lerp(h, THREE.MathUtils.clamp((gp.getZ(i) + 1.2) / 2.6, 0, 1));
+        col.setXYZ(i, tmp.r, tmp.g, tmp.b);
+      }
+      col.needsUpdate = true;
+      hemi.color.set(p.dark ? "#3b4a8a" : "#bfe3ff"); hemi.groundColor.set(p.dark ? "#1a2e1c" : "#4d8a3c"); hemi.intensity = p.dark ? 0.7 : 1.4;
+      key.color.set(p.dark ? "#c7d2fe" : "#fff3d6"); key.intensity = p.dark ? 0.9 : 1.9;
+      scene.fog.color.set(p.dark ? "#2a2f5a" : "#dfeffb");
+    },
+    dispose() { disposables.forEach((d) => d.dispose()); skyTex.dispose(); scene.fog = null; },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

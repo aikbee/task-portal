@@ -31,6 +31,7 @@ export const BG_STYLES = [
   { value: "saturn", label: "Ringed planet", desc: "3D gas giant with rings and moons", three: true },
   { value: "nebula", label: "Nebula", desc: "3D star nursery glowing in deep space", three: true },
   { value: "orbits", label: "Solar system", desc: "3D planets circling a bright sun", three: true },
+  { value: "meadow", label: "Grassland", desc: "3D quiet prairie: wind in the grass, cows grazing and wandering", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
