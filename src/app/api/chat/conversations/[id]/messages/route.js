@@ -28,7 +28,7 @@ export const GET = handler(async (request, params, user) => {
 });
 
 /**
- * Send a message. JSON { body }, or multipart with "body" (optional caption) plus attachments:
+ * Send a message. JSON { body, reply_to? }, or multipart with "body" (optional caption), "reply_to" and attachments:
  *  - "files": up to 8 photos (JPEG, PNG, GIF, WebP, 10 MB each, downscaled by the browser) and/or any
  *    other files (20 MB each, 25 MB per message in total);
  *  - "voice": one recorded note (WebM, Ogg or MP4 audio, up to 5 minutes) with its "duration" in ms.
@@ -40,6 +40,7 @@ export const POST = handler(async (request, params, user) => {
   if (convo.kind === "direct") await assertFriends(user.id, convo.user_id);
 
   let text = "";
+  let replyTo = 0;
   const items = []; // { buf, kind, name, mime, width, height, duration }
   let total = 0;
   if ((request.headers.get("content-type") || "").includes("multipart/form-data")) {
@@ -47,6 +48,7 @@ export const POST = handler(async (request, params, user) => {
     if (Number(request.headers.get("content-length")) > MESSAGE_MAX_BYTES + 1024 * 1024) throw new HttpError("One message can carry up to 25 MB of files.", 413);
     const form = await request.formData();
     text = String(form.get("body") ?? "");
+    replyTo = Number(form.get("reply_to")) || 0;
     const files = form.getAll("files").filter((f) => typeof f === "object" && f.size > 0);
     const voices = form.getAll("voice").filter((f) => typeof f === "object" && f.size > 0);
     if (files.length > ATTACHMENTS_PER_MESSAGE) throw new HttpError(`Up to ${ATTACHMENTS_PER_MESSAGE} attachments per message.`, 400);
@@ -75,7 +77,15 @@ export const POST = handler(async (request, params, user) => {
       items.push({ buf, kind: "audio", name: file.name || `voice.${audio.type}`, mime: audio.mime, duration: duration > 0 ? duration : null });
     }
   } else {
-    text = String((await readJson(request)).body ?? "");
+    const json = await readJson(request);
+    text = String(json.body ?? "");
+    replyTo = Number(json.reply_to) || 0;
+  }
+  if (replyTo) {
+    const quoted = await queryOne("SELECT id, kind, deleted_at FROM messages WHERE id = ? AND conversation_id = ?", [replyTo, id]);
+    if (!quoted) throw new HttpError("That message is not in this conversation.", 400);
+    if (quoted.kind === "system") throw new HttpError("System lines cannot be replied to.", 400);
+    if (quoted.deleted_at) throw new HttpError("That message was deleted.", 400);
   }
   const photos = items.filter((i) => i.kind === "image");
   const plain = items.filter((i) => i.kind === "file");
@@ -84,7 +94,7 @@ export const POST = handler(async (request, params, user) => {
   if (!body && !items.length) throw new HttpError("Message is empty.", 400);
   if (body.length > MESSAGE_MAX) throw new HttpError(`Messages can be up to ${MESSAGE_MAX} characters.`, 400);
 
-  const r = await execute("INSERT INTO messages (conversation_id, sender_id, body) VALUES (?, ?, ?)", [id, user.id, body]);
+  const r = await execute("INSERT INTO messages (conversation_id, sender_id, body, reply_to_id) VALUES (?, ?, ?, ?)", [id, user.id, body, replyTo || null]);
   let order = 1;
   for (const it of items) {
     const { storedName, size } = await saveBuffer(it.buf, it.name);

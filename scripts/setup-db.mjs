@@ -131,6 +131,17 @@ async function migrate(db, adminId) {
     await db.query("ALTER TABLE users ADD COLUMN avatar VARCHAR(255) NULL AFTER avatar_color");
     await db.query("ALTER TABLE conversations ADD COLUMN avatar VARCHAR(255) NULL AFTER avatar_color");
   }
+  if (!(await hasColumn(db, "messages", "reply_to_id"))) {
+    log("migrating: messages.reply_to_id + forwarded");
+    await db.query("ALTER TABLE messages ADD COLUMN reply_to_id INT UNSIGNED NULL AFTER deleted_at, ADD COLUMN forwarded TINYINT(1) NOT NULL DEFAULT 0 AFTER reply_to_id, ADD KEY idx_messages_reply (reply_to_id)");
+  }
+  // an early build added a self-referencing foreign key here; MySQL then refused cascading deletes
+  try {
+    await db.query("ALTER TABLE messages DROP FOREIGN KEY fk_messages_reply");
+    log("migrating: dropped fk_messages_reply (self-reference broke cascading deletes)");
+  } catch (e) {
+    if (e?.code !== "ER_CANT_DROP_FIELD_OR_KEY") throw e;
+  }
   if (!(await hasColumn(db, "notes", "user_id"))) {
     log("migrating: notes.user_id");
     await db.query(`ALTER TABLE notes

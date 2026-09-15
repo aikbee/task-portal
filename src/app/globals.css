@@ -1525,6 +1525,10 @@ body { -webkit-tap-highlight-color: transparent; }
 [data-table-theme="modern"] .chat-pending-file {
   border-radius: 0.7rem;
 }
+[data-table-theme="modern"] .chat-quote,
+[data-table-theme="modern"] .chat-reply-bar {
+  border-radius: 0.7rem;
+}
 [data-table-theme="modern"] .chat-typing {
   color: color-mix(in oklab, var(--accent) 65%, var(--fg-muted));
 }

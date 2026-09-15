@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -204,8 +204,80 @@ function ReceiptsPopover({ tr, read, pending, onClose, align }) {
   );
 }
 
-/** Small menu with Edit / Delete for a message. */
-function MessageMenu({ tr, canEdit, canDelete, onEdit, onDelete, onClose, align }) {
+/** What a quoted message says: its text, or what kind of attachment it carried. */
+function quoteText(q, tr) {
+  if (!q) return "";
+  if (q.deleted) return tr("Message deleted");
+  if (q.body) return q.body;
+  const a = q.attachment;
+  if (!a) return "";
+  if (a.kind === "image") return a.count > 1 ? tr("{n} photos", { n: a.count }) : tr("Photo");
+  if (a.kind === "audio") return tr("Voice message");
+  return a.name || tr("File");
+}
+
+/** Pick the chats a message should be forwarded to. */
+function ForwardModal({ tr, me, message, convos, onClose, onDone }) {
+  const toast = useToast();
+  const [ids, setIds] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const list = convos ?? [];
+  const go = async () => {
+    if (!ids.length || busy) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/chat/messages/${message.id}/forward`, { conversation_ids: ids });
+      toast.success(ids.length === 1 ? tr("Forwarded to 1 chat") : tr("Forwarded to {n} chats", { n: ids.length }));
+      onDone();
+    } catch (e) {
+      toast.error(tr("Could not forward"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="sm"
+      title={tr("Forward message")}
+      description={tr("Choose where to send a copy of this message.")}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>{tr("Cancel")}</Button>
+          <Button icon={Forward} onClick={go} loading={busy} disabled={!ids.length}>{ids.length > 1 ? tr("Forward to {n} chats", { n: ids.length }) : tr("Forward to 1 chat")}</Button>
+        </>
+      }
+    >
+      <div className="chat-quote mb-3 rounded-app border-l-[3px] border-accent bg-accent/8 px-3 py-2 text-xs">
+        <span className="block truncate font-semibold text-accent">{message.sender_id === me?.id ? tr("You") : message.sender_name}</span>
+        <span className="block truncate text-fg-muted">{quoteText({ body: message.body, attachment: message.attachments?.[0] ? { kind: message.attachments[0].kind, count: message.attachments.length, name: message.attachments[0].name } : null }, tr)}</span>
+      </div>
+      {!list.length ? <p className="py-4 text-center text-xs text-fg-faint">{tr("No other chats yet")}</p> : null}
+      <ul className="max-h-72 space-y-0.5 overflow-y-auto">
+        {list.map((c) => {
+          const on = ids.includes(c.id);
+          return (
+            <li key={c.id}>
+              <label className={cn("chat-person flex cursor-pointer items-center gap-2.5 rounded-app-sm px-2 py-1.5", on && "bg-accent/10")}>
+                <Checkbox checked={on} onChange={(v) => setIds(v ? (ids.length < 5 ? [...ids, c.id] : ids) : ids.filter((x) => x !== c.id))} disabled={!on && ids.length >= 5} />
+                <ConvoAvatar convo={c} size="sm" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{c.name}</span>
+                  <span className="block truncate text-[11px] text-fg-muted">{isGroup(c) ? memberCount(c.member_count, tr) : c.email}</span>
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-2 text-[11px] text-fg-faint">{tr("Pick up to 5 chats.")}</p>
+    </Modal>
+  );
+}
+
+/** Small menu with Reply / Forward / Edit / Delete for a message. */
+function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDelete, onClose, align }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -215,6 +287,12 @@ function MessageMenu({ tr, canEdit, canDelete, onEdit, onDelete, onClose, align 
   }, [onClose]);
   return (
     <div ref={ref} className={cn("chat-menu absolute bottom-full z-20 mb-1 min-w-32 overflow-hidden rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="menu">
+      <button type="button" role="menuitem" onClick={onReply} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 focus-ring">
+        <Reply size={14} /> {tr("Reply")}
+      </button>
+      <button type="button" role="menuitem" onClick={onForward} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 focus-ring">
+        <Forward size={14} /> {tr("Forward")}
+      </button>
       {canEdit ? (
         <button type="button" role="menuitem" onClick={onEdit} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 focus-ring">
           <Pencil size={14} /> {tr("Edit")}
@@ -607,6 +685,8 @@ export default function ChatModule() {
               detached={Boolean(detached[active])}
               onJump={jumpTo}
               onJumpLatest={() => jumpToLatest(active)}
+              onFocus={(id) => setFocusId(id)}
+              convos={convos ?? []}
               onMessageChange={(msg) => {
                 setThreads((t) => ({ ...t, [active]: (t[active] ?? []).map((m) => (m.id === msg.id ? { ...m, ...msg } : m)) }));
                 loadConvos();
@@ -1081,7 +1161,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onReactions, onMessageChange, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onFocus, convos, onReactions, onMessageChange, onConvoChange, onLeft }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -1094,6 +1174,18 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [receipts, setReceipts] = useState(null); // message id with the read-receipts popover open
   const narrow = useMediaQuery("(max-width: 640px)"); // phones: compact composer buttons and a short placeholder
   const [editing, setEditing] = useState(null); // { id, text } while editing a message inline
+  // reply / forward state is keyed to the chat it belongs to, so switching chats drops it without an effect
+  const [replyState, setReplyState] = useState(null); // { cid, msg }
+  const [forwardState, setForwardState] = useState(null); // { cid, msg }
+  const replyTo = replyState?.cid === convo.id ? replyState.msg : null;
+  const forwardMsg = forwardState?.cid === convo.id ? forwardState.msg : null;
+  const setReplyTo = (m) => setReplyState(m ? { cid: convo.id, msg: m } : null);
+  const setForwardMsg = (m) => setForwardState(m ? { cid: convo.id, msg: m } : null);
+  const replyRef = useRef(null);
+  useEffect(() => {
+    replyRef.current = replyTo;
+  }, [replyTo]);
+  const showMessage = (id) => (messages?.some((x) => x.id === id) ? onFocus(id) : onJump(convo.id, id));
   const [confirmDelete, setConfirmDelete] = useState(null); // message about to be deleted
   const [deleting, setDeleting] = useState(false);
   const editRef = useRef(null);
@@ -1215,10 +1307,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       const fd = new FormData();
       fd.append("body", "");
       fd.append("duration", String(elapsed));
+      if (replyRef.current) fd.append("reply_to", String(replyRef.current.id));
       fd.append("voice", blob, `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
       setSending(true);
       try {
         const m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
+        setReplyTo(null);
         onSent(m);
       } catch (e) {
         toast.error(tr("Could not send the voice message"), e.message);
@@ -1358,11 +1452,13 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       if (pending.length) {
         const fd = new FormData();
         fd.append("body", body);
+        if (replyTo) fd.append("reply_to", String(replyTo.id));
         for (const p of pending) fd.append("files", p.file, p.file.name);
         m = await api.upload(`/api/chat/conversations/${convo.id}/messages`, fd);
       } else {
-        m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body });
+        m = await api.post(`/api/chat/conversations/${convo.id}/messages`, { body, reply_to: replyTo?.id ?? undefined });
       }
+      setReplyTo(null);
       setDraft("");
       pending.forEach((p) => p.url && URL.revokeObjectURL(p.url));
       setPending([]);
@@ -1474,7 +1570,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const canEdit = mine && !deleted && (m.body || photos.length > 0 || files.length > 0) && !voice;
                 const canDelete = !deleted && (mine || (group && convo.my_role === "owner"));
                 const menuBtn =
-                  canEdit || canDelete ? (
+                  !deleted ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -1537,7 +1633,19 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: editing?.id === m.id ? "78%" : "78%", width: editing?.id === m.id ? "78%" : undefined }}>
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
                       {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
-                      {menu === m.id ? <MessageMenu tr={tr} canEdit={canEdit} canDelete={canDelete} align={mine ? "right" : "left"} onEdit={() => startEdit(m)} onDelete={() => { setMenu(null); setConfirmDelete(m); }} onClose={() => setMenu(null)} /> : null}
+                      {menu === m.id ? (
+                        <MessageMenu
+                          tr={tr}
+                          canEdit={canEdit}
+                          canDelete={canDelete}
+                          align={mine ? "right" : "left"}
+                          onReply={() => { setMenu(null); setReplyTo(m); setTimeout(() => document.querySelector(".chat-composer textarea")?.focus(), 30); }}
+                          onForward={() => { setMenu(null); setForwardMsg(m); }}
+                          onEdit={() => startEdit(m)}
+                          onDelete={() => { setMenu(null); setConfirmDelete(m); }}
+                          onClose={() => setMenu(null)}
+                        />
+                      ) : null}
                       {receipts === m.id && rc ? <ReceiptsPopover tr={tr} read={rc.read} pending={rc.pending} align="right" onClose={() => setReceipts(null)} /> : null}
                       {deleted ? (
                         <div className={cn("chat-bubble chat-deleted flex items-center gap-1.5 rounded-app border border-dashed px-3 py-2 text-sm italic", mine ? "border-accent/50 text-fg-muted" : "border-line text-fg-muted")} title={formatDateTime(m.created_at)}>
@@ -1582,6 +1690,22 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         style={bubbleW ? { width: bubbleW } : undefined}
                         onDoubleClick={photos.length ? undefined : () => toggleReaction(m, "❤️")}
                       >
+                        {m.forwarded ? (
+                          <span className={cn("chat-fwd mb-0.5 flex items-center gap-1 text-[10px] italic", mine ? "text-white/70" : "text-fg-faint", (photos.length || voice || files.length) && "px-1.5 pt-0.5")}>
+                            <Forward size={11} /> {tr("Forwarded")}
+                          </span>
+                        ) : null}
+                        {m.reply_to ? (
+                          <button
+                            type="button"
+                            onClick={() => showMessage(m.reply_to.id)}
+                            className={cn("chat-quote mb-1.5 flex w-full min-w-0 flex-col rounded-[8px] border-l-[3px] px-2 py-1 text-left text-xs focus-ring", mine ? "border-white/70 bg-white/15 hover:bg-white/20" : "border-accent bg-accent/10 hover:bg-accent/15")}
+                            title={tr("Show the original message")}
+                          >
+                            <span className={cn("truncate font-semibold", mine ? "text-white" : "text-accent")}>{m.reply_to.sender_id === me?.id ? tr("You") : m.reply_to.sender_name ?? tr("Deleted account")}</span>
+                            <span className={cn("truncate", mine ? "text-white/80" : "text-fg-muted", m.reply_to.deleted && "italic")}>{quoteText(m.reply_to, tr)}</span>
+                          </button>
+                        ) : null}
                         {photos.length ? (
                           <div className={cn("chat-photos", photos.length > 1 && "grid grid-cols-2 gap-1")}>
                             {photos.map((p, pi) => (
@@ -1677,6 +1801,16 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         <div className="chat-composer border-t border-line p-2.5 md:p-3">
           {canChat ? (
             <div className="mx-auto max-w-3xl">
+              {replyTo ? (
+                <div className="chat-reply-bar mb-2 flex items-center gap-2 rounded-app border-l-[3px] border-accent bg-accent/8 px-3 py-1.5 text-xs">
+                  <Reply size={13} className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold text-accent">{tr("Replying to {name}", { name: replyTo.sender_id === me?.id ? tr("You") : replyTo.sender_name })}</span>
+                    <span className="block truncate text-fg-muted">{quoteText({ body: replyTo.body, deleted: Boolean(replyTo.deleted_at), attachment: replyTo.attachments?.[0] ? { kind: replyTo.attachments[0].kind, count: replyTo.attachments.length, name: replyTo.attachments[0].name } : null }, tr)}</span>
+                  </span>
+                  <Button variant="ghost" size="iconXs" icon={X} onClick={() => setReplyTo(null)} aria-label={tr("Cancel reply")} />
+                </div>
+              ) : null}
               {pending.length ? (
                 <div className="chat-pending mb-2 flex flex-wrap items-center gap-2">
                   {pending.map((p) => {
@@ -1751,6 +1885,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       send();
+                    } else if (e.key === "Escape" && replyTo) {
+                      setReplyTo(null);
                     } else if (e.key === "ArrowUp" && !draft && !pending.length) {
                       const last = [...(messages ?? [])].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && !m.deleted_at && m.body);
                       if (last) {
@@ -1783,6 +1919,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         </div>
       </div>
       {lightbox ? <Lightbox tr={tr} photos={lightbox.photos} index={lightbox.index} onIndex={(index) => setLightbox({ ...lightbox, index })} onClose={() => setLightbox(null)} /> : null}
+      {forwardMsg ? <ForwardModal tr={tr} me={me} message={forwardMsg} convos={convos} onClose={() => setForwardMsg(null)} onDone={() => setForwardMsg(null)} /> : null}
       <ConfirmDialog
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}

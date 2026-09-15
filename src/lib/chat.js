@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { deleteStoredFile } from "./uploads";
+import { deleteStoredFile, readStoredFile, saveBuffer } from "./uploads";
 import { uploadedFileOf } from "./avatar-presets";
 import QRCode from "qrcode";
 import { query, queryOne, execute } from "./db";
@@ -256,7 +256,7 @@ export async function chatBadge(userId) {
 }
 
 /* ---------- messages ---------- */
-export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, x.edited_at, x.deleted_at, s.name AS sender_name, s.avatar_color AS sender_color, COALESCE(s.avatar, 'preset:pro') AS sender_avatar";
+export const MESSAGE_SELECT = "x.id, x.conversation_id, x.sender_id, x.kind, x.body, x.created_at, x.edited_at, x.deleted_at, x.reply_to_id, x.forwarded, s.name AS sender_name, s.avatar_color AS sender_color, COALESCE(s.avatar, 'preset:pro') AS sender_avatar";
 export const MESSAGE_FROM = "messages x LEFT JOIN users s ON s.id = x.sender_id";
 const photoOf = (a) => ({
   id: a.id,
@@ -306,7 +306,48 @@ export async function withExtras(rows) {
   const byMessage = new Map();
   for (const a of photos) byMessage.set(a.message_id, [...(byMessage.get(a.message_id) ?? []), photoOf(a)]);
   const reactions = await reactionsOf(ids);
-  return rows.map((r) => ({ ...r, attachments: byMessage.get(r.id) ?? [], reactions: reactions.get(r.id) ?? [] }));
+  const quotes = await quotesOf([...new Set(rows.map((r) => r.reply_to_id).filter(Boolean))]);
+  return rows.map((r) => ({ ...r, forwarded: Boolean(r.forwarded), attachments: byMessage.get(r.id) ?? [], reactions: reactions.get(r.id) ?? [], reply_to: r.reply_to_id ? quotes.get(r.reply_to_id) ?? null : null }));
+}
+/** Short quotes of the messages being replied to: who wrote it, a snippet, or what kind of attachment it was. */
+export async function quotesOf(ids) {
+  const map = new Map();
+  if (!ids.length) return map;
+  const rows = await query(
+    `SELECT x.id, x.sender_id, x.body, x.deleted_at, s.name AS sender_name,
+       (SELECT a.kind FROM message_attachments a WHERE a.message_id = x.id ORDER BY a.sort_order, a.id LIMIT 1) AS att_kind,
+       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = x.id) AS att_count,
+       (SELECT a.original_name FROM message_attachments a WHERE a.message_id = x.id ORDER BY a.sort_order, a.id LIMIT 1) AS att_name
+     FROM messages x LEFT JOIN users s ON s.id = x.sender_id WHERE x.id IN (${ids.map(() => "?").join(",")})`,
+    ids
+  );
+  for (const r of rows) {
+    map.set(r.id, {
+      id: r.id,
+      sender_id: r.sender_id,
+      sender_name: r.sender_name,
+      body: r.deleted_at ? "" : String(r.body ?? "").slice(0, 200),
+      deleted: Boolean(r.deleted_at),
+      attachment: r.att_kind && !r.deleted_at ? { kind: r.att_kind, count: Number(r.att_count), name: r.att_name } : null,
+    });
+  }
+  return map;
+}
+/** Copy a message's attachments (rows and files) onto another message. */
+export async function copyAttachments(fromId, toId) {
+  const rows = await query("SELECT * FROM message_attachments WHERE message_id = ? ORDER BY sort_order, id", [fromId]);
+  const copied = [];
+  for (const a of rows) {
+    const buf = await readStoredFile(a.stored_name).catch(() => null);
+    if (!buf) continue;
+    const { storedName } = await saveBuffer(buf, a.original_name);
+    await execute(
+      "INSERT INTO message_attachments (message_id, kind, stored_name, original_name, mime_type, size_bytes, width, height, duration_ms, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [toId, a.kind, storedName, a.original_name, a.mime_type, a.size_bytes, a.width, a.height, a.duration_ms, a.sort_order]
+    );
+    copied.push({ ...a, stored_name: storedName });
+  }
+  return copied;
 }
 export async function messageById(id) {
   const row = await queryOne(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.id = ?`, [id]);

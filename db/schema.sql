@@ -475,7 +475,10 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   edited_at DATETIME NULL,
   deleted_at DATETIME NULL, -- soft delete: the row stays as a "message deleted" placeholder, content and files go
+  reply_to_id INT UNSIGNED NULL, -- quoted message (same conversation)
+  forwarded TINYINT(1) NOT NULL DEFAULT 0, -- a copy forwarded from another chat
   KEY idx_messages_conversation (conversation_id, id),
+  KEY idx_messages_reply (reply_to_id), -- no foreign key on purpose: a self-reference breaks MySQL's cascade limit when chats or users are deleted
   CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
