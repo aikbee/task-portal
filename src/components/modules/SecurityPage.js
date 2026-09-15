@@ -122,9 +122,9 @@ export default function SecurityPage() {
                     <span className="min-w-0 flex-1 text-sm">
                       <span className="flex items-start justify-between gap-2">
                         {e.success ? (
-                          <span className="inline-flex min-w-0 items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={14} className="shrink-0" /> <span className="truncate">{tr("Signed in")}{e.current ? ` · ${tr("this session")}` : e.session_active ? ` · ${tr("still active")}` : ""}</span></span>
+                          <span className="inline-flex min-w-0 items-start gap-1 font-medium text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={14} className="shrink-0" /> <span className="[overflow-wrap:anywhere]">{tr("Signed in")}{e.current ? ` · ${tr("this session")}` : e.session_active ? ` · ${tr("still active")}` : ""}</span></span>
                         ) : (
-                          <span className="inline-flex min-w-0 items-center gap-1 font-medium text-rose-500"><XCircle size={14} className="shrink-0" /> <span className="truncate">{tr("Failed")}{e.reason ? ` · ${tr(REASON[e.reason] ?? e.reason)}` : ""}</span></span>
+                          <span className="inline-flex min-w-0 items-start gap-1 font-medium text-rose-500"><XCircle size={14} className="shrink-0" /> <span className="[overflow-wrap:anywhere]">{tr("Failed")}{e.reason ? ` · ${tr(REASON[e.reason] ?? e.reason)}` : ""}</span></span>
                         )}
                         <span className="shrink-0 text-[11px] text-fg-faint" title={formatDateTime(e.created_at)}>{relativeTime(e.created_at)}</span>
                       </span>
