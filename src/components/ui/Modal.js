@@ -23,11 +23,11 @@ export default function Modal({ open, onClose, title, description, children, foo
   if (!mounted || !open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[100] flex items-end justify-center p-0 sm:items-center sm:p-6" role="dialog" aria-modal="true">
       <div className="ui-modal-backdrop fixed inset-0 bg-black/40 backdrop-blur-sm anim-fade" onClick={onClose} />
       <div
         className={cn(
-          "ui-modal relative flex max-h-[calc(100vh-2rem)] w-full flex-col rounded-app-lg border border-line bg-surface shadow-app-lg anim-pop sm:max-h-[calc(100vh-3rem)]",
+          "ui-modal relative flex max-h-[92dvh] w-full flex-col rounded-app-lg border border-line bg-surface shadow-app-lg anim-pop max-sm:rounded-b-none max-sm:border-b-0 sm:max-h-[calc(100vh-3rem)]",
           sizes[size],
           className
         )}

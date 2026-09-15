@@ -80,12 +80,12 @@ export default function TopBar() {
       </div>
 
       {/* breadcrumbs */}
-      <nav className="flex min-w-0 shrink items-center gap-1 overflow-hidden text-sm">
-        <Link href="/" className="rounded-app-sm p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label={tr("Dashboard")}>
+      <nav className="flex min-w-0 shrink items-center gap-1 overflow-hidden text-sm max-sm:flex-1">
+        <Link href="/" className="rounded-app-sm p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg max-sm:hidden" aria-label={tr("Dashboard")}>
           <Home size={15} />
         </Link>
         {crumbs.map((c, i) => (
-          <span key={i} className="flex items-center gap-1">
+          <span key={i} className="flex items-center gap-1 max-sm:hidden">
             <ChevronRight size={14} className="text-fg-faint" />
             {c.href ? (
               <Link href={c.href} className="block max-w-[160px] truncate rounded-app-sm px-1.5 py-1 text-fg-muted hover:bg-surface-2 hover:text-fg">
@@ -97,9 +97,9 @@ export default function TopBar() {
           </span>
         ))}
         {title ? (
-          <span className="flex items-center gap-1 min-w-0">
-            <ChevronRight size={14} className="text-fg-faint" />
-            <span className="max-w-[260px] truncate px-1.5 py-1 font-medium text-fg xl:max-w-[360px]">{title}</span>
+          <span className="flex min-w-0 items-center gap-1 max-sm:flex-1">
+            <ChevronRight size={14} className="text-fg-faint max-sm:hidden" />
+            <span className="max-w-[260px] truncate px-1.5 py-1 font-medium text-fg max-sm:max-w-none max-sm:flex-1 xl:max-w-[360px]">{title}</span>
           </span>
         ) : null}
       </nav>

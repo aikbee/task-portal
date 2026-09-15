@@ -16,11 +16,11 @@ export default function StatCard({ label, value, icon: Icon, color = "var(--acce
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wider text-fg-muted">{label}</p>
-          <p className="stat-value mt-2 text-3xl font-semibold tracking-tight text-fg">{value}</p>
+          <p className="stat-value mt-1.5 text-2xl font-semibold tracking-tight text-fg sm:mt-2 sm:text-3xl">{value}</p>
           {hint ? <p className="mt-1 text-xs text-fg-muted">{hint}</p> : null}
         </div>
         {Icon ? (
-          <span className="stat-icon grid h-10 w-10 place-items-center rounded-app-sm text-white shadow-app" style={{ background: color }}>
+          <span className="stat-icon grid h-8 w-8 place-items-center rounded-app-sm text-white shadow-app sm:h-10 sm:w-10" style={{ background: color }}>
             <Icon size={18} />
           </span>
         ) : null}

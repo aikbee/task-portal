@@ -23,7 +23,7 @@ export default function Drawer({ open, onClose, title, description, children, fo
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[2px] anim-fade" onClick={onClose} />
       <aside
         className={cn(
-          "ui-drawer absolute right-0 top-0 flex h-full max-w-[92vw] flex-col glass shadow-app-lg anim-slide-right border-l",
+          "ui-drawer absolute right-0 top-0 flex h-full max-w-[92vw] flex-col glass shadow-app-lg anim-slide-right border-l max-sm:w-full max-sm:max-w-full",
           width,
           className
         )}

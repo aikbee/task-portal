@@ -280,7 +280,6 @@ export default function ChatModule() {
   const sp = useSearchParams();
   const { user } = useAuth();
   const setCounts = useUI((s) => s.setCounts);
-  const mod = MODULE_MAP.chat;
   const [tab, setTab] = useState(sp.get("add") || sp.get("tab") === "friends" ? "friends" : "chats");
   const [convos, setConvos] = useState(null);
   const [friends, setFriends] = useState(null);
@@ -565,10 +564,10 @@ export default function ChatModule() {
 
   return (
     <>
-      <PageHeader title={tr("Chat")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} />
-      <div className="chat-shell ui-card card flex min-h-[520px] overflow-hidden p-0" style={{ height: "calc(100dvh - var(--topbar-h) - var(--bottombar-h) - 150px)" }}>
+      <PageHeader title={tr("Chat")} crumbs={[]} hideTitle />
+      <div className="chat-shell ui-card card flex overflow-hidden p-0 max-md:-mx-4 max-md:-my-5 max-md:h-[calc(100dvh-var(--topbar-h)-var(--bottombar-h)-env(safe-area-inset-top)-env(safe-area-inset-bottom))] max-md:rounded-none max-md:border-x-0 max-md:border-t-0 md:h-[calc(100dvh-var(--topbar-h)-var(--bottombar-h)-40px)] md:min-h-[520px]">
         <aside className={cn("chat-side flex w-full shrink-0 flex-col border-r border-line md:w-[340px]", active && "hidden md:flex")}>
-          <div className="chat-tabs flex gap-1 border-b border-line p-2">
+          <div className="chat-tabs mx-2 mt-2 flex gap-1 rounded-full bg-surface-2/80 p-1">
             <TabButton active={tab === "chats"} icon={MessageCircle} label={tr("Chats")} count={unreadTotal} onClick={() => setTab("chats")} />
             <TabButton active={tab === "friends"} icon={Users} label={tr("Friends")} count={pendingIn} onClick={() => setTab("friends")} />
           </div>
@@ -622,7 +621,7 @@ export default function ChatModule() {
               }}
             />
           ) : (
-            <div className="grid flex-1 place-items-center p-6">
+            <div className="chat-empty grid flex-1 place-items-center p-6">
               <EmptyState icon={MessageCircle} title={tr("Pick a conversation")} description={tr("Choose a chat on the left, or add a friend with their QR code to start one.")} />
             </div>
           )}
@@ -678,7 +677,7 @@ export default function ChatModule() {
 
 function TabButton({ active, icon: Icon, label, count, onClick }) {
   return (
-    <button type="button" onClick={onClick} className={cn("chat-tab flex flex-1 items-center justify-center gap-2 rounded-app-sm px-3 py-2 text-sm font-medium transition", active ? "is-active bg-accent/12 text-accent" : "text-fg-muted hover:bg-surface-2 hover:text-fg")}>
+    <button type="button" onClick={onClick} className={cn("chat-tab flex flex-1 items-center justify-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition", active ? "is-active bg-surface text-fg shadow-sm" : "text-fg-muted hover:text-fg")}>
       <Icon size={15} /> {label}
       {count ? <span className={cn("rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums", active ? "bg-accent text-white" : "bg-surface-3 text-fg-muted")}>{count}</span> : null}
     </button>
@@ -1438,6 +1437,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   );
                 }
                 const grouped = prev && prev.kind !== "system" && prev.sender_id === m.sender_id && !newDay && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60_000;
+                const next = messages[i + 1];
+                const runLast = !next || next.kind === "system" || next.sender_id !== m.sender_id || new Date(next.created_at) - new Date(m.created_at) >= 5 * 60_000 || new Date(next.created_at).toDateString() !== new Date(m.created_at).toDateString();
                 const showSender = group && !mine && !grouped;
                 const reactions = m.reactions ?? [];
                 const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
@@ -1544,6 +1545,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
+                          grouped ? "chat-run-cont" : "chat-run-first",
+                          runLast && "chat-run-last",
                           photos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : files.length ? "chat-has-files p-1.5" : "px-3 py-2",
                           mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
                         )}
@@ -1643,7 +1646,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             </>
           ) : null}
         </div>
-        <div className="chat-composer border-t border-line p-3">
+        <div className="chat-composer border-t border-line p-2.5 md:p-3">
           {canChat ? (
             <div className="mx-auto max-w-3xl">
               {pending.length ? (
@@ -1688,7 +1691,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   <Button size="iconSm" icon={Check} onClick={() => stopRecording({ send: true })} aria-label={tr("Send voice message")} data-tip={tr("Send")} />
                 </div>
               ) : null}
-              <div className={cn("flex items-end gap-2", rec && "hidden")}>
+              <div className={cn("chat-composer-bar flex items-end gap-1 rounded-[1.4rem] border border-line bg-surface px-1.5 py-1 shadow-sm transition", rec && "hidden")}>
                 <input
                   ref={fileRef}
                   type="file"
@@ -1736,7 +1739,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   }}
                   rows={Math.min(6, Math.max(1, draft.split("\n").length))}
                   placeholder={pending.length ? tr("Add a caption (optional)") : narrow ? tr("Message…") : tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
-                  className="control min-h-[42px] flex-1 resize-none py-2.5"
+                  className="chat-input min-h-[38px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-fg outline-none placeholder:text-fg-faint"
                   maxLength={4000}
                 />
                 {narrow ? (

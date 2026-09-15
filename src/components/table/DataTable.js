@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useEffect, useRef } from "react";
+import { Fragment, useMemo, useState, useEffect, useRef } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -26,6 +26,7 @@ import { formatDate } from "@/lib/utils";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 import { isoDate } from "@/lib/dates";
+import { useMediaQuery } from "@/lib/hooks";
 
 /**
  * Full-width data table with sortable columns, a column-visibility dropdown,
@@ -256,12 +257,14 @@ export default function DataTable({
   };
 
   const colSpan = visibleColumns.length + (selectable ? 1 : 0) + (rowActions ? 1 : 0);
+  const stacked = useMediaQuery("(max-width: 767px)"); // phones: one card per row instead of a sideways-scrolling table
+  const labelOf = (c) => (typeof c.label === "string" ? tr(c.label) : c.label);
 
   return (
     <div className={cn("dt-root card overflow-hidden p-0", className)}>
       {/* toolbar */}
       <div className="dt-toolbar flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
-        <div className="dt-search relative min-w-[200px] flex-1 max-w-sm">
+        <div className="dt-search relative min-w-[200px] flex-1 max-w-sm max-md:basis-full max-md:max-w-none">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
           <input
             value={query}
@@ -275,6 +278,7 @@ export default function DataTable({
             </button>
           ) : null}
         </div>
+        <div className="dt-tools flex items-center gap-2 max-md:w-full max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-0.5 md:contents">
         {filters ? <div className="dt-filters contents">{filters}</div> : null}
         {dateFields?.length ? (
           <Popover
@@ -435,10 +439,65 @@ export default function DataTable({
             <p className="border-t border-line px-3 py-1.5 text-[10px] text-fg-faint">{tr("Clicking a column header sorts for this visit only; the buttons here save your default for this page.")}</p>
           </Popover>
         </div>
+        </div>
       </div>
 
       {/* table */}
       <div ref={bodyRef} className="dt-body relative min-h-[200px] w-full overflow-auto">
+        {stacked ? (
+          <div className="dt-cards space-y-2 p-2">
+            {loading && rows.length === 0 ? (
+              Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-16 w-full rounded-app" />)
+            ) : error ? (
+              <EmptyState title={tr("Could not load data")} description={error.message} compact />
+            ) : pageRows.length === 0 ? (
+              <EmptyState
+                icon={Inbox}
+                title={query || dateActive ? "No results" : emptyTitle}
+                description={query ? `Nothing matches "${query}".` : dateActive ? "Nothing in the selected date range." : emptyDescription}
+                action={query || dateActive ? null : emptyAction}
+                compact
+              />
+            ) : (
+              pageRows.map((row, i) => {
+                const rid = getRowId(row);
+                const isSel = selected.has(rid);
+                const [first, ...rest] = visibleColumns;
+                return (
+                  <div
+                    key={rid ?? i}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    className={cn("dt-card rounded-app border border-line/70 bg-surface/80 px-3 py-3", onRowClick && "cursor-pointer active:bg-surface-2/70", isSel && "is-selected border-accent/50 bg-accent/6")}
+                  >
+                    <div className="flex items-start gap-3">
+                      {selectable ? (
+                        <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
+                          <Checkbox checked={isSel} onChange={() => toggleOne(rid)} aria-label={tr("Select row")} />
+                        </span>
+                      ) : null}
+                      <div className="min-w-0 flex-1 text-sm">{first ? (first.render ? first.render(row) : row[first.key]) : null}</div>
+                      {rowActions ? (
+                        <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                          {rowActions(row)}
+                        </div>
+                      ) : null}
+                    </div>
+                    {rest.length ? (
+                      <dl className="dt-card-grid mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs">
+                        {rest.map((c) => (
+                          <Fragment key={c.key}>
+                            <dt className="whitespace-nowrap pt-px text-[11px] font-medium uppercase tracking-wide text-fg-faint">{labelOf(c)}</dt>
+                            <dd className={cn("min-w-0 text-fg", c.align === "right" && "text-right")}>{c.render ? c.render(row) : (row[c.key] ?? <span className="text-fg-faint">—</span>)}</dd>
+                          </Fragment>
+                        ))}
+                      </dl>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        ) : (
         <table className={cn("data-table w-full min-w-max border-collapse text-sm", dense && "text-xs")}>
           <thead>
             <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
@@ -546,6 +605,7 @@ export default function DataTable({
             )}
           </tbody>
         </table>
+        )}
       </div>
 
       {/* footer / pagination */}

@@ -2,7 +2,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, CalendarDays, Plus, Flag, List, LayoutGrid, Rows3, X, CalendarCheck } from "lucide-react";
-import { useFetch } from "@/lib/hooks";
+import { useFetch, useMediaQuery } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useNav } from "@/lib/nav";
 import { usePrefs } from "@/lib/store";
@@ -50,6 +50,7 @@ export default function CalendarView() {
   const [cursor, setCursor] = useState(() => new Date());
   const [filters, setFilters] = useState({ project_id: "", employee_id: "", status: "" });
   const [selected, setSelected] = useState(() => todayIso());
+  const narrow = useMediaQuery("(max-width: 767px)"); // phones: coloured dots in the cells, details in the day panel below
   const [taskForm, setTaskForm] = useState({ open: false, initial: null, defaults: {} });
   const [dragId, setDragId] = useState(null);
   const [overDay, setOverDay] = useState(null);
@@ -172,10 +173,10 @@ export default function CalendarView() {
           <Agenda days={days} byDay={byDay} deadlinesByDay={deadlinesByDay} today={today} loading={loading && !tasks} onOpen={(t) => router.push(`/tasks/${t.id}`)} onStatus={quickStatus} onNew={(day) => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })} />
         ) : (
           <Card padding={false} className="cal-grid overflow-x-auto">
-            <div className="cal-head grid min-w-[640px] grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+            <div className="cal-head grid grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-muted md:min-w-[640px] md:text-[11px]">
               {WEEKDAYS.map((d) => <div key={d} className="py-2">{d}</div>)}
             </div>
-            <div className={cn("cal-days grid min-w-[640px] grid-cols-7", view === "week" ? "min-h-[520px]" : "")}>
+            <div className={cn("cal-days grid grid-cols-7 md:min-w-[640px]", view === "week" ? "min-h-[320px] md:min-h-[520px]" : "")}>
               {days.map((day) => {
                 const d = parseIso(day);
                 const inMonth = view !== "month" || d.getMonth() === cursor.getMonth();
@@ -194,8 +195,8 @@ export default function CalendarView() {
                     onDragLeave={() => setOverDay((o) => (o === day ? null : o))}
                     onDrop={(e) => { e.preventDefault(); if (dragId != null) reschedule(dragId, day); setDragId(null); setOverDay(null); }}
                     className={cn(
-                      "cal-day group relative flex min-h-[112px] cursor-pointer flex-col border-b border-r border-line/70 p-1.5 transition-colors",
-                      view === "week" && "min-h-[520px]",
+                      "cal-day group relative flex min-h-[64px] cursor-pointer flex-col border-b border-r border-line/70 p-1 transition-colors md:min-h-[112px] md:p-1.5",
+                      view === "week" && "min-h-[320px] md:min-h-[520px]",
                       !inMonth && "bg-surface-2/40 text-fg-faint",
                       isSelected && "is-selected bg-accent/6",
                       overDay === day && dragId != null && "bg-accent/15 ring-2 ring-inset ring-accent/50"
@@ -211,7 +212,7 @@ export default function CalendarView() {
                         ))}
                         <button
                           onClick={(e) => { e.stopPropagation(); setTaskForm({ open: true, initial: null, defaults: { due_date: day } }); }}
-                          className="grid h-5 w-5 place-items-center rounded-md text-fg-faint opacity-0 transition hover:bg-surface-2 hover:text-fg group-hover:opacity-100"
+                          className="grid h-5 w-5 place-items-center rounded-md text-fg-faint opacity-0 transition hover:bg-surface-2 hover:text-fg group-hover:opacity-100 max-md:hidden"
                           aria-label={`New task on ${day}`}
                           title="New task on this day"
                         >
@@ -219,12 +220,23 @@ export default function CalendarView() {
                         </button>
                       </span>
                     </div>
-                    <div className="flex flex-1 flex-col gap-1">
-                      {list.slice(0, max).map((t) => (
-                        <TaskChip key={t.id} task={t} today={today} dragging={dragId === t.id} onDragStart={() => setDragId(t.id)} onDragEnd={() => { setDragId(null); setOverDay(null); }} onOpen={() => router.push(`/tasks/${t.id}`)} />
-                      ))}
-                      {overflow > 0 ? <span className="px-1 text-[11px] font-medium text-fg-muted">+{overflow} more</span> : null}
-                    </div>
+                    {narrow ? (
+                      list.length ? (
+                        <div className="cal-dots flex flex-wrap items-center gap-1 px-0.5 pt-0.5" aria-label={`${list.length} tasks`}>
+                          {list.slice(0, 6).map((t) => (
+                            <span key={t.id} className="h-1.5 w-1.5 rounded-full" style={{ background: t.project_color || "var(--accent)" }} />
+                          ))}
+                          {list.length > 6 ? <span className="text-[9px] font-medium text-fg-muted">+{list.length - 6}</span> : null}
+                        </div>
+                      ) : null
+                    ) : (
+                      <div className="flex flex-1 flex-col gap-1">
+                        {list.slice(0, max).map((t) => (
+                          <TaskChip key={t.id} task={t} today={today} dragging={dragId === t.id} onDragStart={() => setDragId(t.id)} onDragEnd={() => { setDragId(null); setOverDay(null); }} onOpen={() => router.push(`/tasks/${t.id}`)} />
+                        ))}
+                        {overflow > 0 ? <span className="px-1 text-[11px] font-medium text-fg-muted">+{overflow} more</span> : null}
+                      </div>
+                    )}
                   </div>
                 );
               })}

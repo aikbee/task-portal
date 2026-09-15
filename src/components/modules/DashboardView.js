@@ -69,7 +69,7 @@ export default function DashboardView() {
         </button>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 anim-stagger">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4 anim-stagger">
         <Link href="/projects"><StatCard label={tr("Projects")} value={counts.projects} hint={tr("{n} active", { n: counts.active_projects })} icon={FolderKanban} color={MODULE_MAP.projects.color} onClick={() => {}} /></Link>
         <Link href="/employees"><StatCard label={tr("Employees")} value={counts.employees} hint={tr("{n} active", { n: counts.active_employees })} icon={Users} color={MODULE_MAP.employees.color} onClick={() => {}} /></Link>
         <Link href="/tasks"><StatCard label={tr("Open tasks")} value={counts.open_tasks} hint={tr("{n} total", { n: counts.tasks })} icon={CheckSquare} color={MODULE_MAP.tasks.color} onClick={() => {}} /></Link>
@@ -210,7 +210,7 @@ function DashboardSkeleton() {
   return (
     <div className="space-y-5">
       <Skeleton className="h-9 w-64" />
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}</div>
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}</div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-72" />)}</div>
     </div>
   );

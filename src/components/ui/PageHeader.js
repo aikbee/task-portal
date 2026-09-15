@@ -16,23 +16,23 @@ export default function PageHeader({ title, description, icon: Icon, color, acti
   if (hideTitle) return null;
   const tint = color ?? "var(--accent)";
   return (
-    <div className={cn("page-header mb-5 flex flex-wrap items-end justify-between gap-4 anim-rise", className)} style={{ "--ph-color": tint }}>
-      <div className="ph-main flex items-center gap-3 min-w-0">
+    <div className={cn("page-header mb-4 flex flex-wrap items-end justify-between gap-3 anim-rise md:mb-5 md:gap-4", className)} style={{ "--ph-color": tint }}>
+      <div className="ph-main flex min-w-0 items-center gap-3">
         {Icon ? (
           <span
-            className="ph-icon grid h-11 w-11 shrink-0 place-items-center rounded-app text-white shadow-app"
+            className="ph-icon grid h-9 w-9 shrink-0 place-items-center rounded-app text-white shadow-app md:h-11 md:w-11"
             style={{ background: `linear-gradient(135deg, ${tint}, color-mix(in oklab, ${tint} 65%, black))` }}
           >
             <Icon size={20} />
           </span>
         ) : null}
         <div className="min-w-0">
-          <h1 className="ph-title truncate text-xl font-semibold tracking-tight text-fg">{title}</h1>
-          {description ? <p className="ph-desc text-sm text-fg-muted">{description}</p> : null}
+          <h1 className="ph-title truncate text-lg font-semibold tracking-tight text-fg md:text-xl">{title}</h1>
+          {description ? <p className="ph-desc line-clamp-2 text-[13px] text-fg-muted md:line-clamp-none md:text-sm">{description}</p> : null}
           {children}
         </div>
       </div>
-      {actions ? <div className="ph-actions flex flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="ph-actions flex flex-wrap items-center gap-2 max-md:w-full max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-0.5">{actions}</div> : null}
     </div>
   );
 }

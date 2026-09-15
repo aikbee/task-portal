@@ -175,7 +175,7 @@ export default function BoardView() {
 
       {error ? <EmptyState title="Could not load tasks" description={error.message} /> : null}
 
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-3" style={{ minHeight: "calc(100vh - var(--topbar-h) - var(--bottombar-h) - 230px)" }}>
+      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-3 max-md:snap-x max-md:snap-mandatory max-md:scroll-px-1" style={{ minHeight: "calc(100vh - var(--topbar-h) - var(--bottombar-h) - 230px)" }}>
         {columns.map((c) => {
           const list = byColumn[c.key] ?? [];
           const isOverCol = drag && over?.col === c.key;
@@ -196,7 +196,7 @@ export default function BoardView() {
               }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver((o) => (o?.col === c.key ? null : o)); }}
               onDrop={(e) => { e.preventDefault(); dropTo(c.key, over?.col === c.key ? over.index : list.length); }}
-              className={cn("board-col ui-card card flex w-[288px] shrink-0 flex-col p-0 transition-shadow", isOverCol && "ring-2 ring-accent/50")}
+              className={cn("board-col ui-card card flex w-[min(288px,86vw)] shrink-0 snap-start flex-col p-0 transition-shadow", isOverCol && "ring-2 ring-accent/50")}
             >
               <header className="board-col-head flex items-center gap-2 border-b border-line px-3 py-2.5">
                 {c.color ? <Avatar name={c.label} color={c.color} size="xs" /> : <span className={cn("h-2.5 w-2.5 rounded-full", TONE_BAR[c.tone])} />}
