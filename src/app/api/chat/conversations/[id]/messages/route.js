@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
 import { imageMeta, audioMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, mutedMemberIds, unarchiveFor, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS } from "@/lib/chat";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, mutedMemberIds, unarchiveFor, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS, purgeExpired } from "@/lib/chat";
 
 /**
  * Messages of a conversation, oldest first: the newest page (?limit up to 100), earlier pages (?before=<id>),
@@ -11,6 +11,7 @@ import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage,
 export const GET = handler(async (request, params, user) => {
   const id = requireId(params.id);
   const convo = await conversationFor(id, user.id);
+  if (convo.retention_days || convo.retention_cap) await purgeExpired({ conversationId: id }).catch(() => {});
   const floor = Number(convo.hidden_before_id) || 0; // "delete chat" on my side hides everything up to here
   const sp = request.nextUrl.searchParams;
   const around = Number(sp.get("around")) || null;

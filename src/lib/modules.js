@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -137,6 +137,17 @@ export const MODULES = [
     icon: Palette,
     color: "#ec4899",
     description: "Choose which background styles users can pick, set the default, or lock one for everyone.",
+    adminOnly: true,
+  },
+  {
+    key: "moderation",
+    label: "Moderation",
+    singular: "Report",
+    href: "/moderation",
+    api: "/api/chat/admin/reports",
+    icon: ShieldAlert,
+    color: "#ef4444",
+    description: "Reported chat messages, every conversation's size and retention, and a cap on how long chat history is kept.",
     adminOnly: true,
   },
   {

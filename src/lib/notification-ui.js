@@ -27,6 +27,7 @@ const ICONS = {
   chat_group: Users,
   chat_reaction: Heart,
   chat_mention: AtSign,
+  chat_moderation: ShieldAlert,
 };
 
 const TONE_CLASS = {

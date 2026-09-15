@@ -119,6 +119,95 @@ export async function findByCode(code) {
 export const friendLink = (origin, code) => `${origin}/chat?add=${encodeURIComponent(code)}`;
 export const friendQr = (origin, code) => QRCode.toDataURL(friendLink(origin, code), { margin: 1, width: 220, errorCorrectionLevel: "M" });
 
+/* ---------- group roles and invite links ---------- */
+export const ROLE_RANK = { owner: 3, admin: 2, member: 1 };
+/** Owner and admins manage a group (rename, picture, invite link, removing people, deleting any message). */
+export const canManage = (convo) => convo?.kind === "group" && (ROLE_RANK[convo.my_role] ?? 0) >= 2;
+export function assertManager(convo, what) {
+  if (convo.kind !== "group") throw new HttpError("Only group chats have that.", 400);
+  if (!canManage(convo)) throw new HttpError(`Only the group owner or an admin can ${what}.`, 403);
+}
+export async function rotateInviteCode(conversationId) {
+  for (let i = 0; i < 5; i++) {
+    const code = generateCode();
+    try {
+      await execute("UPDATE conversations SET invite_code = ? WHERE id = ?", [code, conversationId]);
+      return code;
+    } catch (e) {
+      if (e?.code !== "ER_DUP_ENTRY") throw e;
+    }
+  }
+  throw new HttpError("Could not generate an invite link.", 500);
+}
+export const inviteLink = (origin, code) => `${origin}/chat?join=${encodeURIComponent(code)}`;
+export const inviteQr = (origin, code) => QRCode.toDataURL(inviteLink(origin, code), { margin: 1, width: 220, errorCorrectionLevel: "M" });
+/** The group behind an invite code (null when the code is unknown or revoked). */
+export async function groupByInviteCode(code) {
+  const pretty = normaliseCode(code);
+  if (!pretty) return null;
+  return queryOne(
+    `SELECT c.id, c.title, c.avatar_color, c.avatar, (SELECT COUNT(*) FROM conversation_members m WHERE m.conversation_id = c.id) AS member_count
+     FROM conversations c WHERE c.kind = 'group' AND c.invite_code = ?`,
+    [pretty]
+  );
+}
+/** When the owner goes, the longest-standing admin takes over, else the longest-standing member. Returns the heir's id. */
+export async function handOver(conversationId) {
+  const heir = await queryOne("SELECT user_id FROM conversation_members WHERE conversation_id = ? ORDER BY (role <> 'admin'), joined_at, user_id LIMIT 1", [conversationId]);
+  if (!heir) return null;
+  await execute("UPDATE conversation_members SET role = 'owner' WHERE conversation_id = ? AND user_id = ?", [conversationId, heir.user_id]);
+  return heir.user_id;
+}
+
+/* ---------- retention (disappearing messages) ---------- */
+export const RETENTION_CHOICES = [1, 7, 30, 90, 365];
+/** Instance-wide chat settings (admins): { max_retention_days } caps every conversation's history. */
+export async function readChatSettings() {
+  const row = await queryOne("SELECT value FROM app_settings WHERE name = 'chat'");
+  const raw = row ? (typeof row.value === "string" ? JSON.parse(row.value) : row.value) : {};
+  const cap = Number(raw?.max_retention_days);
+  return { max_retention_days: Number.isInteger(cap) && cap > 0 ? cap : null };
+}
+export async function saveChatSettings(value, userId) {
+  await execute("INSERT INTO app_settings (name, value, updated_by) VALUES ('chat', ?, ?) AS new ON DUPLICATE KEY UPDATE value = new.value, updated_by = new.updated_by", [JSON.stringify(value), userId]);
+}
+/**
+ * Hard-delete messages older than their conversation's retention (or the instance cap), files included, and tell
+ * the members live so open threads drop them. Returns how many rows went.
+ */
+export async function purgeExpired({ conversationId = null } = {}) {
+  const { max_retention_days: cap } = await readChatSettings();
+  const args = [];
+  if (conversationId) args.push(conversationId);
+  if (cap) args.push(cap);
+  const rows = await query(
+    `SELECT x.id, x.conversation_id FROM messages x JOIN conversations c ON c.id = x.conversation_id
+     WHERE ${conversationId ? "c.id = ? AND" : ""} ((c.retention_days IS NOT NULL AND x.created_at < NOW() - INTERVAL c.retention_days DAY)${cap ? " OR x.created_at < NOW() - INTERVAL ? DAY" : ""})
+     ORDER BY x.id LIMIT 5000`,
+    args
+  );
+  if (!rows.length) return 0;
+  const ids = rows.map((r) => r.id);
+  const marks = ids.map(() => "?").join(",");
+  await purgeMessagePhotos(`m.id IN (${marks})`, ids).catch(() => {});
+  await execute(`DELETE FROM messages WHERE id IN (${marks})`, ids);
+  const byConvo = new Map();
+  for (const r of rows) byConvo.set(r.conversation_id, [...(byConvo.get(r.conversation_id) ?? []), r.id]);
+  for (const [cid, gone] of byConvo) {
+    const members = await query("SELECT user_id FROM conversation_members WHERE conversation_id = ?", [cid]);
+    for (const m of members) publish(m.user_id, { type: "purged", conversation_id: cid, ids: gone });
+  }
+  return ids.length;
+}
+const SWEEP_EVERY_MS = 10 * 60 * 1000;
+/** Opportunistic purge (at most every 10 minutes per process) so retention holds even without the nightly cron. */
+export async function sweepRetention({ force = false } = {}) {
+  const last = globalThis.__chatSweepAt ?? 0;
+  if (!force && Date.now() - last < SWEEP_EVERY_MS) return null;
+  globalThis.__chatSweepAt = Date.now();
+  return purgeExpired().catch(() => 0);
+}
+
 /* ---------- friendships ---------- */
 export async function friendshipBetween(a, b) {
   return queryOne("SELECT * FROM friendships WHERE (requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?)", [a, b, b, a]);
@@ -197,13 +286,17 @@ async function friendStatuses(me, ids) {
   return map;
 }
 /** The row a client sees: `name` / `avatar_color` are the peer (direct) or the group title / colour. */
-function shapeConversation(row, members, statuses, me) {
+function shapeConversation(row, members, statuses, me, settings) {
   const mine = members.find((x) => x.id === me);
+  const myRole = mine?.role ?? "member";
   const base = {
     id: row.id,
     kind: row.kind,
     title: row.title,
-    my_role: mine?.role ?? "member",
+    my_role: myRole,
+    invite_code: row.kind === "group" && (ROLE_RANK[myRole] ?? 0) >= 2 ? row.invite_code ?? null : null,
+    retention_days: row.retention_days ?? null,
+    retention_cap: settings?.max_retention_days ?? null,
     members: members.map(({ id, name, avatar_color, avatar, email, role, last_read_message_id, delivered_message_id, last_seen_at }) => ({ id, name, avatar_color, avatar, email, role, last_read_message_id, delivered_message_id, online: isOnline(id), last_seen_at })),
     member_count: members.length,
     online_count: members.filter((x) => x.id !== me && isOnline(x.id)).length,
@@ -244,7 +337,7 @@ function shapeConversation(row, members, statuses, me) {
 }
 async function loadConversations(userId, onlyId = null, { includeHidden = false } = {}) {
   const rows = await query(
-    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, m.last_read_message_id, m.muted, m.pinned_at, m.archived_at, m.hidden_before_id,
+    `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, c.invite_code, c.retention_days, m.last_read_message_id, m.muted, m.pinned_at, m.archived_at, m.hidden_before_id,
        (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
@@ -263,7 +356,8 @@ async function loadConversations(userId, onlyId = null, { includeHidden = false 
   const members = await membersOf(rows.map((r) => r.id));
   const peerIds = rows.filter((r) => r.kind === "direct").flatMap((r) => (members.get(r.id) ?? []).filter((x) => x.id !== userId).map((x) => x.id));
   const statuses = await friendStatuses(userId, peerIds);
-  return rows.map((r) => shapeConversation(r, members.get(r.id) ?? [], statuses, userId));
+  const settings = await readChatSettings();
+  return rows.map((r) => shapeConversation(r, members.get(r.id) ?? [], statuses, userId, settings));
 }
 export const conversationsOf = (userId) => loadConversations(userId);
 /** A conversation the user belongs to (404 otherwise) — even one they "deleted" on their side. */
@@ -454,7 +548,7 @@ export async function messageById(id) {
   const row = await queryOne(`SELECT ${MESSAGE_SELECT} FROM ${MESSAGE_FROM} WHERE x.id = ?`, [id]);
   return row ? (await withExtras([row]))[0] : null;
 }
-/** A system line in a group ("added", "removed", "left", "renamed", "owner", "created") that every member sees live. */
+/** A system line ("added", "removed", "left", "renamed", "owner", "created", "admin", "joined", "retention"…) that every member sees live. */
 export async function systemMessage(convo, actorId, event, extra = {}) {
   const r = await execute("INSERT INTO messages (conversation_id, sender_id, kind, body) VALUES (?, ?, 'system', ?)", [convo.id, actorId, JSON.stringify({ event, ...extra })]);
   const message = await messageById(r.insertId);
@@ -463,7 +557,7 @@ export async function systemMessage(convo, actorId, event, extra = {}) {
 }
 /**
  * A message the user may edit or delete: their own (any kind but system), or — for deleting only —
- * any message in a group they own. Returns the row with `convo_kind`, `my_role`.
+ * any message in a group they own or administer. Returns the row with `convo_kind`, `my_role`.
  */
 export async function editableMessage(messageId, userId, { forDelete = false } = {}) {
   const row = await queryOne(
@@ -476,8 +570,8 @@ export async function editableMessage(messageId, userId, { forDelete = false } =
   if (!row) throw new HttpError("Message not found.", 404);
   if (row.kind === "system") throw new HttpError("System lines cannot be changed.", 400);
   if (row.deleted_at) throw new HttpError("This message was deleted.", 400);
-  const owner = row.convo_kind === "group" && row.my_role === "owner";
-  if (row.sender_id !== userId && !(forDelete && owner)) throw new HttpError(forDelete ? "You can only delete your own messages." : "You can only edit your own messages.", 403);
+  const manager = row.convo_kind === "group" && (ROLE_RANK[row.my_role] ?? 0) >= 2;
+  if (row.sender_id !== userId && !(forDelete && manager)) throw new HttpError(forDelete ? "You can only delete your own messages." : "You can only edit your own messages.", 403);
   return row;
 }
 
@@ -531,7 +625,7 @@ export async function deleteConversation(id) {
 }
 /**
  * After an account is deleted: direct chats left with one member and empty groups go,
- * and a group whose owner is gone passes to its longest-standing member.
+ * and a group whose owner is gone passes to its longest-standing admin, else member.
  */
 export async function pruneOrphanConversations() {
   const orphans = await query(
@@ -544,6 +638,6 @@ export async function pruneOrphanConversations() {
      AND NOT EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id AND m.role = 'owner')
      AND EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id)`
   );
-  for (const r of ownerless) await execute("UPDATE conversation_members SET role = 'owner' WHERE conversation_id = ? ORDER BY joined_at, user_id LIMIT 1", [r.id]);
+  for (const r of ownerless) await handOver(r.id);
   return orphans.length;
 }

@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -14,12 +14,14 @@ import AvatarPicker, { prepareAvatar } from "@/components/ui/AvatarPicker";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Modal from "@/components/ui/Modal";
-import { Input, Checkbox, Field } from "@/components/ui/Controls";
-import { EmptyState, Spinner } from "@/components/ui/Misc";
+import { Input, Textarea, Checkbox, Field } from "@/components/ui/Controls";
+import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
+import { DropdownMenu } from "@/components/ui/Popover";
+import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { useClickOutside, useDebouncedValue, useMediaQuery } from "@/lib/hooks";
+import { useClickOutside, useDebouncedValue, useMediaQuery, useFetch } from "@/lib/hooks";
 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 function dayLabel(iso, tr) {
@@ -54,6 +56,24 @@ function systemText(m, tr) {
       return tr("{name} renamed the group to “{title}”", { name, title: ev.title ?? "" });
     case "owner":
       return tr("{names} is now the group owner", { names });
+    case "transferred":
+      return tr("{name} handed the group over to {names}", { name, names });
+    case "admin":
+      return tr("{name} made {names} an admin", { name, names });
+    case "unadmin":
+      return tr("{name} removed {names} as admin", { name, names });
+    case "joined":
+      return tr("{name} joined using the invite link", { name });
+    case "invite_on":
+      return tr("{name} turned on the invite link", { name });
+    case "invite_reset":
+      return tr("{name} reset the invite link", { name });
+    case "invite_off":
+      return tr("{name} turned off the invite link", { name });
+    case "retention": {
+      const who = ev.by_admin ? tr("An administrator") : name;
+      return ev.days == null ? tr("{name} turned off disappearing messages", { name: who }) : tr("{name} set messages to disappear after {v}", { name: who, v: retentionLabel(ev.days, tr) });
+    }
     case "image":
       return tr("{name} changed the group picture", { name });
     default:
@@ -61,6 +81,18 @@ function systemText(m, tr) {
   }
 }
 const isGroup = (c) => c?.kind === "group";
+/** Start a browser download of an API file (an anchor click keeps the session cookie and the page). */
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+/** Owner and admins manage a group. */
+const canManage = (c) => isGroup(c) && (c?.my_role === "owner" || c?.my_role === "admin");
 /** Wrap every case-insensitive occurrence of `q` in <mark>. */
 function highlight(text, q) {
   if (!q || !text) return text;
@@ -344,7 +376,7 @@ function ForwardModal({ tr, me, message, convos, onClose, onDone }) {
 }
 
 /** Small menu with Reply / Forward / Edit / Delete for a message. */
-function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDelete, onClose, align }) {
+function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDelete, onReport, onClose, align }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -368,6 +400,11 @@ function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDel
       {canDelete ? (
         <button type="button" role="menuitem" onClick={onDelete} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm text-rose-500 hover:bg-rose-500/10 focus-ring">
           <Trash2 size={14} /> {tr("Delete")}
+        </button>
+      ) : null}
+      {onReport ? (
+        <button type="button" role="menuitem" onClick={onReport} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm text-rose-500 hover:bg-rose-500/10 focus-ring">
+          <Flag size={14} /> {tr("Report…")}
         </button>
       ) : null}
     </div>
@@ -432,8 +469,8 @@ function ChatMenuItem({ icon: Icon, label, onClick, danger }) {
     </button>
   );
 }
-/** Menu for one chat: pin, mute, archive, and (direct chats) delete on my side. */
-function ChatMenu({ tr, convo, onClose, onSetting, onDelete }) {
+/** Menu for one chat: pin, mute, archive, disappearing messages, export, and (direct chats) delete on my side. */
+function ChatMenu({ tr, convo, onClose, onSetting, onDelete, onRetention, onExport }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -446,8 +483,121 @@ function ChatMenu({ tr, convo, onClose, onSetting, onDelete }) {
       <ChatMenuItem icon={convo.pinned_at ? PinOff : Pin} label={convo.pinned_at ? tr("Unpin") : tr("Pin")} onClick={() => onSetting({ pinned: !convo.pinned_at })} />
       <ChatMenuItem icon={convo.muted ? Bell : BellOff} label={convo.muted ? tr("Unmute") : tr("Mute")} onClick={() => onSetting({ muted: !convo.muted })} />
       <ChatMenuItem icon={convo.archived_at ? ArchiveRestore : Archive} label={convo.archived_at ? tr("Unarchive") : tr("Archive")} onClick={() => onSetting({ archived: !convo.archived_at })} />
+      {!isGroup(convo) || canManage(convo) ? <ChatMenuItem icon={Timer} label={tr("Disappearing messages…")} onClick={onRetention} /> : null}
+      <ChatMenuItem icon={Download} label={tr("Export chat…")} onClick={onExport} />
       {!isGroup(convo) ? <ChatMenuItem icon={Trash2} label={tr("Delete chat")} onClick={onDelete} danger /> : null}
     </div>
+  );
+}
+
+/** Pick how long messages in this chat live (owner or admin in groups, either person in a direct chat). */
+function RetentionModal({ tr, convo, open, onClose, onChange }) {
+  const toast = useToast();
+  const current = convo.retention_days ? String(convo.retention_days) : "";
+  const [days, setDays] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const cap = convo.retention_cap ?? null;
+  const save = async () => {
+    setBusy(true);
+    try {
+      const c = await api.put(`/api/chat/conversations/${convo.id}/retention`, { days: days ? Number(days) : null });
+      onChange(c);
+      toast.success(days ? tr("Messages now disappear after {v}", { v: retentionLabel(Number(days), tr) }) : tr("Disappearing messages turned off"));
+      onClose();
+    } catch (e) {
+      toast.error(tr("Could not update the chat"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title={tr("Disappearing messages")} description={tr("Older messages are deleted for everyone in this chat, files included.")}>
+      <div className="space-y-1.5" role="radiogroup">
+        {RETENTION_OPTIONS.map((o) => {
+          const overCap = Boolean(cap && o.value !== "" && Number(o.value) > cap);
+          return (
+            <label key={o.value} className={cn("chat-retention-option flex cursor-pointer items-center gap-3 rounded-app border border-line px-3 py-2 text-sm hover:bg-surface-2", days === o.value && "border-accent bg-accent/8", overCap && "cursor-not-allowed opacity-50")}>
+              <input type="radio" name="retention" value={o.value} checked={days === o.value} disabled={overCap} onChange={() => setDays(o.value)} />
+              <span className="flex-1">{tr(o.label)}</span>
+              {o.value === "" && cap ? <span className="text-[11px] text-fg-muted">{tr("capped at {v}", { v: retentionLabel(cap, tr) })}</span> : null}
+            </label>
+          );
+        })}
+      </div>
+      {cap ? <p className="mt-3 text-[11px] text-fg-muted">{tr("An administrator limits chat history to {v}.", { v: retentionLabel(cap, tr) })}</p> : null}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>{tr("Cancel")}</Button>
+        <Button onClick={save} loading={busy} disabled={days === current}>{tr("Save")}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+const EXPORT_FORMATS = [
+  { format: "txt", icon: FileText, label: "Transcript (.txt)", desc: "Plain text, one line per message; files are named, not included." },
+  { format: "json", icon: FileJson, label: "Data (.json)", desc: "Every message with reactions, mentions and attachment details." },
+  { format: "zip", icon: FileArchive, label: "Everything (.zip)", desc: "Transcript, data and every photo, voice note and file." },
+];
+/** Download the chat as a transcript, JSON, or a ZIP with every file. */
+function ExportModal({ tr, convo, open, onClose }) {
+  const go = (format) => {
+    downloadUrl(`/api/chat/conversations/${convo.id}/export?format=${format}`);
+    onClose();
+  };
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title={tr("Export chat")} description={isGroup(convo) ? tr("Everything you can see in “{title}”.", { title: convo.name }) : tr("Your conversation with {name}.", { name: convo.name })}>
+      <div className="space-y-2">
+        {EXPORT_FORMATS.map((o) => {
+          const Icon = o.icon;
+          return (
+            <button key={o.format} type="button" onClick={() => go(o.format)} className="chat-export-option flex w-full items-start gap-3 rounded-app border border-line px-3 py-2.5 text-left hover:border-accent hover:bg-accent/5 focus-ring">
+              <Icon size={18} className="mt-0.5 shrink-0 text-accent" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{tr(o.label)}</span>
+                <span className="block text-[11px] text-fg-muted">{tr(o.desc)}</span>
+              </span>
+              <Download size={14} className="mt-1 shrink-0 text-fg-faint" />
+            </button>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
+/** Tell the administrators about someone's message. */
+function ReportModal({ tr, message, open, onClose }) {
+  const toast = useToast();
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/api/chat/messages/${message.id}/report`, { reason });
+      toast.success(tr("Reported"), tr("An administrator will look at it."));
+      onClose();
+    } catch (e) {
+      toast.error(tr("Could not send the report"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title={tr("Report message")} description={tr("Only administrators see reports. {name} is not told who reported it.", { name: message?.sender_name ?? "" })}>
+      {message ? (
+        <blockquote className="chat-quote mb-3 rounded-app-sm border-l-2 border-line bg-surface-2 px-3 py-2 text-sm">
+          <span className="block text-[11px] font-semibold text-fg-muted">{message.sender_name}</span>
+          <span className="line-clamp-3 whitespace-pre-wrap break-words">{message.body || (message.attachments?.length ? tr("{n} attachments", { n: message.attachments.length }) : "")}</span>
+        </blockquote>
+      ) : null}
+      <Field label={tr("What is wrong with it?")}>
+        <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} maxLength={500} placeholder={tr("Spam, harassment, something that should not be shared…")} autoFocus />
+      </Field>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>{tr("Cancel")}</Button>
+        <Button variant="danger" icon={Flag} onClick={send} loading={busy} disabled={!reason.trim()}>{tr("Send report")}</Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -465,6 +615,7 @@ export default function ChatModule() {
   const [active, setActive] = useState(() => Number(sp.get("c")) || null);
   const [threads, setThreads] = useState({});
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
+  const [pendingJoin, setPendingJoin] = useState(null); // { code, group, relation } from a group invite link
   const [newGroup, setNewGroup] = useState(false);
   const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
   const [focusId, setFocusId] = useState(null); // message to scroll to and flash after a search jump
@@ -624,6 +775,17 @@ export default function ChatModule() {
     router.replace("/chat?tab=friends");
   }, [sp, router]);
 
+  // a group invite link lands here as ?join=CODE
+  useEffect(() => {
+    const code = sp.get("join");
+    if (!code) return;
+    api
+      .get(`/api/chat/invites/${encodeURIComponent(code)}`)
+      .then((r) => setPendingJoin({ code, ...r }))
+      .catch((e) => toastRef.current.error("Could not read that invite link", e.message));
+    router.replace("/chat");
+  }, [sp, router]);
+
   // live updates: server-sent events, polling if the stream cannot connect
   useEffect(() => {
     let es = null;
@@ -710,12 +872,23 @@ export default function ChatModule() {
     const onConversation = (ev) => {
       if (ev.action === "removed") {
         setConvos((list) => (list ?? []).filter((c) => c.id !== ev.conversation_id));
-        if (activeRef.current === ev.conversation_id) {
-          setActive(null);
-          toastRef.current.info?.(tr("You were removed from “{title}”", { title: ev.title ?? "" })) ?? toastRef.current.success(tr("You were removed from “{title}”", { title: ev.title ?? "" }));
-        }
+        setThreads((t) => {
+          if (!t[ev.conversation_id]) return t;
+          const next = { ...t };
+          delete next[ev.conversation_id];
+          return next;
+        });
+        const text = ev.reason === "moderation" ? tr("An administrator deleted the chat “{title}”", { title: ev.title || "" }) : tr("You were removed from “{title}”", { title: ev.title ?? "" });
+        if (activeRef.current === ev.conversation_id) setActive(null);
+        toastRef.current.info?.(text) ?? toastRef.current.success(text);
         return;
       }
+      loadConvos();
+    };
+    // retention purged old messages: drop them from any loaded thread
+    const onPurged = (ev) => {
+      const gone = new Set(ev.ids ?? []);
+      setThreads((t) => (t[ev.conversation_id] ? { ...t, [ev.conversation_id]: t[ev.conversation_id].filter((m) => !gone.has(m.id)) } : t));
       loadConvos();
     };
     try {
@@ -725,6 +898,7 @@ export default function ChatModule() {
       es.addEventListener("delivered", (e) => onDelivered(JSON.parse(e.data)));
       es.addEventListener("presence", (e) => onPresence(JSON.parse(e.data)));
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
+      es.addEventListener("purged", (e) => onPurged(JSON.parse(e.data)));
       es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
       es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
       es.addEventListener("message_updated", (e) => onMessageUpdated(JSON.parse(e.data)));
@@ -885,6 +1059,43 @@ export default function ChatModule() {
             } catch (e) {
               toast.error(tr("Could not send the request"), e.message);
             }
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={!!pendingJoin}
+        onClose={() => setPendingJoin(null)}
+        danger={false}
+        loading={false}
+        title={pendingJoin?.relation === "member" ? tr("You are already in this group") : pendingJoin?.relation === "full" ? tr("This group is full") : tr("Join “{title}”?", { title: pendingJoin?.group?.title ?? "" })}
+        confirmText={pendingJoin?.relation === "none" ? tr("Join group") : pendingJoin?.relation === "member" ? tr("Open") : tr("OK")}
+        description={
+          !pendingJoin
+            ? ""
+            : pendingJoin.relation === "none"
+              ? tr("“{title}” has {n} members. Anyone with this link can join, and the group will see that you joined.", { title: pendingJoin.group.title, n: pendingJoin.group.member_count })
+              : pendingJoin.relation === "member"
+                ? tr("“{title}” is already in your chats.", { title: pendingJoin.group.title })
+                : tr("“{title}” already has the most members a group can have.", { title: pendingJoin.group.title })
+        }
+        onConfirm={async () => {
+          const p = pendingJoin;
+          setPendingJoin(null);
+          if (!p) return;
+          if (p.relation === "member") {
+            setActive(p.group.id);
+            setTab("chats");
+            return;
+          }
+          if (p.relation !== "none") return;
+          try {
+            const c = await api.post(`/api/chat/invites/${encodeURIComponent(p.code)}`);
+            upsertConvo(c);
+            setActive(c.id);
+            setTab("chats");
+            toast.success(tr("Welcome to “{title}”", { title: c.title }));
+          } catch (e) {
+            toast.error(tr("Could not join the group"), e.message);
           }
         }}
       />
@@ -1131,10 +1342,12 @@ function GroupCreateModal({ tr, open, friends, onClose, onCreated }) {
 function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft }) {
   const toast = useToast();
   const owner = convo.my_role === "owner";
+  const manager = canManage(convo);
   const [title, setTitle] = useState(convo.title ?? "");
   const [adding, setAdding] = useState([]);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null); // { kind: "leave" } | { kind: "remove", member }
+  const [transfer, setTransfer] = useState(null); // member to hand the group to
   const run = async (fn, okMsg) => {
     setBusy(true);
     try {
@@ -1162,6 +1375,10 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
       onChange(c);
     }
   };
+  const changeRole = async (m, role) => {
+    const c = await run(() => api.put(`/api/chat/conversations/${convo.id}/members/${m.id}`, { role }), role === "admin" ? tr("{name} is now an admin", { name: m.name }) : tr("{name} is no longer an admin", { name: m.name }));
+    if (c) onChange(c);
+  };
   const runConfirm = async () => {
     const c = confirm;
     setConfirm(null);
@@ -1188,10 +1405,21 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
       setPicBusy(false);
     }
   };
+  const menuFor = (m) => {
+    if (m.id === me?.id) return [];
+    const items = [];
+    if (owner) {
+      items.push(m.role === "admin" ? { label: tr("Remove as admin"), icon: Shield, onClick: () => changeRole(m, "member") } : { label: tr("Make admin"), icon: Shield, onClick: () => changeRole(m, "admin") });
+      items.push({ label: tr("Transfer ownership…"), icon: Crown, onClick: () => setTransfer(m) });
+      items.push({ divider: true });
+    }
+    if (owner || (manager && m.role === "member")) items.push({ label: tr("Remove from group"), icon: UserMinus, danger: true, onClick: () => setConfirm({ kind: "remove", member: m }) });
+    return items;
+  };
   return (
     <Modal open={open} onClose={onClose} size="sm" title={convo.title} description={memberCount(convo.member_count, tr)}>
       <div className="space-y-5">
-        {owner ? (
+        {manager ? (
           <section>
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Group picture")}</p>
             <AvatarPicker
@@ -1212,7 +1440,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
             />
           </section>
         ) : null}
-        {owner ? (
+        {manager ? (
           <Field label={tr("Group name")}>
             <div className="flex gap-2">
               <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} className="flex-1" />
@@ -1223,21 +1451,26 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
         <section>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Members")}</p>
           <ul className="space-y-0.5">
-            {convo.members.map((m) => (
-              <li key={m.id} className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-1.5">
-                <Presence online={m.online} size="sm"><Avatar name={m.name} color={m.avatar_color} avatar={m.avatar} size="sm" /></Presence>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-sm font-medium">
-                    <span className="truncate">{m.id === me?.id ? tr("You") : m.name}</span>
-                    {m.role === "owner" ? <Badge tone="amber" size="xs"><Crown size={10} /> {tr("Owner")}</Badge> : null}
+            {convo.members.map((m) => {
+              const items = menuFor(m);
+              return (
+                <li key={m.id} className="chat-person flex items-center gap-2.5 rounded-app-sm px-2 py-1.5">
+                  <Presence online={m.online} size="sm"><Avatar name={m.name} color={m.avatar_color} avatar={m.avatar} size="sm" /></Presence>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 text-sm font-medium">
+                      <span className="truncate">{m.id === me?.id ? tr("You") : m.name}</span>
+                      {m.role === "owner" ? <Badge tone="amber" size="xs"><Crown size={10} /> {tr("Owner")}</Badge> : m.role === "admin" ? <Badge tone="indigo" size="xs"><Shield size={10} /> {tr("Admin")}</Badge> : null}
+                    </span>
+                    <span className="block truncate text-[11px] text-fg-muted">{m.email}</span>
                   </span>
-                  <span className="block truncate text-[11px] text-fg-muted">{m.email}</span>
-                </span>
-                {owner && m.id !== me?.id ? <Button size="iconXs" variant="ghost" icon={UserMinus} aria-label={tr("Remove")} data-tip={tr("Remove from group")} onClick={() => setConfirm({ kind: "remove", member: m })} /> : null}
-              </li>
-            ))}
+                  {items.length ? <DropdownMenu trigger={({ toggle }) => <Button size="iconXs" variant="ghost" icon={EllipsisVertical} aria-label={tr("Member options")} data-tip={tr("Member options")} onClick={toggle} />} items={items} /> : null}
+                </li>
+              );
+            })}
           </ul>
+          {owner ? <p className="mt-1 text-[11px] text-fg-muted">{tr("Admins can rename the group, change its picture, manage the invite link, remove members and delete any message. Only you can change roles.")}</p> : null}
         </section>
+        {manager ? <InviteSection tr={tr} convo={convo} /> : null}
         <section>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Add friends")}</p>
           <FriendPicker tr={tr} friends={friends} selected={adding} onChange={setAdding} exclude={memberIds} />
@@ -1245,7 +1478,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
         </section>
         <div className="ui-divider border-t border-line pt-4">
           <Button variant="dangerGhost" icon={LogOut} onClick={() => setConfirm({ kind: "leave" })} disabled={busy}>{tr("Leave group")}</Button>
-          {owner && convo.member_count > 1 ? <p className="mt-1 text-[11px] text-fg-muted">{tr("As the owner, leaving hands the group to its longest-standing member.")}</p> : null}
+          {owner && convo.member_count > 1 ? <p className="mt-1 text-[11px] text-fg-muted">{tr("As the owner, leaving hands the group to its longest-standing admin, or member if there is none. Use “Transfer ownership” to choose.")}</p> : null}
           {convo.member_count === 1 ? <p className="mt-1 text-[11px] text-fg-muted">{tr("You are the last member, so leaving deletes the group and its messages.")}</p> : null}
         </div>
       </div>
@@ -1258,6 +1491,94 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
         confirmText={confirm?.kind === "remove" ? tr("Remove") : tr("Leave")}
         description={confirm?.kind === "remove" ? tr("They will stop seeing new messages. A member can add them again.") : convo.member_count === 1 ? tr("The group and its messages will be deleted.") : tr("You will stop receiving messages from this group.")}
       />
+      {transfer ? <TransferModal key={transfer.id} tr={tr} convo={convo} member={transfer} open onClose={() => setTransfer(null)} onChange={onChange} /> : null}
+    </Modal>
+  );
+}
+
+/** The group's invite link (owner and admins): create, copy, show as a QR code, reset or turn off. */
+function InviteSection({ tr, convo }) {
+  const toast = useToast();
+  const { data, setData, loading } = useFetch(`/api/chat/conversations/${convo.id}/invite`);
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState(false);
+  const run = async (fn, msg) => {
+    setBusy(true);
+    try {
+      setData(await fn());
+      if (msg) toast.success(msg);
+    } catch (e) {
+      toast.error(tr("Something went wrong"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(data.link);
+      toast.success(tr("Link copied"));
+    } catch {
+      toast.error(tr("Could not copy"));
+    }
+  };
+  return (
+    <section className="chat-invite">
+      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Invite link")}</p>
+      {loading && !data ? (
+        <Skeleton className="h-9 w-full" />
+      ) : data?.code ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Input readOnly value={data.link} className="chat-invite-link min-w-0 flex-1 text-xs" onFocus={(e) => e.target.select()} aria-label={tr("Invite link")} />
+            <Button size="sm" variant="secondary" icon={Copy} onClick={copy}>{tr("Copy")}</Button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="ghost" icon={QrCode} onClick={() => setQr((v) => !v)}>{qr ? tr("Hide QR") : tr("Show QR")}</Button>
+            <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => run(() => api.post(`/api/chat/conversations/${convo.id}/invite`), tr("New link created — the old one no longer works"))} loading={busy}>{tr("Reset link")}</Button>
+            <Button size="sm" variant="dangerGhost" icon={Ban} onClick={() => run(() => api.del(`/api/chat/conversations/${convo.id}/invite`), tr("Invite link turned off"))} loading={busy}>{tr("Turn off")}</Button>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element -- a data: URL, nothing to optimise */}
+          {qr ? <img src={data.qr} alt={tr("Invite QR code")} width={180} height={180} className="chat-invite-qr rounded-app border border-line bg-white p-2" /> : null}
+          <p className="text-[11px] text-fg-muted">{tr("Anyone signed in to this portal can join with the link — no friend request needed. Reset it if it leaks.")}</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-fg-muted">{tr("Let people join without being added one by one.")}</p>
+          <Button size="sm" variant="secondary" icon={Link2} onClick={() => run(() => api.post(`/api/chat/conversations/${convo.id}/invite`), tr("Invite link created"))} loading={busy}>{tr("Create invite link")}</Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Hand the group to someone else — deliberately: their name must be typed. You stay on as an admin. */
+function TransferModal({ tr, convo, member, open, onClose, onChange }) {
+  const toast = useToast();
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ready = typed.trim().toLowerCase() === String(member.name).trim().toLowerCase();
+  const go = async () => {
+    setBusy(true);
+    try {
+      const c = await api.put(`/api/chat/conversations/${convo.id}/members/${member.id}`, { role: "owner", confirm: typed });
+      onChange(c);
+      toast.success(tr("{name} now owns “{title}”", { name: member.name, title: convo.title }));
+      onClose();
+    } catch (e) {
+      toast.error(tr("Could not transfer the group"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title={tr("Transfer ownership")} description={tr("{name} becomes the owner of “{title}” and you stay on as an admin. Only they can hand it back.", { name: member.name, title: convo.title })}>
+      <Field label={tr("Type {name} to confirm", { name: member.name })}>
+        <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus placeholder={member.name} onKeyDown={(e) => e.key === "Enter" && ready && !busy && go()} />
+      </Field>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>{tr("Cancel")}</Button>
+        <Button variant="danger" icon={Crown} onClick={go} loading={busy} disabled={!ready}>{tr("Transfer ownership")}</Button>
+      </div>
     </Modal>
   );
 }
@@ -1333,6 +1654,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [panel, setPanel] = useState(false);
   const [chatMenu, setChatMenu] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState(false);
+  const [retentionOpen, setRetentionOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [reportFor, setReportFor] = useState(null); // message being reported
   const [chatBusy, setChatBusy] = useState(false);
   const changeSetting = async (patch) => {
     setChatMenu(false);
@@ -1748,6 +2072,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
             <span className="truncate">{convo.name}</span>
             {convo.muted ? <BellOff size={12} className="shrink-0 text-fg-faint" aria-label={tr("Muted")} /> : null}
             {convo.pinned_at ? <Pin size={12} className="shrink-0 text-fg-faint" aria-label={tr("Pinned")} /> : null}
+            {convo.retention_days || convo.retention_cap ? <Timer size={12} className="chat-retention-icon shrink-0 text-amber-500" aria-label={tr("Disappearing messages")} data-tip={tr("Messages disappear after {v}", { v: retentionLabel(convo.retention_days && convo.retention_cap ? Math.min(convo.retention_days, convo.retention_cap) : convo.retention_days || convo.retention_cap, tr) })} /> : null}
           </span>
           <span className={cn("chat-presence block truncate text-[11px]", !group && convo.online ? "text-emerald-600" : "text-fg-muted")}>
             {group
@@ -1763,7 +2088,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         {group ? <Button variant="ghost" size="iconSm" icon={Settings2} onClick={() => setPanel(true)} aria-label={tr("Group settings")} data-tip={tr("Group settings")} /> : null}
         <span className="relative">
           <Button variant="ghost" size="iconSm" icon={EllipsisVertical} onClick={() => setChatMenu((v) => !v)} aria-label={tr("Chat options")} data-tip={tr("Chat options")} loading={chatBusy} />
-          {chatMenu ? <ChatMenu tr={tr} convo={convo} onClose={() => setChatMenu(false)} onSetting={changeSetting} onDelete={() => { setChatMenu(false); setConfirmDeleteChat(true); }} /> : null}
+          {chatMenu ? <ChatMenu tr={tr} convo={convo} onClose={() => setChatMenu(false)} onSetting={changeSetting} onDelete={() => { setChatMenu(false); setConfirmDeleteChat(true); }} onRetention={() => { setChatMenu(false); setRetentionOpen(true); }} onExport={() => { setChatMenu(false); setExportOpen(true); }} /> : null}
         </span>
       </header>
       <ConfirmDialog
@@ -1799,6 +2124,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         </div>
       ) : null}
       {group && panel ? <GroupPanel tr={tr} me={me} convo={convo} friends={friends ?? []} open={panel} onClose={() => setPanel(false)} onChange={onConvoChange} onLeft={(id) => { setPanel(false); onLeft(id); }} /> : null}
+      {retentionOpen ? <RetentionModal tr={tr} convo={convo} open onClose={() => setRetentionOpen(false)} onChange={onConvoChange} /> : null}
+      {exportOpen ? <ExportModal tr={tr} convo={convo} open onClose={() => setExportOpen(false)} /> : null}
+      {reportFor ? <ReportModal tr={tr} message={reportFor} open onClose={() => setReportFor(null)} /> : null}
       <div className="relative flex min-h-0 flex-1 flex-col" {...dropProps}>
         {dragging ? (
           <div className="chat-drop pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-app border-2 border-dashed border-accent bg-accent/10 text-sm font-medium text-accent">
@@ -1837,7 +2165,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
                 const deleted = Boolean(m.deleted_at);
                 const canEdit = mine && !deleted && (m.body || photos.length > 0 || files.length > 0) && !voice;
-                const canDelete = !deleted && (mine || (group && convo.my_role === "owner"));
+                const canDelete = !deleted && (mine || canManage(convo));
                 const menuBtn =
                   !deleted ? (
                     <button
@@ -1912,6 +2240,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           onForward={() => { setMenu(null); setForwardMsg(m); }}
                           onEdit={() => startEdit(m)}
                           onDelete={() => { setMenu(null); setConfirmDelete(m); }}
+                          onReport={!mine ? () => { setMenu(null); setReportFor(m); } : undefined}
                           onClose={() => setMenu(null)}
                         />
                       ) : null}

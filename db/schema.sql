@@ -451,14 +451,17 @@ CREATE TABLE IF NOT EXISTS conversations (
   title VARCHAR(80) NULL, -- groups only
   avatar_color VARCHAR(16) NOT NULL DEFAULT '#6366f1',
   avatar VARCHAR(255) NULL, -- group picture: 'preset:<key>' or 'upload:group:<id>:<stored file>'; NULL = coloured badge
+  invite_code VARCHAR(16) NULL, -- groups: anyone signed in can join with /chat?join=CODE while it is set
+  retention_days SMALLINT UNSIGNED NULL, -- disappearing messages: rows older than this are purged; NULL = keep
   created_by INT UNSIGNED NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_conversations_invite (invite_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS conversation_members (
   conversation_id INT UNSIGNED NOT NULL,
   user_id INT UNSIGNED NOT NULL,
-  role ENUM('owner','member') NOT NULL DEFAULT 'member', -- the owner renames a group and removes people
+  role ENUM('owner','admin','member') NOT NULL DEFAULT 'member', -- owner and admins rename a group, manage the invite link and remove people; only the owner changes roles
   last_read_message_id INT UNSIGNED NULL, -- read receipts and unread counts
   delivered_message_id INT UNSIGNED NULL, -- the newest message this member's device has received
   muted TINYINT(1) NOT NULL DEFAULT 0, -- no bell or push from this chat, and it stays out of the sidebar badge
@@ -520,6 +523,26 @@ CREATE TABLE IF NOT EXISTS message_reactions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Who a group message mentions (@Name / @everyone); drives the "@" unread signal and mention notifications
+-- Reports users file against a message; the snapshot keeps the text and names even after the message is deleted or purged.
+-- Reporter and sender ids carry no foreign key on purpose (users already cascade into many chat tables).
+CREATE TABLE IF NOT EXISTS message_reports (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  conversation_id INT UNSIGNED NOT NULL,
+  message_id INT UNSIGNED NULL, -- NULL once the message row is gone (purged or the chat deleted)
+  reporter_id INT UNSIGNED NOT NULL,
+  sender_id INT UNSIGNED NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  snapshot JSON NOT NULL, -- { body, sender_name, reporter_name, conversation, attachments: [names] }
+  status ENUM('open','dismissed','actioned') NOT NULL DEFAULT 'open',
+  resolved_by INT UNSIGNED NULL,
+  resolved_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_message_reports_status (status, created_at),
+  KEY idx_message_reports_message (message_id),
+  CONSTRAINT fk_message_reports_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_message_reports_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS message_mentions (
   message_id INT UNSIGNED NOT NULL,
   user_id INT UNSIGNED NOT NULL,

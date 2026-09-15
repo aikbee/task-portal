@@ -26,6 +26,7 @@ export const GET = handler(async (_request, _params, user) => {
     [o, o, o, o, o, o, o, o, o, o, o, user.id, o, o, user.id, user.id, user.id]
   );
 
+  if (user.role === "admin") counts.moderation = Number((await query("SELECT COUNT(*) AS n FROM message_reports WHERE status = 'open'"))[0]?.n ?? 0);
   const tasksByStatus = await query("SELECT status, COUNT(*) AS n FROM tasks WHERE profile_id = ? GROUP BY status", [o]);
   const tasksByPriority = await query("SELECT priority, COUNT(*) AS n FROM tasks WHERE profile_id = ? GROUP BY priority", [o]);
 
