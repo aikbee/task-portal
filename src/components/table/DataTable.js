@@ -483,11 +483,11 @@ export default function DataTable({
                       ) : null}
                     </div>
                     {rest.length ? (
-                      <dl className="dt-card-grid mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs">
+                      <dl className="dt-card-grid mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 text-xs">
                         {rest.map((c) => (
                           <Fragment key={c.key}>
-                            <dt className="whitespace-nowrap pt-px text-[11px] font-medium uppercase tracking-wide text-fg-faint">{labelOf(c)}</dt>
-                            <dd className={cn("min-w-0 text-fg", c.align === "right" && "text-right")}>{c.render ? c.render(row) : (row[c.key] ?? <span className="text-fg-faint">—</span>)}</dd>
+                            <dt className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-fg-faint">{labelOf(c)}</dt>
+                            <dd className="dt-card-val flex min-w-0 justify-end text-right text-fg">{c.render ? c.render(row) : (row[c.key] ?? <span className="text-fg-faint">—</span>)}</dd>
                           </Fragment>
                         ))}
                       </dl>

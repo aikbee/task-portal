@@ -2277,4 +2277,12 @@ body { -webkit-tap-highlight-color: transparent; }
   .dt-card .dt-card-grid dd > * {
     max-width: 100%;
   }
+  /* bars and full-width controls still stretch; everything else hugs the right edge */
+  .dt-card .dt-card-grid dd > .ui-progress,
+  .dt-card .dt-card-grid dd > .w-full {
+    width: 100%;
+  }
+  .dt-card .dt-card-grid dd .ui-progress {
+    min-width: 7rem;
+  }
 }
