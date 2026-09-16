@@ -1421,7 +1421,489 @@ function meadow(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow };
+/* ---------- City drive: the driver's view, cruising down a city avenue at a steady, moderate speed ---------- */
+/** Building facades: a 6×6 block of windows tiled over each wall (`day`), and the subset lit at night (`lit`). */
+function facadeTextures(THREE) {
+  const cells = 6, px = 32, size = cells * px;
+  const day = document.createElement("canvas"), lit = document.createElement("canvas");
+  day.width = day.height = lit.width = lit.height = size;
+  const d = day.getContext("2d"), l = lit.getContext("2d");
+  d.fillStyle = "#ffffff";
+  d.fillRect(0, 0, size, size);
+  l.fillStyle = "#000000";
+  l.fillRect(0, 0, size, size);
+  const warm = ["#ffe9b0", "#ffd98a", "#fff3d1", "#dbeaff", "#ffe4c4"];
+  for (let y = 0; y < cells; y++) {
+    for (let x = 0; x < cells; x++) {
+      const wx = x * px + 7, wy = y * px + 6, ww = px - 14, wh = px - 12;
+      d.fillStyle = "#46566f";
+      d.fillRect(wx, wy, ww, wh);
+      d.fillStyle = "rgba(255,255,255,0.4)";
+      d.fillRect(wx, wy, ww, 3);
+      if (Math.random() < 0.5) {
+        l.globalAlpha = rand(0.45, 1);
+        l.fillStyle = warm[Math.floor(Math.random() * warm.length)];
+        l.fillRect(wx, wy, ww, wh);
+        l.globalAlpha = 1;
+      }
+    }
+  }
+  const mk = (c) => {
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = 4;
+    if (THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return { day: mk(day), lit: mk(lit) };
+}
+/** One 14 m × 12 m stretch of two-way road (asphalt, solid edge lines, dashed lane lines) that tiles along the avenue. */
+function roadTexture(THREE) {
+  const w = 256, h = 512;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const g = c.getContext("2d");
+  g.fillStyle = "#3d3e44";
+  g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 2400; i++) {
+    g.fillStyle = `rgba(${Math.random() < 0.5 ? "255,255,255" : "0,0,0"},${rand(0.03, 0.12).toFixed(3)})`;
+    g.fillRect(Math.random() * w, Math.random() * h, rand(1, 3), rand(1, 3));
+  }
+  const X = (m) => ((m + 7) / 14) * w, Y = (m) => (m / 12) * h;
+  g.fillStyle = "#e6e4dc";
+  for (const m of [-6.75, 6.75]) g.fillRect(X(m) - 2, 0, 4, h);
+  for (const m of [-3.5, 3.5]) g.fillRect(X(m) - 2, Y(0.5), 4, Y(3));
+  g.fillStyle = "#efe8c4";
+  g.fillRect(X(0) - 2, Y(4), 4, Y(5));
+  const t = new THREE.CanvasTexture(c);
+  t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  if (THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+/** A shop signboard: dark board, a border and a few blocky "characters"; the instance colour tints the light parts. */
+function signTexture(THREE) {
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000000";
+  g.fillRect(0, 0, 128, 64);
+  g.strokeStyle = "#ffffff";
+  g.lineWidth = 3;
+  g.strokeRect(4, 4, 120, 56);
+  g.fillStyle = "#ffffff";
+  const n = 3 + Math.floor(Math.random() * 3);
+  const w = 100 / n;
+  for (let i = 0; i < n; i++) {
+    const x0 = 14 + i * w;
+    for (let k = 0; k < 4; k++) g.fillRect(x0 + rand(0, w - 16), rand(14, 42), rand(5, w - 12), rand(3, 7));
+  }
+  const t = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function citydrive(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const SPEED = 13.5; // metres per second, about 50 km/h
+  const BLOCK = 78, GAP = 13, BLOCKS = preview ? 2 : 3;
+  const L = (BLOCK + GAP) * BLOCKS; // the street repeats every L metres
+  const NEAR = 12, FAR = L - NEAR; // scrolling objects live at z ∈ (-FAR, NEAR]
+  const LANE = -1.75; // left-hand traffic: our lane is the one beside the centre line
+  const fogColor = (dark) => (dark ? "#262347" : "#dcecf7");
+  const skyStops = (dark) => (dark ? ["#03050c", "#0a0f22", "#262347", "#262347", "#262347"] : ["#3b86dd", "#8cc4ff", "#dcecf7", "#dcecf7", "#dcecf7"]);
+  camera.far = 340;
+  camera.updateProjectionMatrix();
+
+  // everything on the street bends sideways with distance (in view space), so the avenue curves gently as we drive
+  const bendMats = [];
+  const bendable = (mat) => {
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uBend = { value: 0 };
+      let v = shader.vertexShader.replace("#include <common>", "#include <common>\nuniform float uBend;");
+      if (v.includes("#include <project_vertex>")) v = v.replace("#include <project_vertex>", THREE.ShaderChunk.project_vertex);
+      shader.vertexShader = v.replace("gl_Position = projectionMatrix * mvPosition;", "mvPosition.x += uBend * mvPosition.z * mvPosition.z;\n\tgl_Position = projectionMatrix * mvPosition;");
+      mat.userData.shader = shader;
+    };
+    mat.customProgramCacheKey = () => "city-bend";
+    bendMats.push(mat);
+    disposables.push(mat);
+    return mat;
+  };
+  const geo = (g) => {
+    disposables.push(g);
+    return g;
+  };
+
+  // sky dome, sun by day, moon and stars by night
+  let skyTex = bandTexture(THREE, skyStops(pal.dark));
+  const skyMat = new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false });
+  scene.add(new THREE.Mesh(geo(new THREE.SphereGeometry(330, 24, 16)), skyMat));
+  const glowTex = glowTexture(THREE);
+  const sunMat = new THREE.SpriteMaterial({ map: glowTex, color: new THREE.Color("#fff1c2"), transparent: true, opacity: pal.dark ? 0 : 0.95, depthWrite: false, fog: false });
+  const sun = new THREE.Sprite(sunMat);
+  sun.scale.setScalar(90);
+  sun.position.set(120, 130, -290);
+  const moonMat = new THREE.SpriteMaterial({ map: glowTex, color: new THREE.Color("#e6ecff"), transparent: true, opacity: pal.dark ? 0.85 : 0, depthWrite: false, fog: false });
+  const moon = new THREE.Sprite(moonMat);
+  moon.scale.setScalar(30);
+  moon.position.set(-110, 120, -290);
+  scene.add(sun, moon);
+  const starN = preview ? 120 : 450;
+  const sPos = new Float32Array(starN * 3);
+  for (let i = 0; i < starN; i++) {
+    let p;
+    do p = onSphere(310); while (p[1] < 25);
+    sPos.set(p, i * 3);
+  }
+  const starGeo = geo(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(sPos, 3));
+  const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, transparent: true, opacity: pal.dark ? 0.8 : 0, depthWrite: false, fog: false });
+  scene.add(new THREE.Points(starGeo, starMat));
+  disposables.push(skyMat, glowTex, sunMat, moonMat, starMat);
+
+  // the far skyline: a hazy silhouette that never scrolls
+  const skylineMat = bendable(new THREE.MeshBasicMaterial({ color: new THREE.Color(pal.dark ? "#1a1935" : "#c4d6e7"), fog: false }));
+  const boxGeo = geo(new THREE.BoxGeometry(1, 1, 1));
+  const skylineN = preview ? 26 : 52;
+  const skyline = new THREE.InstancedMesh(boxGeo, skylineMat, skylineN);
+  const m4 = new THREE.Matrix4(), q0 = new THREE.Quaternion(), v3 = new THREE.Vector3(), sc = new THREE.Vector3(), tmp = new THREE.Color();
+  for (let i = 0; i < skylineN; i++) {
+    const w = rand(9, 22), h = rand(28, 120);
+    v3.set(-290 + (i + rand(0.1, 0.9)) * (580 / skylineN), h / 2, rand(-262, -240));
+    sc.set(w, h, rand(10, 20));
+    m4.compose(v3, q0, sc);
+    skyline.setMatrixAt(i, m4);
+  }
+  scene.add(skyline);
+
+  // ground, road, kerbs
+  const groundMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#5a5b60") }));
+  const ground = new THREE.Mesh(geo(new THREE.PlaneGeometry(600, L + 60, 6, 48)), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(0, -0.03, -(L + 60) / 2 + NEAR + 20);
+  scene.add(ground);
+  const roadTex = roadTexture(THREE);
+  roadTex.repeat.set(1, (L + 60) / 12);
+  const roadMat = bendable(new THREE.MeshLambertMaterial({ map: roadTex }));
+  const road = new THREE.Mesh(geo(new THREE.PlaneGeometry(14, L + 60, 1, 72)), roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.copy(ground.position).setY(0);
+  scene.add(road);
+  const kerbMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#b4b3ad") }));
+  const kerbGeo = geo(new THREE.BoxGeometry(3.6, 0.16, L + 60, 1, 1, 72));
+  for (const side of [-1, 1]) {
+    const k = new THREE.Mesh(kerbGeo, kerbMat);
+    k.position.set(side * 8.8, 0.08, ground.position.z);
+    scene.add(k);
+  }
+  disposables.push(roadTex);
+
+  // things that scroll past: their base z is fixed, the drawn z wraps with the distance driven
+  let driven = 0;
+  const wrapZ = (z0) => {
+    let z = (z0 + driven) % L;
+    if (z < 0) z += L;
+    return z - FAR;
+  };
+  const instanced = [];
+  const addInstanced = (g, mat, capacity) => {
+    const mesh = new THREE.InstancedMesh(g, mat, capacity);
+    mesh.count = 0;
+    scene.add(mesh);
+    const entry = { mesh, items: [] };
+    instanced.push(entry);
+    return entry;
+  };
+  const place = (entry, x, y, z, sx, sy, sz, color) => {
+    const i = entry.items.length;
+    entry.items.push({ x, y, z, sx, sy, sz });
+    entry.mesh.count = i + 1;
+    if (color) entry.mesh.setColorAt(i, tmp.set(color));
+  };
+
+  // buildings: three size classes so the windows keep a sensible size, two rows deep, tall ones behind
+  const tex = facadeTextures(THREE);
+  const wallMat = bendable(new THREE.MeshLambertMaterial({ map: tex.day, emissiveMap: tex.lit, emissive: new THREE.Color("#ffd27a"), emissiveIntensity: pal.dark ? 1 : 0 }));
+  const roofMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#3a3d46") }));
+  const wallMats = [wallMat, wallMat, roofMat, roofMat, wallMat, wallMat];
+  const facadeGeo = (cols, rows) => {
+    const g = geo(new THREE.BoxGeometry(1, 1, 1));
+    const uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * cols, uv.getY(i) * rows);
+    return g;
+  };
+  const classes = {
+    low: { entry: addInstanced(facadeGeo(4, 3), wallMats, 60), h: [6, 11], w: [9, 15], d: [12, 16] },
+    mid: { entry: addInstanced(facadeGeo(5, 6), wallMats, 60), h: [12, 24], w: [10, 17], d: [12, 18] },
+    tall: { entry: addInstanced(facadeGeo(6, 15), wallMats, 40), h: [30, 72], w: [14, 24], d: [14, 22] },
+  };
+  const shades = ["#e8e2d6", "#d9d4c7", "#c9c2b8", "#b6bcc6", "#a8b4bf", "#d6c4b0", "#b89a86", "#9aa6b2", "#e2d9cc", "#c7ced8", "#d4b8a6", "#bcc8c0"];
+  const signTex = signTexture(THREE);
+  disposables.push(signTex);
+  const signMat = bendable(new THREE.MeshBasicMaterial({ map: signTex, color: new THREE.Color(pal.dark ? "#ffffff" : "#8a8a8a") }));
+  const signs = addInstanced(geo(new THREE.BoxGeometry(2.2, 1.1, 0.16)), signMat, 40);
+  const neon = ["#ff4fa3", "#22d3ee", "#fbbf24", "#a78bfa", "#34d399", "#fb7185", "#f97316"];
+  const fillRow = (side, front, cls, gap, signsToo) => {
+    for (let b = 0; b < BLOCKS; b++) {
+      let cursor = -FAR + b * (BLOCK + GAP) + 1;
+      const end = cursor + BLOCK - 1;
+      while (cursor < end - 8) {
+        const c = classes[typeof cls === "function" ? cls() : cls];
+        const w = Math.min(rand(c.w[0], c.w[1]), end - cursor), h = rand(c.h[0], c.h[1]), d = rand(c.d[0], c.d[1]);
+        const z = cursor + w / 2, x = side * (front + d / 2);
+        place(c.entry, x, h / 2, z, d, h, w, shades[Math.floor(Math.random() * shades.length)]);
+        if (signsToo && Math.random() < 0.5 && signs.items.length < 40) place(signs, side * (front - 1.0), rand(3.4, Math.min(h - 1.5, 7.5)), z + rand(-w / 3, w / 3), rand(0.8, 1.3), rand(0.8, 1.3), 1, neon[Math.floor(Math.random() * neon.length)]);
+        cursor += w + rand(gap[0], gap[1]);
+      }
+    }
+  };
+  for (const side of [-1, 1]) {
+    fillRow(side, 10.6, () => (Math.random() < 0.6 ? "mid" : "low"), [0.6, 2.2], true);
+    fillRow(side, 30, "tall", [2, 9], false);
+  }
+  for (const c of Object.values(classes)) {
+    c.entry.mesh.instanceColor.needsUpdate = true;
+  }
+  signs.mesh.instanceColor.needsUpdate = true;
+
+  // cross streets and zebra crossings at the block gaps
+  const streetMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#45464c") }));
+  const streets = addInstanced(geo(new THREE.BoxGeometry(1, 1, 1)), streetMat, BLOCKS * 2);
+  const stripeMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#e8e6df") }));
+  const stripes = addInstanced(geo(new THREE.BoxGeometry(0.6, 0.02, 2.6)), stripeMat, BLOCKS * 12);
+  for (let b = 0; b < BLOCKS; b++) {
+    const zGap = -FAR + b * (BLOCK + GAP) + BLOCK + GAP / 2;
+    for (const side of [-1, 1]) place(streets, side * 37, 0.085, zGap, 60, 0.17, GAP - 2);
+    for (let s = 0; s < 12; s++) place(stripes, -6.05 + s * 1.1, 0.01, zGap - GAP / 2 + 2.6, 1, 1, 1);
+  }
+
+  // street lamps (alternating sides) with a glow and a pool of light at night, trees between them
+  const metalMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#4a4d55") }));
+  const poles = addInstanced(geo(new THREE.CylinderGeometry(0.08, 0.13, 8, 6)), metalMat, 14);
+  const arms = addInstanced(geo(new THREE.BoxGeometry(3.4, 0.12, 0.12)), metalMat, 14);
+  const heads = addInstanced(geo(new THREE.BoxGeometry(0.7, 0.2, 0.3)), metalMat, 14);
+  const lampGlowMat = bendable(new THREE.SpriteMaterial({ map: glowTex, color: new THREE.Color("#ffe3a3"), transparent: true, opacity: pal.dark ? 0.95 : 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const poolMat = bendable(new THREE.MeshBasicMaterial({ map: glowTex, color: new THREE.Color("#ffd28a"), transparent: true, opacity: pal.dark ? 0.32 : 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const poolGeo = geo(new THREE.PlaneGeometry(10, 16));
+  const lamps = [];
+  const trunkMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#6b4a2f") }));
+  const crownMat = bendable(new THREE.MeshLambertMaterial({ flatShading: true }));
+  const trunks = addInstanced(geo(new THREE.CylinderGeometry(0.12, 0.2, 2.4, 5)), trunkMat, 30);
+  const crowns = addInstanced(geo(new THREE.IcosahedronGeometry(1.5, 0)), crownMat, 30);
+  for (let z = -FAR + 8, i = 0; z < NEAR; z += 28, i++) {
+    const side = i % 2 ? 1 : -1;
+    place(poles, side * 8.6, 4, z, 1, 1, 1);
+    place(arms, side * 6.9, 7.95, z, 1, 1, 1);
+    place(heads, side * 5.4, 7.85, z, 1, 1, 1);
+    const glow = new THREE.Sprite(lampGlowMat);
+    glow.scale.set(2.6, 1.8, 1);
+    const pool = new THREE.Mesh(poolGeo, poolMat);
+    pool.rotation.x = -Math.PI / 2;
+    scene.add(glow, pool);
+    lamps.push({ z, side, glow, pool });
+    for (const s of [-1, 1]) {
+      const tz = z + 14 + rand(-3, 3);
+      if (tz < NEAR - 2) {
+        const k = rand(0.8, 1.3);
+        place(trunks, s * 9.4, 1.36, tz, 1, 1, 1);
+        place(crowns, s * 9.4, 3.5, tz, k, k * rand(0.9, 1.3), k, ["#3f8a3a", "#4f9d3f", "#2f7a33", "#6aa84f"][i % 4]);
+      }
+    }
+  }
+  crowns.mesh.instanceColor.needsUpdate = true;
+
+  // other traffic: oncoming cars on the far side, slower and faster cars in our lanes
+  const carBodyGeo = geo(new THREE.BoxGeometry(1.8, 0.62, 4.3)), cabinGeo = geo(new THREE.BoxGeometry(1.6, 0.55, 2.2)), wheelGeo = geo(new THREE.CylinderGeometry(0.34, 0.34, 0.26, 10));
+  wheelGeo.rotateZ(Math.PI / 2);
+  const glassMat = bendable(new THREE.MeshPhongMaterial({ color: new THREE.Color("#1f2937"), shininess: 90, specular: new THREE.Color("#8899aa") }));
+  const tyreMat = bendable(new THREE.MeshLambertMaterial({ color: new THREE.Color("#15171c") }));
+  const carMats = ["#e5e7eb", "#1f2937", "#b91c1c", "#1d4ed8", "#9ca3af", "#f59e0b", "#0f766e", "#f3f4f6"].map((c) => bendable(new THREE.MeshPhongMaterial({ color: new THREE.Color(c), shininess: 70, specular: new THREE.Color("#777777") })));
+  const headMat = bendable(new THREE.SpriteMaterial({ map: glowTex, color: new THREE.Color("#fff7d6"), transparent: true, opacity: pal.dark ? 0.95 : 0.35, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const tailMat = bendable(new THREE.SpriteMaterial({ map: glowTex, color: new THREE.Color("#ff2a2a"), transparent: true, opacity: pal.dark ? 0.9 : 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const makeCar = (oncoming) => {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(carBodyGeo, carMats[Math.floor(Math.random() * carMats.length)]);
+    body.position.y = 0.62;
+    const cabin = new THREE.Mesh(cabinGeo, glassMat);
+    cabin.position.set(0, 1.18, 0.2);
+    g.add(body, cabin);
+    for (const [wx, wz] of [[0.86, 1.35], [-0.86, 1.35], [0.86, -1.35], [-0.86, -1.35]]) {
+      const w = new THREE.Mesh(wheelGeo, tyreMat);
+      w.position.set(wx, 0.34, wz);
+      g.add(w);
+    }
+    for (const x of [-0.62, 0.62]) {
+      const h = new THREE.Sprite(headMat);
+      h.scale.set(1, 0.55, 1);
+      h.position.set(x, 0.66, -2.2);
+      const t = new THREE.Sprite(tailMat);
+      t.scale.set(0.6, 0.35, 1);
+      t.position.set(x, 0.72, 2.2);
+      g.add(h, t);
+    }
+    if (oncoming) g.rotation.y = Math.PI;
+    scene.add(g);
+    return g;
+  };
+  const oncoming = [], ahead = [];
+  for (let i = 0; i < (preview ? 2 : 4); i++) oncoming.push({ g: makeCar(true), x: Math.random() < 0.5 ? 1.75 : 5.25, z: rand(-FAR, NEAR), speed: rand(10, 16) });
+  for (let i = 0; i < (preview ? 1 : 3); i++) {
+    const inOurLane = i === 0;
+    ahead.push({ g: makeCar(false), x: inOurLane ? LANE : -5.25, tx: inOurLane ? LANE : -5.25, z: rand(-FAR + 20, -30), rel: inOurLane ? rand(-2.5, -0.5) : rand(-3, 3) });
+  }
+
+  // our car: bonnet in the accent colour and a steering wheel, with the camera in the driver's seat
+  const car = new THREE.Group();
+  car.position.set(LANE, 0, 0);
+  scene.add(car);
+  const bonnetMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(pal.accent), shininess: 110, specular: new THREE.Color("#b8bcc4") });
+  // the bonnet is a shallow arc (a slice of a wide cylinder) so it shades softly, nose dipping slightly
+  const bonnet = new THREE.Mesh(geo(new THREE.CylinderGeometry(3, 3, 1.3, 20, 1, true, -0.3, 0.6)), bonnetMat);
+  bonnet.rotation.x = -Math.PI / 2;
+  bonnet.position.set(0, -3 + 0.8, -1.7);
+  const nose = new THREE.Group();
+  nose.rotation.x = -0.05;
+  nose.add(bonnet);
+  const cowlMat = new THREE.MeshPhongMaterial({ color: new THREE.Color("#1a1c22"), shininess: 20 });
+  const cowl = new THREE.Mesh(geo(new THREE.BoxGeometry(1.9, 0.06, 0.16)), cowlMat);
+  cowl.position.set(0, 0.84, -1.02);
+  car.add(nose, cowl);
+  const wheel = new THREE.Group();
+  wheel.position.set(0.4, 1.06, -0.5);
+  wheel.rotation.x = -0.55;
+  const rim = new THREE.Group();
+  const wheelMat = new THREE.MeshPhongMaterial({ color: new THREE.Color("#1c1e24"), shininess: 40, specular: new THREE.Color("#666a72") });
+  rim.add(new THREE.Mesh(geo(new THREE.TorusGeometry(0.17, 0.02, 8, 28)), wheelMat));
+  const hub = new THREE.Mesh(geo(new THREE.CylinderGeometry(0.06, 0.06, 0.03, 12)), wheelMat);
+  hub.rotation.x = Math.PI / 2;
+  rim.add(hub);
+  const spokeGeo = geo(new THREE.BoxGeometry(0.022, 0.15, 0.022));
+  for (const a of [0, Math.PI, -Math.PI / 2]) {
+    const s = new THREE.Mesh(spokeGeo, wheelMat);
+    s.position.set(Math.cos(a) * 0.09, Math.sin(a) * 0.09, 0);
+    s.rotation.z = a + Math.PI / 2;
+    rim.add(s);
+  }
+  wheel.add(rim);
+  car.add(wheel);
+  camera.position.set(0.4, 1.42, 0);
+  camera.rotation.set(-0.02, 0, 0);
+  car.add(camera);
+  const cabinLight = new THREE.PointLight(new THREE.Color("#ffd9a0"), pal.dark ? 0.5 : 0, 3, 1.5);
+  cabinLight.position.set(0.1, 1.15, -0.7);
+  car.add(cabinLight);
+  const headlights = new THREE.SpotLight(new THREE.Color("#fff4d6"), pal.dark ? 90 : 0, 80, 0.62, 0.8, 1.1);
+  headlights.position.set(0, 0.75, -2.6);
+  headlights.target.position.set(0, -0.2, -40);
+  car.add(headlights, headlights.target);
+  disposables.push(bonnetMat, cowlMat, wheelMat);
+  const crownTint = (dark) => (dark ? "#8a9a86" : "#ffffff");
+  crownMat.color.set(crownTint(pal.dark));
+
+  // light and fog
+  const hemi = new THREE.HemisphereLight(new THREE.Color(pal.dark ? "#2a3060" : "#cfe3ff"), new THREE.Color(pal.dark ? "#0e0e16" : "#8d8a80"), pal.dark ? 0.5 : 1.15);
+  const key = new THREE.DirectionalLight(new THREE.Color(pal.dark ? "#8fa2ff" : "#fff0d2"), pal.dark ? 0.25 : 1.7);
+  key.position.set(60, 90, -110);
+  scene.add(hemi, key);
+  scene.fog = new THREE.Fog(new THREE.Color(fogColor(pal.dark)), pal.dark ? 25 : 35, preview ? 120 : pal.dark ? 170 : 185);
+
+  let bend = 0;
+  const applyItems = (entry) => {
+    for (let i = 0; i < entry.items.length; i++) {
+      const it = entry.items[i];
+      v3.set(it.x, it.y, wrapZ(it.z));
+      sc.set(it.sx, it.sy, it.sz);
+      m4.compose(v3, q0, sc);
+      entry.mesh.setMatrixAt(i, m4);
+    }
+    entry.mesh.instanceMatrix.needsUpdate = true;
+  };
+  return {
+    update(dt, t) {
+      driven = (driven + SPEED * dt) % L;
+      roadTex.offset.y = (roadTex.offset.y + (SPEED * dt) / 12) % 1;
+      // the road curves: a slow wander of the bend, the wheel and a touch of yaw follow it
+      const target = 0.00055 * Math.sin(t * 0.05) + 0.00035 * Math.sin(t * 0.13 + 1);
+      bend += (target - bend) * Math.min(1, dt * 0.8);
+      for (const m of bendMats) if (m.userData.shader) m.userData.shader.uniforms.uBend.value = bend;
+      for (const e of instanced) applyItems(e);
+      for (const l of lamps) {
+        const z = wrapZ(l.z);
+        l.glow.position.set(l.side * 5.4, 7.7, z);
+        l.pool.position.set(l.side * 5.2, 0.02, z + 0.5);
+      }
+      for (const c of oncoming) {
+        c.z += (SPEED + c.speed) * dt;
+        if (c.z > NEAR + 6) {
+          c.z = -FAR - rand(0, 40);
+          c.x = Math.random() < 0.5 ? 1.75 : 5.25;
+          c.speed = rand(10, 16);
+        }
+        c.g.position.set(c.x, 0, c.z);
+      }
+      for (const c of ahead) {
+        c.z += c.rel * dt;
+        if (c.x > -3 && c.z > -18 && c.rel > -0.3) c.tx = -5.25; // a slower car in our lane pulls over to let us by
+        c.x += (c.tx - c.x) * Math.min(1, dt * 2.2);
+        if (c.z < -FAR - 10) {
+          c.z = NEAR + 8;
+          c.x = c.tx = -5.25;
+          c.rel = rand(-3.5, -1);
+        } else if (c.z > NEAR + 8) {
+          c.z = -FAR - rand(0, 30);
+          c.x = c.tx = Math.random() < 0.5 ? LANE : -5.25;
+          c.rel = rand(0.6, 3);
+        }
+        c.g.position.set(c.x, 0, c.z);
+        c.g.rotation.y = (c.tx - c.x) * 0.25;
+      }
+      // the car drifts a little in its lane, the road hums through the seat, the wheel steers into the curve
+      car.position.x = LANE + 0.18 * Math.sin(t * 0.29) + 0.05 * Math.sin(t * 0.9);
+      car.position.y = 0.012 * Math.sin(t * 6.1) + 0.007 * Math.sin(t * 9.7);
+      camera.rotation.set(-0.02 + 0.004 * Math.sin(t * 1.7), bend * 45 + 0.006 * Math.sin(t * 0.37), 0.004 * Math.sin(t * 2.3));
+      rim.rotation.z = THREE.MathUtils.clamp(-bend * 420, -0.55, 0.55) + 0.02 * Math.sin(t * 1.1);
+    },
+    setPalette(p) {
+      skyTex.dispose();
+      skyTex = bandTexture(THREE, skyStops(p.dark));
+      skyMat.map = skyTex;
+      skyMat.needsUpdate = true;
+      sunMat.opacity = p.dark ? 0 : 0.95;
+      moonMat.opacity = p.dark ? 0.85 : 0;
+      starMat.opacity = p.dark ? 0.8 : 0;
+      skylineMat.color.set(p.dark ? "#1a1935" : "#c4d6e7");
+      wallMat.emissiveIntensity = p.dark ? 1 : 0;
+      signMat.color.set(p.dark ? "#ffffff" : "#8a8a8a");
+      crownMat.color.set(crownTint(p.dark));
+      cabinLight.intensity = p.dark ? 0.5 : 0;
+      lampGlowMat.opacity = p.dark ? 0.95 : 0;
+      poolMat.opacity = p.dark ? 0.32 : 0;
+      headMat.opacity = p.dark ? 0.95 : 0.35;
+      tailMat.opacity = p.dark ? 0.9 : 0.55;
+      headlights.intensity = p.dark ? 90 : 0;
+      bonnetMat.color.set(p.accent);
+      hemi.color.set(p.dark ? "#2a3060" : "#cfe3ff");
+      hemi.groundColor.set(p.dark ? "#0e0e16" : "#8d8a80");
+      hemi.intensity = p.dark ? 0.5 : 1.15;
+      key.color.set(p.dark ? "#8fa2ff" : "#fff0d2");
+      key.intensity = p.dark ? 0.25 : 1.7;
+      scene.fog.color.set(fogColor(p.dark));
+      scene.fog.near = p.dark ? 25 : 35;
+      scene.fog.far = preview ? 120 : p.dark ? 170 : 185;
+    },
+    dispose() {
+      disposables.forEach((d) => d.dispose());
+      skyTex.dispose();
+      tex.day.dispose();
+      tex.lit.dispose();
+      scene.fog = null;
+    },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
