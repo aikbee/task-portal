@@ -1022,6 +1022,9 @@ export default function ChatModule() {
         loadFriends();
         loadConvos();
       }),
+      liveOn("call", (ev) => {
+        if (["started", "participant_joined", "participant_left", "ended"].includes(ev.action)) loadConvos();
+      }),
     ];
     return () => offs.forEach((off) => off());
   }, [liveOn, user?.id, loadConvos, loadFriends, markRead, markDelivered, tr]);
@@ -1068,7 +1071,9 @@ export default function ChatModule() {
               tr={tr}
               me={user}
               onCall={calls?.start}
+              onJoinCall={calls?.join}
               inCall={Boolean(calls?.call)}
+              myCallId={calls?.call?.id ?? null}
               convo={activeConvo}
               messages={threads[active]}
               onBack={() => setActive(null)}
@@ -1271,6 +1276,7 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
             <span className={cn("truncate text-sm", c.unread && !c.muted ? "font-semibold text-fg" : "font-medium")}>{c.name}</span>
             {c.pinned_at ? <Pin size={11} className="shrink-0 text-fg-faint" aria-label={tr("Pinned")} /> : null}
             {c.muted ? <BellOff size={11} className="shrink-0 text-fg-faint" aria-label={tr("Muted")} /> : null}
+            {c.active_call ? <span className="chat-list-call inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-semibold text-emerald-600" aria-label={tr("Call in progress")}><Phone size={9} /> {c.active_call.count}</span> : null}
             {isGroup(c) ? <span className="shrink-0 text-[10px] text-fg-faint">{memberCount(c.member_count, tr)}</span> : null}
             {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
           </span>
@@ -1768,7 +1774,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onFocus, convos, onReactions, onMessageChange, onConvoChange, onLeft, onCall, inCall }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onFocus, convos, onReactions, onMessageChange, onConvoChange, onLeft, onCall, onJoinCall, inCall, myCallId }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -2259,7 +2265,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   : convo.email}
           </span>
         </span>
-        {!group && canChat ? (
+        {canChat && !convo.active_call ? (
           <>
             <Button variant="ghost" size="iconSm" icon={Phone} onClick={() => onCall?.(convo, "audio")} disabled={inCall} aria-label={tr("Voice call")} data-tip={tr("Voice call")} className="chat-call-audio" />
             <Button variant="ghost" size="iconSm" icon={Video} onClick={() => onCall?.(convo, "video")} disabled={inCall} aria-label={tr("Video call")} data-tip={tr("Video call")} className="chat-call-video" />
@@ -2281,6 +2287,16 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         confirmText={tr("Delete chat")}
         description={tr("This clears the conversation on your side only. {name} keeps their copy, and the chat reappears if either of you sends a new message.", { name: convo.name })}
       />
+      {group && convo.active_call && convo.active_call.id !== myCallId ? (
+        <div className="chat-call-banner flex items-center gap-3 border-b border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-emerald-500 text-white">{convo.active_call.kind === "video" ? <Video size={15} /> : <Phone size={15} />}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">{convo.active_call.kind === "video" ? tr("Video call in progress") : tr("Voice call in progress")}</span>
+            <span className="block text-[11px] text-fg-muted">{tr("{n} in the call", { n: convo.active_call.count })}</span>
+          </span>
+          <Button size="sm" icon={convo.active_call.kind === "video" ? Video : Phone} onClick={() => onJoinCall?.(convo.active_call.id, convo)} disabled={inCall} className="chat-call-join">{tr("Join")}</Button>
+        </div>
+      ) : null}
       {find ? (
         <div className="chat-find flex items-center gap-2 border-b border-line px-3 py-2" onKeyDown={(e) => e.key === "Escape" && setFind(null)}>
           <Search size={14} className="shrink-0 text-fg-faint" />

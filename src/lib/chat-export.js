@@ -155,7 +155,7 @@ function transcriptOf(convo, members, messages, by, withFiles) {
       let c = {};
       try { c = JSON.parse(m.body); } catch {}
       const dur = c.duration ? ` ${Math.floor(c.duration / 60)}:${String(c.duration % 60).padStart(2, "0")}` : "";
-      lines.push(`[${at}] ${who}: [${c.kind === "video" ? "video" : "voice"} call: ${c.status}${dur}]`);
+      lines.push(`[${at}] ${who}: [${c.group ? "group " : ""}${c.kind === "video" ? "video" : "voice"} call: ${c.status}${dur}${c.group && c.joined ? `, ${c.joined} joined` : ""}]`);
       continue;
     }
     if (m.kind === "location") {

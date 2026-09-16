@@ -33,6 +33,9 @@ function presenceConnect(userId) {
     announcePresence(userId, true).catch(() => {});
   }
 }
+const offlineHooks = globalThis.__chatOfflineHooks ?? (globalThis.__chatOfflineHooks = new Set());
+/** Run something when a user's last live stream has been gone for the grace period (calls use it to hang up). */
+export const onUserOffline = (fn) => offlineHooks.add(fn);
 function presenceDisconnect(userId) {
   const st = presence.get(userId);
   if (!st) return;
@@ -43,6 +46,11 @@ function presenceDisconnect(userId) {
     presence.delete(userId);
     execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
     announcePresence(userId, false).catch(() => {});
+    for (const fn of offlineHooks) {
+      try {
+        fn(userId);
+      } catch {}
+    }
   }, OFFLINE_GRACE_MS);
 }
 export function subscribe(userId, fn) {
@@ -338,6 +346,7 @@ function shapeConversation(row, members, statuses, me, settings) {
     last_files: Number(row.last_files ?? 0),
     last_videos: Number(row.last_videos ?? 0),
     gif_search: Boolean(settings?.gif_search),
+    active_call: row.active_call_id ? { id: row.active_call_id, kind: row.active_call_kind, group: row.active_call_callee == null, count: Number(row.active_call_count ?? 0) } : null,
     mention_unread: Number(row.mention_unread ?? 0),
     last_file_name: row.last_file_name ?? null,
   };
@@ -366,12 +375,15 @@ async function loadConversations(userId, onlyId = null, { includeHidden = false 
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'audio' LIMIT 1) AS last_voice,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file') AS last_files,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'video') AS last_videos,
+       ac.id AS active_call_id, ac.kind AS active_call_kind, ac.callee_id AS active_call_callee,
+       (SELECT COUNT(*) FROM call_participants cp WHERE cp.call_id = ac.id AND cp.status = 'joined') AS active_call_count,
        (SELECT a.original_name FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file' ORDER BY a.sort_order, a.id LIMIT 1) AS last_file_name,
        (SELECT COUNT(*) FROM message_mentions mm JOIN messages x ON x.id = mm.message_id WHERE x.conversation_id = c.id AND mm.user_id = ? AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS mention_unread
      FROM conversations c
      JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = ?
      LEFT JOIN messages lm ON lm.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id AND id > COALESCE(m.hidden_before_id, 0))
      LEFT JOIN users ls ON ls.id = lm.sender_id
+     LEFT JOIN calls ac ON ac.id = (SELECT id FROM calls WHERE conversation_id = c.id AND status IN ('ringing', 'active') AND created_at > NOW() - INTERVAL 3 HOUR ORDER BY id DESC LIMIT 1)
      WHERE ${includeHidden ? "1 = 1" : "(m.hidden_before_id IS NULL OR lm.id IS NOT NULL)"} ${onlyId ? "AND c.id = ?" : ""}
      ORDER BY (m.pinned_at IS NULL), m.pinned_at DESC, COALESCE(lm.created_at, c.created_at) DESC`,
     onlyId ? [userId, userId, userId, onlyId] : [userId, userId, userId]

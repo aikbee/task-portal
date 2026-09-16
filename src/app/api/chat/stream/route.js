@@ -1,5 +1,6 @@
 import { handler } from "@/lib/api-utils";
 import { subscribe } from "@/lib/chat";
+import "@/lib/calls"; // registers the "hang up when a browser goes away" hook
 
 export const dynamic = "force-dynamic";
 

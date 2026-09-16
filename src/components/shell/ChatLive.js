@@ -74,7 +74,7 @@ export function ChatLiveProvider({ locked = false, children }) {
   return (
     <LiveContext.Provider value={{ on, connected, calls }}>
       {children}
-      {locked ? null : <CallOverlay tr={tr} me={user} call={calls.call} localStream={calls.localStream} remoteStream={calls.remoteStream} elapsed={calls.elapsed} onAccept={calls.accept} onDecline={calls.decline} onHangUp={calls.hangUp} onToggleMute={calls.toggleMute} onToggleCamera={calls.toggleCamera} onSwitchCamera={calls.switchCamera} />}
+      {locked ? null : <CallOverlay tr={tr} call={calls.call} localStream={calls.localStream} remoteStreams={calls.remoteStreams} elapsed={calls.elapsed} onAccept={calls.accept} onDecline={calls.decline} onHangUp={calls.hangUp} onToggleMute={calls.toggleMute} onToggleCamera={calls.toggleCamera} onSwitchCamera={calls.switchCamera} />}
     </LiveContext.Provider>
   );
 }

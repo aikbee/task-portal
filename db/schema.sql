@@ -548,8 +548,8 @@ CREATE TABLE IF NOT EXISTS message_reports (
 CREATE TABLE IF NOT EXISTS calls (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   conversation_id INT UNSIGNED NOT NULL,
-  caller_id INT UNSIGNED NOT NULL,
-  callee_id INT UNSIGNED NOT NULL,
+  caller_id INT UNSIGNED NOT NULL, -- who started it
+  callee_id INT UNSIGNED NULL, -- the other person of a direct call; NULL = a group call anyone in the group may join
   kind ENUM('audio','video') NOT NULL DEFAULT 'audio',
   status ENUM('ringing','active','ended','missed','declined','failed') NOT NULL DEFAULT 'ringing',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -559,6 +559,18 @@ CREATE TABLE IF NOT EXISTS calls (
   KEY idx_calls_conversation (conversation_id, id),
   KEY idx_calls_open (status, created_at),
   CONSTRAINT fk_calls_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Who was rung / is in / left each call (group calls can have up to 8 people at once)
+CREATE TABLE IF NOT EXISTS call_participants (
+  call_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  status ENUM('ringing','joined','left','declined','missed') NOT NULL DEFAULT 'ringing',
+  joined_at DATETIME NULL,
+  left_at DATETIME NULL,
+  PRIMARY KEY (call_id, user_id),
+  KEY idx_call_participants_user (user_id, status),
+  CONSTRAINT fk_call_participants_call FOREIGN KEY (call_id) REFERENCES calls(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS message_mentions (

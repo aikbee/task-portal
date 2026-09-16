@@ -161,6 +161,12 @@ async function migrate(db, adminId) {
     log("migrating: voice / video call lines (messages.kind call)");
     await db.query("ALTER TABLE messages MODIFY kind ENUM('text','system','sticker','location','call') NOT NULL DEFAULT 'text'");
   }
+  if ((await db.query("SHOW COLUMNS FROM calls LIKE 'callee_id'"))[0][0]?.Null === "NO") {
+    log("migrating: group calls (calls.callee_id nullable; call_participants via schema)");
+    await db.query("ALTER TABLE calls MODIFY callee_id INT UNSIGNED NULL");
+    await db.query("INSERT IGNORE INTO call_participants (call_id, user_id, status, joined_at) SELECT id, caller_id, 'left', answered_at FROM calls");
+    await db.query("INSERT IGNORE INTO call_participants (call_id, user_id, status, joined_at) SELECT id, callee_id, 'left', answered_at FROM calls WHERE callee_id IS NOT NULL");
+  }
   if (!(await hasColumn(db, "users", "last_seen_at"))) {
     log("migrating: users.last_seen_at (presence)");
     await db.query("ALTER TABLE users ADD COLUMN last_seen_at DATETIME NULL AFTER last_login_at");
