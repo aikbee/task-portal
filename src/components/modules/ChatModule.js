@@ -156,7 +156,7 @@ function renderRich(text, o = {}) {
       else if (m[4] || m[5]) nodes.push(<em key={key()}>{depth < 1 ? inline(tok.slice(1, -1), depth + 1) : tok.slice(1, -1)}</em>);
       else if (m[6]) {
         const [url, trail] = splitTrailing(tok);
-        nodes.push(<a key={key()} href={/^https?:\/\//i.test(url) ? url : `https://${url}`} target="_blank" rel="noopener noreferrer" className="chat-link underline decoration-current/50 underline-offset-2 break-all hover:decoration-current">{url}</a>);
+        nodes.push(<a key={key()} href={/^https?:\/\//i.test(url) ? url : `https://${url}`} target="_blank" rel="noopener noreferrer" className="chat-link underline decoration-current/50 underline-offset-2 [overflow-wrap:anywhere] hover:decoration-current">{url}</a>);
         if (trail) nodes.push(plain(trail));
       }
       rest = rest.slice(m.index + tok.length);
@@ -277,7 +277,7 @@ function Ticks({ tr, state, onClick, mine, label }) {
   );
 }
 /** Popover listing who has read a group message and who has not yet. */
-function ReceiptsPopover({ tr, read, pending, onClose, align }) {
+function ReceiptsPopover({ tr, read, pending, onClose, align, side = "top" }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -293,7 +293,7 @@ function ReceiptsPopover({ tr, read, pending, onClose, align }) {
     </li>
   );
   return (
-    <div ref={ref} className={cn("chat-receipts absolute bottom-full z-20 mb-1 w-56 rounded-app border border-line bg-surface p-1.5 text-fg shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="dialog" aria-label={tr("Read receipts")}>
+    <div ref={ref} className={cn("chat-receipts absolute z-20 w-56 rounded-app border border-line bg-surface p-1.5 text-fg shadow-app-lg anim-pop", side === "bottom" ? "top-full mt-1" : "bottom-full mb-1", align === "right" ? "right-0" : "left-0")} role="dialog" aria-label={tr("Read receipts")}>
       <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{read.length ? tr("Read by {n} of {m}", { n: read.length, m: read.length + pending.length }) : tr("Not read yet")}</p>
       <ul className="max-h-48 overflow-y-auto">
         {read.map((u) => <Row key={u.id} u={u} done />)}
@@ -376,7 +376,7 @@ function ForwardModal({ tr, me, message, convos, onClose, onDone }) {
 }
 
 /** Small menu with Reply / Forward / Edit / Delete for a message. */
-function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDelete, onReport, onClose, align }) {
+function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDelete, onReport, onClose, align, side = "top" }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -385,7 +385,7 @@ function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDel
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div ref={ref} className={cn("chat-menu absolute bottom-full z-20 mb-1 min-w-32 overflow-hidden rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="menu">
+    <div ref={ref} className={cn("chat-menu absolute z-20 min-w-32 overflow-hidden rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop", side === "bottom" ? "top-full mt-1" : "bottom-full mb-1", align === "right" ? "right-0" : "left-0")} role="menu">
       <button type="button" role="menuitem" onClick={onReply} className="flex w-full items-center gap-2 rounded-app-sm px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 focus-ring">
         <Reply size={14} /> {tr("Reply")}
       </button>
@@ -412,7 +412,7 @@ function MessageMenu({ tr, canEdit, canDelete, onReply, onForward, onEdit, onDel
 }
 
 /** Floating row of quick reactions above a bubble. */
-function ReactionPicker({ tr, mine, onPick, onClose, align }) {
+function ReactionPicker({ tr, mine, onPick, onClose, align, side = "top" }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
   useEffect(() => {
@@ -421,7 +421,7 @@ function ReactionPicker({ tr, mine, onPick, onClose, align }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div ref={ref} className={cn("chat-picker-pop absolute bottom-full z-20 mb-1 flex gap-0.5 rounded-full border border-line bg-surface p-1 shadow-app-lg anim-pop", align === "right" ? "right-0" : "left-0")} role="menu" aria-label={tr("Add reaction")}>
+    <div ref={ref} className={cn("chat-picker-pop absolute z-20 flex gap-0.5 rounded-full border border-line bg-surface p-1 shadow-app-lg anim-pop", side === "bottom" ? "top-full mt-1" : "bottom-full mb-1", align === "right" ? "right-0" : "left-0")} role="menu" aria-label={tr("Add reaction")}>
       {REACTIONS.map((e) => (
         <button key={e} type="button" role="menuitemcheckbox" onClick={() => onPick(e)} className={cn("chat-picker-emoji grid h-8 w-8 place-items-center rounded-full text-lg transition hover:scale-125 hover:bg-surface-2", mine.includes(e) && "is-mine bg-accent/15")} aria-label={e} aria-checked={mine.includes(e)}>
           {e}
@@ -1170,7 +1170,7 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
             {c.last_at ? <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{relativeTime(c.last_at)}</span> : null}
           </span>
           <span className="flex items-center gap-2">
-            <span className={cn("flex min-w-0 items-center gap-1 truncate text-xs", c.unread && !c.muted ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
+            <span className={cn("chat-preview block min-w-0 flex-1 truncate text-xs", c.unread && !c.muted ? "text-fg" : "text-fg-muted")}>{preview(c)}</span>
             {c.mention_unread ? <span className="chat-mention-badge ml-auto shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold" title={tr("You were mentioned")}>@</span> : null}
             {c.unread ? <span className={cn("shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold", c.muted ? "bg-surface-3 text-fg-muted" : "bg-accent text-white", !c.mention_unread && "ml-auto")}>{c.unread}</span> : null}
           </span>
@@ -1182,7 +1182,7 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     const typers = Object.values(typing?.[c.id] ?? {});
     if (typers.length) {
       return (
-        <span className="chat-typing-preview flex items-center text-accent">
+        <span className="chat-typing-preview inline-flex items-center text-accent">
           {isGroup(c) ? typingText(typers, tr) : tr("typing")}
           <Dots />
         </span>
@@ -1192,14 +1192,15 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     if (c.last_kind === "system") return systemText({ body: c.last_body, sender_name: c.last_sender_name }, tr);
     if (c.last_deleted) return <span className="pr-1 italic text-fg-faint">{tr("Message deleted")}</span>;
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
+    const glyph = "mr-1 inline-block align-[-2px]";
     const what = c.last_body ? (
-      <span className="truncate">{stripMarkers(c.last_body)}</span>
+      stripMarkers(c.last_body)
     ) : c.last_voice != null ? (
-      <><Mic size={12} className="shrink-0" /> {tr("Voice message")} · {clock(c.last_voice)}</>
+      <><Mic size={12} className={glyph} />{tr("Voice message")} · {clock(c.last_voice)}</>
     ) : c.last_files && !c.last_photos ? (
-      <><Paperclip size={12} className="shrink-0" /> <span className="truncate">{c.last_files > 1 ? tr("{n} files", { n: c.last_files }) : c.last_file_name}</span></>
+      <><Paperclip size={12} className={glyph} />{c.last_files > 1 ? tr("{n} files", { n: c.last_files }) : c.last_file_name}</>
     ) : (
-      <><ImageIcon size={12} className="shrink-0" /> {c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>
+      <><ImageIcon size={12} className={glyph} />{c.last_photos > 1 ? tr("{n} photos", { n: c.last_photos }) : tr("Photo")}</>
     );
     return (
       <>
@@ -1687,6 +1688,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [picker, setPicker] = useState(null); // message id with the reaction picker open
   const [menu, setMenu] = useState(null); // message id with the edit/delete menu open
   const [receipts, setReceipts] = useState(null); // message id with the read-receipts popover open
+  const [popSide, setPopSide] = useState("top"); // where the open menu / picker / receipts sit: above the bubble, or below it when the bubble is near the top
   const narrow = useMediaQuery("(max-width: 640px)"); // phones: compact composer buttons and a short placeholder
   const [editing, setEditing] = useState(null); // { id, text } while editing a message inline
   // reply / forward state is keyed to the chat it belongs to, so switching chats drops it without an effect
@@ -1947,6 +1949,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   }, [convo.id]);
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
+  /** "bottom" when a popover `need` px tall would poke out above the scroll area, else "top". */
+  const sideFor = (el, need) => {
+    const row = el.closest('[id^="msg-"]') ?? el;
+    const top = row.getBoundingClientRect().top - (scrollRef.current?.getBoundingClientRect().top ?? 0);
+    return top < need ? "bottom" : "top";
+  };
   const fileRef = useRef(null);
   const anyRef = useRef(null);
   // a photo that finishes loading while we sit near the bottom keeps the latest message in view
@@ -2170,8 +2178,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   !deleted ? (
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={(e) => {
                         setPicker(null);
+                        setPopSide(sideFor(e.currentTarget, 190));
                         setMenu(menu === m.id ? null : m.id);
                       }}
                       className={cn("chat-more-btn grid h-7 w-7 shrink-0 place-items-center self-center rounded-full text-fg-faint transition hover:bg-surface-2 hover:text-fg focus-ring", menu === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
@@ -2184,8 +2193,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const reactBtn = deleted ? null : (
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
                       setMenu(null);
+                      setPopSide(sideFor(e.currentTarget, 64));
                       setPicker(picker === m.id ? null : m.id);
                     }}
                     className={cn("chat-react-btn grid h-7 w-7 shrink-0 place-items-center self-center rounded-full text-fg-faint transition hover:bg-surface-2 hover:text-fg focus-ring", picker === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
@@ -2202,7 +2212,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice || files.length ? "ml-auto" : "ml-2")}>
                     {m.edited_at && !m.deleted_at ? <span className="chat-edited not-italic">{tr("edited")}</span> : null}
                     {timeOf(m.created_at)}
-                    {rc ? <Ticks tr={tr} mine state={tickState} label={tickLabel} onClick={group ? () => setReceipts(receipts === m.id ? null : m.id) : undefined} /> : null}
+                    {rc ? <Ticks tr={tr} mine state={tickState} label={tickLabel} onClick={group ? (e) => { setPopSide(sideFor(e.currentTarget, 240)); setReceipts(receipts === m.id ? null : m.id); } : undefined} /> : null}
                   </span>
                 );
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
@@ -2229,13 +2239,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                       ) : null}
                       <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: editing?.id === m.id ? "78%" : "78%", width: editing?.id === m.id ? "78%" : undefined }}>
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
-                      {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
+                      {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} side={popSide} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
                       {menu === m.id ? (
                         <MessageMenu
                           tr={tr}
                           canEdit={canEdit}
                           canDelete={canDelete}
                           align={mine ? "right" : "left"}
+                          side={popSide}
                           onReply={() => { setMenu(null); setReplyTo(m); setTimeout(() => document.querySelector(".chat-composer textarea")?.focus(), 30); }}
                           onForward={() => { setMenu(null); setForwardMsg(m); }}
                           onEdit={() => startEdit(m)}
@@ -2244,7 +2255,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           onClose={() => setMenu(null)}
                         />
                       ) : null}
-                      {receipts === m.id && rc ? <ReceiptsPopover tr={tr} read={rc.read} pending={rc.pending} align="right" onClose={() => setReceipts(null)} /> : null}
+                      {receipts === m.id && rc ? <ReceiptsPopover tr={tr} read={rc.read} pending={rc.pending} align="right" side={popSide} onClose={() => setReceipts(null)} /> : null}
                       {deleted ? (
                         <div className={cn("chat-bubble chat-deleted flex items-center gap-1.5 rounded-app border border-dashed px-3 py-2 text-sm italic", mine ? "border-accent/50 text-fg-muted" : "border-line text-fg-muted")} title={formatDateTime(m.created_at)}>
                           <Ban size={13} className="shrink-0 opacity-70" /> {tr("Message deleted")}
@@ -2537,7 +2548,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     }
                   }}
                   rows={Math.min(6, Math.max(1, draft.split("\n").length))}
-                  placeholder={pending.length ? tr("Add a caption (optional)") : narrow ? tr("Message…") : tr("Write a message… (Enter to send, Shift+Enter for a new line)")}
+                  placeholder={pending.length ? tr("Add a caption (optional)") : narrow ? tr("Message…") : tr("Write a message…")}
+                  title={narrow ? undefined : tr("Enter to send, Shift+Enter for a new line")}
                   className="chat-input min-h-[38px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-fg outline-none placeholder:text-fg-faint"
                   maxLength={4000}
                 />
