@@ -9,9 +9,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, X, Brush, Wallpaper, ShieldCheck,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, ChevronDown, Keyboard, Plus as PlusIcon, X, Brush, Wallpaper, ShieldCheck,
 } from "lucide-react";
-import { moduleFromPath, TASK_STATUS } from "@/lib/modules";
+import { moduleFromPath, MODULE_MAP, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
 import { api } from "@/lib/api";
 import { cn, fullName } from "@/lib/utils";
@@ -57,6 +57,8 @@ export default function TopBar() {
   const pinned = usePrefs((s) => s.pins.some((p) => p.href === current.href));
   const togglePin = usePrefs((s) => s.togglePin);
   const isPinned = mounted && pinned;
+  const pins = usePrefs((s) => s.pins);
+  const toggleTool = useUI((s) => s.toggleTool);
   const canLock = usePrefs((s) => Boolean(s.pinHash) && s.lockEnabled);
   const lock = usePrefs((s) => s.lock);
   const splitCount = usePrefs((s) => s.splitCount);
@@ -99,7 +101,25 @@ export default function TopBar() {
         {title ? (
           <span className="flex min-w-0 items-center gap-1 max-sm:flex-1">
             <ChevronRight size={14} className="text-fg-faint max-sm:hidden" />
-            <span className="max-w-[260px] truncate px-1.5 py-1 font-medium text-fg max-sm:max-w-none max-sm:flex-1 xl:max-w-[360px]">{title}</span>
+            <span className="max-w-[260px] truncate px-1.5 py-1 font-medium text-fg max-sm:hidden xl:max-w-[360px]">{title}</span>
+            {/* phones have no keyboard: the title opens the page actions the shortcuts cover (P, N, ?) and the pinned pages */}
+            <DropdownMenu
+              align="start"
+              width="w-64"
+              className="max-sm:min-w-0 max-sm:flex-1 sm:hidden"
+              trigger={({ toggle }) => (
+                <button type="button" onClick={toggle} className="tb-page-menu flex w-full min-w-0 items-center gap-1 rounded-app-sm px-1.5 py-1 text-left font-medium text-fg" aria-label={tr("Page actions")}>
+                  <span className="min-w-0 truncate">{title}</span>
+                  <ChevronDown size={14} className="shrink-0 text-fg-faint" />
+                </button>
+              )}
+              items={[
+                { label: isPinned ? tr("Unpin this page") : tr("Pin this page"), icon: isPinned ? PinOff : Pin, onClick: () => togglePin({ href: current.href, label: current.label, module: current.module }) },
+                mod.creatable ? { label: tr("New {x}", { x: tr(mod.singular) }), icon: PlusIcon, href: `${mod.href}?new=1` } : null,
+                { label: tr("Shortcuts"), icon: Keyboard, onClick: () => toggleTool("shortcuts") },
+                ...(mounted && pins.length ? [{ divider: true }, ...pins.slice(0, 6).map((p) => ({ label: tr(p.label), icon: MODULE_MAP[p.module]?.icon ?? Pin, href: p.href, hint: p.href === pathname ? tr("here") : undefined }))] : []),
+              ]}
+            />
           </span>
         ) : null}
       </nav>
@@ -114,7 +134,7 @@ export default function TopBar() {
         className={cn("hidden sm:inline-flex", isPinned && "text-accent")}
       />
 
-      <div className="flex-1" />
+      <div className="flex-1 max-sm:hidden" />
 
       <GlobalSearch />
 
@@ -169,6 +189,7 @@ export default function TopBar() {
 
       <DropdownMenu
         width="w-60"
+        className="max-md:hidden"
         trigger={({ toggle }) => (
           <Button
             variant="ghost"
@@ -192,6 +213,7 @@ export default function TopBar() {
 
       <DropdownMenu
         width="w-44"
+        className="max-lg:hidden"
         trigger={({ toggle }) => (
           <Button className="hidden sm:inline-flex" variant="ghost" size="icon" icon={Languages} onClick={toggle} aria-label={tr("Language")} data-tip={LOCALES[locale]} data-tip-pos="bottom" />
         )}
@@ -224,6 +246,7 @@ export default function TopBar() {
 
       <DropdownMenu
         width="w-52"
+        className="max-lg:hidden"
         trigger={({ toggle }) => (
           <button onClick={toggle} className="ml-1 flex items-center gap-2 rounded-full p-0.5 pr-2 transition hover:bg-surface-2" aria-label={tr("Account menu")}>
             <Avatar name={user?.name ?? "?"} color={user?.avatar_color ?? "var(--accent)"} avatar={user?.avatar} size="sm" />

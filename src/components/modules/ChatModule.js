@@ -19,7 +19,8 @@ import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
 import { STICKER_PACK } from "@/lib/stickers";
-import { useCalls, CallOverlay, callText, parseCall } from "./ChatCalls";
+import { callText, parseCall } from "./ChatCalls";
+import { useChatLive } from "@/components/shell/ChatLive";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -730,11 +731,9 @@ export default function ChatModule() {
   const [threads, setThreads] = useState({});
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
   const [pendingJoin, setPendingJoin] = useState(null); // { code, group, relation } from a group invite link
-  const calls = useCalls({ me: user, tr, toast });
-  const callsRef = useRef(calls);
-  useEffect(() => {
-    callsRef.current = calls;
-  }, [calls]);
+  const live = useChatLive();
+  const { on: liveOn } = live;
+  const calls = live.calls;
   const [newGroup, setNewGroup] = useState(false);
   const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
   const [focusId, setFocusId] = useState(null); // message to scroll to and flash after a search jump
@@ -905,19 +904,18 @@ export default function ChatModule() {
     router.replace("/chat");
   }, [sp, router]);
 
-  // live updates: server-sent events, polling if the stream cannot connect
+  // polling while the shared live stream is not connected
   useEffect(() => {
-    let es = null;
-    let poll = null;
-    let stopped = false;
-    const startPolling = () => {
-      if (poll || stopped) return;
-      poll = setInterval(() => {
-        loadConvos();
-        loadFriends();
-        if (activeRef.current) loadThread(activeRef.current);
-      }, 5000);
-    };
+    if (live.connected) return;
+    const poll = setInterval(() => {
+      loadConvos();
+      loadFriends();
+      if (activeRef.current) loadThread(activeRef.current);
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [live.connected, loadConvos, loadFriends, loadThread]);
+  // live updates from the app-wide stream (opened once in the shell)
+  useEffect(() => {
     const onTyping = (ev) => {
       if (ev.user_id === user?.id) return;
       setTyping((t) => {
@@ -1010,38 +1008,23 @@ export default function ChatModule() {
       setThreads((t) => (t[ev.conversation_id] ? { ...t, [ev.conversation_id]: t[ev.conversation_id].filter((m) => !gone.has(m.id)) } : t));
       loadConvos();
     };
-    try {
-      es = new EventSource("/api/chat/stream");
-      es.addEventListener("message", (e) => onMessage(JSON.parse(e.data)));
-      es.addEventListener("read", (e) => onRead(JSON.parse(e.data)));
-      es.addEventListener("delivered", (e) => onDelivered(JSON.parse(e.data)));
-      es.addEventListener("presence", (e) => onPresence(JSON.parse(e.data)));
-      es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
-      es.addEventListener("purged", (e) => onPurged(JSON.parse(e.data)));
-      es.addEventListener("call", (e) => callsRef.current.handleEvent(JSON.parse(e.data)));
-      es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
-      es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
-      es.addEventListener("message_updated", (e) => onMessageUpdated(JSON.parse(e.data)));
-      es.addEventListener("friends", () => {
+    const offs = [
+      liveOn("message", onMessage),
+      liveOn("read", onRead),
+      liveOn("delivered", onDelivered),
+      liveOn("presence", onPresence),
+      liveOn("conversation", onConversation),
+      liveOn("purged", onPurged),
+      liveOn("typing", onTyping),
+      liveOn("reaction", onReaction),
+      liveOn("message_updated", onMessageUpdated),
+      liveOn("friends", () => {
         loadFriends();
         loadConvos();
-      });
-      es.onopen = () => {
-        if (poll) {
-          clearInterval(poll);
-          poll = null;
-        }
-      };
-      es.onerror = () => startPolling();
-    } catch {
-      startPolling();
-    }
-    return () => {
-      stopped = true;
-      es?.close();
-      if (poll) clearInterval(poll);
-    };
-  }, [user?.id, loadConvos, loadFriends, loadThread, markRead, markDelivered, tr]);
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [liveOn, user?.id, loadConvos, loadFriends, markRead, markDelivered, tr]);
 
   const openWith = async (friend) => {
     try {
@@ -1084,8 +1067,8 @@ export default function ChatModule() {
             <Thread
               tr={tr}
               me={user}
-              onCall={calls.start}
-              inCall={Boolean(calls.call)}
+              onCall={calls?.start}
+              inCall={Boolean(calls?.call)}
               convo={activeConvo}
               messages={threads[active]}
               onBack={() => setActive(null)}
@@ -1184,7 +1167,6 @@ export default function ChatModule() {
           }
         }}
       />
-      <CallOverlay tr={tr} me={user} call={calls.call} localStream={calls.localStream} remoteStream={calls.remoteStream} elapsed={calls.elapsed} onAccept={calls.accept} onDecline={calls.decline} onHangUp={calls.hangUp} onToggleMute={calls.toggleMute} onToggleCamera={calls.toggleCamera} />
       <ConfirmDialog
         open={!!pendingJoin}
         onClose={() => setPendingJoin(null)}

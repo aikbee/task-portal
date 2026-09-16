@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff, PhoneIncoming } from "lucide-react";
+import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff, PhoneIncoming, SwitchCamera, Minimize2, Maximize2, GripHorizontal } from "lucide-react";
 import Avatar from "@/components/ui/Avatar";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -122,6 +122,13 @@ export function useCalls({ me, tr, toast }) {
     [s, teardown]
   );
   const post = useCallback((path, body) => api.post(path, body ?? {}), []);
+  const countCameras = useCallback(async () => {
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const n = list.filter((d) => d.kind === "videoinput").length;
+      setCall((c) => (c ? { ...c, cameras: n } : c));
+    } catch {}
+  }, []);
   const getMedia = useCallback(
     async (kind) => {
       try {
@@ -192,7 +199,8 @@ export function useCalls({ me, tr, toast }) {
         const c = await post("/api/chat/calls", { conversation_id: convo.id, kind });
         s.local = local;
         setLocalStream(local);
-        setCall({ id: c.id, kind, role: "caller", peer: c.peer, conversation_id: convo.id, status: "ringing", muted: false, cameraOff: false });
+        setCall({ id: c.id, kind, role: "caller", peer: c.peer, conversation_id: convo.id, status: "ringing", muted: false, cameraOff: false, facing: "user" });
+        if (kind === "video") countCameras();
         s.tone = makeTone([1000, 3000], [440]);
         s.tone.start();
         s.ringTimer = setTimeout(() => {
@@ -204,7 +212,7 @@ export function useCalls({ me, tr, toast }) {
         toastRef.current.error(tr("Could not start the call"), e.message);
       }
     },
-    [s, tr, getMedia, post, finish]
+    [s, tr, getMedia, post, finish, countCameras]
   );
   const accept = useCallback(async () => {
     const c = callRef.current;
@@ -222,6 +230,7 @@ export function useCalls({ me, tr, toast }) {
     }
     s.local = local;
     setLocalStream(local);
+    if (c.kind === "video") countCameras();
     try {
       await post(`/api/chat/calls/${c.id}/accept`);
       setCall((x) => (x ? { ...x, status: "connecting" } : x));
@@ -232,7 +241,40 @@ export function useCalls({ me, tr, toast }) {
       post(`/api/chat/calls/${c.id}/end`, { reason: "failed" }).catch(() => {});
       finish("failed");
     }
-  }, [s, tr, getMedia, post, finish, makePc, flushQueue, stopTone]);
+  }, [s, tr, getMedia, post, finish, makePc, flushQueue, stopTone, countCameras]);
+  /** Front ⇄ back camera: a new video track replaces the one being sent, without renegotiating. */
+  const switchCamera = useCallback(async () => {
+    const c = callRef.current;
+    if (!c || c.kind !== "video" || !s.local) return;
+    const facing = c.facing === "environment" ? "user" : "environment";
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { exact: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    } catch {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: facing } });
+      } catch (e) {
+        return toastRef.current.error(tr("Could not switch the camera"), e?.message);
+      }
+    }
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !c.cameraOff;
+    const sender = s.pc?.getSenders().find((x) => x.track?.kind === "video");
+    try {
+      if (sender) await sender.replaceTrack(track);
+    } catch (e) {
+      track.stop();
+      return toastRef.current.error(tr("Could not switch the camera"), e?.message);
+    }
+    for (const t of s.local.getVideoTracks()) {
+      t.stop();
+      s.local.removeTrack(t);
+    }
+    s.local.addTrack(track);
+    setLocalStream(new MediaStream(s.local.getTracks()));
+    setCall((x) => (x ? { ...x, facing } : x));
+  }, [s, tr]);
   const decline = useCallback(async () => {
     const c = callRef.current;
     if (!c) return;
@@ -352,27 +394,57 @@ export function useCalls({ me, tr, toast }) {
   }, []);
   useEffect(() => () => teardown(), [teardown]);
 
-  return { call, localStream, remoteStream, elapsed, start, accept, decline, hangUp, toggleMute, toggleCamera, handleEvent };
+  return { call, localStream, remoteStream, elapsed, start, accept, decline, hangUp, toggleMute, toggleCamera, switchCamera, handleEvent };
 }
 
 /** The call UI: an incoming-call card, or the in-call panel (full screen on phones, a corner panel on desktop). */
-export function CallOverlay({ tr, me, call, localStream, remoteStream, elapsed, onAccept, onDecline, onHangUp, onToggleMute, onToggleCamera }) {
+export function CallOverlay({ tr, me, call, localStream, remoteStream, elapsed, onAccept, onDecline, onHangUp, onToggleMute, onToggleCamera, onSwitchCamera }) {
   const remoteRef = useRef(null);
   const localRef = useRef(null);
+  const [miniFor, setMiniFor] = useState(null); // the call id that was minimised (a new call always starts expanded)
+  const [pos, setPos] = useState(null); // { x, y } once the panel or pill has been dragged
+  const drag = useRef(null);
+  const mini = Boolean(call) && miniFor === call.id;
+  const setMini = (on) => setMiniFor(on ? call?.id ?? null : null);
+  const startDrag = (e) => {
+    if (e.button != null && e.button !== 0) return;
+    const el = e.currentTarget.closest(".chat-call, .chat-call-mini");
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
+    const move = (ev) => {
+      const d = drag.current;
+      if (!d) return;
+      const x = Math.min(Math.max(4, ev.clientX - d.dx), window.innerWidth - d.w - 4);
+      const y = Math.min(Math.max(4, ev.clientY - d.dy), window.innerHeight - d.h - 4);
+      setPos({ x, y });
+    };
+    const up = () => {
+      drag.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    e.preventDefault();
+  };
+  const placed = pos ? { left: pos.x, top: pos.y, right: "auto", bottom: "auto" } : undefined;
   useEffect(() => {
     const el = remoteRef.current;
     if (el && remoteStream && el.srcObject !== remoteStream) {
       el.srcObject = remoteStream;
       el.play?.().catch(() => {});
     }
-  }, [remoteStream, call?.status]);
+  }, [remoteStream, call?.status, mini]);
   useEffect(() => {
     const el = localRef.current;
     if (el && localStream && el.srcObject !== localStream) {
       el.srcObject = localStream;
       el.play?.().catch(() => {});
     }
-  }, [localStream, call?.status]);
+  }, [localStream, call?.status, mini]);
   if (!call || typeof document === "undefined") return null;
   const video = call.kind === "video";
   const peer = call.peer ?? {};
@@ -419,8 +491,34 @@ export function CallOverlay({ tr, me, call, localStream, remoteStream, elapsed, 
       document.body
     );
   }
+  if (mini) {
+    // a small draggable pill: the call goes on (audio keeps playing through the hidden video element) while the app is used
+    return createPortal(
+      <div className="chat-call-mini fixed z-[80] flex select-none items-center gap-2 rounded-full bg-neutral-950/95 py-1.5 pl-1.5 pr-2 text-white shadow-app-lg ring-1 ring-white/15 backdrop-blur" style={placed ?? { top: 12, right: 12 }} role="dialog" aria-label={status}>
+        <video ref={remoteRef} autoPlay playsInline className="absolute h-px w-px opacity-0" />
+        <button type="button" onPointerDown={startDrag} className="chat-call-drag grid h-8 w-6 cursor-grab place-items-center text-white/50 touch-none" aria-label={tr("Move")}>
+          <GripHorizontal size={14} />
+        </button>
+        <button type="button" onClick={() => setMini(false)} className="flex min-w-0 items-center gap-2 rounded-full focus-ring" aria-label={tr("Expand")}>
+          <Avatar name={peer.name} color={peer.avatar_color} avatar={peer.avatar ?? "initials"} size="xs" />
+          <span className="min-w-0 text-left leading-tight">
+            <span className="block max-w-32 truncate text-xs font-semibold">{peer.name}</span>
+            <span className="chat-call-status block text-[11px] text-white/70">{status}</span>
+          </span>
+          <Maximize2 size={14} className="shrink-0 text-white/60" />
+        </button>
+        <button type="button" onClick={onToggleMute} disabled={call.status === "ended"} className={cn("grid h-8 w-8 place-items-center rounded-full focus-ring", call.muted ? "bg-white text-neutral-900" : "bg-white/15 hover:bg-white/25")} aria-label={call.muted ? tr("Unmute") : tr("Mute")} aria-pressed={call.muted}>
+          {call.muted ? <MicOff size={14} /> : <Mic size={14} />}
+        </button>
+        <button type="button" onClick={onHangUp} disabled={call.status === "ended"} className="chat-call-hangup grid h-8 w-8 place-items-center rounded-full bg-rose-500 text-white hover:bg-rose-600 focus-ring disabled:opacity-50" aria-label={tr("Hang up")}>
+          <PhoneOff size={14} />
+        </button>
+      </div>,
+      document.body
+    );
+  }
   return createPortal(
-    <div className={cn("chat-call fixed z-[80] flex flex-col overflow-hidden bg-neutral-950 text-white shadow-app-lg", "inset-0 md:inset-auto md:bottom-4 md:right-4 md:h-[32rem] md:w-[24rem] md:rounded-app md:border md:border-white/10")} role="dialog" aria-label={status}>
+    <div className={cn("chat-call fixed z-[80] flex flex-col overflow-hidden bg-neutral-950 text-white shadow-app-lg", "inset-0 md:inset-auto md:bottom-4 md:right-4 md:h-[32rem] md:w-[24rem] md:rounded-app md:border md:border-white/10")} style={placed && window.matchMedia("(min-width: 768px)").matches ? placed : undefined} role="dialog" aria-label={status}>
       <video ref={remoteRef} autoPlay playsInline className={cn("chat-call-remote absolute inset-0 h-full w-full object-cover", !remoteHasVideo && "opacity-0")} />
       {!remoteHasVideo ? (
         <div className="absolute inset-0 grid place-items-center">
@@ -430,11 +528,16 @@ export function CallOverlay({ tr, me, call, localStream, remoteStream, elapsed, 
         </div>
       ) : null}
       <div className="relative flex items-start justify-between gap-3 bg-gradient-to-b from-black/60 to-transparent p-4">
-        <div className="min-w-0">
+        <div className="chat-call-drag min-w-0 flex-1 md:cursor-grab md:touch-none" onPointerDown={(e) => window.matchMedia("(min-width: 768px)").matches && startDrag(e)}>
           <p className="truncate text-base font-semibold drop-shadow">{peer.name}</p>
           <p className="chat-call-status text-sm text-white/80 drop-shadow">{status}</p>
         </div>
-        {video && localStream ? <video ref={localRef} autoPlay playsInline muted className={cn("chat-call-local h-28 w-20 shrink-0 rounded-app-sm border border-white/20 bg-black object-cover shadow", call.cameraOff && "opacity-30")} /> : null}
+        <div className="flex shrink-0 items-start gap-2">
+          <button type="button" onClick={() => setMini(true)} className="chat-call-minimize grid h-9 w-9 place-items-center rounded-full bg-black/40 text-white/90 hover:bg-black/60 focus-ring" aria-label={tr("Minimize")} title={tr("Minimize")}>
+            <Minimize2 size={16} />
+          </button>
+          {video && localStream ? <video ref={localRef} autoPlay playsInline muted className={cn("chat-call-local h-28 w-20 rounded-app-sm border border-white/20 bg-black object-cover shadow", call.cameraOff && "opacity-30", call.facing !== "environment" && "-scale-x-100")} /> : null}
+        </div>
       </div>
       {!video ? <video ref={localRef} autoPlay playsInline muted className="hidden" /> : null}
       <div className="relative mt-auto flex items-center justify-center gap-4 bg-gradient-to-t from-black/70 to-transparent p-5">
@@ -444,6 +547,11 @@ export function CallOverlay({ tr, me, call, localStream, remoteStream, elapsed, 
         {video ? (
           <button type="button" onClick={onToggleCamera} disabled={call.status === "ended"} className={cn("chat-call-btn grid h-12 w-12 place-items-center rounded-full transition focus-ring", call.cameraOff ? "bg-white text-neutral-900" : "bg-white/15 text-white hover:bg-white/25")} aria-label={call.cameraOff ? tr("Turn camera on") : tr("Turn camera off")} aria-pressed={call.cameraOff}>
             {call.cameraOff ? <VideoOff size={20} /> : <Video size={20} />}
+          </button>
+        ) : null}
+        {video && (call.cameras ?? 0) > 1 ? (
+          <button type="button" onClick={onSwitchCamera} disabled={call.status === "ended" || call.cameraOff} className="chat-call-btn chat-call-switch grid h-12 w-12 place-items-center rounded-full bg-white/15 text-white transition hover:bg-white/25 focus-ring disabled:opacity-50" aria-label={tr("Switch camera")} title={tr("Switch camera")}>
+            <SwitchCamera size={20} />
           </button>
         ) : null}
         <button type="button" onClick={onHangUp} disabled={call.status === "ended"} className="chat-call-btn chat-call-hangup grid h-14 w-14 place-items-center rounded-full bg-rose-500 text-white shadow-lg transition hover:bg-rose-600 focus-ring disabled:opacity-50" aria-label={tr("Hang up")}>

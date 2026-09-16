@@ -19,6 +19,7 @@ import { usePrefs, useUI } from "@/lib/store";
 import { api } from "@/lib/api";
 import { useMounted } from "@/lib/hooks";
 import { AuthProvider } from "@/lib/auth-context";
+import { ChatLiveProvider } from "./ChatLive";
 
 /** The Google callback lands on /?google=linked|taken after connecting an account: show the result once. */
 function GoogleLinkNotice() {
@@ -88,6 +89,7 @@ export default function AppShell({ user, children }) {
   return (
     <AuthProvider user={user}>
     <ToastProvider>
+    <ChatLiveProvider locked={locked}>
       <ThemeApplier />
       <AnimatedBackground />
       {locked ? null : (
@@ -110,6 +112,7 @@ export default function AppShell({ user, children }) {
       <Suspense fallback={null}>
         <GoogleLinkNotice />
       </Suspense>
+    </ChatLiveProvider>
     </ToastProvider>
     </AuthProvider>
   );

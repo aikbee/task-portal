@@ -39,6 +39,18 @@ export function Popover({ trigger, children, align = "end", side = "bottom", wid
     const st = computeStyle(a.getBoundingClientRect(), { align, side, width });
     Object.assign(p.style, { top: "", bottom: "", left: "", right: "", transform: "", width: "" });
     for (const [k, v] of Object.entries(st)) p.style[k] = typeof v === "number" ? `${v}px` : v;
+    // a panel wider than the space beside its trigger (phones) slides back inside the viewport
+    const pr = p.getBoundingClientRect();
+    const vw = window.innerWidth;
+    if (pr.left < 8) {
+      p.style.left = "8px";
+      p.style.right = "auto";
+      p.style.transform = "";
+    } else if (pr.right > vw - 8) {
+      p.style.right = "8px";
+      p.style.left = "auto";
+      p.style.transform = "";
+    }
   }, [align, side, width]);
 
   useLayoutEffect(() => {
@@ -123,9 +135,9 @@ function computeStyle(r, { align, side, width }) {
 }
 
 /** Menu of items: [{ label, icon, onClick, href, danger, disabled, divider, hint }] */
-export function DropdownMenu({ trigger, items, align = "end", side = "bottom", width = "w-52" }) {
+export function DropdownMenu({ trigger, items, align = "end", side = "bottom", width = "w-52", className }) {
   return (
-    <Popover trigger={trigger} align={align} side={side} width={width}>
+    <Popover trigger={trigger} align={align} side={side} width={width} className={className}>
       {({ close }) => (
         <div className="p-1">
           {items.filter(Boolean).map((it, i) =>
