@@ -1420,8 +1420,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
   return (
     <Modal open={open} onClose={onClose} size="sm" title={convo.title} description={memberCount(convo.member_count, tr)}>
       <div className="space-y-5">
-        {manager ? (
-          <section>
+        <section>
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">{tr("Group picture")}</p>
             <AvatarPicker
               value={convo.avatar ?? null}
@@ -1440,7 +1439,6 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
               onClear={() => savePicture(() => api.del(`/api/chat/conversations/${convo.id}/avatar`))}
             />
           </section>
-        ) : null}
         {manager ? (
           <Field label={tr("Group name")}>
             <div className="flex gap-2">
@@ -1469,7 +1467,7 @@ function GroupPanel({ tr, me, convo, friends, open, onClose, onChange, onLeft })
               );
             })}
           </ul>
-          {owner ? <p className="mt-1 text-[11px] text-fg-muted">{tr("Admins can rename the group, change its picture, manage the invite link, remove members and delete any message. Only you can change roles.")}</p> : null}
+          {owner ? <p className="mt-1 text-[11px] text-fg-muted">{tr("Anyone can change the picture. Admins can also rename the group, manage the invite link, remove members and delete any message. Only you can change roles.")}</p> : null}
         </section>
         {manager ? <InviteSection tr={tr} convo={convo} /> : null}
         <section>
@@ -1949,11 +1947,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   }, [convo.id]);
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
-  /** "bottom" when a popover `need` px tall would poke out above the scroll area, else "top". */
+  /** Popovers open below their button; "top" only when `need` px would not fit below and there is more room above. */
   const sideFor = (el, need) => {
-    const row = el.closest('[id^="msg-"]') ?? el;
-    const top = row.getBoundingClientRect().top - (scrollRef.current?.getBoundingClientRect().top ?? 0);
-    return top < need ? "bottom" : "top";
+    const r = el.getBoundingClientRect();
+    const s = scrollRef.current?.getBoundingClientRect();
+    if (!s) return "bottom";
+    const below = s.bottom - r.bottom;
+    const above = r.top - s.top;
+    return below >= need || below >= above ? "bottom" : "top";
   };
   const fileRef = useRef(null);
   const anyRef = useRef(null);
@@ -2145,7 +2146,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
           {!messages ? (
             <div className="grid h-full place-items-center"><Spinner className="text-fg-muted" /></div>
           ) : (
-            <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5">
               {messages.length >= 50 ? (
                 <button type="button" onClick={onLoadEarlier} className="mx-auto mb-2 rounded-full border border-line px-3 py-1 text-[11px] text-fg-muted hover:text-fg">{tr("Load earlier messages")}</button>
               ) : null}
@@ -2205,6 +2206,29 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     <SmilePlus size={15} />
                   </button>
                 );
+                // the ⋯ and smile buttons sit beside the bubble; their menu and picker open right under (or above) them, towards the bubble
+                const actions = deleted ? null : (
+                  <span className="chat-actions relative flex shrink-0 items-center gap-0.5 self-center">
+                    {mine ? menuBtn : reactBtn}
+                    {mine ? reactBtn : menuBtn}
+                    {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "left" : "right"} side={popSide} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
+                    {menu === m.id ? (
+                      <MessageMenu
+                        tr={tr}
+                        canEdit={canEdit}
+                        canDelete={canDelete}
+                        align={mine ? "left" : "right"}
+                        side={popSide}
+                        onReply={() => { setMenu(null); setReplyTo(m); setTimeout(() => document.querySelector(".chat-composer textarea")?.focus(), 30); }}
+                        onForward={() => { setMenu(null); setForwardMsg(m); }}
+                        onEdit={() => startEdit(m)}
+                        onDelete={() => { setMenu(null); setConfirmDelete(m); }}
+                        onReport={!mine ? () => { setMenu(null); setReportFor(m); } : undefined}
+                        onClose={() => setMenu(null)}
+                      />
+                    ) : null}
+                  </span>
+                );
                 const rc = mine && !deleted ? readersOf(m, convo, me) : null;
                 const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : rc.delivered.length ? "delivered" : "sent";
                 const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : tickState === "delivered" ? tr("Delivered") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
@@ -2231,30 +2255,9 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     ) : null}
                     <div className={cn("group flex items-end gap-2", mine ? "justify-end" : "justify-start", grouped ? "mt-0.5" : "mt-2")}>
                       {group && !mine ? <span className="w-6 shrink-0">{grouped ? null : <Avatar name={m.sender_name ?? "?"} color={m.sender_color ?? "#94a3b8"} avatar={m.sender_avatar ?? "initials"} size="xs" />}</span> : null}
-                      {mine ? (
-                        <>
-                          {menuBtn}
-                          {reactBtn}
-                        </>
-                      ) : null}
-                      <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: editing?.id === m.id ? "78%" : "78%", width: editing?.id === m.id ? "78%" : undefined }}>
+                      {mine ? actions : null}
+                      <div className={cn("relative flex min-w-0 flex-col", mine ? "items-end" : "items-start", reactions.length && "mb-3")} style={{ maxWidth: "min(78%, 40rem)", width: editing?.id === m.id ? "min(78%, 40rem)" : undefined }}>
                       {showSender ? <span className="chat-sender mb-0.5 ml-1 text-[11px] font-semibold" style={{ color: m.sender_color ?? undefined }}>{m.sender_name}</span> : null}
-                      {picker === m.id ? <ReactionPicker tr={tr} mine={myEmojis} align={mine ? "right" : "left"} side={popSide} onPick={(e) => toggleReaction(m, e)} onClose={() => setPicker(null)} /> : null}
-                      {menu === m.id ? (
-                        <MessageMenu
-                          tr={tr}
-                          canEdit={canEdit}
-                          canDelete={canDelete}
-                          align={mine ? "right" : "left"}
-                          side={popSide}
-                          onReply={() => { setMenu(null); setReplyTo(m); setTimeout(() => document.querySelector(".chat-composer textarea")?.focus(), 30); }}
-                          onForward={() => { setMenu(null); setForwardMsg(m); }}
-                          onEdit={() => startEdit(m)}
-                          onDelete={() => { setMenu(null); setConfirmDelete(m); }}
-                          onReport={!mine ? () => { setMenu(null); setReportFor(m); } : undefined}
-                          onClose={() => setMenu(null)}
-                        />
-                      ) : null}
                       {receipts === m.id && rc ? <ReceiptsPopover tr={tr} read={rc.read} pending={rc.pending} align="right" side={popSide} onClose={() => setReceipts(null)} /> : null}
                       {deleted ? (
                         <div className={cn("chat-bubble chat-deleted flex items-center gap-1.5 rounded-app border border-dashed px-3 py-2 text-sm italic", mine ? "border-accent/50 text-fg-muted" : "border-line text-fg-muted")} title={formatDateTime(m.created_at)}>
@@ -2374,12 +2377,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         </div>
                       ) : null}
                       </div>
-                      {!mine ? (
-                        <>
-                          {reactBtn}
-                          {menuBtn}
-                        </>
-                      ) : null}
+                      {!mine ? actions : null}
                     </div>
                     {mine && lastMine?.id === m.id && seen ? <p className="mt-0.5 text-right text-[10px] text-fg-faint">{seenLabel}</p> : null}
                   </div>
@@ -2409,7 +2407,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         </div>
         <div className="chat-composer relative border-t border-line p-2.5 md:p-3">
           {canChat ? (
-            <div className="relative mx-auto max-w-3xl">
+            <div className="relative">
               {mentionPop && mentionChoices.length ? (
                 <ul className="chat-mention-pop absolute bottom-full left-0 z-20 mb-1 w-64 rounded-app border border-line bg-surface p-1 shadow-app-lg anim-pop" role="listbox" aria-label={tr("Mention someone")}>
                   {mentionChoices.map((c, i) => (

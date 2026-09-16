@@ -1,14 +1,14 @@
 import { queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
-import { conversationFor, systemMessage, broadcast, assertManager } from "@/lib/chat";
+import { conversationFor, systemMessage, broadcast } from "@/lib/chat";
 import { saveBuffer, deleteStoredFile } from "@/lib/uploads";
 import { imageMeta } from "@/lib/images";
 import { PRESET_KEYS, AVATAR_MAX_BYTES, uploadedFileOf } from "@/lib/avatar-presets";
 
-async function ownedGroup(id, user) {
+/** Any member may change the picture — a system line says who did. */
+async function memberGroup(id, user) {
   const convo = await conversationFor(id, user.id);
   if (convo.kind !== "group") throw new HttpError("Only group chats have a picture.", 400);
-  assertManager(convo, "change the picture");
   return convo;
 }
 async function apply(convo, userId, value) {
@@ -21,17 +21,17 @@ async function apply(convo, userId, value) {
   return conversationFor(convo.id, userId);
 }
 
-/** Pick a preset icon for the group: { avatar: "preset:<key>" } (owner or admin). */
+/** Pick a preset icon for the group: { avatar: "preset:<key>" } (any member). */
 export const PUT = handler(async (request, params, user) => {
-  const convo = await ownedGroup(requireId(params.id), user);
+  const convo = await memberGroup(requireId(params.id), user);
   const value = String((await readJson(request)).avatar ?? "");
   if (!(value.startsWith("preset:") && PRESET_KEYS.has(value.slice(7)))) throw new HttpError("Pick one of the icons.", 400);
   return ok(await apply(convo, user.id, value));
 });
 
-/** Upload a group picture (multipart "file", 2 MB; owner or admin). */
+/** Upload a group picture (multipart "file", 2 MB; any member). */
 export const POST = handler(async (request, params, user) => {
-  const convo = await ownedGroup(requireId(params.id), user);
+  const convo = await memberGroup(requireId(params.id), user);
   const form = await request.formData();
   const file = form.get("file");
   if (!file || typeof file !== "object" || !file.size) throw new HttpError("Choose a picture.", 400);
@@ -43,8 +43,8 @@ export const POST = handler(async (request, params, user) => {
   return ok(await apply(convo, user.id, `upload:group:${convo.id}:${storedName}`), { status: 201 });
 });
 
-/** Back to the coloured badge (owner or admin). */
+/** Back to the coloured badge (any member). */
 export const DELETE = handler(async (_request, params, user) => {
-  const convo = await ownedGroup(requireId(params.id), user);
+  const convo = await memberGroup(requireId(params.id), user);
   return ok(await apply(convo, user.id, null));
 });
