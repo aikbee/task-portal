@@ -82,6 +82,7 @@ async function main() {
 }
 
 const hasColumn = async (db, table, col) => (await db.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [col]))[0].length > 0;
+const hasEnumValue = async (db, table, col, value) => String((await db.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [col]))[0][0]?.Type ?? "").includes(`'${value}'`);
 const hasIndex = async (db, table, name) => (await db.query(`SHOW INDEX FROM ${table} WHERE Key_name = ?`, [name]))[0].length > 0;
 const hasFk = async (db, table, name) =>
   (await db.query(
@@ -150,6 +151,11 @@ async function migrate(db, adminId) {
     log("migrating: group admins, invite links and retention (conversations.invite_code/retention_days, members.role admin)");
     await db.query("ALTER TABLE conversations ADD COLUMN invite_code VARCHAR(16) NULL AFTER avatar, ADD COLUMN retention_days SMALLINT UNSIGNED NULL AFTER invite_code, ADD UNIQUE KEY uq_conversations_invite (invite_code)");
     await db.query("ALTER TABLE conversation_members MODIFY role ENUM('owner','admin','member') NOT NULL DEFAULT 'member'");
+  }
+  if (!(await hasEnumValue(db, "messages", "kind", "sticker"))) {
+    log("migrating: stickers, locations and video clips (messages.kind, message_attachments.kind)");
+    await db.query("ALTER TABLE messages MODIFY kind ENUM('text','system','sticker','location') NOT NULL DEFAULT 'text'");
+    await db.query("ALTER TABLE message_attachments MODIFY kind ENUM('image','audio','file','video') NOT NULL DEFAULT 'file'");
   }
   if (!(await hasColumn(db, "users", "last_seen_at"))) {
     log("migrating: users.last_seen_at (presence)");

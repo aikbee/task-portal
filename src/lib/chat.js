@@ -77,10 +77,11 @@ export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 export const PHOTOS_PER_MESSAGE = 8;
 export const VOICE_MAX_MS = 5 * 60 * 1000;
 export const FILE_MAX_BYTES = 20 * 1024 * 1024;
+export const VIDEO_MAX_BYTES = 15 * 1024 * 1024;
 export const ATTACHMENTS_PER_MESSAGE = 8;
 export const MESSAGE_MAX_BYTES = 25 * 1024 * 1024; // all files of one message together
 /** Types a browser may open in a tab straight from the file route; anything else is served as a download. */
-export const INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "video/mp4", "video/webm", "application/pdf", "text/plain"]);
+export const INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "video/mp4", "video/webm", "video/quicktime", "application/pdf", "text/plain"]);
 export const cleanMime = (m) => (/^[\w.+-]+\/[\w.+-]+$/.test(String(m || "")) ? String(m).toLowerCase().slice(0, 120) : "application/octet-stream");
 
 /* ---------- friend codes ---------- */
@@ -161,13 +162,20 @@ export async function handOver(conversationId) {
 
 /* ---------- retention (disappearing messages) ---------- */
 export const RETENTION_CHOICES = [1, 7, 30, 90, 365];
-/** Instance-wide chat settings (admins): { max_retention_days } caps every conversation's history. */
+/**
+ * Instance-wide chat settings (admins): { max_retention_days } caps every conversation's history; { gif_provider, gif_api_key }
+ * enable GIF search (giphy | tenor). `gif_search` says whether it is usable; the key itself must never be sent to clients.
+ */
 export async function readChatSettings() {
   const row = await queryOne("SELECT value FROM app_settings WHERE name = 'chat'");
   const raw = row ? (typeof row.value === "string" ? JSON.parse(row.value) : row.value) : {};
   const cap = Number(raw?.max_retention_days);
-  return { max_retention_days: Number.isInteger(cap) && cap > 0 ? cap : null };
+  const provider = ["giphy", "tenor"].includes(raw?.gif_provider) ? raw.gif_provider : null;
+  const key = provider && typeof raw?.gif_api_key === "string" && raw.gif_api_key.trim() ? raw.gif_api_key.trim() : null;
+  return { max_retention_days: Number.isInteger(cap) && cap > 0 ? cap : null, gif_provider: provider, gif_api_key: key, gif_search: Boolean(provider && key) };
 }
+/** What administrators may see of the settings: the key is reported as set / not set. */
+export const publicChatSettings = (s) => ({ max_retention_days: s.max_retention_days, gif_provider: s.gif_provider, gif_key_set: Boolean(s.gif_api_key), gif_search: s.gif_search });
 export async function saveChatSettings(value, userId) {
   await execute("INSERT INTO app_settings (name, value, updated_by) VALUES ('chat', ?, ?) AS new ON DUPLICATE KEY UPDATE value = new.value, updated_by = new.updated_by", [JSON.stringify(value), userId]);
 }
@@ -316,6 +324,8 @@ function shapeConversation(row, members, statuses, me, settings) {
     last_photos: Number(row.last_photos ?? 0),
     last_voice: row.last_voice ?? null,
     last_files: Number(row.last_files ?? 0),
+    last_videos: Number(row.last_videos ?? 0),
+    gif_search: Boolean(settings?.gif_search),
     mention_unread: Number(row.mention_unread ?? 0),
     last_file_name: row.last_file_name ?? null,
   };
@@ -338,11 +348,12 @@ function shapeConversation(row, members, statuses, me, settings) {
 async function loadConversations(userId, onlyId = null, { includeHidden = false } = {}) {
   const rows = await query(
     `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, c.invite_code, c.retention_days, m.last_read_message_id, m.muted, m.pinned_at, m.archived_at, m.hidden_before_id,
-       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
+       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind <> 'system' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'audio' LIMIT 1) AS last_voice,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file') AS last_files,
+       (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'video') AS last_videos,
        (SELECT a.original_name FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'file' ORDER BY a.sort_order, a.id LIMIT 1) AS last_file_name,
        (SELECT COUNT(*) FROM message_mentions mm JOIN messages x ON x.id = mm.message_id WHERE x.conversation_id = c.id AND mm.user_id = ? AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS mention_unread
      FROM conversations c
@@ -399,7 +410,7 @@ export async function friendIdsAmong(userId, ids) {
 export async function chatBadge(userId) {
   const row = await queryOne(
     `SELECT
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE m.muted = 0 AND x.sender_id <> ? AND x.kind = 'text' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE m.muted = 0 AND x.sender_id <> ? AND x.kind <> 'system' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
       (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS pending`,
     [userId, userId, userId]
   );
@@ -509,7 +520,7 @@ export async function quotesOf(ids) {
   const map = new Map();
   if (!ids.length) return map;
   const rows = await query(
-    `SELECT x.id, x.sender_id, x.body, x.deleted_at, s.name AS sender_name,
+    `SELECT x.id, x.kind, x.sender_id, x.body, x.deleted_at, s.name AS sender_name,
        (SELECT a.kind FROM message_attachments a WHERE a.message_id = x.id ORDER BY a.sort_order, a.id LIMIT 1) AS att_kind,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = x.id) AS att_count,
        (SELECT a.original_name FROM message_attachments a WHERE a.message_id = x.id ORDER BY a.sort_order, a.id LIMIT 1) AS att_name
@@ -521,7 +532,8 @@ export async function quotesOf(ids) {
       id: r.id,
       sender_id: r.sender_id,
       sender_name: r.sender_name,
-      body: r.deleted_at ? "" : String(r.body ?? "").slice(0, 200),
+      body: r.deleted_at ? "" : r.kind === "location" ? "📍 Location" : String(r.body ?? "").slice(0, 200),
+      kind: r.kind,
       deleted: Boolean(r.deleted_at),
       attachment: r.att_kind && !r.deleted_at ? { kind: r.att_kind, count: Number(r.att_count), name: r.att_name } : null,
     });
@@ -570,6 +582,7 @@ export async function editableMessage(messageId, userId, { forDelete = false } =
   if (!row) throw new HttpError("Message not found.", 404);
   if (row.kind === "system") throw new HttpError("System lines cannot be changed.", 400);
   if (row.deleted_at) throw new HttpError("This message was deleted.", 400);
+  if (!forDelete && row.kind !== "text") throw new HttpError("Only text can be edited.", 400);
   const manager = row.convo_kind === "group" && (ROLE_RANK[row.my_role] ?? 0) >= 2;
   if (row.sender_id !== userId && !(forDelete && manager)) throw new HttpError(forDelete ? "You can only delete your own messages." : "You can only edit your own messages.", 403);
   return row;
@@ -595,13 +608,18 @@ export async function purgeMessagePhotos(whereSql, args) {
 
 /** One unread bell entry per conversation and recipient: the newest message replaces the previous unread one. */
 export const clockOf = (ms) => `${Math.floor((ms || 0) / 60000)}:${String(Math.floor(((ms || 0) % 60000) / 1000)).padStart(2, "0")}`;
-export async function notifyMessage(recipientId, sender, convo, body, photos = 0, voiceMs = null, files = 0, fileName = "") {
+export async function notifyMessage(recipientId, sender, convo, body, photos = 0, voiceMs = null, files = 0, fileName = "", { kind = "text", videos = 0 } = {}) {
   await execute("DELETE FROM notifications WHERE user_id = ? AND type IN ('chat_message', 'chat_mention') AND entity_type = 'conversation' AND entity_id = ? AND read_at IS NULL", [recipientId, convo.id]);
-  const text = body
-    ? body.length > 90 ? `${body.slice(0, 90)}…` : body
-    : voiceMs != null ? `🎤 Voice message (${clockOf(voiceMs)})`
-    : photos ? (photos > 1 ? `📷 ${photos} photos` : "📷 Photo") + (files ? ` + 📎 ${files}` : "")
-    : files > 1 ? `📎 ${files} files` : `📎 ${fileName || "File"}`;
+  const text = kind === "sticker"
+    ? `${body} Sticker`
+    : kind === "location"
+      ? "📍 Location"
+      : body
+        ? body.length > 90 ? `${body.slice(0, 90)}…` : body
+        : voiceMs != null ? `🎤 Voice message (${clockOf(voiceMs)})`
+        : videos ? (videos > 1 ? `🎬 ${videos} videos` : "🎬 Video") + (photos ? ` + 📷 ${photos}` : "") + (files ? ` + 📎 ${files}` : "")
+        : photos ? (photos > 1 ? `📷 ${photos} photos` : "📷 Photo") + (files ? ` + 📎 ${files}` : "")
+        : files > 1 ? `📎 ${files} files` : `📎 ${fileName || "File"}`;
   await notify({
     userId: recipientId,
     type: "chat_message",

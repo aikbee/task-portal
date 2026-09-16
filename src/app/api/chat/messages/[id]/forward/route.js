@@ -25,7 +25,7 @@ export const POST = handler(async (request, params, user) => {
   for (const cid of targets) {
     const convo = await conversationFor(cid, user.id);
     if (convo.kind === "direct") await assertFriends(user.id, convo.user_id);
-    const r = await execute("INSERT INTO messages (conversation_id, sender_id, body, forwarded) VALUES (?, ?, ?, 1)", [cid, user.id, msg.body]);
+    const r = await execute("INSERT INTO messages (conversation_id, sender_id, kind, body, forwarded) VALUES (?, ?, ?, ?, 1)", [cid, user.id, msg.kind, msg.body]);
     const copied = await copyAttachments(id, r.insertId);
     await execute("UPDATE conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?", [r.insertId, cid, user.id]);
     const message = await messageById(r.insertId);

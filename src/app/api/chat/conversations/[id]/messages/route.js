@@ -1,8 +1,10 @@
 import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveBuffer } from "@/lib/uploads";
-import { imageMeta, audioMeta } from "@/lib/images";
-import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, mutedMemberIds, unarchiveFor, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, PEER_FIELDS, purgeExpired } from "@/lib/chat";
+import { imageMeta, audioMeta, videoMeta } from "@/lib/images";
+import { STICKERS } from "@/lib/stickers";
+import { fetchGif } from "@/lib/gifs";
+import { conversationFor, assertFriends, broadcast, recipientsOf, notifyMessage, notifyMention, readMentions, mentionTargets, saveMentions, mutedMemberIds, unarchiveFor, withExtras, messageById, cleanMime, MESSAGE_SELECT, MESSAGE_FROM, MESSAGE_MAX, PHOTO_MAX_BYTES, FILE_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, MESSAGE_MAX_BYTES, VOICE_MAX_MS, VIDEO_MAX_BYTES, PEER_FIELDS, purgeExpired } from "@/lib/chat";
 
 /**
  * Messages of a conversation, oldest first: the newest page (?limit up to 100), earlier pages (?before=<id>),
@@ -30,9 +32,11 @@ export const GET = handler(async (request, params, user) => {
 });
 
 /**
- * Send a message. JSON { body, reply_to?, mentions?, mention_all? }, or multipart with "body", "reply_to", "mentions" (JSON), "mention_all" and attachments:
- *  - "files": up to 8 photos (JPEG, PNG, GIF, WebP, 10 MB each, downscaled by the browser) and/or any
- *    other files (20 MB each, 25 MB per message in total);
+ * Send a message. JSON { body, reply_to?, mentions?, mention_all? }, JSON { sticker } (one emoji from the built-in pack),
+ * JSON { location: { lat, lng, accuracy? } }, JSON { gif_url } (a GIF picked from the configured GIF search, downloaded and
+ * stored by the server), or multipart with "body", "reply_to", "mentions" (JSON), "mention_all" and attachments:
+ *  - "files": up to 8 photos (JPEG, PNG, GIF, WebP, 10 MB each, downscaled by the browser), video clips (MP4, MOV or WebM,
+ *    15 MB each, checked by content) and/or any other files (20 MB each, 25 MB per message in total);
  *  - "voice": one recorded note (WebM, Ogg or MP4 audio, up to 5 minutes) with its "duration" in ms.
  * Photos and voice notes are checked by content. Direct chats need an accepted friendship; group chats need membership.
  */
@@ -42,6 +46,7 @@ export const POST = handler(async (request, params, user) => {
   if (convo.kind === "direct") await assertFriends(user.id, convo.user_id);
 
   let text = "";
+  let kind = "text";
   let replyTo = 0;
   let mentionInput = { ids: [], all: false };
   const items = []; // { buf, kind, name, mime, width, height, duration }
@@ -61,9 +66,13 @@ export const POST = handler(async (request, params, user) => {
     for (const file of files) {
       const buf = Buffer.from(await file.arrayBuffer());
       const meta = imageMeta(buf);
+      const video = !meta && !String(file.type || "").startsWith("audio/") ? videoMeta(buf) : null;
       if (meta) {
         if (file.size > PHOTO_MAX_BYTES) throw new HttpError(`${file.name} is larger than 10 MB.`, 413);
         items.push({ buf, kind: "image", name: file.name || `photo.${meta.type}`, mime: meta.mime, width: meta.width || null, height: meta.height || null });
+      } else if (video) {
+        if (file.size > VIDEO_MAX_BYTES) throw new HttpError(`${file.name} is larger than 15 MB — videos can be up to 15 MB.`, 413);
+        items.push({ buf, kind: "video", name: (file.name || `video.${video.type}`).slice(0, 255), mime: video.mime });
       } else {
         if (file.size > FILE_MAX_BYTES) throw new HttpError(`${file.name} is larger than 20 MB.`, 413);
         items.push({ buf, kind: "file", name: (file.name || "file").slice(0, 255), mime: cleanMime(file.type) });
@@ -85,8 +94,27 @@ export const POST = handler(async (request, params, user) => {
     text = String(json.body ?? "");
     replyTo = Number(json.reply_to) || 0;
     mentionInput = readMentions(json);
+    if (json.sticker != null) {
+      const sticker = String(json.sticker);
+      if (!STICKERS.has(sticker)) throw new HttpError("Pick a sticker from the pack.", 400);
+      kind = "sticker";
+      text = sticker;
+    } else if (json.location != null) {
+      const lat = Number(json.location?.lat);
+      const lng = Number(json.location?.lng);
+      const accuracy = Number(json.location?.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new HttpError("That is not a valid location.", 400);
+      kind = "location";
+      text = JSON.stringify({ lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6, accuracy: Number.isFinite(accuracy) && accuracy > 0 ? Math.round(accuracy) : null });
+    } else if (json.gif_url != null) {
+      const buf = await fetchGif(json.gif_url);
+      const meta = imageMeta(buf);
+      if (!meta) throw new HttpError("That is not an animated picture.", 400);
+      const name = `gif-${Date.now().toString(36)}.${meta.type}`;
+      items.push({ buf, kind: "image", name, mime: meta.mime, width: meta.width || null, height: meta.height || null });
+    }
   }
-  const mentionIds = mentionTargets(convo, user.id, mentionInput);
+  const mentionIds = kind === "text" ? mentionTargets(convo, user.id, mentionInput) : [];
   if (replyTo) {
     const quoted = await queryOne("SELECT id, kind, deleted_at FROM messages WHERE id = ? AND conversation_id = ?", [replyTo, id]);
     if (!quoted) throw new HttpError("That message is not in this conversation.", 400);
@@ -94,13 +122,14 @@ export const POST = handler(async (request, params, user) => {
     if (quoted.deleted_at) throw new HttpError("That message was deleted.", 400);
   }
   const photos = items.filter((i) => i.kind === "image");
+  const videos = items.filter((i) => i.kind === "video");
   const plain = items.filter((i) => i.kind === "file");
   const voice = items.find((i) => i.kind === "audio") ?? null;
-  const body = text.replace(/\r\n/g, "\n").trim();
+  const body = kind === "text" ? text.replace(/\r\n/g, "\n").trim() : text;
   if (!body && !items.length) throw new HttpError("Message is empty.", 400);
   if (body.length > MESSAGE_MAX) throw new HttpError(`Messages can be up to ${MESSAGE_MAX} characters.`, 400);
 
-  const r = await execute("INSERT INTO messages (conversation_id, sender_id, body, reply_to_id) VALUES (?, ?, ?, ?)", [id, user.id, body, replyTo || null]);
+  const r = await execute("INSERT INTO messages (conversation_id, sender_id, kind, body, reply_to_id) VALUES (?, ?, ?, ?, ?)", [id, user.id, kind, body, replyTo || null]);
   let order = 1;
   for (const it of items) {
     const { storedName, size } = await saveBuffer(it.buf, it.name);
@@ -121,7 +150,7 @@ export const POST = handler(async (request, params, user) => {
   for (const rid of recipientsOf(convo, user.id)) {
     if (muted.has(rid)) continue;
     if (mentioned.has(rid)) notifyMention(rid, me, convo, body).catch(() => {});
-    else notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "").catch(() => {});
+    else notifyMessage(rid, me, convo, body, photos.length, voice ? voice.duration ?? 0 : null, plain.length, plain[0]?.name ?? "", { kind, videos: videos.length }).catch(() => {});
   }
   return ok(message, { status: 201 });
 });

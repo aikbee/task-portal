@@ -9,7 +9,7 @@ import Tabs from "@/components/ui/Tabs";
 import StatCard from "@/components/ui/StatCard";
 import Avatar from "@/components/ui/Avatar";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Select, Toggle } from "@/components/ui/Controls";
+import { Select, Toggle, Input, Field } from "@/components/ui/Controls";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";
@@ -43,7 +43,7 @@ export default function ModerationPage() {
         <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <StatCard label={tr("Open reports")} value={totals.open_reports} icon={Flag} color="#ef4444" hint={tr("waiting for a decision")} />
           <StatCard label={tr("Conversations")} value={totals.conversations} icon={Users} color="#0ea5e9" hint={tr("{g} groups · {d} direct", { g: totals.groups, d: totals.direct })} />
-          <StatCard label={tr("Messages")} value={totals.messages} icon={MessageSquare} color="#8b5cf6" hint={tr("text messages, deleted ones excluded")} />
+          <StatCard label={tr("Messages")} value={totals.messages} icon={MessageSquare} color="#8b5cf6" hint={tr("messages, system lines and deleted ones excluded")} />
           <StatCard label={tr("Files")} value={formatBytes(totals.attachment_bytes)} icon={HardDrive} color="#f59e0b" hint={tr("photos, voice notes and files")} />
         </div>
       ) : null}
@@ -54,7 +54,7 @@ export default function ModerationPage() {
         tabs={[
           { key: "reports", label: "Reports", icon: Flag, count: totals?.open_reports ?? undefined },
           { key: "conversations", label: "Conversations", icon: Users, count: totals?.conversations ?? undefined },
-          { key: "settings", label: "Retention", icon: Timer },
+          { key: "settings", label: "Settings", icon: Timer },
         ]}
       />
       {tab === "reports" ? <Reports tr={tr} state={reports} showResolved={showResolved} setShowResolved={setShowResolved} onChanged={reload} /> : null}
@@ -293,6 +293,7 @@ function RetentionSettings({ tr, state, onChanged }) {
   };
   if (!state.data) return <Skeleton className="h-40 w-full" />;
   return (
+    <>
     <Card className="max-w-2xl space-y-4">
       <div>
         <h3 className="text-sm font-semibold">{tr("Maximum chat history")}</h3>
@@ -306,6 +307,59 @@ function RetentionSettings({ tr, state, onChanged }) {
         {dirty ? <Button variant="ghost" icon={X} onClick={() => setValue(null)}>{tr("Cancel")}</Button> : null}
       </div>
       <p className="text-[11px] text-fg-muted">{tr("Members can pick a shorter window per chat (owner or admin in groups, either person in a direct chat); they cannot keep messages longer than the cap.")}</p>
+    </Card>
+    <GifSettings tr={tr} state={state} onChanged={onChanged} />
+    </>
+  );
+}
+
+/** GIF search: a GIPHY or Tenor key kept on the server; the chat's sticker panel gets a GIF tab once it is set. */
+function GifSettings({ tr, state, onChanged }) {
+  const toast = useToast();
+  const s = state.data?.settings ?? {};
+  const [provider, setProvider] = useState(null); // null = untouched
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const shownProvider = provider ?? (s.gif_provider || "");
+  const dirty = shownProvider !== (s.gif_provider || "") || key.trim() !== "";
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = { gif_provider: shownProvider || null };
+      if (key.trim() || !shownProvider) body.gif_api_key = shownProvider ? key.trim() : "";
+      const r = await api.put("/api/chat/admin/settings", body);
+      toast.success(r.gif_search ? tr("GIF search is on") : tr("GIF search is off"));
+      setProvider(null);
+      setKey("");
+      onChanged();
+    } catch (e) {
+      toast.error(tr("Could not save"), e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card className="mt-4 max-w-2xl space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold">{tr("GIF search")}</h3>
+        <p className="mt-1 text-xs text-fg-muted">{tr("Lets people search GIFs from the sticker panel. Paste a GIPHY or Tenor API key; it stays on the server, searches go through this portal, and a chosen GIF is downloaded and stored like a photo so recipients never contact the provider.")}</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
+        <Field label={tr("Provider")}>
+          <Select value={shownProvider} onChange={(e) => setProvider(e.target.value)} className="h-9 w-full">
+            <option value="">{tr("Off")}</option>
+            <option value="giphy">GIPHY</option>
+            <option value="tenor">Tenor</option>
+          </Select>
+        </Field>
+        <Field label={tr("API key")} hint={s.gif_key_set && !key ? tr("A key is saved. Paste a new one to replace it.") : undefined}>
+          <Input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.gif_key_set ? "••••••••••••" : tr("Paste the key")} disabled={!shownProvider} />
+        </Field>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button icon={Save} onClick={save} loading={saving} disabled={!dirty}>{tr("Save changes")}</Button>
+        {s.gif_search ? <span className="text-[11px] text-emerald-600">{tr("GIF search is on ({p})", { p: s.gif_provider === "giphy" ? "GIPHY" : "Tenor" })}</span> : <span className="text-[11px] text-fg-muted">{tr("Currently off — the GIF tab tells people to ask an administrator.")}</span>}
+      </div>
     </Card>
   );
 }

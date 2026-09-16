@@ -21,7 +21,7 @@ export const POST = handler(async (request, params, user) => {
   const files = await query("SELECT original_name FROM message_attachments WHERE message_id = ? ORDER BY sort_order, id", [id]);
   const peer = msg.convo_kind === "direct" ? await queryOne("SELECT u.name FROM conversation_members m JOIN users u ON u.id = m.user_id WHERE m.conversation_id = ? AND m.user_id <> ? LIMIT 1", [msg.conversation_id, user.id]) : null;
   const snapshot = {
-    body: String(msg.body ?? "").slice(0, 4000),
+    body: msg.kind === "location" ? "📍 Location" : String(msg.body ?? "").slice(0, 4000),
     sender_name: msg.sender_name ?? "Deleted account",
     reporter_name: user.name,
     conversation: msg.convo_kind === "group" ? msg.title : `${user.name} ↔ ${peer?.name ?? "Deleted account"}`,

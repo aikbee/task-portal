@@ -46,6 +46,19 @@ export function imageMeta(buf) {
   return null;
 }
 
+/** Container check for video clips: MP4 / MOV (ISO base media, any brand but the audio-only M4A/M4B) or WebM. */
+export function videoMeta(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return { type: "webm", mime: "video/webm" };
+  if (buf.toString("latin1", 4, 8) === "ftyp") {
+    const brand = buf.toString("latin1", 8, 12);
+    if (/^M4[AB]/.test(brand)) return null;
+    if (brand === "qt  ") return { type: "mov", mime: "video/quicktime" };
+    return { type: "mp4", mime: "video/mp4" };
+  }
+  return null;
+}
+
 /** Container check for recorded voice notes: WebM/Opus (Chrome, Firefox, Android), MP4/AAC (Safari) or Ogg. */
 export function audioMeta(buf) {
   if (!buf || buf.length < 12) return null;

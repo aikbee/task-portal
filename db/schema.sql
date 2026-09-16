@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   conversation_id INT UNSIGNED NOT NULL,
   sender_id INT UNSIGNED NOT NULL,
-  kind ENUM('text','system') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…)
+  kind ENUM('text','system','sticker','location') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…); sticker = one big emoji in body; location = JSON { lat, lng, accuracy }
   body TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   edited_at DATETIME NULL,
@@ -496,7 +496,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS message_attachments (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   message_id INT UNSIGNED NOT NULL,
-  kind ENUM('image','audio','file') NOT NULL DEFAULT 'file', -- photo, voice note, or any other file
+  kind ENUM('image','audio','file','video') NOT NULL DEFAULT 'file', -- photo, voice note, video clip, or any other file
   stored_name VARCHAR(255) NOT NULL,
   original_name VARCHAR(255) NOT NULL,
   mime_type VARCHAR(120) NULL,

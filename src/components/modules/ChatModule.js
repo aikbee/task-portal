@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -18,6 +18,7 @@ import { Input, Textarea, Checkbox, Field } from "@/components/ui/Controls";
 import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
+import { STICKER_PACK } from "@/lib/stickers";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -312,7 +313,119 @@ function quoteText(q, tr) {
   if (!a) return "";
   if (a.kind === "image") return a.count > 1 ? tr("{n} photos", { n: a.count }) : tr("Photo");
   if (a.kind === "audio") return tr("Voice message");
+  if (a.kind === "video") return a.count > 1 ? tr("{n} videos", { n: a.count }) : tr("Video");
   return a.name || tr("File");
+}
+const parseLocation = (body) => {
+  try {
+    const o = JSON.parse(body);
+    return Number.isFinite(o?.lat) && Number.isFinite(o?.lng) ? o : null;
+  } catch {
+    return null;
+  }
+};
+const mapsUrl = (loc) => `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
+
+/** A sticker: one big emoji, no bubble. */
+function StickerMessage({ m, mine, time }) {
+  return (
+    <div className={cn("chat-sticker flex flex-col", mine ? "items-end" : "items-start")} title={formatDateTime(m.created_at)}>
+      <span className="select-none text-[64px] leading-none drop-shadow-sm">{m.body}</span>
+      <span className="mt-1 px-1">{time}</span>
+    </div>
+  );
+}
+/** A shared location: coordinates and a button that asks before opening Google Maps. */
+function LocationMessage({ tr, m, mine, time, onOpen }) {
+  const loc = parseLocation(m.body);
+  return (
+    <div className={cn("chat-bubble chat-location w-64 max-w-full rounded-app p-1.5", mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg")} title={formatDateTime(m.created_at)}>
+      <button type="button" onClick={() => loc && onOpen(loc)} className={cn("flex w-full items-center gap-3 rounded-[10px] px-2.5 py-2 text-left transition focus-ring", mine ? "bg-white/15 hover:bg-white/25" : "bg-fg/5 hover:bg-fg/10")}>
+        <span className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-full", mine ? "bg-white/20" : "bg-rose-500/12 text-rose-500")}>
+          <MapPin size={20} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">{mine ? tr("Your location") : tr("Shared location")}</span>
+          <span className={cn("block truncate text-[11px]", mine ? "text-white/75" : "text-fg-muted")}>{loc ? `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}${loc.accuracy ? ` · ±${loc.accuracy} m` : ""}` : "—"}</span>
+          <span className={cn("mt-0.5 flex items-center gap-1 text-[11px] font-medium", mine ? "text-white" : "text-accent")}>
+            <Navigation size={11} /> {tr("Open in Google Maps")}
+          </span>
+        </span>
+      </button>
+      <span className="flex justify-end px-1.5 pt-1">{time}</span>
+    </div>
+  );
+}
+
+/** Stickers (built-in emoji pack) and GIF search (when an administrator configured a provider). */
+function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
+  const ref = useRef(null);
+  useClickOutside(ref, onClose);
+  const [tab, setTab] = useState("stickers");
+  const [q, setQ] = useState("");
+  const dq = useDebouncedValue(q.trim(), 350);
+  const [res, setRes] = useState(null); // { q, configured, provider, items, next, error }
+  useEffect(() => {
+    if (tab !== "gifs" || !gifSearch) return;
+    let alive = true;
+    api
+      .get(`/api/chat/gifs?q=${encodeURIComponent(dq)}`)
+      .then((r) => alive && setRes({ q: dq, ...r }))
+      .catch((e) => alive && setRes({ q: dq, configured: true, items: [], next: null, error: e.message }));
+    return () => {
+      alive = false;
+    };
+  }, [tab, dq, gifSearch]);
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const loading = tab === "gifs" && gifSearch && (!res || res.q !== dq);
+  const tabCls = (on) => cn("rounded-app-sm px-2.5 py-1 text-xs font-medium transition", on ? "bg-accent/12 text-accent" : "text-fg-muted hover:bg-surface-2");
+  return (
+    <div ref={ref} className="chat-sticker-pop absolute bottom-full left-0 z-20 mb-2 flex w-[min(24rem,100%)] flex-col overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop" role="dialog" aria-label={tr("Stickers and GIFs")}>
+      <div className="flex items-center gap-1 border-b border-line p-1.5">
+        <button type="button" onClick={() => setTab("stickers")} className={tabCls(tab === "stickers")}>{tr("Stickers")}</button>
+        <button type="button" onClick={() => setTab("gifs")} className={tabCls(tab === "gifs")}>GIF</button>
+        {tab === "gifs" && gifSearch ? <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Search GIFs…")} className="control ml-auto h-7 w-40 min-w-0 text-xs" aria-label={tr("Search GIFs…")} autoFocus /> : null}
+      </div>
+      <div className="chat-sticker-body max-h-72 overflow-y-auto p-2">
+        {tab === "stickers" ? (
+          STICKER_PACK.map((g) => (
+            <div key={g.key} className="mb-2 last:mb-0">
+              <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{tr(g.label)}</p>
+              <div className="grid grid-cols-8 gap-1">
+                {g.items.map((e) => (
+                  <button key={e} type="button" onClick={() => onSticker(e)} className="chat-sticker-btn grid aspect-square place-items-center rounded-app-sm text-2xl transition hover:scale-125 hover:bg-surface-2 focus-ring" aria-label={e}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))
+        ) : !gifSearch || (res && !res.configured) ? (
+          <p className="px-2 py-6 text-center text-xs text-fg-muted">{tr("GIF search is not set up yet. An administrator can add a GIPHY or Tenor key on the Moderation page.")}</p>
+        ) : loading ? (
+          <div className="grid place-items-center py-8"><Spinner className="text-fg-muted" /></div>
+        ) : res.error ? (
+          <p className="px-2 py-6 text-center text-xs text-rose-500">{res.error}</p>
+        ) : !res.items.length ? (
+          <p className="px-2 py-6 text-center text-xs text-fg-muted">{tr("No GIFs found")}</p>
+        ) : (
+          <div className="columns-3 gap-1">
+            {res.items.map((g) => (
+              <button key={g.id} type="button" onClick={() => onGif(g.url)} className="chat-gif mb-1 block w-full overflow-hidden rounded-app-sm bg-surface-2 focus-ring" title={g.title}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- provider previews, chosen one is re-hosted */}
+                <img src={g.preview} alt={g.title} className="block w-full" loading="lazy" style={g.width && g.height ? { aspectRatio: `${g.width} / ${g.height}` } : undefined} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {tab === "gifs" && res?.configured ? <p className="border-t border-line px-2 py-1 text-right text-[10px] text-fg-faint">{res.provider === "giphy" ? "Powered by GIPHY" : "Powered by Tenor"}</p> : null}
+    </div>
+  );
 }
 
 /** Pick the chats a message should be forwarded to. */
@@ -1193,10 +1306,20 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     if (c.last_deleted) return <span className="pr-1 italic text-fg-faint">{tr("Message deleted")}</span>;
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
     const glyph = "mr-1 inline-block align-[-2px]";
+    if (c.last_kind === "sticker" || c.last_kind === "location") {
+      return (
+        <>
+          {who ? `${who}: ` : ""}
+          {c.last_kind === "sticker" ? `${c.last_body} ${tr("Sticker")}` : `📍 ${tr("Location")}`}
+        </>
+      );
+    }
     const what = c.last_body ? (
       stripMarkers(c.last_body)
     ) : c.last_voice != null ? (
       <><Mic size={12} className={glyph} />{tr("Voice message")} · {clock(c.last_voice)}</>
+    ) : c.last_videos ? (
+      <><Clapperboard size={12} className={glyph} />{c.last_videos > 1 ? tr("{n} videos", { n: c.last_videos }) : tr("Video")}</>
     ) : c.last_files && !c.last_photos ? (
       <><Paperclip size={12} className={glyph} />{c.last_files > 1 ? tr("{n} files", { n: c.last_files }) : c.last_file_name}</>
     ) : (
@@ -1586,7 +1709,8 @@ const MAX_EDGE = 1920;
 const KEEP_BYTES = 3 * 1024 * 1024;
 const MAX_PHOTOS = 8;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
-const INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "video/mp4", "video/webm", "application/pdf", "text/plain"]);
+const MAX_VIDEO_BYTES = 15 * 1024 * 1024;
+const INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "video/mp4", "video/webm", "video/quicktime", "application/pdf", "text/plain"]);
 /** An icon that fits the file's type or extension. */
 function FileGlyph({ name = "", mime = "", size = 18, className }) {
   const ext = name.split(".").pop().toLowerCase();
@@ -1656,6 +1780,10 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
   const [retentionOpen, setRetentionOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [reportFor, setReportFor] = useState(null); // message being reported
+  const [mapTarget, setMapTarget] = useState(null); // a shared location about to open in Google Maps
+  const [stickerOpen, setStickerOpen] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [shareLoc, setShareLoc] = useState(null); // { lat, lng, accuracy } waiting for the sender's OK
   const [chatBusy, setChatBusy] = useState(false);
   const changeSetting = async (patch) => {
     setChatMenu(false);
@@ -1992,6 +2120,14 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     const prepared = [];
     for (const f of files) {
       const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      if (f.type.startsWith("video/")) {
+        if (f.size > MAX_VIDEO_BYTES) {
+          toast.error(tr("{name} is larger than 15 MB — videos can be up to 15 MB", { name: f.name }));
+          continue;
+        }
+        prepared.push({ key, kind: "video", file: f, url: URL.createObjectURL(f) });
+        continue;
+      }
       if (f.type.startsWith("image/") && f.type !== "image/svg+xml") {
         try {
           const file = await prepareImage(f);
@@ -2015,6 +2151,35 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       return cur.filter((p) => p.key !== key);
     });
 
+  /** Stickers, GIFs and locations go as small JSON posts. */
+  const sendSpecial = async (payload, failMsg) => {
+    if (sending) return;
+    setSending(true);
+    try {
+      const m = await api.post(`/api/chat/conversations/${convo.id}/messages`, payload);
+      setStickerOpen(false);
+      onSent(m);
+    } catch (e) {
+      toast.error(failMsg, e.message);
+    } finally {
+      setSending(false);
+    }
+  };
+  const shareLocation = () => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return toast.error(tr("Location is not available in this browser"));
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        setShareLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+      },
+      (err) => {
+        setLocating(false);
+        toast.error(tr("Could not get your location"), err?.code === 1 ? tr("Allow location access in your browser and try again.") : err?.message);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+    );
+  };
   const send = async () => {
     const body = draft.trim();
     if ((!body && !pending.length) || sending) return;
@@ -2133,6 +2298,33 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
         </div>
       ) : null}
       {group && panel ? <GroupPanel tr={tr} me={me} convo={convo} friends={friends ?? []} open={panel} onClose={() => setPanel(false)} onChange={onConvoChange} onLeft={(id) => { setPanel(false); onLeft(id); }} /> : null}
+      <ConfirmDialog
+        open={!!mapTarget}
+        onClose={() => setMapTarget(null)}
+        danger={false}
+        title={tr("Open in Google Maps?")}
+        confirmText={tr("Open Google Maps")}
+        description={mapTarget ? tr("Google Maps opens in a new tab with directions to {lat}, {lng}. On a phone this opens the Maps app.", { lat: mapTarget.lat.toFixed(5), lng: mapTarget.lng.toFixed(5) }) : ""}
+        onConfirm={() => {
+          const t = mapTarget;
+          setMapTarget(null);
+          if (t) window.open(mapsUrl(t), "_blank", "noopener");
+        }}
+      />
+      <ConfirmDialog
+        open={!!shareLoc}
+        onClose={() => setShareLoc(null)}
+        danger={false}
+        loading={sending}
+        title={tr("Share your location?")}
+        confirmText={tr("Share location")}
+        description={shareLoc ? tr("{lat}, {lng} (accurate to about {m} m). Everyone in this chat can open it in Google Maps.", { lat: shareLoc.lat.toFixed(5), lng: shareLoc.lng.toFixed(5), m: Math.round(shareLoc.accuracy || 0) }) : ""}
+        onConfirm={async () => {
+          const l = shareLoc;
+          await sendSpecial({ location: l }, tr("Could not share your location"));
+          setShareLoc(null);
+        }}
+      />
       {retentionOpen ? <RetentionModal tr={tr} convo={convo} open onClose={() => setRetentionOpen(false)} onChange={onConvoChange} /> : null}
       {exportOpen ? <ExportModal tr={tr} convo={convo} open onClose={() => setExportOpen(false)} /> : null}
       {reportFor ? <ReportModal tr={tr} message={reportFor} open onClose={() => setReportFor(null)} /> : null}
@@ -2156,6 +2348,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const photos = (m.attachments ?? []).filter((a) => a.kind === "image");
                 const voice = (m.attachments ?? []).find((a) => a.kind === "audio") ?? null;
                 const files = (m.attachments ?? []).filter((a) => a.kind === "file");
+                const videos = (m.attachments ?? []).filter((a) => a.kind === "video");
                 const prev = messages[i - 1];
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
                 if (m.kind === "system") {
@@ -2173,7 +2366,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const reactions = m.reactions ?? [];
                 const myEmojis = reactions.filter((r) => r.user_ids.includes(me?.id)).map((r) => r.emoji);
                 const deleted = Boolean(m.deleted_at);
-                const canEdit = mine && !deleted && (m.body || photos.length > 0 || files.length > 0) && !voice;
+                const canEdit = mine && !deleted && m.kind === "text" && (m.body || photos.length > 0 || files.length > 0 || videos.length > 0) && !voice;
                 const canDelete = !deleted && (mine || canManage(convo));
                 const menuBtn =
                   !deleted ? (
@@ -2233,7 +2426,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const tickState = !rc ? null : rc.others.length && rc.read.length === rc.others.length ? "all" : rc.read.length ? "some" : rc.delivered.length ? "delivered" : "sent";
                 const tickLabel = !rc ? "" : tickState === "sent" ? tr("Sent") : tickState === "delivered" ? tr("Delivered") : !group ? tr("Read") : tickState === "all" ? tr("Read by everyone") : tr("Read by {names}", { names: rc.read.map((u) => u.name).join(", ") });
                 const time = (
-                  <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine ? "text-white/70" : "text-fg-faint", photos.length || voice || files.length ? "ml-auto" : "ml-2")}>
+                  <span className={cn("inline-flex shrink-0 items-center gap-1 whitespace-nowrap align-bottom text-[10px] tabular-nums", mine && m.kind !== "sticker" ? "text-white/70" : "text-fg-faint", photos.length || voice || files.length || videos.length ? "ml-auto" : "ml-2")}>
                     {m.edited_at && !m.deleted_at ? <span className="chat-edited not-italic">{tr("edited")}</span> : null}
                     {timeOf(m.created_at)}
                     {rc ? <Ticks tr={tr} mine state={tickState} label={tickLabel} onClick={group ? (e) => { setPopSide(sideFor(e.currentTarget, 240)); setReceipts(receipts === m.id ? null : m.id); } : undefined} /> : null}
@@ -2242,7 +2435,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 // photo bubbles take their width from the picture (longest edge 360 px), so a caption wraps under it
                 const single = photos.length === 1 ? photos[0] : null;
                 const imgW = single?.width && single?.height ? Math.round(Math.min(single.width, 360, (360 * single.width) / single.height)) : null;
-                const bubbleW = voice ? 272 : files.length && !photos.length ? 320 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
+                const bubbleW = voice ? 272 : videos.length ? 320 : files.length && !photos.length ? 320 : photos.length > 1 ? 372 : imgW ? (m.body ? Math.max(imgW, 240) : imgW) + 12 : undefined;
                 return (
                   <div key={m.id} id={`msg-${m.id}`} className="chat-msg rounded-app">
                     {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
@@ -2289,13 +2482,17 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                             <Button size="xs" icon={Check} onClick={saveEdit} disabled={!editing.text.trim() && !photos.length}>{tr("Save")}</Button>
                           </div>
                         </div>
+                      ) : m.kind === "sticker" ? (
+                        <StickerMessage m={m} mine={mine} time={time} />
+                      ) : m.kind === "location" ? (
+                        <LocationMessage tr={tr} m={m} mine={mine} time={time} onOpen={setMapTarget} />
                       ) : (
                       <div
                         className={cn(
                           "chat-bubble max-w-full whitespace-pre-wrap break-words rounded-app text-sm leading-relaxed",
                           grouped ? "chat-run-cont" : "chat-run-first",
                           runLast && "chat-run-last",
-                          photos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : files.length ? "chat-has-files p-1.5" : "px-3 py-2",
+                          photos.length || videos.length ? "chat-has-photos p-1.5" : voice ? "chat-has-voice px-2 py-2" : files.length ? "chat-has-files p-1.5" : "px-3 py-2",
                           mine ? "chat-mine bg-accent text-white" : "chat-theirs bg-surface-2 text-fg"
                         )}
                         title={formatDateTime(m.created_at)}
@@ -2339,6 +2536,13 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                           </div>
                         ) : null}
                         {voice ? <VoicePlayer tr={tr} src={voice.url} duration={voice.duration} mine={mine} /> : null}
+                        {videos.length ? (
+                          <div className={cn("chat-videos flex flex-col gap-1", photos.length && "mt-1")}>
+                            {videos.map((v) => (
+                              <video key={v.id} src={v.url} controls preload="metadata" playsInline className="chat-video block max-h-80 w-full rounded-[10px] bg-black" onLoadedMetadata={stickToBottom} title={v.name} />
+                            ))}
+                          </div>
+                        ) : null}
                         {files.length ? (
                           <div className={cn("chat-files flex flex-col gap-1", photos.length && "mt-1")}>
                             {files.map((f) => (
@@ -2346,7 +2550,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                             ))}
                           </div>
                         ) : null}
-                        {photos.length || voice || files.length ? (
+                        {photos.length || voice || files.length || videos.length ? (
                           <span className={cn("flex items-end gap-2 px-1.5", voice ? "pt-0.5" : "pt-1")}>
                             {m.body ? <span className="min-w-0">{renderBody(m.body, mine)}</span> : null}
                             {time}
@@ -2426,7 +2630,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   <Reply size={13} className="shrink-0 text-accent" />
                   <span className="min-w-0 flex-1">
                     <span className="block font-semibold text-accent">{tr("Replying to {name}", { name: replyTo.sender_id === me?.id ? tr("You") : replyTo.sender_name })}</span>
-                    <span className="block truncate text-fg-muted">{quoteText({ body: replyTo.body, deleted: Boolean(replyTo.deleted_at), attachment: replyTo.attachments?.[0] ? { kind: replyTo.attachments[0].kind, count: replyTo.attachments.length, name: replyTo.attachments[0].name } : null }, tr)}</span>
+                    <span className="block truncate text-fg-muted">{quoteText({ body: replyTo.kind === "location" ? `📍 ${tr("Location")}` : replyTo.body, deleted: Boolean(replyTo.deleted_at), attachment: replyTo.attachments?.[0] ? { kind: replyTo.attachments[0].kind, count: replyTo.attachments.length, name: replyTo.attachments[0].name } : null }, tr)}</span>
                   </span>
                   <Button variant="ghost" size="iconXs" icon={X} onClick={() => setReplyTo(null)} aria-label={tr("Cancel reply")} />
                 </div>
@@ -2439,6 +2643,8 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                         {p.kind === "image" ? (
                           /* eslint-disable-next-line @next/next/no-img-element */
                           <img src={p.url} alt="" className="h-16 w-16 rounded-app-sm border border-line object-cover" />
+                        ) : p.kind === "video" ? (
+                          <video src={p.url} muted playsInline preload="metadata" className="h-16 w-24 rounded-app-sm border border-line bg-black object-cover" />
                         ) : (
                           <span className="chat-pending-file flex h-16 max-w-48 items-center gap-2 rounded-app-sm border border-line bg-surface-2 px-2.5" title={p.file.name}>
                             <FileGlyph name={p.file.name} mime={p.file.type} size={20} className="shrink-0 text-accent" />
@@ -2455,7 +2661,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     );
                   })}
                   <span className="text-[11px] text-fg-muted">
-                    {pending.every((p) => p.kind === "image") ? (pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")) : pending.length > 1 ? tr("{n} attachments", { n: pending.length }) : tr("1 attachment")}
+                    {pending.every((p) => p.kind === "image") ? (pending.length > 1 ? tr("{n} photos", { n: pending.length }) : tr("Photo")) : pending.every((p) => p.kind === "video") ? (pending.length > 1 ? tr("{n} videos", { n: pending.length }) : tr("Video")) : pending.length > 1 ? tr("{n} attachments", { n: pending.length }) : tr("1 attachment")}
                   </span>
                 </div>
               ) : null}
@@ -2473,11 +2679,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   <Button size="iconSm" icon={Check} onClick={() => stopRecording({ send: true })} aria-label={tr("Send voice message")} data-tip={tr("Send")} />
                 </div>
               ) : null}
+              {stickerOpen ? <StickerPanel tr={tr} gifSearch={Boolean(convo.gif_search)} onSticker={(e) => sendSpecial({ sticker: e }, tr("Could not send the sticker"))} onGif={(u) => sendSpecial({ gif_url: u }, tr("Could not send the GIF"))} onClose={() => setStickerOpen(false)} /> : null}
               <div className={cn("chat-composer-bar flex items-end gap-1 rounded-[1.4rem] border border-line bg-surface px-1.5 py-1 shadow-sm transition", rec && "hidden")}>
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   multiple
                   className="hidden"
                   onChange={(e) => {
@@ -2495,8 +2702,26 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     e.target.value = "";
                   }}
                 />
-                <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos")} data-tip={tr("Add photos")} disabled={sending} />
-                <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Paperclip} onClick={() => anyRef.current?.click()} aria-label={tr("Attach files")} data-tip={tr("Attach files")} disabled={sending} className="chat-clip" />
+                {narrow ? (
+                  <DropdownMenu
+                    side="top"
+                    align="start"
+                    width="w-48"
+                    trigger={({ toggle }) => <Button variant="ghost" size="iconSm" icon={Plus} onClick={toggle} aria-label={tr("Attach")} disabled={sending} className="chat-plus" />}
+                    items={[
+                      { label: tr("Photo or video"), icon: ImageIcon, onClick: () => fileRef.current?.click() },
+                      { label: tr("File"), icon: Paperclip, onClick: () => anyRef.current?.click() },
+                      { label: tr("Location"), icon: MapPin, onClick: shareLocation },
+                    ]}
+                  />
+                ) : (
+                  <>
+                    <Button variant="ghost" size="icon" icon={ImageIcon} onClick={() => fileRef.current?.click()} aria-label={tr("Add photos or videos")} data-tip={tr("Photo or video")} disabled={sending} />
+                    <Button variant="ghost" size="icon" icon={Paperclip} onClick={() => anyRef.current?.click()} aria-label={tr("Attach files")} data-tip={tr("Attach files")} disabled={sending} className="chat-clip" />
+                    <Button variant="ghost" size="icon" icon={MapPin} onClick={shareLocation} loading={locating} aria-label={tr("Share location")} data-tip={tr("Share location")} disabled={sending} className="chat-loc" />
+                  </>
+                )}
+                <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Sticker} onClick={() => setStickerOpen((v) => !v)} aria-label={tr("Stickers and GIFs")} data-tip={tr("Stickers and GIFs")} disabled={sending} className={cn("chat-sticker-toggle", stickerOpen && "text-accent")} />
                 {canRecord() && !draft.trim() && !pending.length ? <Button variant="ghost" size={narrow ? "iconSm" : "icon"} icon={Mic} onClick={startRecording} aria-label={tr("Record a voice message")} data-tip={tr("Voice message")} disabled={sending} className="chat-mic" /> : null}
                 <textarea
                   ref={composerRef}
@@ -2532,7 +2757,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                     } else if (e.key === "Escape" && replyTo) {
                       setReplyTo(null);
                     } else if (e.key === "ArrowUp" && !draft && !pending.length) {
-                      const last = [...(messages ?? [])].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && !m.deleted_at && m.body);
+                      const last = [...(messages ?? [])].reverse().find((m) => m.sender_id === me?.id && m.kind === "text" && !m.deleted_at && m.body);
                       if (last) {
                         e.preventDefault();
                         startEdit(last);

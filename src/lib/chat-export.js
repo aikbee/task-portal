@@ -147,6 +147,16 @@ function transcriptOf(convo, members, messages, by, withFiles) {
       lines.push(`[${at}] ${who}: (message deleted)`);
       continue;
     }
+    if (m.kind === "sticker") {
+      lines.push(`[${at}] ${who}: [sticker: ${m.body}]`);
+      continue;
+    }
+    if (m.kind === "location") {
+      let loc = {};
+      try { loc = JSON.parse(m.body); } catch {}
+      lines.push(`[${at}] ${who}: [location: ${loc.lat}, ${loc.lng}${loc.accuracy ? ` ±${loc.accuracy} m` : ""} — https://www.google.com/maps?q=${loc.lat},${loc.lng}]`);
+      continue;
+    }
     const parts = [];
     if (m.reply_to) {
       const quoted = m.reply_to.deleted ? "(deleted)" : (m.reply_to.body || (m.reply_to.attachment ? `[${m.reply_to.attachment.kind}]` : "")).replace(/\s+/g, " ").slice(0, 80);
@@ -155,7 +165,7 @@ function transcriptOf(convo, members, messages, by, withFiles) {
     if (m.forwarded) parts.push("(forwarded)");
     if (m.body) parts.push(m.body);
     for (const a of m.attachments ?? []) {
-      const tag = a.kind === "image" ? "photo" : a.kind === "audio" ? "voice message" : "file";
+      const tag = a.kind === "image" ? "photo" : a.kind === "audio" ? "voice message" : a.kind === "video" ? "video" : "file";
       parts.push(`[${tag}: ${a.name ?? ""}${withFiles ? ` → ${fileEntryName(m, a)}` : ""}]`);
     }
     if (m.edited_at) parts.push("(edited)");
@@ -179,6 +189,7 @@ function jsonOf(convo, members, messages, by, withFiles) {
         sender_id: m.sender_id,
         sender_name: m.sender_name,
         body: m.kind === "system" ? systemLineText(m) : m.body,
+        location: m.kind === "location" ? (() => { try { return JSON.parse(m.body); } catch { return null; } })() : undefined,
         created_at: m.created_at,
         edited_at: m.edited_at,
         deleted_at: m.deleted_at,
