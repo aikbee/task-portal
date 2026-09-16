@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   conversation_id INT UNSIGNED NOT NULL,
   sender_id INT UNSIGNED NOT NULL,
-  kind ENUM('text','system','sticker','location') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…); sticker = one big emoji in body; location = JSON { lat, lng, accuracy }
+  kind ENUM('text','system','sticker','location','call') NOT NULL DEFAULT 'text', -- system rows hold a JSON event (member added, renamed…); sticker = one big emoji in body; location = JSON { lat, lng, accuracy }; call = JSON { call_id, kind, status, duration }
   body TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   edited_at DATETIME NULL,
@@ -541,6 +541,24 @@ CREATE TABLE IF NOT EXISTS message_reports (
   KEY idx_message_reports_message (message_id),
   CONSTRAINT fk_message_reports_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   CONSTRAINT fk_message_reports_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Voice / video calls between two people: the browsers talk WebRTC, the server only rings, relays signals and keeps this log.
+-- No foreign keys on the people (users already cascade into many chat tables); a deleted account leaves dangling ids here.
+CREATE TABLE IF NOT EXISTS calls (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  conversation_id INT UNSIGNED NOT NULL,
+  caller_id INT UNSIGNED NOT NULL,
+  callee_id INT UNSIGNED NOT NULL,
+  kind ENUM('audio','video') NOT NULL DEFAULT 'audio',
+  status ENUM('ringing','active','ended','missed','declined','failed') NOT NULL DEFAULT 'ringing',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  answered_at DATETIME NULL,
+  ended_at DATETIME NULL,
+  message_id INT UNSIGNED NULL, -- the "call" line written into the chat when it is over
+  KEY idx_calls_conversation (conversation_id, id),
+  KEY idx_calls_open (status, created_at),
+  CONSTRAINT fk_calls_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS message_mentions (

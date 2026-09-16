@@ -157,6 +157,10 @@ async function migrate(db, adminId) {
     await db.query("ALTER TABLE messages MODIFY kind ENUM('text','system','sticker','location') NOT NULL DEFAULT 'text'");
     await db.query("ALTER TABLE message_attachments MODIFY kind ENUM('image','audio','file','video') NOT NULL DEFAULT 'file'");
   }
+  if (!(await hasEnumValue(db, "messages", "kind", "call"))) {
+    log("migrating: voice / video call lines (messages.kind call)");
+    await db.query("ALTER TABLE messages MODIFY kind ENUM('text','system','sticker','location','call') NOT NULL DEFAULT 'text'");
+  }
   if (!(await hasColumn(db, "users", "last_seen_at"))) {
     log("migrating: users.last_seen_at (presence)");
     await db.query("ALTER TABLE users ADD COLUMN last_seen_at DATETIME NULL AFTER last_login_at");

@@ -1379,6 +1379,123 @@ console.log("chat (friends by code, one-to-one messages)");
     check("admin deletes a whole conversation", admDelete.status === 200 && admDelete.data.deleted === true && doomedGone.status === 404);
     const admDeleteMissing = await as(adminJar, () => call("DELETE", `/api/chat/admin/conversations/${doomed.data.id}`));
     check("deleting it again -> 404", admDeleteMissing.status === 404);
+  // voice / video calls: ring, accept / decline, signal relay, call lines, missed-call notifications, ICE settings
+  {
+    const cookieOf = (j) => Object.entries(j).map(([k, v]) => `${k}=${v}`).join("; ");
+    const openStream = async (j) => {
+      const ctrl = new AbortController();
+      const res = await fetch(`${BASE}/api/chat/stream`, { headers: { cookie: cookieOf(j) }, signal: ctrl.signal });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let pending = null;
+      const read = () => (pending ??= reader.read().then((r) => { pending = null; return r; }));
+      const next = async (name, timeoutMs = 8000) => {
+        const until = Date.now() + timeoutMs;
+        for (;;) {
+          const re = new RegExp(`event: ${name}\\ndata: (.*)\\n`);
+          const m = buf.match(re);
+          if (m) { buf = buf.slice(0, m.index) + buf.slice(m.index + m[0].length); return JSON.parse(m[1]); } // take just this event; others stay for later waits
+          const left = until - Date.now();
+          if (left <= 0) return null;
+          const r = await Promise.race([read(), new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), left))]);
+          if (r.timeout) return null;
+          if (r.done) return null;
+          buf += dec.decode(r.value, { stream: true });
+        }
+      };
+      return { next, close: () => ctrl.abort() };
+    };
+    const adminStream = await openStream(adminJar);
+    const userStream = await openStream(userJar);
+    await adminStream.next("hello", 5000);
+    await userStream.next("hello", 5000);
+    const inGroup = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: gid, kind: "audio" } }));
+    check("calls in a group -> 400 (direct chats only for now)", inGroup.status === 400);
+    const noConvo = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: 999999 } }));
+    check("call in an unknown chat -> 404", noConvo.status === 404);
+    const c1 = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: convoId, kind: "audio" } }));
+    check("POST /api/chat/calls -> 201 ringing voice call with the peer", c1.status === 201 && c1.data.status === "ringing" && c1.data.kind === "audio" && c1.data.callee_id === adminId && c1.data.peer?.id === adminId, JSON.stringify(c1.raw).slice(0, 200));
+    const ring = await adminStream.next("call");
+    check("the other person's live stream rings (call event with the caller)", ring?.action === "ring" && ring.call?.id === c1.data.id && ring.from?.name === "Smoke User 2", JSON.stringify(ring));
+    const nRing = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+    check("a chat_call bell entry says who is calling", nRing.data.items.some((n) => n.type === "chat_call" && n.entity_id === convoId && /is calling you/.test(n.title)));
+    const busy = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: convoId, kind: "video" } }));
+    check("a second call while one rings -> 409", busy.status === 409);
+    const busyOther = await as(adminJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: convoId } }));
+    check("the person being called cannot start another call -> 409", busyOther.status === 409);
+    const earlySignal = await as(userJar, () => call("POST", `/api/chat/calls/${c1.data.id}/signal`, { body: { signal: { type: "offer", sdp: "v=0" } } }));
+    check("signals before the call is accepted -> 409", earlySignal.status === 409);
+    const wrongAccept = await as(userJar, () => call("POST", `/api/chat/calls/${c1.data.id}/accept`));
+    check("the caller cannot accept their own call -> 403", wrongAccept.status === 403);
+    const declined = await as(adminJar, () => call("POST", `/api/chat/calls/${c1.data.id}/decline`));
+    check("the callee declines -> status declined", declined.status === 200 && declined.data.status === "declined");
+    const endedEv = await userStream.next("call");
+    check("the caller's stream gets the end event", endedEv?.action === "ended" && endedEv.status === "declined" && endedEv.call_id === c1.data.id, JSON.stringify(endedEv));
+    const lineDeclined = await userStream.next("message");
+    check("a 'call' line lands in the chat for both sides", lineDeclined?.message?.kind === "call" && JSON.parse(lineDeclined.message.body).status === "declined" && lineDeclined.message.sender_id === userId, String(JSON.stringify(lineDeclined?.message)).slice(0, 200));
+    await adminStream.next("call"); await adminStream.next("message");
+    const nAfterDecline = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+    check("declining removes the 'is calling you' entry", !nAfterDecline.data.items.some((n) => n.type === "chat_call" && n.entity_id === convoId && /is calling you/.test(n.title)));
+    // a full video call: accept, offer / answer / candidate relay, hang up
+    const c2 = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: convoId, kind: "video" } }));
+    check("a video call rings", c2.status === 201 && c2.data.kind === "video");
+    await adminStream.next("call");
+    const accepted = await as(adminJar, () => call("POST", `/api/chat/calls/${c2.data.id}/accept`));
+    check("the callee accepts -> active with answered_at", accepted.status === 200 && accepted.data.status === "active" && Boolean(accepted.data.answered_at));
+    const accEv = await userStream.next("call");
+    check("the caller's stream gets 'accepted'", accEv?.action === "accepted" && accEv.by === adminId, JSON.stringify(accEv));
+    await adminStream.next("call");
+    const offer = await as(userJar, () => call("POST", `/api/chat/calls/${c2.data.id}/signal`, { body: { signal: { type: "offer", sdp: "v=0 offer" } } }));
+    const offerEv = await adminStream.next("call");
+    check("an offer is relayed to the callee untouched", offer.status === 200 && offerEv?.action === "signal" && offerEv.signal.type === "offer" && offerEv.signal.sdp === "v=0 offer" && offerEv.from === userId, JSON.stringify(offerEv));
+    await as(adminJar, () => call("POST", `/api/chat/calls/${c2.data.id}/signal`, { body: { signal: { type: "answer", sdp: "v=0 answer" } } }));
+    const answerEv = await userStream.next("call");
+    check("an answer is relayed to the caller", answerEv?.signal?.type === "answer" && answerEv.signal.sdp === "v=0 answer");
+    await as(adminJar, () => call("POST", `/api/chat/calls/${c2.data.id}/signal`, { body: { signal: { type: "candidate", candidate: { candidate: "candidate:1 1 udp 1 127.0.0.1 5000 typ host", sdpMid: "0" } } } }));
+    const candEv = await userStream.next("call");
+    check("ICE candidates are relayed", candEv?.signal?.type === "candidate" && candEv.signal.candidate.sdpMid === "0");
+    const badSignal = await as(adminJar, () => call("POST", `/api/chat/calls/${c2.data.id}/signal`, { body: { signal: { type: "bye" } } }));
+    check("unknown signal type -> 400", badSignal.status === 400);
+    const stranger = await as(guestJar, () => call("POST", `/api/chat/calls/${c2.data.id}/signal`, { body: { signal: { type: "answer", sdp: "x" } } }));
+    check("someone outside the call cannot signal -> 404", stranger.status === 404);
+    const hung = await as(userJar, () => call("POST", `/api/chat/calls/${c2.data.id}/end`, { body: {} }));
+    check("hanging up an active call -> ended with ended_at", hung.status === 200 && hung.data.status === "ended" && Boolean(hung.data.ended_at));
+    const endEv2 = await adminStream.next("call");
+    check("the callee's stream gets 'ended' with the duration", endEv2?.action === "ended" && endEv2.status === "ended" && typeof endEv2.duration === "number");
+    await adminStream.next("message"); await userStream.next("call"); await userStream.next("message");
+    const again = await as(userJar, () => call("POST", `/api/chat/calls/${c2.data.id}/end`, { body: {} }));
+    check("ending it twice is harmless", again.status === 200 && again.data.status === "ended");
+    const callRow = (await as(adminJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`))).data.filter((m) => m.kind === "call").pop();
+    check("the chat holds a call line { kind: video, status: ended, duration }", callRow && JSON.parse(callRow.body).kind === "video" && JSON.parse(callRow.body).status === "ended" && typeof JSON.parse(callRow.body).duration === "number");
+    const replyCall = await as(adminJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "?", reply_to: callRow.id } }));
+    check("call lines cannot be replied to -> 400", replyCall.status === 400);
+    const fwdCall = await as(adminJar, () => call("POST", `/api/chat/messages/${callRow.id}/forward`, { body: { conversation_ids: [gid] } }));
+    check("call lines cannot be forwarded -> 400", fwdCall.status === 400);
+    // no answer: the caller gives up while it rings -> missed for the other person, with a bell entry and an unread mark
+    const unreadBeforeMissed = (await as(adminJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId)?.unread ?? 0;
+    const c3 = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: convoId, kind: "audio" } }));
+    await adminStream.next("call");
+    const gaveUp = await as(userJar, () => call("POST", `/api/chat/calls/${c3.data.id}/end`, { body: { reason: "timeout" } }));
+    check("the caller giving up while ringing -> missed", gaveUp.status === 200 && gaveUp.data.status === "missed");
+    await adminStream.next("call"); await adminStream.next("message"); await userStream.next("call"); await userStream.next("message");
+    const nMissed = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));
+    check("a missed call raises 'Missed voice call from …'", nMissed.data.items.some((n) => n.type === "chat_call" && n.entity_id === convoId && /Missed voice call from Smoke User 2/.test(n.title)));
+    const rowMissed = (await as(adminJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId);
+    check("a missed call counts as unread for the person who missed it, ended calls do not", rowMissed.unread === unreadBeforeMissed + 1 && rowMissed.last_kind === "call", JSON.stringify({ unread: rowMissed.unread, before: unreadBeforeMissed }));
+    const ice = await as(userJar, () => call("GET", "/api/chat/calls/ice"));
+    check("GET /api/chat/calls/ice lists public STUN servers", ice.status === 200 && Array.isArray(ice.data.iceServers) && JSON.stringify(ice.data.iceServers).includes("stun:"));
+    const badTurn = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { turn_url: "https://not-a-turn" } }));
+    check("a TURN URL must start with turn: -> 400", badTurn.status === 400);
+    const turnOn = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { turn_url: "turn:turn.example.com:3478", turn_username: "smoke", turn_credential: "secret-cred" } }));
+    check("admin adds a TURN server (credential never echoed)", turnOn.status === 200 && turnOn.data.turn_url === "turn:turn.example.com:3478" && turnOn.data.turn_credential_set === true && !JSON.stringify(turnOn.raw).includes("secret-cred"));
+    const iceTurn = await as(userJar, () => call("GET", "/api/chat/calls/ice"));
+    check("callers then get the TURN server with its credential", iceTurn.data.iceServers.some((s) => s.urls === "turn:turn.example.com:3478" && s.username === "smoke" && s.credential === "secret-cred"));
+    const turnOff = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { turn_url: "" } }));
+    check("admin removes the TURN server", turnOff.status === 200 && turnOff.data.turn_url === null && turnOff.data.turn_credential_set === false);
+    adminStream.close();
+    userStream.close();
+  }
     const bellMod = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
     for (const n of bellMod.data.items.filter((x) => x.type === "chat_group" && x.entity_id === gid)) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
     const rmGuest = await as(adminJar, () => call("DELETE", `/api/users/${guestId}`));
@@ -1541,13 +1658,13 @@ console.log("chat (friends by code, one-to-one messages)");
   const afterUnfriend = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { body: "?" } }));
   check("no messages after unfriending -> 403", afterUnfriend.status === 403);
   const keepsHistory = await as(userJar, () => call("GET", `/api/chat/conversations/${convoId}/messages`));
-  check("history is still readable (retention lines, stickers, a location, a clip and a forwarded sticker included)", keepsHistory.status === 200 && keepsHistory.data.length === 29, String(keepsHistory.data?.length));
+  check("history is still readable (retention lines, stickers, a location, a clip, a forwarded sticker and three call lines included)", keepsHistory.status === 200 && keepsHistory.data.length === 32, String(keepsHistory.data?.length));
   const notFriends = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
   check("unfriending again -> 404", notFriends.status === 404);
 
   // tidy the admin's bell (the smoke user's rows go with the account)
   const bell = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
-  for (const n of bell.data.items.filter((x) => ["friend_request", "friend_accepted", "chat_message"].includes(x.type) && (x.actor_id === userId || x.entity_id === convoId))) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
+  for (const n of bell.data.items.filter((x) => ["friend_request", "friend_accepted", "chat_message", "chat_call"].includes(x.type) && (x.actor_id === userId || x.entity_id === convoId))) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
   jar = { ...adminJar };
 }
 

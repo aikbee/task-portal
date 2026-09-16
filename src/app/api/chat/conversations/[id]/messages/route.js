@@ -118,7 +118,7 @@ export const POST = handler(async (request, params, user) => {
   if (replyTo) {
     const quoted = await queryOne("SELECT id, kind, deleted_at FROM messages WHERE id = ? AND conversation_id = ?", [replyTo, id]);
     if (!quoted) throw new HttpError("That message is not in this conversation.", 400);
-    if (quoted.kind === "system") throw new HttpError("System lines cannot be replied to.", 400);
+    if (quoted.kind === "system" || quoted.kind === "call") throw new HttpError("System lines cannot be replied to.", 400);
     if (quoted.deleted_at) throw new HttpError("That message was deleted.", 400);
   }
   const photos = items.filter((i) => i.kind === "image");

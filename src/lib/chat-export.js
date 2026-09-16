@@ -151,6 +151,13 @@ function transcriptOf(convo, members, messages, by, withFiles) {
       lines.push(`[${at}] ${who}: [sticker: ${m.body}]`);
       continue;
     }
+    if (m.kind === "call") {
+      let c = {};
+      try { c = JSON.parse(m.body); } catch {}
+      const dur = c.duration ? ` ${Math.floor(c.duration / 60)}:${String(c.duration % 60).padStart(2, "0")}` : "";
+      lines.push(`[${at}] ${who}: [${c.kind === "video" ? "video" : "voice"} call: ${c.status}${dur}]`);
+      continue;
+    }
     if (m.kind === "location") {
       let loc = {};
       try { loc = JSON.parse(m.body); } catch {}

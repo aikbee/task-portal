@@ -13,7 +13,7 @@ export const POST = handler(async (request, params, user) => {
   );
   if (!msg) throw new HttpError("Message not found.", 404);
   if (msg.sender_id === user.id) throw new HttpError("You cannot report your own message.", 400);
-  if (msg.kind === "system" || msg.deleted_at) throw new HttpError("There is nothing to report on this message.", 400);
+  if (msg.kind === "system" || msg.kind === "call" || msg.deleted_at) throw new HttpError("There is nothing to report on this message.", 400);
   const reason = String((await readJson(request)).reason ?? "").trim().slice(0, 500);
   if (!reason) throw new HttpError("Say what is wrong with the message.", 400);
   const dup = await queryOne("SELECT id FROM message_reports WHERE message_id = ? AND reporter_id = ? AND status = 'open'", [id, user.id]);

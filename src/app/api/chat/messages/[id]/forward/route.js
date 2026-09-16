@@ -14,7 +14,7 @@ export const POST = handler(async (request, params, user) => {
     [user.id, id]
   );
   if (!msg) throw new HttpError("Message not found.", 404);
-  if (msg.kind === "system") throw new HttpError("System lines cannot be forwarded.", 400);
+  if (msg.kind === "system" || msg.kind === "call") throw new HttpError("System lines cannot be forwarded.", 400);
   if (msg.deleted_at) throw new HttpError("That message was deleted.", 400);
   const raw = (await readJson(request)).conversation_ids;
   const targets = [...new Set((Array.isArray(raw) ? raw : []).map(Number))].filter((n) => Number.isInteger(n) && n > 0);

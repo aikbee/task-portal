@@ -72,6 +72,8 @@ export function publish(userId, event) {
 export const PEER_FIELDS = "u.id, u.name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.email";
 /** Same person columns for conversation rows, where `id` is the conversation and the person is `user_id`. */
 export const CONVO_PEER = "u.id AS user_id, u.name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.email";
+/** Rows that count as unread for the other side: everything but system lines, and call lines only when the call was missed. */
+export const UNREAD_KIND_SQL = "(x.kind NOT IN ('system', 'call') OR (x.kind = 'call' AND x.body LIKE '%\"status\":\"missed\"%'))";
 export const MESSAGE_MAX = 4000;
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 export const PHOTOS_PER_MESSAGE = 8;
@@ -172,10 +174,20 @@ export async function readChatSettings() {
   const cap = Number(raw?.max_retention_days);
   const provider = ["giphy", "tenor"].includes(raw?.gif_provider) ? raw.gif_provider : null;
   const key = provider && typeof raw?.gif_api_key === "string" && raw.gif_api_key.trim() ? raw.gif_api_key.trim() : null;
-  return { max_retention_days: Number.isInteger(cap) && cap > 0 ? cap : null, gif_provider: provider, gif_api_key: key, gif_search: Boolean(provider && key) };
+  const str = (v, n) => (typeof v === "string" && v.trim() ? v.trim().slice(0, n) : null);
+  const turnUrl = str(raw?.turn_url, 300);
+  return {
+    max_retention_days: Number.isInteger(cap) && cap > 0 ? cap : null,
+    gif_provider: provider,
+    gif_api_key: key,
+    gif_search: Boolean(provider && key),
+    turn_url: turnUrl && /^turns?:/i.test(turnUrl) ? turnUrl : null,
+    turn_username: str(raw?.turn_username, 200),
+    turn_credential: str(raw?.turn_credential, 200),
+  };
 }
-/** What administrators may see of the settings: the key is reported as set / not set. */
-export const publicChatSettings = (s) => ({ max_retention_days: s.max_retention_days, gif_provider: s.gif_provider, gif_key_set: Boolean(s.gif_api_key), gif_search: s.gif_search });
+/** What administrators may see of the settings: secrets are reported as set / not set. */
+export const publicChatSettings = (s) => ({ max_retention_days: s.max_retention_days, gif_provider: s.gif_provider, gif_key_set: Boolean(s.gif_api_key), gif_search: s.gif_search, turn_url: s.turn_url, turn_username: s.turn_username, turn_credential_set: Boolean(s.turn_credential) });
 export async function saveChatSettings(value, userId) {
   await execute("INSERT INTO app_settings (name, value, updated_by) VALUES ('chat', ?, ?) AS new ON DUPLICATE KEY UPDATE value = new.value, updated_by = new.updated_by", [JSON.stringify(value), userId]);
 }
@@ -348,7 +360,7 @@ function shapeConversation(row, members, statuses, me, settings) {
 async function loadConversations(userId, onlyId = null, { includeHidden = false } = {}) {
   const rows = await query(
     `SELECT c.id, c.kind, c.title, c.avatar_color AS group_color, c.avatar AS group_avatar, c.invite_code, c.retention_days, m.last_read_message_id, m.muted, m.pinned_at, m.archived_at, m.hidden_before_id,
-       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND x.kind <> 'system' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
+       (SELECT COUNT(*) FROM messages x WHERE x.conversation_id = c.id AND x.sender_id <> ? AND ${UNREAD_KIND_SQL} AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
        lm.id AS last_id, lm.kind AS last_kind, lm.body AS last_body, lm.deleted_at AS last_deleted, lm.sender_id AS last_sender_id, lm.created_at AS last_at, ls.name AS last_sender_name,
        (SELECT COUNT(*) FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'image') AS last_photos,
        (SELECT a.duration_ms FROM message_attachments a WHERE a.message_id = lm.id AND a.kind = 'audio' LIMIT 1) AS last_voice,
@@ -410,7 +422,7 @@ export async function friendIdsAmong(userId, ids) {
 export async function chatBadge(userId) {
   const row = await queryOne(
     `SELECT
-      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE m.muted = 0 AND x.sender_id <> ? AND x.kind <> 'system' AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
+      (SELECT COUNT(*) FROM messages x JOIN conversation_members m ON m.conversation_id = x.conversation_id AND m.user_id = ? WHERE m.muted = 0 AND x.sender_id <> ? AND ${UNREAD_KIND_SQL} AND x.deleted_at IS NULL AND x.id > GREATEST(COALESCE(m.last_read_message_id, 0), COALESCE(m.hidden_before_id, 0))) AS unread,
       (SELECT COUNT(*) FROM friendships f WHERE f.addressee_id = ? AND f.status = 'pending') AS pending`,
     [userId, userId, userId]
   );
@@ -532,7 +544,7 @@ export async function quotesOf(ids) {
       id: r.id,
       sender_id: r.sender_id,
       sender_name: r.sender_name,
-      body: r.deleted_at ? "" : r.kind === "location" ? "📍 Location" : String(r.body ?? "").slice(0, 200),
+      body: r.deleted_at ? "" : r.kind === "location" ? "📍 Location" : r.kind === "call" ? "📞 Call" : String(r.body ?? "").slice(0, 200),
       kind: r.kind,
       deleted: Boolean(r.deleted_at),
       attachment: r.att_kind && !r.deleted_at ? { kind: r.att_kind, count: Number(r.att_count), name: r.att_name } : null,
@@ -580,7 +592,7 @@ export async function editableMessage(messageId, userId, { forDelete = false } =
     [userId, messageId]
   );
   if (!row) throw new HttpError("Message not found.", 404);
-  if (row.kind === "system") throw new HttpError("System lines cannot be changed.", 400);
+  if (row.kind === "system" || row.kind === "call") throw new HttpError("System lines cannot be changed.", 400);
   if (row.deleted_at) throw new HttpError("This message was deleted.", 400);
   if (!forDelete && row.kind !== "text") throw new HttpError("Only text can be edited.", 400);
   const manager = row.convo_kind === "group" && (ROLE_RANK[row.my_role] ?? 0) >= 2;

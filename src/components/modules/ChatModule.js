@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation } from "lucide-react";
+import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation, Phone, Video } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -19,6 +19,7 @@ import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
 import { STICKER_PACK } from "@/lib/stickers";
+import { useCalls, CallOverlay, callText, parseCall } from "./ChatCalls";
 import { useToast } from "@/components/ui/Toast";
 import { cn, relativeTime, formatDateTime, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -729,6 +730,11 @@ export default function ChatModule() {
   const [threads, setThreads] = useState({});
   const [pendingAdd, setPendingAdd] = useState(null); // { code, user, relation } from a scanned QR link
   const [pendingJoin, setPendingJoin] = useState(null); // { code, group, relation } from a group invite link
+  const calls = useCalls({ me: user, tr, toast });
+  const callsRef = useRef(calls);
+  useEffect(() => {
+    callsRef.current = calls;
+  }, [calls]);
   const [newGroup, setNewGroup] = useState(false);
   const [typing, setTyping] = useState({}); // conversation id -> { user id: { name, avatar_color, until } }
   const [focusId, setFocusId] = useState(null); // message to scroll to and flash after a search jump
@@ -1012,6 +1018,7 @@ export default function ChatModule() {
       es.addEventListener("presence", (e) => onPresence(JSON.parse(e.data)));
       es.addEventListener("conversation", (e) => onConversation(JSON.parse(e.data)));
       es.addEventListener("purged", (e) => onPurged(JSON.parse(e.data)));
+      es.addEventListener("call", (e) => callsRef.current.handleEvent(JSON.parse(e.data)));
       es.addEventListener("typing", (e) => onTyping(JSON.parse(e.data)));
       es.addEventListener("reaction", (e) => onReaction(JSON.parse(e.data)));
       es.addEventListener("message_updated", (e) => onMessageUpdated(JSON.parse(e.data)));
@@ -1077,6 +1084,8 @@ export default function ChatModule() {
             <Thread
               tr={tr}
               me={user}
+              onCall={calls.start}
+              inCall={Boolean(calls.call)}
               convo={activeConvo}
               messages={threads[active]}
               onBack={() => setActive(null)}
@@ -1175,6 +1184,7 @@ export default function ChatModule() {
           }
         }}
       />
+      <CallOverlay tr={tr} me={user} call={calls.call} localStream={calls.localStream} remoteStream={calls.remoteStream} elapsed={calls.elapsed} onAccept={calls.accept} onDecline={calls.decline} onHangUp={calls.hangUp} onToggleMute={calls.toggleMute} onToggleCamera={calls.toggleCamera} />
       <ConfirmDialog
         open={!!pendingJoin}
         onClose={() => setPendingJoin(null)}
@@ -1306,6 +1316,15 @@ function ConversationList({ tr, me, convos, typing, active, onOpen, onFindFriend
     if (c.last_deleted) return <span className="pr-1 italic text-fg-faint">{tr("Message deleted")}</span>;
     const who = c.last_sender_id === me?.id ? tr("You") : isGroup(c) ? c.last_sender_name : null;
     const glyph = "mr-1 inline-block align-[-2px]";
+    if (c.last_kind === "call") {
+      const cl = parseCall(c.last_body);
+      return (
+        <>
+          <Phone size={12} className={cn(glyph, cl?.status === "missed" && c.last_sender_id !== me?.id && "text-rose-500")} />
+          {callText(cl, c.last_sender_id === me?.id, tr)}
+        </>
+      );
+    }
     if (c.last_kind === "sticker" || c.last_kind === "location") {
       return (
         <>
@@ -1767,7 +1786,7 @@ async function prepareImage(file) {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, { type: "image/jpeg" });
 }
 
-function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onFocus, convos, onReactions, onMessageChange, onConvoChange, onLeft }) {
+function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friends, typers = [], focusId, onFocused, unreadFrom, detached, onJump, onJumpLatest, onFocus, convos, onReactions, onMessageChange, onConvoChange, onLeft, onCall, inCall }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState([]); // photos waiting in the composer: { key, file, url }
@@ -2213,7 +2232,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
       setSending(false);
     }
   };
-  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && !m.deleted_at) : null;
+  const lastMine = messages ? [...messages].reverse().find((m) => m.sender_id === me?.id && m.kind !== "system" && m.kind !== "call" && !m.deleted_at) : null;
   const seenBy = lastMine ? (convo.members ?? []).filter((m) => m.id !== me?.id && Number(m.last_read_message_id) >= lastMine.id) : [];
   const seen = lastMine && (group ? seenBy.length > 0 : Number(convo.peer_last_read) >= lastMine.id);
   const seenLabel = !group ? tr("Seen") : seenBy.length === (convo.members?.length ?? 1) - 1 ? tr("Seen by everyone") : tr("Seen by {names}", { names: seenBy.map((m) => m.name).join(", ") });
@@ -2258,6 +2277,12 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   : convo.email}
           </span>
         </span>
+        {!group && canChat ? (
+          <>
+            <Button variant="ghost" size="iconSm" icon={Phone} onClick={() => onCall?.(convo, "audio")} disabled={inCall} aria-label={tr("Voice call")} data-tip={tr("Voice call")} className="chat-call-audio" />
+            <Button variant="ghost" size="iconSm" icon={Video} onClick={() => onCall?.(convo, "video")} disabled={inCall} aria-label={tr("Video call")} data-tip={tr("Video call")} className="chat-call-video" />
+          </>
+        ) : null}
         <Button variant="ghost" size="iconSm" icon={Search} onClick={() => { setFind((f) => (f ? null : { q: "", results: null, idx: -1 })); setTimeout(() => findInputRef.current?.focus(), 50); }} aria-label={tr("Search in this chat")} data-tip={tr("Search in this chat")} className={cn(find && "text-accent")} />
         {group ? <Button variant="ghost" size="iconSm" icon={Settings2} onClick={() => setPanel(true)} aria-label={tr("Group settings")} data-tip={tr("Group settings")} /> : null}
         <span className="relative">
@@ -2351,11 +2376,20 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                 const videos = (m.attachments ?? []).filter((a) => a.kind === "video");
                 const prev = messages[i - 1];
                 const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-                if (m.kind === "system") {
+                if (m.kind === "system" || m.kind === "call") {
+                  const cl = m.kind === "call" ? parseCall(m.body) : null;
+                  const placed = m.sender_id === me?.id;
                   return (
                     <div key={m.id} id={`msg-${m.id}`}>
                       {newDay ? <p className="chat-day my-3 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{dayLabel(m.created_at, tr)}</p> : null}
-                      <p className="chat-system my-1.5 text-center text-[11px] text-fg-muted" title={formatDateTime(m.created_at)}>{systemText(m, tr)}</p>
+                      {cl ? (
+                        <p className={cn("chat-system chat-call-line my-1.5 flex items-center justify-center gap-1.5 text-center text-[11px]", cl.status === "missed" && !placed ? "text-rose-500" : "text-fg-muted")} title={formatDateTime(m.created_at)}>
+                          {cl.kind === "video" ? <Video size={12} className="shrink-0" /> : <Phone size={12} className="shrink-0" />}
+                          <span>{callText(cl, placed, tr)} · {timeOf(m.created_at)}</span>
+                        </p>
+                      ) : (
+                        <p className="chat-system my-1.5 text-center text-[11px] text-fg-muted" title={formatDateTime(m.created_at)}>{systemText(m, tr)}</p>
+                      )}
                     </div>
                   );
                 }

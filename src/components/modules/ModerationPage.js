@@ -309,7 +309,51 @@ function RetentionSettings({ tr, state, onChanged }) {
       <p className="text-[11px] text-fg-muted">{tr("Members can pick a shorter window per chat (owner or admin in groups, either person in a direct chat); they cannot keep messages longer than the cap.")}</p>
     </Card>
     <GifSettings tr={tr} state={state} onChanged={onChanged} />
+    <CallSettings tr={tr} state={state} onChanged={onChanged} />
     </>
+  );
+}
+
+/** Calls: an optional TURN server for voice / video calls between people behind strict NATs. */
+function CallSettings({ tr, state, onChanged }) {
+  const toast = useToast();
+  const s = state.data?.settings ?? {};
+  const [form, setForm] = useState(null); // { url, username, credential } or null = untouched
+  const [saving, setSaving] = useState(false);
+  const shown = form ?? { url: s.turn_url || "", username: s.turn_username || "", credential: "" };
+  const dirty = Boolean(form) && (shown.url !== (s.turn_url || "") || shown.username !== (s.turn_username || "") || shown.credential !== "");
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = { turn_url: shown.url, turn_username: shown.username };
+      if (shown.credential || !shown.url) body.turn_credential = shown.url ? shown.credential : "";
+      await api.put("/api/chat/admin/settings", body);
+      toast.success(shown.url ? tr("TURN server saved") : tr("TURN server removed"));
+      setForm(null);
+      onChanged();
+    } catch (e) {
+      toast.error(tr("Could not save"), e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const set = (k) => (e) => setForm({ ...shown, [k]: e.target.value });
+  return (
+    <Card className="mt-4 max-w-2xl space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold">{tr("Voice and video calls")}</h3>
+        <p className="mt-1 text-xs text-fg-muted">{tr("Calls connect browser to browser through public STUN servers, which works on most networks. Add a TURN server (for example coturn, or a hosted one) so calls also connect from behind strict company or mobile NATs; its address and credentials are handed to signed-in users when a call starts.")}</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label={tr("TURN URL")} className="sm:col-span-3"><Input value={shown.url} onChange={set("url")} placeholder="turn:turn.example.com:3478?transport=udp" /></Field>
+        <Field label={tr("Username")}><Input value={shown.username} onChange={set("username")} disabled={!shown.url} autoComplete="off" /></Field>
+        <Field label={tr("Credential")} hint={s.turn_credential_set && !shown.credential ? tr("A credential is saved. Paste a new one to replace it.") : undefined} className="sm:col-span-2"><Input type="password" value={shown.credential} onChange={set("credential")} disabled={!shown.url} autoComplete="off" placeholder={s.turn_credential_set ? "••••••••••••" : ""} /></Field>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button icon={Save} onClick={save} loading={saving} disabled={!dirty}>{tr("Save changes")}</Button>
+        <span className="text-[11px] text-fg-muted">{s.turn_url ? tr("TURN server on: {url}", { url: s.turn_url }) : tr("STUN only — most home and office networks work; some strict NATs will not connect.")}</span>
+      </div>
+    </Card>
   );
 }
 
