@@ -3,7 +3,7 @@ import { handler, ok, readJson, pick, requireFields, oneOf } from "@/lib/api-uti
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/constants";
 import { nextSortOrder } from "@/lib/ordering";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 
 export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "due_date"];
 
@@ -58,6 +58,6 @@ export const POST = handler(async (request, _params, user) => {
   const cols = Object.keys(data);
   const res = await execute(`INSERT INTO tasks (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => data[c]));
   const [row] = await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]);
-  notifyOwner(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_name].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id });
+  notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_name].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { employeeIds: [row.employee_id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
   return ok(row, { status: 201 });
 });

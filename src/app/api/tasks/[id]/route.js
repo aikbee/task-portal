@@ -3,7 +3,7 @@ import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-uti
 import { TASK_FIELDS, TASK_SELECT, normaliseTask } from "../route";
 import { deleteStoredFile } from "@/lib/uploads";
 import { listAttachments as listKind } from "@/lib/attachments";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 import { TASK_STATUS } from "@/lib/constants";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 
@@ -43,17 +43,17 @@ export const PUT = handler(async (request, params, user) => {
   if (cols.length) await execute(`UPDATE tasks SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND profile_id = ?`, [...cols.map((c) => data[c]), id, owner]);
   const after = await getTask(id, owner);
   if (data.status && data.status !== before.status) {
-    notifyOwner(user, {
+    notifyInvolved(user, {
       type: after.status === "done" ? "task_done" : "task_status",
       title: after.status === "done" ? `Task completed: ${after.title}` : `${after.title} moved to ${TASK_STATUS[after.status]?.label ?? after.status}`,
       body: [after.project_name, after.assignee_name].filter(Boolean).join(" · ") || null,
       href: `/tasks/${id}`,
       entityType: "task",
       entityId: id,
-    });
+    }, { employeeIds: [after.employee_id] });
   }
   if ("employee_id" in data && data.employee_id !== before.employee_id && after.assignee_name) {
-    notifyOwner(user, { type: "task_assigned", title: `${after.title} assigned to ${after.assignee_name}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id });
+    notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${after.assignee_name}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: [after.employee_id], forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
   }
   return ok(after);
 });

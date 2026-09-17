@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -46,6 +46,15 @@ export const MODULES = [
     color: "#06b6d4",
     description: "People who belong to projects and own tasks.",
     creatable: true,
+  },
+  {
+    key: "mytasks",
+    label: "My tasks",
+    singular: "Task",
+    href: "/my-tasks",
+    icon: UserCheck,
+    color: "#0ea5e9",
+    description: "Everything assigned to you, across your own profiles and the ones shared with you.",
   },
   {
     key: "tasks",

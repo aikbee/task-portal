@@ -10,9 +10,10 @@ import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { EMPLOYEE_STATUS, DEPARTMENTS, PALETTE } from "@/lib/modules";
+import { useAuth } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
-const empty = { first_name: "", last_name: "", email: "", phone: "", job_title: "", department: "", status: "active", avatar_color: PALETTE[8], hired_at: "", project_ids: [] };
+const empty = { first_name: "", last_name: "", email: "", phone: "", job_title: "", department: "", status: "active", avatar_color: PALETTE[8], hired_at: "", linked_user_id: "", project_ids: [] };
 
 function fromInitial(initial) {
   if (!initial) return { ...empty, avatar_color: PALETTE[Math.floor(Math.random() * PALETTE.length)] };
@@ -26,6 +27,7 @@ function fromInitial(initial) {
     status: initial.status ?? "active",
     avatar_color: initial.avatar_color ?? PALETTE[8],
     hired_at: initial.hired_at ?? "",
+    linked_user_id: initial.linked_user_id ?? "",
     project_ids: (initial.projects ?? []).map((p) => p.id),
   };
 }
@@ -42,6 +44,9 @@ function EmployeeFormInner({ onClose, initial, onSaved }) {
   const [error, setError] = useState(null);
   const toast = useToast();
   const { data: projects } = useFetch("/api/projects");
+  const { user } = useAuth();
+  const { data: sharing } = useFetch(user?.profile_id ? `/api/profiles/${user.profile_id}/members` : null);
+  const accounts = (sharing?.members ?? []).filter((m) => m.status === "active");
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -113,6 +118,12 @@ function EmployeeFormInner({ onClose, initial, onSaved }) {
         </Field>
         <Field label="Hired on" className="sm:col-span-3">
           <Input type="date" value={form.hired_at || ""} onChange={(e) => set("hired_at", e.target.value)} />
+        </Field>
+        <Field label={tr("Portal account")} className="sm:col-span-6" hint={tr("The sign-in this person uses. Tasks assigned to them then show up in their My tasks and notify them. Only the owner and members of this profile can be picked; a matching email links by itself.")}>
+          <Select value={form.linked_user_id ?? ""} onChange={(e) => set("linked_user_id", e.target.value ? Number(e.target.value) : "")} className="employee-account">
+            <option value="">{tr("Not linked")}</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.email}</option>)}
+          </Select>
         </Field>
         <Field label={tr("Projects")} className="sm:col-span-6" hint="Projects this employee is a member of">
           <MultiSelect options={options} value={form.project_ids} onChange={(v) => set("project_ids", v)} placeholder="Pick projects…" />

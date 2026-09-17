@@ -2,7 +2,7 @@ import { execute, withTransaction } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { ownedEmployeeIds } from "@/lib/ownership";
 import { getProject } from "../route";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 
 /** Add (or update the role of) members: { employee_id, role } or { employees: [{employee_id, role}] } */
 export const POST = handler(async (request, params, user) => {
@@ -21,7 +21,7 @@ export const POST = handler(async (request, params, user) => {
   });
   const project = await getProject(id, owner);
   const names = project.employees.filter((e) => rows.some((r) => r[1] === e.id)).map((e) => `${e.first_name} ${e.last_name}`);
-  notifyOwner(user, { type: "project_member", title: `${names.join(", ")} added to ${project.name}`, body: null, href: `/projects/${id}`, entityType: "project", entityId: id });
+  notifyInvolved(user, { type: "project_member", title: `${names.join(", ")} added to ${project.name}`, body: null, href: `/projects/${id}`, entityType: "project", entityId: id }, { employeeIds: rows.map((r) => r[1]), managers: true, forAssignee: { title: `${user.name} added you to ${project.name}` } });
   return ok(project);
 });
 

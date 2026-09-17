@@ -2,7 +2,7 @@ import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf, HttpError } from "@/lib/api-utils";
 import { REQ_TYPE, REQ_PRIORITY, REQ_STATUS } from "@/lib/constants";
 import { nextSortOrder } from "@/lib/ordering";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 
 export const REQ_FIELDS = ["project_id", "title", "description", "acceptance_criteria", "type", "priority", "status", "employee_id"];
 
@@ -106,6 +106,6 @@ export const POST = handler(async (request, _params, user) => {
   const cols = Object.keys(data);
   const res = await execute(`INSERT INTO requirements (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => data[c]));
   const row = await queryOne(`${REQ_SELECT} WHERE r.id = ?`, [res.insertId]);
-  notifyOwner(user, { type: "requirement_created", title: `New requirement ${row.code}: ${row.title}`, body: row.project_name, href: `/requirements/${row.id}`, entityType: "requirement", entityId: row.id });
+  notifyInvolved(user, { type: "requirement_created", title: `New requirement ${row.code}: ${row.title}`, body: row.project_name, href: `/requirements/${row.id}`, entityType: "requirement", entityId: row.id }, { employeeIds: [row.employee_id], managers: true });
   return ok(row, { status: 201 });
 });

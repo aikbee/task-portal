@@ -38,6 +38,22 @@ export function notifyOwner(user, payload) {
   return notify({ ...payload, userId: user.owner_id, actorId: user.id, profileId: user.profile_id ?? null }).catch(() => false);
 }
 
+/**
+ * Notify the people a change concerns inside the active profile: its owner, the accounts linked to the given
+ * employee records (the assignee, say), and with `managers` the profile's managers. The actor is skipped by
+ * notify() itself. `forAssignee` can reword the entry for the linked person ("… assigned you: …").
+ */
+export async function notifyInvolved(user, payload, { employeeIds = [], managers = false, forAssignee = null } = {}) {
+  try {
+    const profileId = user.profile_id ?? null;
+    const ids = employeeIds.filter(Boolean);
+    const linked = ids.length ? (await query("SELECT DISTINCT linked_user_id AS id FROM employees WHERE id IN (?) AND profile_id = ? AND linked_user_id IS NOT NULL", [ids, profileId])).map((r) => r.id) : [];
+    const bosses = managers ? (await query("SELECT user_id AS id FROM profile_members WHERE profile_id = ? AND status = 'active' AND role = 'manager'", [profileId])).map((r) => r.id) : [];
+    const recipients = new Set([user.owner_id, ...linked, ...bosses]);
+    await Promise.all([...recipients].map((userId) => notify({ ...payload, ...(forAssignee && linked.includes(userId) && userId !== user.owner_id ? forAssignee : {}), userId, actorId: user.id, profileId }).catch(() => false)));
+  } catch {}
+}
+
 /** Notify every active admin except the actor. */
 export async function notifyAdmins(actor, payload) {
   const admins = await query("SELECT id FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?", [actor?.id ?? 0]);
@@ -48,15 +64,19 @@ export async function notifyAdmins(actor, payload) {
 export async function ensureReminders(userId, profileId) {
   let created = 0;
   const tasks = await query(
-    `SELECT t.id, t.title, t.due_date, p.name AS project_name,
+    `SELECT t.id, t.title, t.due_date, p.name AS project_name, e.linked_user_id,
        DATEDIFF(t.due_date, CURDATE()) AS days
-     FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+     FROM tasks t LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN employees e ON e.id = t.employee_id
      WHERE t.profile_id = ? AND t.status <> 'done' AND t.due_date IS NOT NULL AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 1 DAY)`,
     [profileId]
   );
   for (const t of tasks) {
     const overdue = t.days < 0;
     const when = overdue ? `${-t.days} day${t.days === -1 ? "" : "s"} overdue` : t.days === 0 ? "due today" : "due tomorrow";
+    // the person the task is assigned to gets the same reminder when their employee record is linked to an account
+    if (t.linked_user_id && t.linked_user_id !== userId) {
+      await notify({ userId: t.linked_user_id, type: overdue ? "task_overdue" : "task_due", title: `${t.title} is ${when}`, body: t.project_name || null, href: `/tasks/${t.id}`, entityType: "task", entityId: t.id, profileId, dedupeKey: `${overdue ? "overdue" : "due"}:${t.id}:${t.due_date}` }).catch(() => false);
+    }
     const made = await notify({
       userId,
       type: overdue ? "task_overdue" : "task_due",

@@ -2,7 +2,7 @@ import { query, withTransaction } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf } from "@/lib/api-utils";
 import { PROJECT_STATUS } from "@/lib/constants";
 import { ownedEmployeeIds } from "@/lib/ownership";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 
 const FIELDS = ["name", "code", "description", "status", "color", "start_date", "end_date", "budget"];
 
@@ -61,6 +61,6 @@ export const POST = handler(async (request, _params, user) => {
     return res.insertId;
   });
   const [row] = await listProjects(owner, { id });
-  notifyOwner(user, { type: "project_created", title: `New project: ${row.name}`, body: row.code, href: `/projects/${row.id}`, entityType: "project", entityId: row.id });
+  notifyInvolved(user, { type: "project_created", title: `New project: ${row.name}`, body: row.code, href: `/projects/${row.id}`, entityType: "project", entityId: row.id }, { managers: true });
   return ok(row, { status: 201 });
 });

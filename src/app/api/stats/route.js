@@ -31,6 +31,13 @@ export const GET = handler(async (_request, _params, user) => {
 
   if (user.access !== "owner") counts.info = 0; // the Info vault is not shared
   counts.profile_invites = await pendingInviteCount(user.id);
+  // open tasks assigned to me (an employee record linked to my account) in any profile I can open
+  counts.mytasks = Number((await query(
+    `SELECT COUNT(*) AS n FROM tasks t JOIN employees e ON e.id = t.employee_id AND e.linked_user_id = ? JOIN profiles pr ON pr.id = t.profile_id
+     LEFT JOIN profile_members pm ON pm.profile_id = pr.id AND pm.user_id = ? AND pm.status = 'active'
+     WHERE t.status <> 'done' AND (pr.user_id = ? OR pm.user_id IS NOT NULL)`,
+    [user.id, user.id, user.id]
+  ))[0]?.n ?? 0);
   if (user.role === "admin") {
     const state = backupHealth(await readStatus().catch(() => null));
     counts.backups = state === "failed" || state === "stale" ? 1 : 0; // a badge only when something needs attention

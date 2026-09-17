@@ -2,6 +2,7 @@ import { query, withTransaction } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf } from "@/lib/api-utils";
 import { EMPLOYEE_STATUS } from "@/lib/constants";
 import { ownedProjectIds } from "@/lib/ownership";
+import { linkableId, autoLinkByEmail } from "@/lib/sharing";
 
 const FIELDS = ["first_name", "last_name", "email", "phone", "job_title", "department", "status", "avatar_color", "hired_at"];
 
@@ -14,11 +15,11 @@ export async function listEmployees(owner, { status, department, project_id, q, 
   if (project_id) { where.push("EXISTS (SELECT 1 FROM project_employees pe WHERE pe.employee_id = e.id AND pe.project_id = ?)"); args.push(project_id); }
   if (q) { where.push("(CONCAT(e.first_name,' ',e.last_name) LIKE ? OR e.email LIKE ? OR e.job_title LIKE ?)"); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   const rows = await query(
-    `SELECT e.*,
+    `SELECT e.*, lu.name AS linked_user_name, lu.avatar_color AS linked_user_color, COALESCE(lu.avatar, 'preset:pro') AS linked_user_avatar,
       (SELECT COUNT(*) FROM project_employees pe WHERE pe.employee_id = e.id) AS project_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.employee_id = e.id) AS task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.employee_id = e.id AND t.status <> 'done') AS open_task_count
-     FROM employees e WHERE ${where.join(" AND ")}
+     FROM employees e LEFT JOIN users lu ON lu.id = e.linked_user_id WHERE ${where.join(" AND ")}
      ORDER BY e.first_name, e.last_name`,
     args
   );
@@ -48,6 +49,7 @@ export const POST = handler(async (request, _params, user) => {
   oneOf(data.status, Object.keys(EMPLOYEE_STATUS), "status");
   data.user_id = user.owner_id;
   data.profile_id = owner;
+  if ("linked_user_id" in body) data.linked_user_id = await linkableId(owner, body.linked_user_id);
   const projectIds = await ownedProjectIds(owner, body.project_ids);
   const id = await withTransaction(async (conn) => {
     const cols = Object.keys(data);
@@ -55,6 +57,7 @@ export const POST = handler(async (request, _params, user) => {
     if (projectIds.length) await conn.query("INSERT IGNORE INTO project_employees (project_id, employee_id) VALUES ?", [projectIds.map((p) => [p, res.insertId])]);
     return res.insertId;
   });
+  if (!data.linked_user_id) await autoLinkByEmail(owner, { employeeId: id }); // same email as the owner or a member: that is them
   const [row] = await listEmployees(owner, { id });
   return ok(row, { status: 201 });
 });

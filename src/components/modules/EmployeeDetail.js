@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, Plus, Mail, Phone, Building2, Calendar, FolderKanban, CheckSquare, BriefcaseBusiness } from "lucide-react";
+import { Pencil, Trash2, Plus, Mail, Phone, Building2, Calendar, FolderKanban, CheckSquare, BriefcaseBusiness, UserCheck } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { EMPLOYEE_STATUS, PROJECT_STATUS, TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
@@ -95,6 +95,7 @@ export default function EmployeeDetail({ id }) {
               {emp.phone ? <a href={`tel:${emp.phone}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Phone size={14} /> {emp.phone}</a> : null}
               {emp.department ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Building2 size={14} /> {emp.department}</span> : null}
               {emp.hired_at ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Calendar size={14} /> Since {formatDate(emp.hired_at)}</span> : null}
+              {emp.linked_user_id ? <span className="employee-linked inline-flex items-center gap-1.5 text-accent"><UserCheck size={14} /> {tr("Signs in as {name}", { name: emp.linked_user_name })}</span> : null}
             </div>
           </div>
           <div className="flex gap-2">

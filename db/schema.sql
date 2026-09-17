@@ -172,9 +172,11 @@ CREATE TABLE IF NOT EXISTS employees (
   status ENUM('active','on_leave','inactive') NOT NULL DEFAULT 'active',
   avatar_color VARCHAR(16) NOT NULL DEFAULT '#0ea5e9',
   hired_at DATE NULL,
+  linked_user_id INT UNSIGNED NULL, -- the portal account this person signs in with (the owner or a member of the profile); no FK, cleared in code
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_employees_profile_email (profile_id, email),
+  KEY idx_employees_linked (linked_user_id),
   KEY idx_employees_status (status),
   KEY idx_employees_department (department),
   KEY idx_employees_owner (user_id),

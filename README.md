@@ -73,6 +73,13 @@ Profiles page; while they are inside it a blue banner says whose profile it is a
   own workspace, never the sharer's.
 - Members can leave at any time; removing a member takes effect on their next request, even if they are inside
   the profile at that moment.
+- **Employees can be linked to accounts.** An employee record has a **Portal account** field (the owner or an
+  active member of the profile). A record whose email equals a member's account email links by itself, when the
+  record is saved or when the member joins; leaving or being removed clears the link. Linked people are told
+  when a task is assigned to them ("… assigned you: …"), when its status changes, when they are added to a
+  project, and they get the due and overdue reminders. Project and requirement events also reach the managers.
+- **My tasks** (`/my-tasks`, with a sidebar count) lists everything assigned to you across your own profiles
+  and the shared ones; opening a task from another profile switches to it first.
 
 The rules are enforced in one place: the session puts the member's role on the user as `access`
 (`owner | manager | editor | viewer`, with `owner_id` = the profile's owner and `home_id` = the member's own
@@ -166,6 +173,7 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT | `/api/auth/pin` | `{ pin }` / `{ pin: null }` keeps a hashed copy of the lock-screen PIN on the account for re-verification |
 | POST/PUT | `/api/info/:id/notes` · PUT/DELETE `/api/info-notes/:id` | notes, like task outputs |
 | POST/PUT | `/api/info/:id/attachments` | uploads; files via `/api/attachments/info/:id` |
+| GET | `/api/tasks/mine` | tasks assigned to me (employee records linked to my account) in every profile I can open; `?open=1` hides finished ones |
 | PUT | `/api/tasks/reorder` | `{ order: [ids] }` sets board order (active profile only) |
 | GET/POST | `/api/tasks` | filters: `project_id`, `employee_id`, `status`, `priority`, `q`, `due_from`, `due_to`, `has_due=1` |
 | GET/PUT/DELETE | `/api/tasks/:id` | detail includes ordered `attachments[]` and `outputs[]` |

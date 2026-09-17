@@ -4,7 +4,7 @@ import { PROJECT_STATUS } from "@/lib/constants";
 import { ownedEmployeeIds } from "@/lib/ownership";
 import { listRequirements } from "../../requirements/route";
 import { purgeFiles } from "@/lib/attachments";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 
 const FIELDS = ["name", "code", "description", "status", "color", "start_date", "end_date", "budget"];
 
@@ -60,14 +60,14 @@ export const PUT = handler(async (request, params, user) => {
   });
   const after = await getProject(id, owner);
   if (data.status && data.status !== before.status) {
-    notifyOwner(user, {
+    notifyInvolved(user, {
       type: after.status === "completed" ? "project_completed" : "project_status",
       title: after.status === "completed" ? `Project completed: ${after.name}` : `${after.name} is now ${PROJECT_STATUS[after.status]?.label ?? after.status}`,
       body: after.code,
       href: `/projects/${id}`,
       entityType: "project",
       entityId: id,
-    });
+    }, { managers: true });
   }
   return ok(after);
 });

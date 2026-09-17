@@ -88,5 +88,40 @@ export function assertCanSetRole(myRole, currentRole, nextRole) {
   if (currentRole === "manager" || nextRole === "manager") throw new HttpError("Only the owner can add, change or remove a manager.", 403);
 }
 
+/* ---------- employee records and the accounts behind them ---------- */
+
+/** Accounts an employee of this profile can be linked to: the owner and the active members. */
+export async function linkableAccounts(profileId) {
+  return (await membersOf(profileId)).filter((m) => m.status === "active").map(({ id, name, email, avatar, avatar_color, role }) => ({ id, name, email, avatar, avatar_color, role }));
+}
+/** Null, or the id when that account may be linked to an employee of the profile. */
+export async function linkableId(profileId, userId) {
+  if (userId == null || userId === "") return null;
+  const id = Number(userId);
+  if (!(await linkableAccounts(profileId)).some((a) => a.id === id)) throw new HttpError("Only the owner or an active member of this profile can be linked to an employee.", 400);
+  return id;
+}
+/**
+ * Link by email where nobody chose yet: an employee record whose email is the account's email is that person.
+ * Runs when a member joins (userId) and when an employee is saved (employeeId).
+ */
+export async function autoLinkByEmail(profileId, { userId = null, employeeId = null } = {}) {
+  if (userId) {
+    const u = await queryOne("SELECT email FROM users WHERE id = ?", [userId]);
+    if (u) await execute("UPDATE employees SET linked_user_id = ? WHERE profile_id = ? AND linked_user_id IS NULL AND LOWER(email) = LOWER(?)", [userId, profileId, u.email]);
+    return;
+  }
+  const e = await queryOne("SELECT email, linked_user_id FROM employees WHERE id = ? AND profile_id = ?", [employeeId, profileId]);
+  if (!e || e.linked_user_id) return;
+  const match = (await linkableAccounts(profileId)).find((a) => a.email.toLowerCase() === String(e.email).toLowerCase());
+  if (match) await execute("UPDATE employees SET linked_user_id = ? WHERE id = ?", [match.id, employeeId]);
+}
+/** Somebody lost access to a profile: their employee record there no longer points at them. */
+export const unlinkMember = (profileId, userId) => execute("UPDATE employees SET linked_user_id = NULL WHERE profile_id = ? AND linked_user_id = ?", [profileId, userId]);
+
 /** Drop every trace of an account from shared profiles (called when the account is deleted). */
-export const forgetMember = (userId) => execute("DELETE FROM profile_members WHERE user_id = ?", [userId]).then(() => execute("UPDATE profile_members SET invited_by = NULL WHERE invited_by = ?", [userId]));
+export const forgetMember = async (userId) => {
+  await execute("DELETE FROM profile_members WHERE user_id = ?", [userId]);
+  await execute("UPDATE profile_members SET invited_by = NULL WHERE invited_by = ?", [userId]);
+  await execute("UPDATE employees SET linked_user_id = NULL WHERE linked_user_id = ?", [userId]);
+};

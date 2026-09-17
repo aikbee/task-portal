@@ -1,6 +1,6 @@
 import { queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
-import { MEMBER_ROLES, membersOf, profileForMembers, assertCanSetRole } from "@/lib/sharing";
+import { MEMBER_ROLES, membersOf, profileForMembers, assertCanSetRole, unlinkMember } from "@/lib/sharing";
 import { notify } from "@/lib/notifications";
 
 async function memberRow(profileId, userId) {
@@ -33,6 +33,7 @@ export const DELETE = handler(async (_request, params, user) => {
   if (memberId === user.id) throw new HttpError("Use Leave to remove yourself.", 400);
   assertCanSetRole(profile.my_role, member.role, null);
   await execute("DELETE FROM profile_members WHERE profile_id = ? AND user_id = ?", [profile.id, memberId]);
+  await unlinkMember(profile.id, memberId);
   if (member.status === "active") await notify({ userId: memberId, type: "profile_removed", title: `You no longer have access to "${profile.name}"`, body: `Removed by ${user.name}`, href: "/profiles", entityType: "profile", entityId: profile.id, actorId: user.id }).catch(() => {});
   else await execute("DELETE FROM notifications WHERE user_id = ? AND type = 'profile_invite' AND entity_type = 'profile' AND entity_id = ? AND read_at IS NULL", [memberId, profile.id]).catch(() => {});
   return ok({ members: await membersOf(profile.id) });

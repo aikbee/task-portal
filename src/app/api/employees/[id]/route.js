@@ -1,4 +1,5 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { linkableId, autoLinkByEmail } from "@/lib/sharing";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { EMPLOYEE_STATUS } from "@/lib/constants";
 import { ownedProjectIds } from "@/lib/ownership";
@@ -6,7 +7,7 @@ import { ownedProjectIds } from "@/lib/ownership";
 const FIELDS = ["first_name", "last_name", "email", "phone", "job_title", "department", "status", "avatar_color", "hired_at"];
 
 export async function getEmployee(id, owner) {
-  const employee = await queryOne("SELECT * FROM employees WHERE id = ? AND profile_id = ?", [id, owner]);
+  const employee = await queryOne("SELECT e.*, lu.name AS linked_user_name, lu.avatar_color AS linked_user_color, COALESCE(lu.avatar, 'preset:pro') AS linked_user_avatar FROM employees e LEFT JOIN users lu ON lu.id = e.linked_user_id WHERE e.id = ? AND e.profile_id = ?", [id, owner]);
   if (!employee) throw new HttpError("Employee not found.", 404);
   employee.projects = await query(
     `SELECT p.id, p.name, p.code, p.color, p.status, p.end_date, pe.role, pe.assigned_at,
@@ -37,6 +38,7 @@ export const PUT = handler(async (request, params, user) => {
   const data = pick(body, FIELDS);
   oneOf(data.status, Object.keys(EMPLOYEE_STATUS), "status");
   for (const f of ["first_name", "last_name", "email"]) if (data[f] === null) throw new HttpError(`${f} is required.`, 400);
+  if ("linked_user_id" in body) data.linked_user_id = await linkableId(owner, body.linked_user_id);
 
   await withTransaction(async (conn) => {
     const cols = Object.keys(data);
@@ -47,6 +49,7 @@ export const PUT = handler(async (request, params, user) => {
       if (ids.length) await conn.query("INSERT IGNORE INTO project_employees (project_id, employee_id) VALUES ?", [ids.map((p) => [p, id])]);
     }
   });
+  if (!("linked_user_id" in body) && data.email) await autoLinkByEmail(owner, { employeeId: id });
   return ok(await getEmployee(id, owner));
 });
 

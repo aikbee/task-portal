@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
 import { useNav } from "@/lib/nav";
-import { Plus, Mail, Phone } from "lucide-react";
+import { Plus, Mail, Phone, UserCheck } from "lucide-react";
 import DataTable from "@/components/table/DataTable";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
@@ -40,7 +40,7 @@ export default function EmployeesList() {
   const mod = MODULE_MAP.employees;
 
   const columns = [
-    { key: "name", label: tr("Employee"), hideable: false, sortValue: (r) => fullName(r), render: (r) => <PersonCell id={r.id} name={fullName(r)} color={r.avatar_color} sub={r.email} link={false} size="md" /> },
+    { key: "name", label: tr("Employee"), hideable: false, sortValue: (r) => fullName(r), render: (r) => <span className="flex items-center gap-2"><PersonCell id={r.id} name={fullName(r)} color={r.avatar_color} sub={r.email} link={false} size="md" />{r.linked_user_id ? <span className="employee-linked inline-flex items-center gap-1 rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent" data-tip={tr("Signs in as {name}", { name: r.linked_user_name })}><UserCheck size={10} /> {tr("Account")}</span> : null}</span> },
     { key: "job_title", label: tr("Title") },
     { key: "department", label: tr("Department"), render: (r) => r.department || <span className="text-fg-faint">—</span> },
     { key: "status", label: tr("Status"), render: (r) => <StatusBadge map={EMPLOYEE_STATUS} value={r.status} /> },

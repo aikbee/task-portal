@@ -4,7 +4,7 @@ import { nextSortOrder } from "@/lib/ordering";
 import { REQ_FIELDS, REQ_SELECT, normaliseRequirement, assertRequirementRefs, nextRequirementCode, normaliseCode, assertCodeFree, bumpSequence } from "../route";
 import { TASK_SELECT } from "../../tasks/route";
 import { listAttachments, purgeFiles } from "@/lib/attachments";
-import { notifyOwner } from "@/lib/notifications";
+import { notifyInvolved } from "@/lib/notifications";
 import { REQ_STATUS } from "@/lib/constants";
 
 export async function getRequirement(id, owner) {
@@ -53,14 +53,14 @@ export const PUT = handler(async (request, params, user) => {
   });
   const after = await getRequirement(id, owner);
   if (data.status && data.status !== existing.status) {
-    notifyOwner(user, {
+    notifyInvolved(user, {
       type: after.status === "done" ? "requirement_done" : "requirement_status",
       title: after.status === "done" ? `Requirement delivered: ${after.code} ${after.title}` : `${after.code} ${after.title} is now ${REQ_STATUS[after.status]?.label ?? after.status}`,
       body: after.project_name,
       href: `/requirements/${id}`,
       entityType: "requirement",
       entityId: id,
-    });
+    }, { employeeIds: [after.employee_id], managers: true });
   }
   return ok(after);
 });
