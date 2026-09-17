@@ -19,6 +19,7 @@ export const TASK_SELECT = `
     (SELECT COUNT(*) FROM task_checklist k WHERE k.task_id = t.id) AS checklist_total,
     (SELECT COUNT(*) FROM task_checklist k WHERE k.task_id = t.id AND k.done = 1) AS checklist_done,
     (SELECT COUNT(*) FROM task_dependencies d WHERE d.task_id = t.id) AS dependency_count,
+    (SELECT COALESCE(SUM(x.minutes), 0) FROM time_entries x WHERE x.task_id = t.id) AS minutes_logged,
     (SELECT COUNT(*) FROM task_dependencies d JOIN tasks bt ON bt.id = d.depends_on_id WHERE d.task_id = t.id AND bt.status <> 'done') AS blocked_by_open
   FROM tasks t
   LEFT JOIN projects p ON p.id = t.project_id

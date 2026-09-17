@@ -34,6 +34,7 @@ export const BG_STYLES = [
   { value: "meadow", label: "Grassland", desc: "3D quiet prairie: wind in the grass, cows grazing and wandering", three: true },
   { value: "citydrive", label: "City drive", desc: "3D driver's view cruising through a city at an easy pace", three: true },
   { value: "neural", label: "Neural network", desc: "3D web of glowing nodes: links come and go, signals hop between them", three: true },
+  { value: "frostpeaks", label: "Frozen peaks", desc: "3D ice mountains: falling snow, valley mist, aurora and a lone climber", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

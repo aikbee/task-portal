@@ -15,9 +15,10 @@ import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, Pe
 import { TASK_STATUS, TASK_PRIORITY, MODULE_MAP } from "@/lib/modules";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
-import { formatDate, relativeTime, fullName } from "@/lib/utils";
+import { formatDate, relativeTime, fullName, cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { CanEdit } from "@/lib/auth-context";
+import { formatMinutes } from "@/lib/duration";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function TasksList() {
@@ -65,6 +66,7 @@ export default function TasksList() {
     { key: "status", label: tr("Status"), sortValue: (r) => Object.keys(TASK_STATUS).indexOf(r.status), render: (r) => <InlineSelect value={r.status} map={TASK_STATUS} onChange={(v) => quickUpdate(r, { status: v })} /> },
     { key: "priority", label: tr("Priority"), sortValue: (r) => Object.keys(TASK_PRIORITY).indexOf(r.priority), render: (r) => <StatusBadge map={TASK_PRIORITY} value={r.priority} /> },
     { key: "due_date", label: tr("Due"), render: (r) => <DueDateCell date={r.due_date} status={r.status} /> },
+    { key: "time", label: tr("Time"), defaultHidden: true, searchable: false, sortValue: (r) => Number(r.minutes_logged), render: (r) => (Number(r.minutes_logged) || r.estimate_hours != null ? <span className={cn("text-xs tabular-nums", r.estimate_hours != null && Number(r.minutes_logged) > Number(r.estimate_hours) * 60 && "font-medium text-rose-500")}>{formatMinutes(r.minutes_logged)}{r.estimate_hours != null ? <span className="text-fg-muted"> / {formatMinutes(Number(r.estimate_hours) * 60)}</span> : null}</span> : <span className="text-fg-faint">—</span>) },
     { key: "counts", label: tr("Files / Outputs / Comments"), sortable: false, searchable: false, render: (r) => <CountsCell attachments={r.attachment_count} outputs={r.output_count} comments={r.comment_count} /> },
     { key: "requirement_code", label: tr("Requirement"), defaultHidden: true, sortValue: (r) => r.requirement_code, render: (r) => r.requirement_id ? <Link href={`/requirements/${r.requirement_id}`} onClick={(e) => e.stopPropagation()} className="font-mono text-xs hover:text-accent" title={r.requirement_title}>{r.requirement_code}</Link> : <span className="text-fg-faint">—</span> },
     { key: "created_at", label: tr("Created"), defaultHidden: true, render: (r) => formatDate(r.created_at) },

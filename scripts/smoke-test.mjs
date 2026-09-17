@@ -609,6 +609,43 @@ console.log("planning: dependencies");
   await call("DELETE", `/api/tasks/${c.id}`);
 }
 
+console.log("planning: time tracking");
+{
+  const t1 = (await call("POST", "/api/tasks", { body: { title: "Time A", estimate_hours: 2 } })).data;
+  const t2 = (await call("POST", "/api/tasks", { body: { title: "Time B" } })).data;
+  const bad = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "soon" } });
+  const zero = await call("POST", `/api/tasks/${t1.id}/time`, { body: { minutes: 0 } });
+  const huge = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "30h" } });
+  const badDay = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "1h", spent_on: "yesterday" } });
+  check("unreadable, zero, over a day and a non-date -> 400", [bad, zero, huge, badDay].every((r) => r.status === 400), [bad, zero, huge, badDay].map((r) => r.status).join());
+  const e1 = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "1h 30m", spent_on: "2026-09-01", note: "  drafting  " } });
+  const e2 = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "0:45" } });
+  const e3 = await call("POST", `/api/tasks/${t1.id}/time`, { body: { duration: "0,5" } });
+  check("durations are read as people write them (1h 30m, 0:45, 0,5)", e1.status === 201 && e3.status === 201 && e3.data.total_minutes === 165 && e3.data.entries.some((e) => e.minutes === 90 && e.note === "drafting" && e.spent_on === "2026-09-01" && e.mine === true), JSON.stringify(e3.data?.entries?.map((e) => e.minutes)));
+  check("the task row carries minutes_logged", Number((await call("GET", `/api/tasks/${t1.id}`)).data.minutes_logged) === 165);
+  const mine = e2.data.entries.find((e) => e.minutes === 45);
+  const edited = await call("PUT", `/api/tasks/${t1.id}/time/${mine.id}`, { body: { duration: "1h", note: "review" } });
+  check("an entry can be corrected", edited.status === 200 && edited.data.total_minutes === 180 && edited.data.entries.find((e) => e.id === mine.id).note === "review");
+  const start = await call("POST", `/api/tasks/${t1.id}/time`, { body: { start: true } });
+  check("starting a timer -> a running entry", start.status === 201 && start.data.running && start.data.running.running === true && start.data.stopped === null);
+  const run = await call("GET", "/api/time/running");
+  check("my running timer is known everywhere", run.status === 200 && run.data.running?.task_id === t1.id && run.data.running.task_title === "Time A" && typeof run.data.running.elapsed_seconds === "number");
+  const lockEdit = await call("PUT", `/api/tasks/${t1.id}/time/${start.data.running.id}`, { body: { duration: "5h" } });
+  check("a running entry cannot be edited (409)", lockEdit.status === 409);
+  const second = await call("POST", `/api/tasks/${t2.id}/time`, { body: { start: true } });
+  check("starting another timer stops the first and keeps at least a minute", second.status === 201 && second.data.stopped?.task_id === t1.id && second.data.stopped.minutes >= 1);
+  const afterSwitch = await call("GET", `/api/tasks/${t1.id}/time`);
+  check("…the first task has no running timer any more", afterSwitch.data.running === null && afterSwitch.data.total_minutes >= 181);
+  const stop = await call("POST", "/api/time/stop", { body: {} });
+  const stopAgain = await call("POST", "/api/time/stop", { body: {} });
+  check("stop ends my timer once", stop.status === 200 && stop.data.stopped?.task_id === t2.id && stopAgain.data.stopped === null && (await call("GET", "/api/time/running")).data.running === null);
+  const del = await call("DELETE", `/api/tasks/${t1.id}/time/${mine.id}`);
+  check("an entry can be deleted", del.status === 200 && !del.data.entries.some((e) => e.id === mine.id));
+  check("an entry of another task -> 404", (await call("DELETE", `/api/tasks/${t2.id}/time/${e1.data.entries[0].id}`)).status === 404);
+  await call("DELETE", `/api/tasks/${t1.id}`);
+  await call("DELETE", `/api/tasks/${t2.id}`);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
@@ -835,6 +872,8 @@ const adminJar = { ...jar };
     check("a viewer reads comments and history but cannot comment (403)", vComments.status === 200 && vHistory.status === 200 && vComment.status === 403);
     const vDep = await call("POST", `/api/tasks/${taskId}/dependencies`, { body: { depends_on_id: taskId } });
     check("a viewer reads dependencies but cannot change them (403)", vDep.status === 403 && (await call("GET", `/api/tasks/${taskId}/dependencies`)).status === 200 && (await call("GET", "/api/tasks/dependencies")).status === 200);
+    const vTime = await call("POST", `/api/tasks/${taskId}/time`, { body: { duration: "1h" } });
+    check("a viewer sees logged time but cannot log any (403)", vTime.status === 403 && (await call("GET", `/api/tasks/${taskId}/time`)).status === 200);
     const vInfo = await call("GET", "/api/info");
     const vInfoSearch = await call("GET", "/api/info/search?q=a");
     const vSearch = await call("GET", "/api/search?q=a");

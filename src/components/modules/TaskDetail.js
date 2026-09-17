@@ -22,6 +22,7 @@ import TaskOutputs from "./TaskOutputs";
 import TaskActivity from "./TaskActivity";
 import TaskChecklist from "./TaskChecklist";
 import TaskDependencies from "./TaskDependencies";
+import TaskTime from "./TaskTime";
 import { TagChips } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
@@ -219,6 +220,7 @@ export default function TaskDetail({ id }) {
             </Row>
             </fieldset>
           </Card>
+          <TaskTime taskId={task.id} estimateHours={task.estimate_hours} onTotal={(m) => setData((t) => ({ ...t, minutes_logged: m }))} />
           <TaskDependencies taskId={task.id} onChange={(d) => setData((t) => ({ ...t, blocked_by_open: d.open, dependency_count: d.blocked_by.length }))} />
           <Card className="space-y-2 text-xs text-fg-muted">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>

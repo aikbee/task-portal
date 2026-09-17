@@ -2236,7 +2236,7 @@ const FROST_SNOW_VS = /* glsl */ `
     float px = aSeed.z * uPx / -mv.z;
     gl_PointSize = clamp(px, 1.5, 72.0);
     // close flakes are big and out of focus: the same light spread over a larger disc
-    vAlpha = clamp(7.0 / px, 0.2, 1.0) * smoothstep(0.3, 1.6, -mv.z) * (1.0 - 0.7 * smoothstep(28.0, 60.0, -mv.z));
+    vAlpha = clamp(8.0 / px, 0.3, 1.0) * smoothstep(0.3, 1.6, -mv.z) * (1.0 - 0.7 * smoothstep(28.0, 60.0, -mv.z));
   }
 `;
 const FROST_SNOW_FS = /* glsl */ `
@@ -2268,9 +2268,9 @@ const FROST_AURORA_FS = /* glsl */ `
     float x = vUv.x * 40.0;
     float rays = 0.55 + 0.45 * sin(x + sin(x * 0.37 + uTime * 0.3) * 2.0 + uTime * 0.25 + uPhase);
     rays *= 0.7 + 0.3 * sin(x * 2.7 - uTime * 0.4);
-    float curtain = smoothstep(0.0, 0.1, vUv.y) * pow(1.0 - vUv.y, 2.2); // bright lower hem, fading upwards
+    float curtain = smoothstep(0.0, 0.1, vUv.y) * pow(1.0 - vUv.y, 1.7); // bright lower hem, fading upwards
     float ends = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x);
-    gl_FragColor = vec4(mix(uLow, uHigh, clamp(vUv.y * 1.7, 0.0, 1.0)), curtain * rays * ends * uOpacity);
+    gl_FragColor = vec4(mix(uLow, uHigh, smoothstep(0.04, 0.45, vUv.y)), curtain * rays * ends * uOpacity);
     #include <colorspace_fragment>
   }
 `;
@@ -2290,9 +2290,9 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
     const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
   };
-  const ridged = (x, z) => { // sharp crests: folded noise, each octave turned so the grid never shows
+  const ridged = (x, z, octaves) => { // sharp crests: folded noise, each octave turned so the grid never shows
     let sum = 0, norm = 0, a = 0.5;
-    for (let o = 0; o < 5; o++) {
+    for (let o = 0; o < octaves; o++) { // keep the finest octave coarser than the mesh, or flat shading turns it into a checkerboard
       const n = 1 - Math.abs(noise(x, z) * 2 - 1);
       sum += n * n * a; norm += a; a *= 0.5;
       const nx = (x * 0.8 - z * 0.6) * 2.03, nz = (x * 0.6 + z * 0.8) * 2.03;
@@ -2305,45 +2305,67 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const mountainH = (x, z) => {
     const d = -z;
     const env = Math.max(smooth(24, 72, d), 0.6 * smooth(22, 60, Math.abs(x)) * smooth(-5, 25, d)); // a valley in front, flanks closing in
-    const r = ridged(x * 0.022, z * 0.022);
-    let h = env * (4 + 30 * Math.pow(r, 1.5));
-    h += (bump(x, z, 9, -80, 20, 27) + bump(x, z, -34, -90, 18, 19) + bump(x, z, 48, -94, 20, 16) + bump(x, z, -72, -72, 16, 12)) * (0.55 + 0.6 * r);
+    const r = ridged(x * 0.022, z * 0.022, 4);
+    let h = env * (3 + 30 * Math.pow(r, 1.7));
+    const peaks = bump(x, z, 9, -80, 14, 36) + bump(x, z, -9, -72, 10, 20) + bump(x, z, -24, -86, 12, 27) + bump(x, z, 30, -88, 11, 22)
+      + bump(x, z, -52, -92, 14, 24) + bump(x, z, 58, -96, 15, 21) + bump(x, z, -84, -74, 15, 16) + bump(x, z, 92, -84, 16, 15);
+    h += peaks * (0.42 + 0.85 * r); // the crests of the noise carve each summit into aretes
     h += (noise(x * 0.15, z * 0.15) - 0.5) * 1.2 * (0.3 + env);
-    return h - 1.6 * Math.exp(-(((x - LAKE.x) / 14) ** 2 + ((z - LAKE.z) / 9) ** 2)); // basin for the lake
+    return h - 2.8 * Math.exp(-(((x - LAKE.x) / 21) ** 2 + ((z - LAKE.z) / 13) ** 2)); // basin for the lake
   };
   const foreH = (x, z) => {
-    const summit = 3.7 * Math.exp(-(x * x + z * z) / 3.2); // the pinnacle the climber stands on
+    const summit = 5.6 * Math.exp(-(x * x + z * z) / 5); // the pinnacle the climber stands on
     const t = smooth(-1, 12, z);
-    const spine = (2.6 - 1.2 * t) * Math.exp(-(x * x) / (5 + 8 * t)) * smooth(-3.5, 0.5, z); // ridge running back under the camera
-    const base = Math.max(summit, spine);
-    const rough = (ridged(x * 0.35 + 9, z * 0.35 + 4) - 0.4) * 1.6;
-    return base + rough * (0.35 + 0.25 * base) - 1.2 - 3 * smooth(6, 14, Math.abs(x)) - 3 * smooth(-6, -13, z);
+    const sx = x + 1.6 * t; // the ridge bends away to the left as it runs back under the camera
+    const spine = (4.5 - 2.2 * t) * Math.exp(-(sx * sx) / (8 + 30 * t)) * smooth(-5, 0.5, z);
+    const shoulder = bump(x, z, 3.4, 2.2, 2.4, 3.4) + bump(x, z, -4.2, 4.5, 2.8, 2.6);
+    const base = Math.max(summit, spine, shoulder);
+    const rough = (ridged(x * 0.16 + 9, z * 0.16 + 4, 2) - 0.45) * 3.2;
+    return base + rough * (0.3 + 0.16 * base) * smooth(0, 1.5, x * x + z * z) - 0.6 - 4 * smooth(7, 14, Math.abs(x)) - 4 * smooth(-7, -13, z);
   };
 
   /** A flat-shaded height field with snow on the gentle faces and bare rock on the steep ones. */
-  const ROCK = new THREE.Color("#222f48"), SNOW = new THREE.Color("#eef5ff"), ICE = new THREE.Color("#a9c3e4"), tmp = new THREE.Color();
+  const TONES = { // rock far / rock near / valley ice / snow
+    dark: ["#1a2540", "#131b30", "#34507f", "#eef5ff"].map((c) => new THREE.Color(c)),
+    light: ["#56657f", "#475266", "#c9dcef", "#ffffff"].map((c) => new THREE.Color(c)),
+  };
+  const tmp = new THREE.Color(), white = new THREE.Color();
+  const lands = [];
   const landMat = keep(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
-  function land(w, d, sx, sz, cz, heightAt, snowLine) {
+  function land(w, d, sx, sz, cz, heightAt, near) {
     const geo = keep(new THREE.PlaneGeometry(w, d, sx, sz));
     geo.rotateX(-Math.PI / 2);
     geo.translate(0, 0, cz);
-    const p = geo.attributes.position;
-    for (let i = 0; i < p.count; i++) p.setY(i, heightAt(p.getX(i), p.getZ(i)));
+    const p = geo.attributes.position, cell = (w / sx) * 0.3;
+    for (let i = 0; i < p.count; i++) { // nudge the grid so the facets are not all alike
+      const x = p.getX(i) + (hash(i, 7) - 0.5) * cell * 2, z = p.getZ(i) + (hash(i, 13) - 0.5) * cell * 2;
+      p.setXYZ(i, x, heightAt(x, z), z);
+    }
     geo.computeVertexNormals();
-    const nrm = geo.attributes.normal, col = new Float32Array(p.count * 3);
+    // how much snow lies on each vertex, and how white it is: baked once, coloured per theme in paint()
+    const nrm = geo.attributes.normal, snowK = new Float32Array(p.count), whiteK = new Float32Array(p.count);
     for (let i = 0; i < p.count; i++) {
       const h = p.getY(i);
-      const snow = Math.min(1, smooth(0.5, 0.8, nrm.getY(i)) + smooth(snowLine, snowLine + 22, h) * 0.35);
-      tmp.copy(ROCK).lerp(tmp.clone().copy(ICE).lerp(SNOW, smooth(0, 5, h)), snow);
-      col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+      const ny = nrm.getY(i);
+      // far range: snow above the snow line except on the steepest faces, bare dark slopes below, ice on the valley floor;
+      // the outcrop in front: dark rock with snow only where it can lie
+      snowK[i] = near ? smooth(0.78, 0.95, ny) * smooth(0.35, 0.6, noise(p.getX(i) * 0.5, p.getZ(i) * 0.5)) : Math.min(1, smooth(5, 16, h) * (1 - 0.9 * smooth(0.5, 0.78, 1 - ny)) + smooth(0.86, 0.97, ny));
+      whiteK[i] = near ? 0.7 : smooth(1, 7, h);
     }
-    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
-    const mesh = new THREE.Mesh(geo, landMat);
-    scene.add(mesh);
-    return mesh;
+    const col = new THREE.BufferAttribute(new Float32Array(p.count * 3), 3);
+    geo.setAttribute("color", col);
+    scene.add(new THREE.Mesh(geo, landMat));
+    lands.push((dark) => {
+      const [rockFar, rockNear, ice, snow] = TONES[dark ? "dark" : "light"];
+      for (let i = 0; i < p.count; i++) {
+        tmp.copy(near ? rockNear : rockFar).lerp(white.copy(ice).lerp(snow, whiteK[i]), snowK[i]);
+        col.setXYZ(i, tmp.r, tmp.g, tmp.b);
+      }
+      col.needsUpdate = true;
+    });
   }
-  land(320, 160, preview ? 84 : 176, preview ? 44 : 92, -62, mountainH, 12);
-  land(30, 26, preview ? 30 : 60, preview ? 26 : 52, -1, foreH, 40);
+  land(320, 160, preview ? 84 : 176, preview ? 44 : 92, -62, mountainH, false);
+  land(30, 26, preview ? 26 : 44, preview ? 22 : 38, -1, foreH, true);
 
   // sky: a gradient dome, stars, the moon (the sun on the light theme)
   const skyStops = (dark) => (dark
@@ -2361,8 +2383,8 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
     if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
-  let skyTex = skyTexture(pal.dark);
-  const skyMat = keep(new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
+  let skyTex = null; // made by applyPalette, again whenever the theme flips
+  const skyMat = keep(new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false, depthWrite: false }));
   const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(320, 24, 24)), skyMat);
   sky.renderOrder = -3;
   scene.add(sky);
@@ -2383,9 +2405,11 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const glow = keep(glowTexture(THREE));
   const moonMat = keep(new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, fog: false }));
   const moon = new THREE.Sprite(moonMat);
-  moon.position.set(-96, 92, -200);
-  moon.renderOrder = -1;
-  scene.add(moon);
+  const moonCore = new THREE.Sprite(moonMat);
+  moon.position.set(-44, 94, -200); // close enough to the middle that a phone in portrait still sees it
+  moonCore.position.copy(moon.position);
+  moon.renderOrder = moonCore.renderOrder = -1;
+  scene.add(moon, moonCore);
 
   // aurora: curtains of light far behind the range (dark theme only)
   const auroras = [];
@@ -2395,7 +2419,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
       vertexShader: FROST_AURORA_VS, fragmentShader: FROST_AURORA_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
     }));
     const m = new THREE.Mesh(keep(new THREE.PlaneGeometry(300, 60, preview ? 40 : 96, 1)), mat);
-    m.position.set([-30, 50, -90][i], [78, 92, 70][i], [-215, -245, -190][i]);
+    m.position.set([-30, 60, -100][i], [112, 124, 104][i], [-215, -245, -190][i]);
     m.rotation.y = [0.15, -0.25, 0.4][i];
     scene.add(m);
     auroras.push({ mat, strength: [1, 0.7, 0.55][i] });
@@ -2406,9 +2430,12 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const lakeGeo = keep(new THREE.PlaneGeometry(1, 1));
   lakeGeo.rotateX(-Math.PI / 2);
   const lake = new THREE.Mesh(lakeGeo, lakeMat);
-  lake.position.set(LAKE.x, 0.1, LAKE.z);
-  lake.scale.set(40, 1, 26);
-  scene.add(lake);
+  lake.position.set(LAKE.x, 0.35, LAKE.z);
+  lake.scale.set(44, 1, 30);
+  const lakeHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, fog: false })));
+  lakeHalo.position.set(LAKE.x, 1.6, LAKE.z);
+  lakeHalo.scale.set(46, 7, 1);
+  scene.add(lake, lakeHalo);
 
   // mist lying in the valley, and spindrift streaming off the main summit
   const cloudTex = keep(cloudTexture(THREE));
@@ -2417,7 +2444,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const mists = [];
   for (let i = 0; i < (preview ? 4 : 10); i++) {
     const m = new THREE.Mesh(mistGeo, mistMat);
-    m.position.set(rand(-90, 90), rand(1.5, 7), rand(-62, -10));
+    m.position.set(rand(-90, 90), rand(0.5, 5), rand(-58, -10));
     m.scale.set(rand(1, 2.4), rand(0.8, 1.5), 1);
     scene.add(m);
     mists.push({ m, speed: rand(0.25, 0.7) });
@@ -2426,7 +2453,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const plume = new THREE.Mesh(mistGeo, plumeMat);
   const TOP = { x: 9, z: -80 };
   plume.position.set(TOP.x + 13, mountainH(TOP.x, TOP.z) - 1, TOP.z - 2);
-  plume.scale.set(0.95, 0.9, 1);
+  plume.scale.set(1.1, 0.55, 1);
   scene.add(plume);
 
   // the climber: a small figure on the pinnacle, jacket in the accent colour
@@ -2448,20 +2475,21 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   climber.add(head);
   part(darkMat, 0.014, 0.5, 0.014, 0.19, 0.25, -0.05).rotation.z = -0.12; // trekking pole
   climber.position.set(0, foreH(0, 0) - 0.02, 0);
-  climber.scale.setScalar(1.35);
+  climber.scale.setScalar(1.7);
   scene.add(climber);
-  const lampMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xfde68a, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
+  const lampMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffc46b, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
   const lamp = new THREE.Sprite(lampMat);
-  lamp.position.set(0, climber.position.y + 0.82, -0.12);
+  lamp.position.set(0, climber.position.y + 1.03, -0.15);
+  lamp.scale.setScalar(1.05);
   scene.add(lamp);
 
   // snowfall
-  const FLAKES = preview ? 520 : 2600;
+  const FLAKES = preview ? 600 : 3200;
   const BOX = { x: 64, y: 36, z: 62 };
   const flakePos = new Float32Array(FLAKES * 3), flakeSeed = new Float32Array(FLAKES * 3);
   for (let i = 0; i < FLAKES; i++) {
     flakePos.set([rand(0, BOX.x), rand(0, BOX.y), rand(0, BOX.z)], i * 3);
-    flakeSeed.set([rand(0.9, 2.4), rand(0, 6.28), rand(0.05, 0.13) * (preview ? 1.8 : 1)], i * 3);
+    flakeSeed.set([rand(0.9, 2.4), rand(0, 6.28), (i % 7 === 0 ? rand(0.18, 0.34) : rand(0.06, 0.15)) * (preview ? 1.8 : 1)], i * 3);
   }
   const snowGeo = keep(new THREE.BufferGeometry());
   snowGeo.setAttribute("position", new THREE.BufferAttribute(flakePos, 3));
@@ -2488,36 +2516,36 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
 
   const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
   const key = new THREE.DirectionalLight(0xffffff, 1);
-  key.position.set(-60, 55, 30);
+  key.position.set(-70, 60, 45);
   scene.add(hemi, key);
-  scene.fog = new THREE.FogExp2(0x0a1a3d, 0.0085);
+  scene.fog = new THREE.FogExp2(0x0a1a3d, 0.0062);
 
   const mixed = new THREE.Color();
   function applyPalette(p) {
-    const swapSky = p.dark !== pal.dark;
+    if (!skyTex || p.dark !== pal.dark) { // only when the theme flips: a new sky and repainted slopes
+      skyTex?.dispose(); skyTex = skyTexture(p.dark); skyMat.map = skyTex; skyMat.needsUpdate = true;
+      lands.forEach((paint) => paint(p.dark));
+    }
     pal = p;
-    if (swapSky) { skyTex.dispose(); skyTex = skyTexture(p.dark); skyMat.map = skyTex; skyMat.needsUpdate = true; }
     scene.fog.color.set(p.dark ? "#0a1a3d" : "#dcebf7");
-    hemi.color.set(p.dark ? "#3559a8" : "#e3f0ff"); hemi.groundColor.set(p.dark ? "#0a1226" : "#93a7c2"); hemi.intensity = p.dark ? 1.15 : 1.3;
-    key.color.set(p.dark ? "#bcd3ff" : "#fff1d6"); key.intensity = p.dark ? 1.7 : 2.1;
+    hemi.color.set(p.dark ? "#3559a8" : "#e3f0ff"); hemi.groundColor.set(p.dark ? "#0a1226" : "#93a7c2"); hemi.intensity = p.dark ? 0.95 : 1.3;
+    key.color.set(p.dark ? "#bcd3ff" : "#fff1d6"); key.intensity = p.dark ? 4.6 : 2.3;
     starMat.opacity = p.dark ? 0.9 : 0;
-    moonMat.color.set(p.dark ? "#dbe7ff" : "#fff4d6"); moonMat.opacity = p.dark ? 0.95 : 0.9;
-    moon.scale.setScalar(p.dark ? 34 : 90);
-    for (const a of auroras) { a.mat.uniforms.uLow.value.set("#34d399"); a.mat.uniforms.uHigh.value.set(p.accent); a.mat.uniforms.uOpacity.value = p.dark ? 0.5 * a.strength : 0; }
-    lakeMat.color.copy(mixed.set("#38bdf8").lerp(tmp.set(p.accent), 0.35)); lakeMat.opacity = p.dark ? 0.85 : 0.5;
-    blend(THREE, lakeMat, p.dark);
-    mistMat.color.set(p.dark ? "#3d63b0" : "#ffffff"); mistMat.opacity = p.dark ? 0.34 : 0.6;
-    plumeMat.color.set(p.dark ? "#9db9ee" : "#ffffff");
+    moonMat.color.set(p.dark ? "#dbe7ff" : "#fff4d6"); moonMat.opacity = p.dark ? 0.7 : 0.9;
+    moon.scale.setScalar(p.dark ? 52 : 120); moonCore.scale.setScalar(p.dark ? 14 : 34);
+    for (const a of auroras) { a.mat.uniforms.uLow.value.set("#34d399"); a.mat.uniforms.uHigh.value.set(p.accent); a.mat.uniforms.uOpacity.value = p.dark ? 0.85 * a.strength : 0; }
+    lakeMat.color.copy(mixed.set("#7dd3fc").lerp(tmp.set(p.accent), 0.25)); lakeMat.opacity = p.dark ? 1 : 0.5;
+    lakeHalo.material.color.copy(lakeMat.color); lakeHalo.material.opacity = p.dark ? 0.95 : 0.2;
+    blend(THREE, lakeMat, p.dark); blend(THREE, lakeHalo.material, p.dark);
+    mistMat.color.set(p.dark ? "#4473cf" : "#ffffff"); mistMat.opacity = p.dark ? 0.36 : 0.6;
+    plumeMat.color.set(p.dark ? "#9db9ee" : "#ffffff"); plumeMat.opacity = p.dark ? 0.3 : 0.7;
     jacketMat.color.set(p.accent); jacketMat.emissive.set(p.accent); jacketMat.emissiveIntensity = p.dark ? 0.55 : 0.1;
     packMat.color.set(p.strong); packMat.emissive.set(p.strong); packMat.emissiveIntensity = p.dark ? 0.25 : 0;
-    lampMat.opacity = p.dark ? 0.6 : 0;
+    lampMat.opacity = p.dark ? 0.55 : 0;
     snowUni.uColor.value.set(p.dark ? "#eaf2ff" : "#ffffff"); snowUni.uOpacity.value = p.dark ? 0.95 : 1;
     blend(THREE, snowMat, p.dark);
   }
-  const first = pal;
-  pal = { ...pal, dark: !pal.dark }; // so the first call builds nothing twice but still sets every colour
-  skyTex.dispose();
-  applyPalette(first);
+  applyPalette(pal);
 
   camera.position.set(CAM.x, CAM.y, CAM.z);
   camera.lookAt(0, 11, -40);
@@ -2527,11 +2555,11 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
       snowUni.uWind.value = 0.9 + Math.sin(t * 0.13) * 0.6; // gusts
       for (const a of auroras) a.mat.uniforms.uTime.value = t;
       for (const c of mists) { c.m.position.x += dt * c.speed; if (c.m.position.x > 110) c.m.position.x = -110; }
-      plumeMat.opacity = (pal.dark ? 0.4 : 0.75) * (0.75 + 0.25 * Math.sin(t * 0.5));
-      plume.scale.x = 0.95 + Math.sin(t * 0.31) * 0.12;
+      plumeMat.opacity = (pal.dark ? 0.3 : 0.7) * (0.75 + 0.25 * Math.sin(t * 0.5));
+      plume.scale.x = 1.1 + Math.sin(t * 0.31) * 0.14;
       head.rotation.y = Math.sin(t * 0.23) * 0.5; // looking along the range
-      climber.scale.y = 1.35 * (1 + Math.sin(t * 1.4) * 0.008);
-      lamp.scale.setScalar(1.5 + Math.sin(t * 7.3) * 0.05 + Math.sin(t * 2.1) * 0.08);
+      climber.scale.y = 1.7 * (1 + Math.sin(t * 1.4) * 0.008);
+      lamp.scale.setScalar(1.05 + Math.sin(t * 7.3) * 0.04 + Math.sin(t * 2.1) * 0.06);
       if (pal.dark) {
         if (shot.at < 0 && (shot.next -= dt) <= 0) {
           const dir = Math.random() < 0.5 ? -1 : 1, ang = rand(0.25, 0.6);
@@ -2550,7 +2578,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
       camera.lookAt(0, 11, -40);
     },
     setPalette: applyPalette,
-    dispose() { disposables.forEach((d) => d.dispose()); skyTex.dispose(); scene.fog = null; },
+    dispose() { disposables.forEach((d) => d.dispose()); skyTex?.dispose(); scene.fog = null; },
   };
 }
 

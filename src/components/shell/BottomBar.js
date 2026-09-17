@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useMounted } from "@/lib/hooks";
 import { timerTotalSeconds } from "./tools/TimerTool";
 import { TOOLS, useToolExpanded } from "./ToolWorkspace";
+import RunningTimer from "./RunningTimer";
 import { useT } from "@/lib/i18n";
 
 
@@ -137,6 +138,7 @@ export default function BottomBar() {
 
       {/* right: utilities */}
       <div className="flex items-center gap-1 text-fg-muted">
+        <RunningTimer />
         <span className="mr-1 hidden items-center gap-1.5 lg:flex">
           <span className="h-2 w-2 rounded-full" style={{ background: mod.color }} />
           {tr(mod.label)}

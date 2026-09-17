@@ -402,6 +402,24 @@ CREATE TABLE IF NOT EXISTS task_checklist (
   CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Time spent on a task. A row with started_at set and minutes = 0 is a running timer (one per user at most);
+-- stopping it fills in the minutes. user_id carries no foreign key; user_name keeps the entry readable.
+CREATE TABLE IF NOT EXISTS time_entries (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  user_name VARCHAR(120) NOT NULL,
+  minutes INT UNSIGNED NOT NULL DEFAULT 0,
+  spent_on DATE NOT NULL,
+  note VARCHAR(255) NULL,
+  started_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_te_task (task_id, spent_on),
+  KEY idx_te_running (user_id, started_at),
+  CONSTRAINT fk_te_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- "task_id waits for depends_on_id". Both live in the same profile; cycles are refused in code.
 CREATE TABLE IF NOT EXISTS task_dependencies (
   task_id INT UNSIGNED NOT NULL,
