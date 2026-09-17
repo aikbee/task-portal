@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { signSessionId, verifySessionToken, SESSION_COOKIE, sessionSecret } from "./session-token";
+import { sharedProfilesOf } from "./sharing";
 
 const DAY = 86_400_000;
 export const WORKSPACE_COOKIE = "ap_workspace";
@@ -79,7 +80,13 @@ export async function setWorkspaceCookie(userId) {
  *
  * The result carries `owner_id`: the workspace whose projects / employees /
  * tasks are in scope. It is the user's own id, or — for admins who switched
- * workspace — another user's id (then `workspace` describes that user).
+ * workspace — another user's id (then `workspace` describes that user), or the
+ * owner of a profile that was shared with the user.
+ *
+ *   home_id          whose profiles "my profiles" are (own id, or the admin's target): never a sharer
+ *   profiles         the home profiles;  shared_profiles  the ones other people share with this user
+ *   access           owner | manager | editor | viewer: what the user may do in the active profile
+ *   shared           null, or { owner, role } while the active profile is somebody else's
  */
 export async function getSessionUser(request) {
   const id = await sessionIdFrom(request);
@@ -107,11 +114,26 @@ export async function getSessionUser(request) {
       }
     }
   }
-  // active profile inside that workspace: the cookie's profile if it belongs to the owner, else the default
-  const profiles = await profilesOf(owner_id);
+  // active profile: the cookie's profile if it is one of the home profiles or one shared with the user, else the default
+  const home_id = owner_id;
+  const profiles = await profilesOf(home_id);
+  const shared_profiles = await sharedProfilesOf(row.id);
   const wantedProfile = Number(await cookieValue(request, PROFILE_COOKIE));
-  const profile = profiles.find((p) => p.id === wantedProfile) ?? profiles.find((p) => p.is_default) ?? profiles[0];
-  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: Boolean(row.secrets_unlocked), owner_id, workspace, profile_id: profile.id, profile, profiles };
+  let profile = profiles.find((p) => p.id === wantedProfile);
+  let access = "owner";
+  let shared = null;
+  if (!profile) {
+    const lent = shared_profiles.find((p) => p.id === wantedProfile);
+    if (lent) {
+      profile = lent;
+      owner_id = lent.user_id; // what members create belongs to the profile's owner
+      workspace = null;
+      access = lent.role;
+      shared = { owner: lent.owner, role: lent.role };
+    }
+  }
+  profile ??= profiles.find((p) => p.is_default) ?? profiles[0];
+  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: Boolean(row.secrets_unlocked), owner_id, home_id, workspace, profile_id: profile.id, profile, profiles, shared_profiles, access, shared };
 }
 
 export async function requireUser(request) {

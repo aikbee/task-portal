@@ -17,6 +17,7 @@ import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import TaskForm from "./TaskForm";
+import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const TONE_BAR = { slate: "bg-slate-400", sky: "bg-sky-500", violet: "bg-violet-500", emerald: "bg-emerald-500", amber: "bg-amber-500", rose: "bg-rose-500" };
@@ -37,6 +38,7 @@ function columnsFor(groupBy, employees) {
 const columnKeyOf = (task, groupBy) => (groupBy === "priority" ? task.priority : groupBy === "assignee" ? (task.employee_id ? String(task.employee_id) : UNASSIGNED) : task.status);
 
 export default function BoardView() {
+  const { canEdit } = useAccess();
   const tr = useT();
   const router = useNav();
   const toast = useToast();
@@ -146,7 +148,7 @@ export default function BoardView() {
         icon={mod.icon}
         color={mod.color}
         crumbs={[]}
-        actions={<Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: filters.project_id ? { project_id: filters.project_id } : {} })}>{tr("New task")}</Button>}
+        actions={<CanEdit><Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: filters.project_id ? { project_id: filters.project_id } : {} })}>{tr("New task")}</Button></CanEdit>}
       />
 
       <div className="tool-bar card mb-4 flex flex-wrap items-center gap-2 px-3 py-2">
@@ -219,14 +221,15 @@ export default function BoardView() {
                       onDragStart={() => setDrag({ id: t.id, from: c.key })}
                       onDragEnd={() => { setDrag(null); setOver(null); }}
                       onOpen={() => router.push(`/tasks/${t.id}`)}
-                      onEdit={() => setTaskForm({ open: true, initial: t, defaults: {} })}
+                      onEdit={() => canEdit && setTaskForm({ open: true, initial: t, defaults: {} })}
+                      canEdit={canEdit}
                     />
                   </div>
                 ))}
                 {isOverCol && over.index >= list.filter((t) => t.id !== drag?.id).length ? <div className="h-1 rounded-full bg-accent" /> : null}
                 {!loading && list.length === 0 && !isOverCol ? <p className="rounded-app border border-dashed border-line px-3 py-6 text-center text-xs text-fg-faint">{tr("Drop tasks here")}</p> : null}
               </div>
-              <QuickAdd onAdd={(title) => quickAdd(c.key, title)} />
+              {canEdit ? <QuickAdd onAdd={(title) => quickAdd(c.key, title)} /> : null}
             </section>
           );
         })}
@@ -254,12 +257,12 @@ export default function BoardView() {
   );
 }
 
-function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpen, onEdit }) {
+function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpen, onEdit, canEdit = true }) {
   const overdue = t.status !== "done" && t.due_date && t.due_date < today;
   return (
     <article
       data-card={t.id}
-      draggable
+      draggable={canEdit}
       onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", String(t.id)); } catch {} onDragStart(); }}
       onDragEnd={onDragEnd}
       onClick={onOpen}

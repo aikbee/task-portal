@@ -1,4 +1,5 @@
 import { queryOne, execute } from "@/lib/db";
+import { forgetMember } from "@/lib/sharing";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { hashPassword, PASSWORD_MIN } from "@/lib/password";
 import { USER_ROLES, USER_STATUS } from "@/lib/constants";
@@ -65,6 +66,7 @@ export const DELETE = handler(
     await purgeMessagePhotos("m.sender_id = ?", [id]).catch(() => {});
     const pic = uploadedFileOf((await queryOne("SELECT avatar FROM users WHERE id = ?", [id]))?.avatar);
     if (pic) await deleteStoredFile(pic).catch(() => {});
+    await forgetMember(id); // memberships carry no foreign key (see db/schema.sql)
     await execute("DELETE FROM users WHERE id = ?", [id]);
     await pruneOrphanConversations().catch(() => {});
     notifyAdmins(me, { type: "user_deleted", title: `Account removed: ${existing.name}`, body: existing.email, href: "/users", entityType: "user", entityId: id });

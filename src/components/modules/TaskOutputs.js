@@ -14,6 +14,7 @@ import BlockEditor from "@/components/ui/BlockEditor";
 import { MentionChips } from "@/components/ui/Mentions";
 import { displayMentions } from "@/lib/mentions";
 import { parseTableJson, emptyTable, tableToMarkdown, countTables } from "@/lib/text-tables";
+import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const DEFAULT_LABELS = { title: "Outputs", singular: "output", plural: "outputs", add: "Add output", first: "Add first output", empty: "No outputs yet", emptyHint: "Record logs, results, notes or any long text. Each block keeps its own position.", placeholder: "Paste logs, results, long notes…" };
@@ -23,6 +24,7 @@ const DEFAULT_LABELS = { title: "Outputs", singular: "output", plural: "outputs"
  * `baseUrl` (collection: POST create / PUT reorder) and `itemUrl` (PUT / DELETE one).
  */
 export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUrl = "/api/outputs", labels: labelOverrides }) {
+  const { canEdit } = useAccess();
   const tr = useT();
   const labels = { ...DEFAULT_LABELS, ...(labelOverrides ?? {}) };
   const collection = baseUrl ?? `/api/tasks/${taskId}/outputs`;
@@ -96,17 +98,18 @@ export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUr
                 {tr(expanded.size === outputs.length ? "Collapse all" : "Expand all")}
               </Button>
             ) : null}
-            <Button size="sm" icon={Plus} loading={adding} onClick={add}>{tr(labels.add)}</Button>
+            <CanEdit><Button size="sm" icon={Plus} loading={adding} onClick={add}>{tr(labels.add)}</Button></CanEdit>
           </>
         }
       />
       {outputs.length === 0 ? (
-        <EmptyState compact icon={FileText} title={labels.empty} description={labels.emptyHint} action={<Button size="sm" icon={Plus} onClick={add}>{labels.first}</Button>} />
+        <EmptyState compact icon={FileText} title={labels.empty} description={labels.emptyHint} action={<CanEdit><Button size="sm" icon={Plus} onClick={add}>{labels.first}</Button></CanEdit>} />
       ) : (
         <SortableList
           items={outputs}
           onReorder={reorder}
           onSetPosition={setPosition}
+          disabled={!canEdit}
           renderItem={(o) => (
             <OutputRow output={o} placeholder={labels.placeholder} singular={labels.singular} open={expanded.has(o.id)} onToggle={() => toggle(o.id)} onSave={(patch) => save(o.id, patch)} onDelete={() => setToDelete(o)} />
           )}
@@ -119,6 +122,7 @@ export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUr
 
 function OutputRow({ output, open, onToggle, onSave, onDelete, placeholder = DEFAULT_LABELS.placeholder, singular = "output" }) {
   const tr = useT();
+  const { canEdit } = useAccess();
   const autosaveSeconds = usePrefs((s) => s.autosaveSeconds);
   const [draft, setDraft] = useState(null); // { title, content } while editing; null = showing the server copy
   const [saving, setSaving] = useState(false);
@@ -190,7 +194,8 @@ function OutputRow({ output, open, onToggle, onSave, onDelete, placeholder = DEF
         </button>
         <input
           value={title}
-          onChange={(e) => edit({ title: e.target.value })}
+          onChange={(e) => canEdit && edit({ title: e.target.value })}
+          readOnly={!canEdit}
           onBlur={() => dirty && flush()}
           placeholder={`Untitled ${singular}`}
           className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-fg-faint"
@@ -198,7 +203,7 @@ function OutputRow({ output, open, onToggle, onSave, onDelete, placeholder = DEF
         <span className="hidden shrink-0 text-[11px] text-fg-faint sm:inline">{meta}</span>
         <span className={cn("shrink-0 text-[11px]", saving ? "text-accent" : dirty ? "text-amber-500" : "text-fg-faint")}>{status}</span>
         <Button variant="ghost" size="iconXs" icon={copied ? Check : Copy} onClick={copy} aria-label={tr("Copy")} data-tip={copied ? tr("Copied") : tr("Copy")} />
-        <Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={onDelete} aria-label={tr("Delete")} data-tip={tr("Delete")} />
+        {canEdit ? <Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={onDelete} aria-label={tr("Delete")} data-tip={tr("Delete")} /> : null}
       </div>
       {!open && firstLine ? (
         <div className="flex items-center gap-3 border-t border-line px-3 py-1.5" onClick={onToggle}>
@@ -208,16 +213,24 @@ function OutputRow({ output, open, onToggle, onSave, onDelete, placeholder = DEF
       ) : null}
       {open ? (
         <div className="border-t border-line p-3">
-          <BlockEditor value={content} onChange={(c) => edit({ content: c })} onBlur={() => dirty && flush()} onSave={flush} placeholder={placeholder} mono={mono} />
+          {canEdit ? (
+            <BlockEditor value={content} onChange={(c) => edit({ content: c })} onBlur={() => dirty && flush()} onSave={flush} placeholder={placeholder} mono={mono} />
+          ) : (
+            <pre className={cn("max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-app-sm bg-surface-2 p-3 text-xs", mono ? "font-mono" : "font-sans")}>{content}</pre>
+          )}
           <div className="mt-2 flex items-center justify-between">
             <button onClick={() => setMono((m) => !m)} className="flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg">
               {mono ? <Type size={13} /> : <Code2 size={13} />} {tr(mono ? "Proportional font" : "Monospace font")}
             </button>
             <span className="flex items-center gap-2">
-              <span className="text-[11px] text-fg-faint">{tr("⌘S saves")}</span>
-              <Button size="sm" variant={dirty ? "primary" : "secondary"} onClick={flush} loading={saving} disabled={!dirty}>
-                {tr(dirty ? "Save" : "Saved")}
-              </Button>
+              {canEdit ? (
+                <>
+                  <span className="text-[11px] text-fg-faint">{tr("⌘S saves")}</span>
+                  <Button size="sm" variant={dirty ? "primary" : "secondary"} onClick={flush} loading={saving} disabled={!dirty}>
+                    {tr(dirty ? "Save" : "Saved")}
+                  </Button>
+                </>
+              ) : <span className="text-[11px] text-fg-faint">{tr("View only")}</span>}
             </span>
           </div>
         </div>

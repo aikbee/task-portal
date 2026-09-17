@@ -1,5 +1,5 @@
 "use client";
-import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell, UserCheck, MessageCircle, Heart, AtSign, Phone, DatabaseBackup } from "lucide-react";
+import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell, UserCheck, MessageCircle, Heart, AtSign, Phone, DatabaseBackup, Share2, UserMinus, UserCog } from "lucide-react";
 import { NOTIFICATION_TYPES } from "./constants";
 
 const ICONS = {
@@ -22,6 +22,10 @@ const ICONS = {
   user_deleted: ShieldAlert,
   security_login: LogIn,
   backup_failed: DatabaseBackup,
+  profile_invite: Share2,
+  profile_joined: UserCheck,
+  profile_role: UserCog,
+  profile_removed: UserMinus,
   friend_request: UserPlus,
   friend_accepted: UserCheck,
   chat_message: MessageCircle,

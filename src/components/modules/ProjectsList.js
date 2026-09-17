@@ -16,6 +16,7 @@ import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow } f
 import { PROJECT_STATUS, MODULE_MAP } from "@/lib/modules";
 import { formatDate, formatMoney, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { CanEdit } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function ProjectsList() {
@@ -75,7 +76,7 @@ export default function ProjectsList() {
         icon={mod.icon}
         color={mod.color}
         crumbs={[]}
-        actions={<><ReportButton module="projects" /><Button icon={Plus} onClick={openNew}>{tr("New project")}</Button></>}
+        actions={<><ReportButton module="projects" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New project")}</Button></CanEdit></>}
       />
       <DataTable
         id="projects"
@@ -103,7 +104,7 @@ export default function ProjectsList() {
         }
         emptyTitle={tr("No projects yet")}
         emptyDescription={tr("Create your first project to start grouping employees and tasks.")}
-        emptyAction={<Button icon={Plus} onClick={openNew}>{tr("New project")}</Button>}
+        emptyAction={<CanEdit><Button icon={Plus} onClick={openNew}>{tr("New project")}</Button></CanEdit>}
       />
       <ProjectForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
       <ConfirmDialog

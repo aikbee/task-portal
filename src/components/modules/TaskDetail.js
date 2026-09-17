@@ -22,9 +22,11 @@ import TaskOutputs from "./TaskOutputs";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function TaskDetail({ id }) {
+  const { canEdit } = useAccess();
   const tr = useT();
   const router = useNav();
   const toast = useToast();
@@ -94,8 +96,8 @@ export default function TaskDetail({ id }) {
         actions={
           <>
             <ReportButton module="tasks" id={id} />
-            <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
-            <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
+            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
           </>
         }
       >
@@ -123,6 +125,7 @@ export default function TaskDetail({ id }) {
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
           <Card className="space-y-4">
+            <fieldset disabled={!canEdit} className="contents">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Details")}</p>
             <Row label={tr("Status")}>
               <Select value={task.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
@@ -197,6 +200,7 @@ export default function TaskDetail({ id }) {
                 <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">No project — link one</button>
               )}
             </Row>
+            </fieldset>
           </Card>
           <Card className="space-y-2 text-xs text-fg-muted">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>

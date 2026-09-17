@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, Layers, Check, Pencil, Trash2, Star, ArrowRightLeft, FolderKanban, ClipboardList, Users, CheckSquare } from "lucide-react";
+import { Plus, Layers, Check, Pencil, Trash2, Star, ArrowRightLeft, FolderKanban, ClipboardList, Users, CheckSquare, Share2, LogOut, MailPlus, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useAuth } from "@/lib/auth-context";
@@ -13,6 +13,9 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import ProfileForm from "./ProfileForm";
+import ProfileMembers, { MEMBER_ROLE } from "./ProfileMembers";
+import Avatar from "@/components/ui/Avatar";
+import Badge from "@/components/ui/Badge";
 import { useNewParam, useNewShortcut } from "./shared";
 import { useT } from "@/lib/i18n";
 
@@ -25,9 +28,11 @@ export default function ProfilesList() {
   const [editing, setEditing] = useState(null);
   const [toDelete, setToDelete] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(null); // the profile whose members are open
+  const [toLeave, setToLeave] = useState(null);
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
-  useNewParam("/profiles", openNew);
-  useNewShortcut(openNew);
+  useNewParam("/profiles", openNew, { workspace: false });
+  useNewShortcut(openNew, { workspace: false });
   const mod = MODULE_MAP.profiles;
   const items = data?.items ?? [];
   const activeId = user?.profile_id;
@@ -38,9 +43,35 @@ export default function ProfilesList() {
     // keep the header/switcher list fresh
     try {
       const me = await api.get("/api/auth/me");
-      setUser((u) => ({ ...u, profile: me.profile, profiles: me.profiles }));
+      setUser((u) => ({ ...u, profile: me.profile, profiles: me.profiles, shared_profiles: me.shared_profiles }));
     } catch {}
   };
+  const answer = async (p, accept) => {
+    try {
+      await api.put(`/api/profiles/${p.id}/membership`, { accept });
+      toast.success(accept ? tr("You joined “{name}”", { name: p.name }) : tr("Invitation declined"));
+      onSaved(null, false, false);
+    } catch (e) {
+      toast.error(tr("Could not answer the invitation"), e.message);
+    }
+  };
+  const leave = async () => {
+    setBusy(true);
+    try {
+      await api.del(`/api/profiles/${toLeave.id}/membership`);
+      toast.success(tr("You left “{name}”", { name: toLeave.name }));
+      const wasActive = toLeave.id === activeId;
+      setToLeave(null);
+      if (wasActive) window.location.assign(new URL("/", window.location.origin).toString());
+      else onSaved(null, false, false);
+    } catch (e) {
+      toast.error(tr("Could not leave"), e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const invites = data?.invites ?? [];
+  const lent = data?.shared ?? [];
   const makeDefault = async (p) => {
     try {
       await api.put(`/api/profiles/${p.id}`, { is_default: true });
@@ -71,6 +102,22 @@ export default function ProfilesList() {
       <PageHeader title={tr("Profiles")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New profile")}</Button>} />
       {error ? <EmptyState title="Could not load profiles" description={error.message} /> : null}
       {loading && !data ? <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-44" />)}</div> : null}
+      {invites.length ? (
+        <div className="profile-invites mb-4 space-y-2">
+          {invites.map((p) => (
+            <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-app border border-accent/30 bg-accent/8 px-4 py-3">
+              <MailPlus size={18} className="shrink-0 text-accent" />
+              <Avatar name={p.owner.name} color={p.owner.avatar_color} avatar={p.owner.avatar} size="sm" />
+              <p className="min-w-0 flex-1 basis-56 text-sm">
+                {tr("{who} invites you to the profile “{name}” as {role}.", { who: p.invited_by?.name ?? p.owner.name, name: p.name, role: tr(MEMBER_ROLE[p.role]?.label ?? p.role) })}
+                <span className="block text-xs text-fg-muted">{tr(MEMBER_ROLE[p.role]?.hint ?? "")}</span>
+              </p>
+              <Button size="sm" icon={Check} onClick={() => answer(p, true)} className="invite-accept">{tr("Accept")}</Button>
+              <Button size="sm" variant="ghost" icon={X} onClick={() => answer(p, false)} className="invite-decline">{tr("Decline")}</Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 anim-stagger">
         {items.map((p) => {
           const active = p.id === activeId;
@@ -109,6 +156,7 @@ export default function ProfilesList() {
                 ) : (
                   <Button size="sm" icon={ArrowRightLeft} onClick={() => switchProfile(p.id, "/")}>Switch</Button>
                 )}
+                <Button size="sm" variant="secondary" icon={Share2} onClick={() => setSharing(p)} className="profile-share">{p.member_count ? tr("Shared · {n}", { n: p.member_count }) : tr("Share")}</Button>
                 <span className="flex-1" />
                 {!p.is_default ? <Button size="iconSm" variant="ghost" icon={Star} onClick={() => makeDefault(p)} aria-label="Make default" title="Make default" /> : null}
                 <Button size="iconSm" variant="ghost" icon={Pencil} onClick={() => { setEditing(p); setFormOpen(true); }} aria-label={tr("Edit")} title={tr("Edit")} />
@@ -118,6 +166,49 @@ export default function ProfilesList() {
           );
         })}
       </div>
+      {lent.length ? (
+        <>
+          <h2 className="shared-with-me mb-3 mt-8 flex items-center gap-2 text-sm font-semibold"><Users size={16} className="text-fg-muted" /> {tr("Shared with me")}</h2>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {lent.map((p) => {
+              const active = p.id === activeId;
+              const meta = MEMBER_ROLE[p.role] ?? MEMBER_ROLE.viewer;
+              return (
+                <Card key={p.id} className={cn("shared-card relative flex flex-col", active && "ring-2 ring-accent/50")}>
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-app text-white shadow-app" style={{ background: p.color }}><Users size={20} /></span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <h3 className="truncate text-base font-semibold">{p.name}</h3>
+                        {active ? <span className="rounded-full bg-accent/12 px-1.5 py-px text-[10px] font-semibold text-accent">active</span> : null}
+                        <Badge tone={meta.tone}>{tr(meta.label)}</Badge>
+                      </div>
+                      <p className="flex items-center gap-1.5 truncate text-xs text-fg-muted"><Avatar name={p.owner.name} color={p.owner.avatar_color} avatar={p.owner.avatar} size="xs" /> {tr("shared by {name}", { name: p.owner.name })}</p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-fg-muted">{tr(meta.hint)}</p>
+                  <div className="mt-4 flex items-center gap-1.5">
+                    {active ? <Button size="sm" variant="secondary" icon={Check} disabled>{tr("Active")}</Button> : <Button size="sm" icon={ArrowRightLeft} onClick={() => switchProfile(p.id, "/")} className="shared-open">{tr("Open")}</Button>}
+                    <Button size="sm" variant="secondary" icon={Users} onClick={() => setSharing(p)}>{tr("Members")}</Button>
+                    <span className="flex-1" />
+                    <Button size="sm" variant="dangerGhost" icon={LogOut} onClick={() => setToLeave(p)} className="shared-leave">{tr("Leave")}</Button>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+      <ProfileMembers profile={sharing} open={!!sharing} onClose={() => setSharing(null)} onChanged={refetch} />
+      <ConfirmDialog
+        open={!!toLeave}
+        onClose={() => setToLeave(null)}
+        onConfirm={leave}
+        loading={busy}
+        title={toLeave ? tr("Leave “{name}”?", { name: toLeave.name }) : ""}
+        description={tr("You lose access until someone invites you again. Nothing in the profile is deleted.")}
+        confirmText="Leave"
+      />
       <ProfileForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={onSaved} />
       <ConfirmDialog
         open={!!toDelete}

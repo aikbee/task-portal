@@ -15,6 +15,7 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { Field, Select } from "@/components/ui/Controls";
 import { EmptyState } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
+import { CanEdit } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 export default function ProjectMembers({ project, onChange }) {
@@ -72,10 +73,10 @@ export default function ProjectMembers({ project, onChange }) {
         icon={Users}
         title="Team members"
         description={`${project.employees.length} employee${project.employees.length === 1 ? "" : "s"} on this project`}
-        actions={<Button size="sm" icon={UserPlus} onClick={() => setOpen(true)}>Add members</Button>}
+        actions={<CanEdit><Button size="sm" icon={UserPlus} onClick={() => setOpen(true)}>Add members</Button></CanEdit>}
       />
       {project.employees.length === 0 ? (
-        <EmptyState compact icon={Users} title="No members yet" description="Assign employees so their tasks can be tracked under this project." action={<Button size="sm" icon={UserPlus} onClick={() => setOpen(true)}>Add members</Button>} />
+        <EmptyState compact icon={Users} title="No members yet" description="Assign employees so their tasks can be tracked under this project." action={<CanEdit><Button size="sm" icon={UserPlus} onClick={() => setOpen(true)}>Add members</Button></CanEdit>} />
       ) : (
         <div className="overflow-x-auto">
           <table className="data-table w-full text-sm">
@@ -110,7 +111,7 @@ export default function ProjectMembers({ project, onChange }) {
                   <td className="text-right tabular-nums">{e.task_count}</td>
                   <td className="text-fg-muted">{formatDate(e.assigned_at)}</td>
                   <td className="text-right">
-                    <Button variant="dangerGhost" size="iconXs" icon={X} onClick={() => remove(e.id)} aria-label={tr("Remove")} data-tip="Remove from project" />
+                    <CanEdit><Button variant="dangerGhost" size="iconXs" icon={X} onClick={() => remove(e.id)} aria-label={tr("Remove")} data-tip="Remove from project" /></CanEdit>
                   </td>
                 </tr>
               ))}

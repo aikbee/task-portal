@@ -17,6 +17,7 @@ import { useFetch } from "@/lib/hooks";
 import { useNav } from "@/lib/nav";
 import { formatDate, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { CanEdit } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function RequirementsList() {
@@ -78,7 +79,7 @@ export default function RequirementsList() {
 
   return (
     <>
-      <PageHeader title={tr("Requirements")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="requirements" /><Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button></>} />
+      <PageHeader title={tr("Requirements")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="requirements" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button></CanEdit></>} />
       <DataTable
         id="requirements"
         columns={columns}
@@ -105,7 +106,7 @@ export default function RequirementsList() {
         }
         emptyTitle={tr("No requirements yet")}
         emptyDescription="Capture what each project must deliver, prioritise with MoSCoW and link the tasks that implement it."
-        emptyAction={<Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button>}
+        emptyAction={<CanEdit><Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button></CanEdit>}
       />
       <RequirementForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
       <ConfirmDialog

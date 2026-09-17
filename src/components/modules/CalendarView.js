@@ -19,6 +19,7 @@ import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
 import { InlineSelect } from "./shared";
+import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const PRIORITY_DOT = { low: "bg-slate-400", medium: "bg-sky-500", high: "bg-amber-500", urgent: "bg-rose-500" };
@@ -136,7 +137,7 @@ export default function CalendarView() {
         icon={mod.icon}
         color={mod.color}
         crumbs={[]}
-        actions={<Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: { due_date: selected || today } })}>{tr("New task")}</Button>}
+        actions={<CanEdit><Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: { due_date: selected || today } })}>{tr("New task")}</Button></CanEdit>}
       />
 
       {/* toolbar */}
@@ -266,10 +267,11 @@ export default function CalendarView() {
 }
 
 function TaskChip({ task: t, today, dragging, onDragStart, onDragEnd, onOpen }) {
+  const { canEdit } = useAccess();
   const overdue = t.status !== "done" && t.due_date < today;
   return (
     <button
-      draggable
+      draggable={canEdit}
       onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", String(t.id)); } catch {} onDragStart(); }}
       onDragEnd={onDragEnd}
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
@@ -307,7 +309,7 @@ function DayPanel({ day, today, tasks, deadlines, loading, onClose, onOpen, onSt
           <h3 className="text-lg font-semibold tracking-tight">{formatDate(day, { month: "long", day: "numeric", year: "numeric" })}</h3>
         </div>
         <div className="flex items-center gap-1">
-          <Button size="sm" icon={Plus} onClick={onNew}>{tr("New task")}</Button>
+          <CanEdit><Button size="sm" icon={Plus} onClick={onNew}>{tr("New task")}</Button></CanEdit>
           <Button variant="ghost" size="iconSm" icon={X} onClick={onClose} aria-label={tr("Close")} />
         </div>
       </div>

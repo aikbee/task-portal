@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { ChevronDown, Check, Layers, Plus, Settings2 } from "lucide-react";
+import { ChevronDown, Check, Layers, Plus, Settings2, Users } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import { Popover } from "@/components/ui/Popover";
@@ -12,6 +12,8 @@ export default function ProfileSwitcher({ collapsed = false }) {
   const { user, switchProfile } = useAuth();
   const profile = user?.profile;
   const profiles = user?.profiles ?? [];
+  const lent = user?.shared_profiles ?? [];
+  const ROLE = { viewer: "Viewer", editor: "Editor", manager: "Manager" };
   if (!profile) return null;
 
   return (
@@ -38,7 +40,7 @@ export default function ProfileSwitcher({ collapsed = false }) {
           {!collapsed ? (
             <>
               <span className="min-w-0 flex-1 leading-tight">
-                <span className="block text-[10px] uppercase tracking-wider text-fg-faint">{tr("Profile")}</span>
+                <span className="block text-[10px] uppercase tracking-wider text-fg-faint">{user?.shared ? tr("Shared profile") : tr("Profile")}</span>
                 <span className="block truncate text-xs font-medium">{profile.name}</span>
               </span>
               <ChevronDown size={13} className="shrink-0 text-fg-faint" />
@@ -73,6 +75,34 @@ export default function ProfileSwitcher({ collapsed = false }) {
               </button>
             );
           })}
+          {lent.length ? (
+            <>
+              <p className="sb-shared-title px-2.5 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider text-fg-faint">{tr("Shared with me")}</p>
+              {lent.map((p) => {
+                const active = p.id === profile.id;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      close();
+                      if (!active) switchProfile(p.id, "/");
+                    }}
+                    className={cn("sb-shared-item flex w-full items-center gap-2.5 rounded-app-sm px-2.5 py-2 text-left text-sm hover:bg-surface-2", active && "bg-accent/8")}
+                  >
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-white" style={{ background: p.color }}>
+                      <Users size={12} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{p.name}</span>
+                      <span className="block truncate text-[11px] text-fg-muted">{p.owner.name}</span>
+                    </span>
+                    <span className="rounded-full bg-surface-3 px-1.5 text-[10px] text-fg-muted">{tr(ROLE[p.role] ?? p.role)}</span>
+                    {active ? <Check size={14} className="text-accent" /> : null}
+                  </button>
+                );
+              })}
+            </>
+          ) : null}
           <div className="my-1 h-px bg-line" />
           <Link href="/profiles?new=1" onClick={close} className="flex items-center gap-2.5 rounded-app-sm px-2.5 py-2 text-sm text-fg hover:bg-surface-2">
             <Plus size={15} className="text-fg-muted" /> New profile

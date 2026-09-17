@@ -27,6 +27,7 @@ import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 import { isoDate } from "@/lib/dates";
 import { useMediaQuery } from "@/lib/hooks";
+import { useAccess } from "@/lib/auth-context";
 
 /**
  * Full-width data table with sortable columns, a column-visibility dropdown,
@@ -66,7 +67,8 @@ export default function DataTable({
   onRowClick,
   rowActions,
   toolbar,
-  selectable = false,
+  selectable: wantSelectable = false,
+  workspace = true, // false for tables that are not shared profile data (users)
   onDeleteSelected,
   emptyTitle = "Nothing here yet",
   emptyDescription,
@@ -77,6 +79,8 @@ export default function DataTable({
   className,
   dense,
 }) {
+  const { canDelete } = useAccess();
+  const selectable = wantSelectable && (canDelete || !workspace);
   const tr = useT();
   const bodyRef = useRef(null);
   // The table body scrolls internally and takes exactly the space left in the pane below the

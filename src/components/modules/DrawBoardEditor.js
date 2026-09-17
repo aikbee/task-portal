@@ -7,6 +7,7 @@ import { DropdownMenu } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";
 import { usePrefs } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const COLORS = ["#111827", "#ef4444", "#f97316", "#eab308", "#22c55e", "#0ea5e9", "#6366f1", "#ec4899", "#ffffff"];
@@ -29,6 +30,7 @@ const slug = (s) => (s || "board").toLowerCase().replace(/[^a-z0-9]+/g, "-").rep
  * Autosaves the Fabric JSON (images referenced by their attachment URL) plus a JPEG thumbnail.
  */
 export default function DrawBoardEditor({ board, onSaved }) {
+  const { canEdit } = useAccess();
   const tr = useT();
   const toast = useToast();
   const autosaveSeconds = usePrefs((s) => s.autosaveSeconds);
@@ -140,7 +142,7 @@ export default function DrawBoardEditor({ board, onSaved }) {
   const thumbnail = () => withNativeScale((c) => c.toDataURL({ format: "jpeg", quality: 0.75, multiplier: Math.min(1, 1000 / W) }));
 
   const save = async () => {
-    if (!fab.current || saving) return;
+    if (!fab.current || saving || !canEdit) return; // view-only member of a shared profile
     setSaving(true);
     try {
       const row = await fetch(`/api/drawboards/${board.id}?light=1`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ data: serialize(), thumbnail: thumbnail() }) }).then(async (r) => {
@@ -435,7 +437,7 @@ export default function DrawBoardEditor({ board, onSaved }) {
     uploadImages(e.dataTransfer.files, { x: (e.clientX - rect.left) / z, y: (e.clientY - rect.top) / z });
   };
 
-  const status = saving ? tr("Saving…") : dirty ? (autosaveSeconds ? `${tr("Unsaved")} · ${tr("autosaves after {n}s", { n: autosaveSeconds })}` : tr("Unsaved")) : tr("Saved");
+  const status = !canEdit ? tr("View only") : saving ? tr("Saving…") : dirty ? (autosaveSeconds ? `${tr("Unsaved")} · ${tr("autosaves after {n}s", { n: autosaveSeconds })}` : tr("Unsaved")) : tr("Saved");
 
   return (
     <div className="card overflow-hidden p-0">

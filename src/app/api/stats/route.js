@@ -1,5 +1,6 @@
 import { query } from "@/lib/db";
 import { readStatus, backupHealth } from "@/lib/backups";
+import { pendingInviteCount } from "@/lib/sharing";
 import { handler, ok } from "@/lib/api-utils";
 import { UNREAD_KIND_SQL } from "@/lib/chat";
 
@@ -28,6 +29,8 @@ export const GET = handler(async (_request, _params, user) => {
     [o, o, o, o, o, o, o, o, o, o, o, user.id, o, o, user.id, user.id, user.id]
   );
 
+  if (user.access !== "owner") counts.info = 0; // the Info vault is not shared
+  counts.profile_invites = await pendingInviteCount(user.id);
   if (user.role === "admin") {
     const state = backupHealth(await readStatus().catch(() => null));
     counts.backups = state === "failed" || state === "stale" ? 1 : 0; // a badge only when something needs attention

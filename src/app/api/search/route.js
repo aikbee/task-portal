@@ -34,5 +34,6 @@ export const GET = handler(async (request, _params, user) => {
       [owner, like, like]
     ),
   ]);
-  return ok({ projects, employees, tasks, requirements, info, drawboards });
+  // the Info vault is private to the owner of a shared profile
+  return ok({ projects, employees, tasks, requirements, info: user.access === "owner" ? info : [], drawboards });
 });

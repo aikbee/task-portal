@@ -15,6 +15,7 @@ import { MODULE_MAP } from "@/lib/modules";
 import { useNav } from "@/lib/nav";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { CanEdit } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function DrawBoardsList() {
@@ -55,7 +56,7 @@ export default function DrawBoardsList() {
 
   return (
     <>
-      <PageHeader title={tr("Draw Board")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="drawboards" /><Button icon={Plus} onClick={openNew}>{tr("New board")}</Button></>} />
+      <PageHeader title={tr("Draw Board")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="drawboards" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New board")}</Button></CanEdit></>} />
       <DataTable
         id="drawboards"
         columns={columns}
@@ -72,7 +73,7 @@ export default function DrawBoardsList() {
         filters={<Select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="h-9 w-44"><option value="">{tr("All projects")}</option>{(projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>}
         emptyTitle={tr("No boards yet")}
         emptyDescription={tr("Create a board to sketch, paste screenshots and arrange them.")}
-        emptyAction={<Button icon={Plus} onClick={openNew}>{tr("New board")}</Button>}
+        emptyAction={<CanEdit><Button icon={Plus} onClick={openNew}>{tr("New board")}</Button></CanEdit>}
       />
       <DrawBoardForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={(saved, created) => { refetch(); if (created) router.push(`/drawboards/${saved.id}`); }} />
       <ConfirmDialog

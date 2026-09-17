@@ -22,6 +22,7 @@ import TaskForm from "./TaskForm";
 import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
+import { CanEdit, CanDelete } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function EmployeeDetail({ id }) {
@@ -98,8 +99,8 @@ export default function EmployeeDetail({ id }) {
           </div>
           <div className="flex gap-2">
             <ReportButton module="employees" id={id} />
-            <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
-            <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
+            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
           </div>
         </Card>
         <Card>
@@ -134,10 +135,10 @@ export default function EmployeeDetail({ id }) {
             { key: "updated_at", label: tr("Updated") },
           ]}
           onRowClick={(r) => router.push(`/tasks/${r.id}`)}
-          toolbar={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button>}
+          toolbar={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button></CanEdit>}
           rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => setTaskForm({ open: true, initial: r })} onDelete={() => taskDel.setTarget(r)} />}
           emptyTitle="No tasks assigned"
-          emptyAction={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Assign a task</Button>}
+          emptyAction={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Assign a task</Button></CanEdit>}
         />
       ) : emp.projects.length === 0 ? (
         <Card><EmptyState compact icon={FolderKanban} title="Not on any project" description="Edit the employee to add them to projects." action={<Button size="sm" icon={Pencil} onClick={() => setEditOpen(true)}>Edit employee</Button>} /></Card>

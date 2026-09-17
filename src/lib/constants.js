@@ -68,6 +68,7 @@ export const NOTIFICATION_CATEGORIES = {
   team: { label: "Accounts", description: "User accounts created, changed or removed (admins)" },
   security: { label: "Security", description: "New sign-ins to your account" },
   chat: { label: "Chat", description: "Friend requests and new messages" },
+  sharing: { label: "Sharing", description: "Invitations to shared profiles and membership changes" },
 };
 
 export const NOTIFICATION_TYPES = {
@@ -91,6 +92,10 @@ export const NOTIFICATION_TYPES = {
   security_login: { category: "security", label: "New sign-in", tone: "amber" },
   security_method: { category: "security", label: "Sign-in method changed", tone: "amber" },
   backup_failed: { category: "security", label: "Backup failed", tone: "rose" },
+  profile_invite: { category: "sharing", label: "Profile invitation", tone: "indigo" },
+  profile_joined: { category: "sharing", label: "Shared profile", tone: "emerald" },
+  profile_role: { category: "sharing", label: "Role changed", tone: "violet" },
+  profile_removed: { category: "sharing", label: "Access removed", tone: "rose" },
   friend_request: { category: "chat", label: "Friend request", tone: "sky" },
   friend_accepted: { category: "chat", label: "Friend accepted", tone: "emerald" },
   chat_message: { category: "chat", label: "New message", tone: "indigo" },

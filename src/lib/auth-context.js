@@ -38,8 +38,28 @@ export function useAuth() {
   return useContext(AuthContext) ?? EMPTY;
 }
 
-/** Modules the signed-in user may see (admin-only modules are hidden from users). */
+/** Modules the signed-in user may see (admin-only modules are hidden from users; the Info vault is never shared). */
 export function useVisibleModules() {
   const { user } = useAuth();
-  return useMemo(() => modulesForRole(user?.role), [user?.role]);
+  const member = Boolean(user?.access && user.access !== "owner");
+  return useMemo(() => modulesForRole(user?.role).filter((m) => !(member && m.key === "info")), [user?.role, member]);
+}
+
+/**
+ * What the user may do in the active profile. In their own profiles everything; in a profile somebody shared
+ * with them it follows their role (the server enforces the same rules, this only keeps dead buttons off the screen).
+ */
+export function useAccess() {
+  const { user } = useAuth();
+  const access = user?.access ?? "owner";
+  const shared = user?.shared ?? null;
+  return useMemo(() => ({ access, shared, isOwner: access === "owner", canEdit: access !== "viewer", canDelete: access === "owner" || access === "manager" }), [access, shared]);
+}
+/** Renders its children only for people who may create and edit in the active profile. */
+export function CanEdit({ children, fallback = null }) {
+  return useAccess().canEdit ? children : fallback;
+}
+/** Renders its children only for people who may delete whole records (owner and managers). */
+export function CanDelete({ children, fallback = null }) {
+  return useAccess().canDelete ? children : fallback;
 }

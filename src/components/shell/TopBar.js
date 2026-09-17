@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useVisibleModules } from "@/lib/auth-context";
+import { useAuth, useVisibleModules, useAccess } from "@/lib/auth-context";
+
+/** Modules whose records live inside a (possibly shared) profile. */
+const SHARED_DATA = new Set(["projects", "requirements", "employees", "tasks", "info", "drawboards"]);
 import ProfileModal from "./ProfileModal";
 import {LOCALES, switchLocale, useLocale, useT } from "@/lib/i18n";
 import NotificationsBell from "./NotificationsBell";
@@ -24,6 +27,7 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { useCurrentPin } from "./PinBar";
 
 export default function TopBar() {
+  const { canEdit } = useAccess();
   const tr = useT();
   const pathname = usePathname();
   const router = useRouter();
@@ -148,7 +152,7 @@ export default function TopBar() {
             <Button variant="primary" size="icon" icon={Plus} onClick={toggle} className="sm:hidden" aria-label={tr("New")} />
           </>
         )}
-        items={visibleModules.filter((m) => m.creatable).map((m) => ({
+        items={visibleModules.filter((m) => m.creatable && (canEdit || !SHARED_DATA.has(m.key))).map((m) => ({
           label: tr("New {x}", { x: tr(m.singular) }),
           icon: m.icon,
           href: `${m.href}?new=1`,

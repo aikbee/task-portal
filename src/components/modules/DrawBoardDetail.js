@@ -18,6 +18,7 @@ import BlockEditor from "@/components/ui/BlockEditor";
 import ReportButton from "@/components/report/ReportButton";
 import DrawBoardForm from "./DrawBoardForm";
 import { ProjectChip } from "./shared";
+import { CanEdit, CanDelete } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 // Fabric touches the DOM at import time; keep the editor out of the server render
@@ -60,8 +61,8 @@ export default function DrawBoardDetail({ id }) {
         actions={
           <>
             <ReportButton module="drawboards" id={id} />
-            <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
-            <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
+            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
           </>
         }
       >

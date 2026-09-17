@@ -23,9 +23,11 @@ import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
 import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow } from "./shared";
 import { useT } from "@/lib/i18n";
+import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function RequirementDetail({ id }) {
+  const { canEdit } = useAccess();
   const tr = useT();
   const router = useNav();
   const toast = useToast();
@@ -89,8 +91,8 @@ export default function RequirementDetail({ id }) {
         actions={
           <>
             <ReportButton module="requirements" id={id} />
-            <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
-            <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
+            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
           </>
         }
       >
@@ -134,16 +136,17 @@ export default function RequirementDetail({ id }) {
             defaultSort={{ key: "status", dir: "asc" }}
             searchPlaceholder="Search linked tasks…"
             onRowClick={(r) => router.push(`/tasks/${r.id}`)}
-            toolbar={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button>}
+            toolbar={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button></CanEdit>}
             rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => setTaskForm({ open: true, initial: r })} onDelete={() => taskDel.setTarget(r)} />}
             emptyTitle="No tasks implement this yet"
             emptyDescription="Create a task here, or link an existing one from its edit form."
-            emptyAction={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button>}
+            emptyAction={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button></CanEdit>}
           />
         </div>
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
           <Card className="space-y-4">
+            <fieldset disabled={!canEdit} className="contents">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Details")}</p>
             <Row label={tr("Status")}>
               <Select value={req.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
@@ -182,6 +185,7 @@ export default function RequirementDetail({ id }) {
                 </span>
               </Link>
             </Row>
+            </fieldset>
           </Card>
           <Card>
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Delivery")}</p>

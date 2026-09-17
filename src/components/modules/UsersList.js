@@ -27,8 +27,8 @@ export default function UsersList() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
-  useNewParam("/users", openNew);
-  useNewShortcut(openNew);
+  useNewParam("/users", openNew, { workspace: false });
+  useNewShortcut(openNew, { workspace: false });
   const del = useDeleteFlow("/api/users", { toast, label: "user", onDeleted: removeLocal });
   // admin recovery actions: drop every passkey of an account or disconnect Google
   const [methodTarget, setMethodTarget] = useState(null); // { user, kind: "passkeys" | "google" | "totp" | "sessions" }
@@ -92,6 +92,7 @@ export default function UsersList() {
     <>
       <PageHeader title={tr("Users")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New user")}</Button>} />
       <DataTable
+        workspace={false}
         id="users"
         columns={columns}
         rows={filtered}
@@ -135,7 +136,7 @@ export default function UsersList() {
             {r.active_sessions > 0 && r.id !== me?.id ? (
               <Button variant="ghost" size="iconXs" icon={LogOut} aria-label={tr("Sign out everywhere")} data-tip={tr("Sign out everywhere")} onClick={() => setMethodTarget({ user: r, kind: "sessions" })} />
             ) : null}
-            <RowActions onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
+            <RowActions workspace={false} onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
           </>
         )}
         filters={

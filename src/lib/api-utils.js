@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { HttpError } from "./http-error";
 import { requireUser, requireRole } from "./auth";
+import { assertAccess } from "./sharing";
 
 export { HttpError };
 
@@ -25,6 +26,8 @@ export function handler(fn, { auth = true, role } = {}) {
       if (auth) {
         user = await requireUser(request);
         if (role) requireRole(user, role);
+        // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
+        if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);
       }
       return await fn(request, params, user);
     } catch (err) {

@@ -13,6 +13,7 @@ import { useToast } from "@/components/ui/Toast";
 import SortableList from "./SortableList";
 import RequirementForm from "./RequirementForm";
 import { InlineSelect } from "./shared";
+import { CanEdit, CanDelete } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 /** A project's requirements, ordered (drag / arrows / position) with quick status changes. */
@@ -68,10 +69,10 @@ export default function ProjectRequirements({ project, onChange }) {
         icon={ClipboardList}
         title={tr("Requirements")}
         description={`${items.length} requirement${items.length === 1 ? "" : "s"} · drag, use arrows or type a number to set the order`}
-        actions={<Button size="sm" icon={Plus} onClick={() => setForm({ open: true, initial: null })}>{tr("New requirement")}</Button>}
+        actions={<CanEdit><Button size="sm" icon={Plus} onClick={() => setForm({ open: true, initial: null })}>{tr("New requirement")}</Button></CanEdit>}
       />
       {items.length === 0 ? (
-        <EmptyState compact icon={ClipboardList} title={tr("No requirements yet")} description="Write down what this project must deliver, then link tasks to each requirement." action={<Button size="sm" icon={Plus} onClick={() => setForm({ open: true, initial: null })}>Add the first one</Button>} />
+        <EmptyState compact icon={ClipboardList} title={tr("No requirements yet")} description="Write down what this project must deliver, then link tasks to each requirement." action={<CanEdit><Button size="sm" icon={Plus} onClick={() => setForm({ open: true, initial: null })}>Add the first one</Button></CanEdit>} />
       ) : (
         <SortableList
           items={items}
@@ -91,8 +92,8 @@ export default function ProjectRequirements({ project, onChange }) {
               <InlineSelect value={r.status} map={REQ_STATUS} onChange={(v) => quick(r, { status: v })} />
               <div className="flex shrink-0 items-center gap-0.5">
                 <Link href={`/requirements/${r.id}`}><Button variant="ghost" size="iconXs" icon={ExternalLink} aria-label={tr("Open")} data-tip={tr("Open")} /></Link>
-                <Button variant="ghost" size="iconXs" icon={Pencil} onClick={() => setForm({ open: true, initial: r })} aria-label={tr("Edit")} data-tip={tr("Edit")} />
-                <Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={() => setToDelete(r)} aria-label={tr("Delete")} data-tip={tr("Delete")} />
+                <CanEdit><Button variant="ghost" size="iconXs" icon={Pencil} onClick={() => setForm({ open: true, initial: r })} aria-label={tr("Edit")} data-tip={tr("Edit")} /></CanEdit>
+                <CanDelete><Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={() => setToDelete(r)} aria-label={tr("Delete")} data-tip={tr("Delete")} /></CanDelete>
               </div>
             </div>
           )}

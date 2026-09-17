@@ -22,9 +22,11 @@ import ProjectInfo from "./ProjectInfo";
 import TaskForm from "./TaskForm";
 import { RowActions, PersonCell, DueDateCell, CountsCell, InlineSelect, useDeleteFlow } from "./shared";
 import { useT } from "@/lib/i18n";
+import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function ProjectDetail({ id }) {
+  const { isOwner } = useAccess();
   const tr = useT();
   const router = useNav();
   const toast = useToast();
@@ -83,8 +85,8 @@ export default function ProjectDetail({ id }) {
         actions={
           <>
             <ReportButton module="projects" id={id} />
-            <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
-            <Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button>
+            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
           </>
         }
       >
@@ -135,7 +137,7 @@ export default function ProjectDetail({ id }) {
           { key: "members", label: tr("Members"), icon: Users, count: project.employees.length },
           { key: "requirements", label: tr("Requirements"), icon: ClipboardList, count: (project.requirements ?? []).length },
           { key: "tasks", label: tr("Tasks"), icon: CheckSquare, count: project.tasks.length },
-          { key: "info", label: tr("Info"), icon: BookOpen },
+          ...(isOwner ? [{ key: "info", label: tr("Info"), icon: BookOpen }] : []), // the Info vault is not shared
         ]}
       />
 
@@ -144,7 +146,7 @@ export default function ProjectDetail({ id }) {
       ) : tab === "requirements" ? (
         <ProjectRequirements project={project} onChange={setData} />
       ) : tab === "info" ? (
-        <ProjectInfo project={project} />
+        isOwner ? <ProjectInfo project={project} /> : null
       ) : (
         <DataTable
           id="project-tasks"
@@ -157,10 +159,10 @@ export default function ProjectDetail({ id }) {
             { key: "updated_at", label: tr("Updated") },
           ]}
           onRowClick={(r) => router.push(`/tasks/${r.id}`)}
-          toolbar={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button>}
+          toolbar={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button></CanEdit>}
           rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => setTaskForm({ open: true, initial: r })} onDelete={() => taskDel.setTarget(r)} />}
           emptyTitle="No tasks in this project"
-          emptyAction={<Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button>}
+          emptyAction={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button></CanEdit>}
         />
       )}
 

@@ -8,6 +8,7 @@ import Card, { CardHeader } from "@/components/ui/Card";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import SortableList from "./SortableList";
+import { useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const EXT_BY_MIME = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg", "image/bmp": "bmp", "image/tiff": "tiff", "text/plain": "txt", "application/pdf": "pdf" };
@@ -39,6 +40,7 @@ const API_BASE = { task: "/api/tasks", requirement: "/api/requirements", info: "
 
 /** Attachments for a task or a requirement (kind). Upload, drag-drop, paste, rename, reorder, delete. */
 export default function AttachmentsPanel({ kind = "task", parentId, attachments, onChange }) {
+  const { canEdit } = useAccess();
   const tr = useT();
   const taskId = parentId; // parent id (kept name for the upload path below)
   const base = API_BASE[kind] ?? API_BASE.task;
@@ -52,7 +54,7 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
 
   const upload = async (files, { source = "files" } = {}) => {
     const list = Array.from(files || []).filter((f) => f.size > 0);
-    if (!list.length) return;
+    if (!list.length || !canEdit) return; // a viewer of a shared profile cannot add files (pasting included)
     setUploading(true);
     try {
       const fd = new FormData();
@@ -149,7 +151,7 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
         icon={Paperclip}
         title={tr("Attachments")}
         description={`${attachments.length} file${attachments.length === 1 ? "" : "s"} · drag, use arrows or type a number to set the order`}
-        actions={
+        actions={!canEdit ? null : (
           <>
             <Button size="sm" variant="outline" icon={ClipboardPaste} disabled={uploading} onClick={pasteFromClipboard} data-tip={`Paste image from clipboard (${PASTE_KEY})`}>
               {tr("Paste")}
@@ -158,11 +160,11 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
               {tr("Upload")}
             </Button>
           </>
-        }
+        )}
       />
       <input ref={inputRef} type="file" multiple className="hidden" onChange={(e) => upload(e.target.files)} />
 
-      <div
+      {canEdit ? <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); upload(e.dataTransfer.files); }}
@@ -177,14 +179,15 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
           Drop files here, click to browse, or paste with <kbd className="rounded border border-line bg-surface px-1 font-mono text-[11px]">{PASTE_KEY}</kbd>
         </p>
         <p className="text-xs text-fg-muted">Screenshots and copied images upload straight from the clipboard · multiple files · up to 50 MB each</p>
-      </div>
+      </div> : null}
 
       {attachments.length === 0 ? null : (
         <SortableList
           items={attachments}
           onReorder={reorder}
           onSetPosition={setPosition}
-          renderItem={(a) => <AttachmentRow att={a} url={itemUrl(a.id)} onRename={(n) => rename(a.id, n)} onDelete={() => setToDelete(a)} />}
+          disabled={!canEdit}
+          renderItem={(a) => <AttachmentRow att={a} url={itemUrl(a.id)} canEdit={canEdit} onRename={(n) => rename(a.id, n)} onDelete={() => setToDelete(a)} />}
         />
       )}
 
@@ -200,7 +203,7 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
   );
 }
 
-function AttachmentRow({ att, url, onRename, onDelete }) {
+function AttachmentRow({ att, url, onRename, onDelete, canEdit = true }) {
   const tr = useT();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(att.original_name);
@@ -247,10 +250,10 @@ function AttachmentRow({ att, url, onRename, onDelete }) {
         </p>
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        <Button variant="ghost" size="iconXs" icon={Pencil} onClick={() => setEditing(true)} aria-label={tr("Rename")} data-tip={tr("Rename")} />
+        {canEdit ? <Button variant="ghost" size="iconXs" icon={Pencil} onClick={() => setEditing(true)} aria-label={tr("Rename")} data-tip={tr("Rename")} /> : null}
         <a href={url} target="_blank" rel="noreferrer"><Button variant="ghost" size="iconXs" icon={ExternalLink} aria-label={tr("Open")} data-tip={tr("Open")} /></a>
         <a href={`${url}?download=1`}><Button variant="ghost" size="iconXs" icon={Download} aria-label={tr("Download")} data-tip={tr("Download")} /></a>
-        <Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={onDelete} aria-label={tr("Delete")} data-tip={tr("Delete")} />
+        {canEdit ? <Button variant="dangerGhost" size="iconXs" icon={Trash2} onClick={onDelete} aria-label={tr("Delete")} data-tip={tr("Delete")} /> : null}
       </div>
     </div>
   );

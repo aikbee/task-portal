@@ -120,6 +120,22 @@ CREATE TABLE IF NOT EXISTS profiles (
   CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- People a profile is shared with. The owner is profiles.user_id and never has a row here.
+-- user_id / invited_by carry no foreign key on purpose: deleting a user already cascades through close to the
+-- 30 tables InnoDB allows, so these rows are removed in code (DELETE /api/users/:id) and every read joins users.
+CREATE TABLE IF NOT EXISTS profile_members (
+  profile_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  role ENUM('viewer','editor','manager') NOT NULL DEFAULT 'viewer',
+  status ENUM('invited','active') NOT NULL DEFAULT 'invited',
+  invited_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  accepted_at TIMESTAMP NULL,
+  PRIMARY KEY (profile_id, user_id),
+  KEY idx_pm_user (user_id, status),
+  CONSTRAINT fk_pm_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS projects (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   user_id INT UNSIGNED NOT NULL,

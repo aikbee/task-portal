@@ -10,6 +10,7 @@ import { cn, formatDate, isOverdue } from "@/lib/utils";
 import Button from "@/components/ui/Button";
 import Avatar from "@/components/ui/Avatar";
 import { useT } from "@/lib/i18n";
+import { useAccess } from "@/lib/auth-context";
 
 /** List-page data + delete helpers. */
 export function useCrudList(url) {
@@ -20,13 +21,14 @@ export function useCrudList(url) {
 }
 
 /** Opens the create form when the URL has ?new=1 (from the top bar "New" menu), then cleans the URL. */
-export function useNewParam(basePath, onNew) {
+export function useNewParam(basePath, onNew, { workspace = true } = {}) {
   const sp = useSearchParams();
   const router = useNav();
   const flag = sp.get("new");
+  const allowed = useAccess().canEdit || !workspace; // workspace: false for pages that are not shared data (profiles, users)
   useEffect(() => {
     if (flag === "1") {
-      onNew();
+      if (allowed) onNew();
       router.replace(basePath);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -34,8 +36,10 @@ export function useNewParam(basePath, onNew) {
 }
 
 /** Press "n" (outside inputs) to create a new record. */
-export function useNewShortcut(onNew) {
+export function useNewShortcut(onNew, { workspace = true } = {}) {
+  const allowed = useAccess().canEdit || !workspace;
   useEffect(() => {
+    if (!allowed) return;
     const onKey = (e) => {
       const t = e.target;
       const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
@@ -46,11 +50,15 @@ export function useNewShortcut(onNew) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onNew]);
+  }, [onNew, allowed]);
 }
 
-export function RowActions({ href, onEdit, onDelete }) {
+/** View / edit / delete icons of a table row. `workspace: false` for rows that are not shared data (users). */
+export function RowActions({ href, onEdit, onDelete, workspace = true }) {
   const tr = useT();
+  const access = useAccess();
+  if (workspace && !access.canEdit) onEdit = null;
+  if (workspace && !access.canDelete) onDelete = null;
   return (
     <>
       {href ? <Link href={href} className="inline-flex" onClick={(e) => e.stopPropagation()}><Button variant="ghost" size="iconXs" icon={Eye} aria-label={tr("View")} data-tip={tr("View")} /></Link> : null}
@@ -110,6 +118,7 @@ export function CountsCell({ attachments = 0, outputs = 0 }) {
 /** Small inline status/priority <select> that PUTs immediately. */
 export function InlineSelect({ value, map, onChange, className }) {
   const tr = useT();
+  const { canEdit } = useAccess();
   const [busy, setBusy] = useState(false);
   const change = async (e) => {
     setBusy(true);
@@ -123,7 +132,7 @@ export function InlineSelect({ value, map, onChange, className }) {
     <select
       value={value}
       onChange={change}
-      disabled={busy}
+      disabled={busy || !canEdit}
       onClick={(e) => e.stopPropagation()}
       className={cn("control h-8 w-auto cursor-pointer py-0 pr-7 text-xs", className)}
     >

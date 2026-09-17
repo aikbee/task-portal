@@ -51,6 +51,34 @@ Sign-in is required for every page and API route (a request proxy redirects to `
 | **admin** | Everything, plus the **Users** module: create accounts, set roles, disable, reset passwords, see each account's sign-in methods (passkeys, Google, 2FA), remove a lost passkey, unlink Google, reset two-factor authentication or sign the account out everywhere (the account keeps its password and is notified), delete (the last active admin and your own account are protected) |
 | **user** | Projects, employees and tasks |
 
+### Sharing a profile
+
+A profile can be shared with other accounts from **Profiles → Share**. Pick one of your chat friends or type the
+email of an existing account, choose a role, and the person gets an invitation (bell, push and a badge on
+Profiles). Once they accept, the profile appears under **Shared with me** in the profile switcher and on their
+Profiles page; while they are inside it a blue banner says whose profile it is and what they may do.
+
+| Role | May |
+| --- | --- |
+| **Viewer** | read everything in the profile |
+| **Editor** | also create and edit, and take parts off a record (a file, an output block, a project team member) |
+| **Manager** | also delete whole records, invite people, change viewers and editors, remove them |
+| **Owner** | everything; only the owner adds, changes or removes a manager |
+
+- Members see the profile's projects, requirements, employees, tasks, board, calendar and draw boards. What a
+  member creates belongs to the profile's owner, and the owner is notified about what members do.
+- **The Info vault is never shared.** Inside someone else's profile the Info module disappears from the sidebar,
+  search and counts, and its API answers 403 for every role.
+- A member's own profiles stay their own: renaming, deleting or creating profiles always acts on the member's
+  own workspace, never the sharer's.
+- Members can leave at any time; removing a member takes effect on their next request, even if they are inside
+  the profile at that moment.
+
+The rules are enforced in one place: the session puts the member's role on the user as `access`
+(`owner | manager | editor | viewer`, with `owner_id` = the profile's owner and `home_id` = the member's own
+workspace), and `handler()` checks `requiredAccess(method, path)` from `src/lib/sharing.js` for every workspace
+route. Route code keeps scoping by `user.profile_id` and needs no sharing logic of its own.
+
 **Profiles.** Each user can have several profiles (Profiles page, or the switcher at the top of the sidebar); a profile is a separate set of projects, requirements, employees and tasks — switch any time, mark one as default, and delete a profile to remove everything inside it (the last one cannot be deleted). Project codes and employee emails are unique per profile. Notifications remember which profile a record belongs to and switch to it when opened.
 
 **Every user has their own workspace.** Projects, employees and tasks carry an owner; each account only ever sees and edits its own records (project codes and employee emails are unique per owner, and deleting a user deletes their workspace). Admins can step into another user's workspace from the **Workspace** menu in the top bar (or the briefcase action in the Users list) — an amber banner shows whose data they are looking at, and everything they create there belongs to that user.
@@ -167,9 +195,13 @@ All endpoints return `{ data }` or `{ error }`.
 | GET | `/api/avatars/user/:id` · `/api/avatars/group/:id` | an uploaded picture (group pictures for members only) |
 | PUT | `/api/auth/password` | `{ current_password, new_password }` |
 | PUT | `/api/auth/workspace` | admin only: `{ user_id }` to work inside that user's workspace, `{ user_id: null }` to return |
-| GET/POST | `/api/profiles` | your profiles with counts (`active_id` = current) / create |
+| GET/POST | `/api/profiles` | your profiles with counts and `member_count` (`active_id` = current), plus `shared[]` (profiles others share with you) and `invites[]` (open invitations) / create |
 | PUT/DELETE | `/api/profiles/:id` | rename, colour, description, `is_default` / delete with all its data |
-| POST | `/api/profiles/:id/activate` | make it the active profile (cookie) |
+| POST | `/api/profiles/:id/activate` | make it the active profile (cookie): one of your own, or one shared with you and accepted |
+| GET / POST | `/api/profiles/:id/members` | who the profile is shared with (`can_manage`) / invite `{ user_id \| email, role: viewer\|editor\|manager }` (owner or manager; 404 unknown account, 409 already invited) |
+| PUT / DELETE | `/api/profiles/:id/members/:userId` | change a role / remove a member or withdraw an invitation (managers cannot touch managers) |
+| PUT / DELETE | `/api/profiles/:id/membership` | my own membership: `{ accept: true\|false }` answers an invitation / leave |
+| GET | `/api/profiles/:id/candidates` | chat friends who are not in the profile yet, for the invite picker |
 | GET/POST | `/api/users` | admin only |
 | GET/PUT/DELETE | `/api/users/:id` | admin only; PUT accepts an optional `password` to reset |
 
