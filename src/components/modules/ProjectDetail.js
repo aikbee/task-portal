@@ -20,7 +20,7 @@ import ProjectMembers from "./ProjectMembers";
 import ProjectRequirements from "./ProjectRequirements";
 import ProjectInfo from "./ProjectInfo";
 import TaskForm from "./TaskForm";
-import { RowActions, PersonCell, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask, AssigneesCell } from "./shared";
+import { RowActions, PersonCell, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask, AssigneesCell, deletedToast } from "./shared";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
@@ -36,7 +36,7 @@ export default function ProjectDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
-  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch() });
+  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Project not found" description={error.message} action={<Button onClick={() => router.push("/projects")}>Back to projects</Button>} />;
   if (loading && !project) return <DetailSkeleton />;
@@ -47,8 +47,8 @@ export default function ProjectDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/projects/${id}`);
-      toast.success("Project deleted");
+      const gone = await api.del(`/api/projects/${id}`);
+      deletedToast({ toast, tr, title: tr("Project deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/projects/${id}`) });
       router.push("/projects");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -168,8 +168,8 @@ export default function ProjectDetail({ id }) {
 
       <ProjectForm open={editOpen} onClose={() => setEditOpen(false)} initial={project} onSaved={(p) => setData({ ...project, ...p })} />
       <TaskForm open={taskForm.open} onClose={() => setTaskForm({ open: false, initial: null })} initial={taskForm.initial} defaults={{ project_id: project.id }} onSaved={refetch} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title="Delete this project?" description="Tasks are kept but unlinked from the project. This cannot be undone." />
-      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title="Delete this project?" description="Its requirements and team list go with it. Tasks are kept and only lose the link, which a restore brings back." bin />
+      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." bin />
     </>
   );
 }

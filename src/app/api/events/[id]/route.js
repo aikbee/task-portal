@@ -1,4 +1,5 @@
 import { execute } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { handler, ok, readJson, requireId } from "@/lib/api-utils";
 import { cleanEvent, getEvent } from "@/lib/events";
 
@@ -20,9 +21,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(await getEvent(id, user.profile_id));
 });
 
-export const DELETE = handler(async (_request, params, user) => {
+/** To the recycle bin. */
+export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  await getEvent(id, user.profile_id);
-  await execute("DELETE FROM calendar_events WHERE id = ? AND profile_id = ?", [id, user.profile_id]);
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "event", id);
+  return ok({ id, trash_id });
 });

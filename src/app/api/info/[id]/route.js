@@ -1,7 +1,8 @@
 import { query, queryOne, execute } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
 import { encryptSecret } from "@/lib/crypto";
-import { listAttachments, purgeFiles } from "@/lib/attachments";
+import { listAttachments } from "@/lib/attachments";
 import { INFO_FIELDS, INFO_SELECT, normaliseInfo, assertInfoProject } from "../route";
 
 export async function getInfo(id, profileId) {
@@ -30,10 +31,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(await getInfo(id, user.profile_id));
 });
 
+/** To the recycle bin with its notes and files (owner only, like the vault itself). */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  await getInfo(id, user.profile_id);
-  await purgeFiles("info", "p.id = ? AND p.profile_id = ?", [id, user.profile_id]);
-  await execute("DELETE FROM info_items WHERE id = ? AND profile_id = ?", [id, user.profile_id]);
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "info", id);
+  return ok({ id, trash_id });
 });

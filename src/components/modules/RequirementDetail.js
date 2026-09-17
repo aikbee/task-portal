@@ -21,7 +21,7 @@ import RequirementForm from "./RequirementForm";
 import TaskForm from "./TaskForm";
 import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
-import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow, putTask, AssigneesCell } from "./shared";
+import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow, putTask, AssigneesCell, deletedToast } from "./shared";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
@@ -36,7 +36,7 @@ export default function RequirementDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
-  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch() });
+  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Requirement not found" description={error.message} action={<Button onClick={() => router.push("/requirements")}>Back to requirements</Button>} />;
   if (loading && !req) return <DetailSkeleton />;
@@ -52,8 +52,8 @@ export default function RequirementDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/requirements/${id}`);
-      toast.success("Requirement deleted");
+      const gone = await api.del(`/api/requirements/${id}`);
+      deletedToast({ toast, tr, title: tr("Requirement deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/requirements/${id}`) });
       router.push("/requirements");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -204,8 +204,8 @@ export default function RequirementDetail({ id }) {
 
       <RequirementForm open={editOpen} onClose={() => setEditOpen(false)} initial={req} onSaved={refetch} />
       <TaskForm open={taskForm.open} onClose={() => setTaskForm({ open: false, initial: null })} initial={taskForm.initial} defaults={{ project_id: req.project_id, requirement_id: req.id }} onSaved={refetch} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={`Delete ${req.code}?`} description="Linked tasks are kept but unlinked." />
-      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={`Delete ${req.code}?`} description="Linked tasks are kept and only lose the link, which a restore brings back." bin />
+      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." bin />
     </>
   );
 }

@@ -9,6 +9,7 @@ import Button from "@/components/ui/Button";
 import ColorPicker from "@/components/ui/ColorPicker";
 import { Field, Input, Select, Textarea, Toggle } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
+import { deletedToast } from "./shared";
 import { useT } from "@/lib/i18n";
 
 const blank = { title: "", all_day: true, start_date: "", end_date: "", start_time: "09:00", end_time: "10:00", location: "", description: "", project_id: "", color: "#0ea5e9" };
@@ -50,8 +51,8 @@ function EventFormInner({ onClose, initial, defaults, onSaved }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/events/${initial.id}`);
-      toast.success(tr("Event deleted"));
+      const gone = await api.del(`/api/events/${initial.id}`);
+      deletedToast({ toast, tr, title: tr("Event deleted"), trashIds: [gone?.trash_id], onRestored: () => onSaved?.(null) });
       onSaved?.(null);
       onClose();
     } catch (err) {

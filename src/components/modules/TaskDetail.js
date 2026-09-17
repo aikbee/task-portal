@@ -24,7 +24,7 @@ import TaskChecklist from "./TaskChecklist";
 import TaskDependencies from "./TaskDependencies";
 import TaskTime from "./TaskTime";
 import { REPEAT_RULES } from "@/lib/recurrence";
-import { TagChips, putTask } from "./shared";
+import { TagChips, putTask, deletedToast } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -57,8 +57,8 @@ export default function TaskDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/tasks/${id}`);
-      toast.success("Task deleted");
+      const gone = await api.del(`/api/tasks/${id}`);
+      deletedToast({ toast, tr, title: tr("Task deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/tasks/${id}`) });
       router.push("/tasks");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -216,7 +216,7 @@ export default function TaskDetail({ id }) {
       </div>
 
       <TaskForm open={editOpen} onClose={() => setEditOpen(false)} initial={task} onSaved={refetch} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title="Delete this task?" description="All attachments and outputs are permanently removed." />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title="Delete this task?" description="Its files, outputs, checklist, comments and logged time go with it." bin />
     </>
   );
 }

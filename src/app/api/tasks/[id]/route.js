@@ -1,7 +1,7 @@
 import { query, queryOne, execute } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
 import { TASK_FIELDS, TASK_SELECT, normaliseTask, assertDateOrder } from "../route";
-import { deleteStoredFile } from "@/lib/uploads";
 import { listAttachments as listKind } from "@/lib/attachments";
 import { notifyInvolved } from "@/lib/notifications";
 import { TASK_STATUS } from "@/lib/constants";
@@ -86,13 +86,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(after);
 });
 
+/** Moves the task, with everything on it, to the recycle bin (files stay on disk until the bin entry is purged). */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  const owner = user.profile_id;
-  await getTask(id, owner);
-  const files = await listAttachments(id);
-  const res = await execute("DELETE FROM tasks WHERE id = ? AND profile_id = ?", [id, owner]);
-  if (!res.affectedRows) throw new HttpError("Task not found.", 404);
-  await Promise.all(files.map((f) => deleteStoredFile(f.stored_name).catch(() => {})));
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "task", id);
+  return ok({ id, trash_id });
 });

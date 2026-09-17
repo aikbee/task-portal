@@ -16,13 +16,14 @@ export const MEMBER_ROLES = ["viewer", "editor", "manager"];
 export const ACCESS_RANK = { viewer: 1, editor: 2, manager: 3, owner: 4 };
 export const can = (user, level) => (ACCESS_RANK[user?.access ?? "owner"] ?? 0) >= ACCESS_RANK[level];
 
-const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|events|info|info-notes|attachments|outputs)(\/|$)/;
+const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|events|info|info-notes|attachments|outputs|trash)(\/|$)/;
 const WHOLE_RECORD = /^\/api\/(projects|tasks|requirements|employees|drawboards|events)\/\d+\/?$/;
 
 /** The access a request needs inside the active profile, or null for routes that are not workspace data. */
 export function requiredAccess(method, pathname) {
   const m = WORKSPACE_ROUTE.exec(pathname);
   if (!m) return null;
+  if (m[1] === "trash") return "manager"; // looking into the bin, restoring and purging go with the right to delete
   if (m[1] === "info" || m[1] === "info-notes" || /^\/api\/attachments\/info(\/|$)/.test(pathname)) return "owner";
   if (method === "GET" || method === "HEAD") return "viewer";
   if (method === "DELETE") return WHOLE_RECORD.test(pathname) ? "manager" : "editor";

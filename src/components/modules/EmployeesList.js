@@ -36,7 +36,7 @@ export default function EmployeesList() {
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/employees", openNew);
   useNewShortcut(openNew);
-  const del = useDeleteFlow("/api/employees", { toast, label: "employee", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/employees", { toast, label: "employee", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.employees;
 
   const columns = [
@@ -111,7 +111,8 @@ export default function EmployeesList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} employees?` : "Delete employee?"}
-        description="Their tasks will be kept but become unassigned. Project memberships are removed."
+        description="Their tasks are kept; they come off them and off their projects, and a restore puts them back."
+        bin
       />
     </>
   );

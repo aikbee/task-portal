@@ -224,7 +224,31 @@ export function InlineSelect({ value, map, onChange, className }) {
   );
 }
 
-export function useDeleteFlow(baseUrl, { onDeleted, toast, label = "record" }) {
+/** "Task deleted · moved to the recycle bin" with an Undo that restores the bin entries the delete returned. */
+export function deletedToast({ toast, tr = (x) => x, title, trashIds = [], onRestored }) {
+  const ids = trashIds.filter(Boolean);
+  if (!ids.length) return toast.success(title);
+  toast.show({
+    type: "success",
+    title,
+    description: tr("Moved to the recycle bin. It stays there for 30 days."),
+    action: {
+      label: tr("Undo"),
+      onClick: async () => {
+        try {
+          for (const id of ids) await api.post(`/api/trash/${id}/restore`, {});
+          toast.success(tr("Restored"));
+          onRestored?.();
+        } catch (e) {
+          toast.error(tr("Could not restore"), e.message);
+        }
+      },
+    },
+  });
+}
+
+export function useDeleteFlow(baseUrl, { onDeleted, onRestored, toast, label = "record" }) {
+  const tr = useT();
   const [target, setTarget] = useState(null); // row | { ids: [] }
   const [busy, setBusy] = useState(false);
   const confirm = useCallback(async () => {
@@ -232,8 +256,8 @@ export function useDeleteFlow(baseUrl, { onDeleted, toast, label = "record" }) {
     setBusy(true);
     try {
       const ids = target.ids ?? [target.id];
-      await Promise.all(ids.map((id) => api.del(`${baseUrl}/${id}`)));
-      toast.success(ids.length > 1 ? `${ids.length} ${label}s deleted` : `${capitalize(label)} deleted`);
+      const gone = await Promise.all(ids.map((id) => api.del(`${baseUrl}/${id}`)));
+      deletedToast({ toast, tr, title: ids.length > 1 ? `${ids.length} ${label}s deleted` : `${capitalize(label)} deleted`, trashIds: gone.map((g) => g?.trash_id), onRestored });
       onDeleted(ids);
       setTarget(null);
     } catch (e) {
@@ -241,7 +265,7 @@ export function useDeleteFlow(baseUrl, { onDeleted, toast, label = "record" }) {
     } finally {
       setBusy(false);
     }
-  }, [target, baseUrl, onDeleted, toast, label]);
+  }, [target, baseUrl, onDeleted, onRestored, toast, label, tr]);
   return { target, setTarget, busy, confirm };
 }
 

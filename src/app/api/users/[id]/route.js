@@ -1,4 +1,5 @@
 import { queryOne, execute } from "@/lib/db";
+import { purgeTrashOf } from "@/lib/trash";
 import { forgetMember } from "@/lib/sharing";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { hashPassword, PASSWORD_MIN } from "@/lib/password";
@@ -61,6 +62,7 @@ export const DELETE = handler(
     if (id === me.id) throw new HttpError("You cannot delete your own account.", 400);
     const existing = await find(id);
     if (existing.role === "admin") await assertNotLastAdmin(id);
+    await purgeTrashOf("p.user_id = ?", [id]);
     await purgeFiles("task", "p.user_id = ?", [id]);
     await purgeFiles("requirement", "p.user_id = ?", [id]);
     await purgeMessagePhotos("m.sender_id = ?", [id]).catch(() => {});

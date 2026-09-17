@@ -749,6 +749,75 @@ console.log("several assignees");
   for (const e of [ana, cy]) await call("DELETE", `/api/employees/${e.id}`);
 }
 
+console.log("recycle bin");
+{
+  await call("DELETE", "/api/trash"); // start from an empty bin: earlier sections deleted plenty
+  const proj = (await call("POST", "/api/projects", { body: { name: "Bin project", code: "BINP" } })).data;
+  const emp = (await call("POST", "/api/employees", { body: { first_name: "Bin", last_name: "Person", email: "bin.person@example.com", project_ids: [proj.id] } })).data;
+  const req = (await call("POST", "/api/requirements", { body: { project_id: proj.id, title: "Bin requirement" } })).data;
+  const task = (await call("POST", "/api/tasks", { body: { title: "Bin task", project_id: proj.id, requirement_id: req.id, assignee_ids: [emp.id], tags: "bin", due_date: "2026-10-01", estimate_hours: 3.5, description: "multi\nline ✓ 'quoted'" } })).data;
+  const follower = (await call("POST", "/api/tasks", { body: { title: "Bin follower", project_id: proj.id } })).data;
+  await call("POST", `/api/tasks/${task.id}/checklist`, { body: { title: "one\ntwo" } });
+  await call("POST", `/api/tasks/${task.id}/comments`, { body: { body: "a comment 🙂" } });
+  await call("POST", `/api/tasks/${task.id}/time`, { body: { duration: "1h 15m", note: "worked" } });
+  await call("POST", `/api/tasks/${follower.id}/dependencies`, { body: { depends_on_id: task.id } });
+  const fdBin = new FormData();
+  fdBin.append("files", new Blob(["hello bin"], { type: "text/plain" }), "bin-note.txt");
+  const up = await call("POST", `/api/tasks/${task.id}/attachments`, { form: fdBin });
+  const fileId = up.data[0].id;
+  const shape = async () => { const t = (await call("GET", `/api/tasks/${task.id}`)).data; const h = (await call("GET", `/api/tasks/${task.id}/history`)).data.filter((x) => x.action !== "restored"); const c = (await call("GET", `/api/tasks/${task.id}/comments`)).data; const tm = (await call("GET", `/api/tasks/${task.id}/time`)).data; return JSON.stringify([t.title, t.description, t.project_id, t.requirement_id, t.employee_id, t.tags, t.due_date, t.estimate_hours, t.created_at, t.assignee_names, t.checklist.map((k) => [k.id, k.title, k.done]), t.attachments.map((a) => [a.id, a.original_name, a.stored_name]), c.map((x) => [x.id, x.body, x.created_at]), tm.entries.map((e) => [e.id, e.minutes, e.note, e.spent_on]), h.map((x) => [x.id, x.action, x.created_at])]); };
+  const before = await shape();
+  const del = await call("DELETE", `/api/tasks/${task.id}`);
+  check("deleting a task answers with its bin entry and the task is gone", del.status === 200 && Number.isInteger(del.data.trash_id) && (await call("GET", `/api/tasks/${task.id}`)).status === 404);
+  const bin = await call("GET", "/api/trash");
+  const entry = bin.data.items.find((i) => i.id === del.data.trash_id);
+  check("the bin lists it with who, when, what came along and the days left", bin.status === 200 && entry?.label === "Task" && entry.title === "Bin task" && entry.deleted_by_name === "Admin User" && entry.file_count === 1 && entry.days_left >= 29 && /related items/.test(entry.detail) && !("snapshot" in entry), JSON.stringify(entry));
+  check("its file is still served from the bin's point of view: nothing was removed from disk yet", (await call("GET", `/api/tasks/${follower.id}/dependencies`)).data.blocked_by.length === 0);
+  const back = await call("POST", `/api/trash/${del.data.trash_id}/restore`);
+  check("restore puts it back under the same id", back.status === 200 && back.data.id === task.id && back.data.entity === "task");
+  check("…with every field, checklist item, comment, time entry, file and history row exactly as before", (await shape()) === before);
+  check("…its file downloads again", (await call("GET", `/api/attachments/task/${fileId}`)).status === 200);
+  check("…the task that waited for it waits again, and history says it was restored", (await call("GET", `/api/tasks/${follower.id}/dependencies`)).data.blocked_by.some((t) => t.id === task.id) && (await call("GET", `/api/tasks/${task.id}/history`)).data.at(-1).action === "restored");
+  check("restoring twice -> 404", (await call("POST", `/api/trash/${del.data.trash_id}/restore`)).status === 404);
+  const pDel = await call("DELETE", `/api/projects/${proj.id}`);
+  const orphan = (await call("GET", `/api/tasks/${task.id}`)).data;
+  check("deleting a project takes its requirements along; tasks stay and only lose the links", pDel.status === 200 && orphan.project_id === null && orphan.requirement_id === null && (await call("GET", `/api/requirements/${req.id}`)).status === 404);
+  await call("POST", `/api/trash/${pDel.data.trash_id}/restore`);
+  const relinked = (await call("GET", `/api/tasks/${task.id}`)).data;
+  check("restoring the project brings back requirements, the team and the tasks' links", relinked.project_id === proj.id && relinked.requirement_id === req.id && (await call("GET", `/api/projects/${proj.id}`)).data.employees.some((e) => e.id === emp.id) && (await call("GET", `/api/requirements/${req.id}`)).status === 200);
+  const rDel = await call("DELETE", `/api/requirements/${req.id}`);
+  const pDel2 = await call("DELETE", `/api/projects/${proj.id}`);
+  const tooEarly = await call("POST", `/api/trash/${rDel.data.trash_id}/restore`);
+  check("a requirement cannot come back before its project (409 names the project)", tooEarly.status === 409 && /Bin project/.test(tooEarly.error));
+  const squatter = await call("POST", "/api/projects", { body: { name: "Squatter", code: "BINP" } });
+  const clash = await call("POST", `/api/trash/${pDel2.data.trash_id}/restore`);
+  check("a project whose code was taken meanwhile -> 409 with advice", clash.status === 409 && /same code/.test(clash.error));
+  await call("DELETE", `/api/projects/${squatter.data.id}`);
+  check("after removing the clash both restore, in order", (await call("POST", `/api/trash/${pDel2.data.trash_id}/restore`)).status === 200 && (await call("POST", `/api/trash/${rDel.data.trash_id}/restore`)).status === 200 && (await call("GET", `/api/tasks/${task.id}`)).data.requirement_id === req.id);
+  const eDel = await call("DELETE", `/api/employees/${emp.id}`);
+  check("deleting an employee takes them off their tasks", (await call("GET", `/api/tasks/${task.id}`)).data.assignees.length === 0);
+  await call("POST", `/api/trash/${eDel.data.trash_id}/restore`);
+  const reassigned = (await call("GET", `/api/tasks/${task.id}`)).data;
+  check("restoring them puts them back on their tasks (as lead) and projects", reassigned.employee_id === emp.id && reassigned.assignees.length === 1 && (await call("GET", `/api/projects/${proj.id}`)).data.employees.length === 1);
+  const evt = (await call("POST", "/api/events", { body: { title: "Bin event", start_date: "2026-10-02", all_day: false, start_time: "09:30" } })).data;
+  const evDel = await call("DELETE", `/api/events/${evt.id}`);
+  await call("POST", `/api/trash/${evDel.data.trash_id}/restore`);
+  check("events go through the bin too, times intact", (await call("GET", `/api/events/${evt.id}`)).data.start_time === "09:30");
+  await call("DELETE", `/api/attachments/task/${fileId}`);
+  const fileEntry = (await call("GET", "/api/trash")).data.items.find((i) => i.label === "File");
+  check("a single file goes to the bin, named after the record it hung on", fileEntry?.title === "bin-note.txt" && fileEntry.detail === "Bin task" && (await call("GET", `/api/attachments/task/${fileId}`)).status === 404);
+  await call("POST", `/api/trash/${fileEntry.id}/restore`);
+  check("…and comes back", (await call("GET", `/api/attachments/task/${fileId}`)).status === 200 && (await call("GET", `/api/tasks/${task.id}`)).data.attachments.length === 1);
+  const gone = await call("DELETE", `/api/tasks/${task.id}`);
+  const forever = await call("DELETE", `/api/trash/${gone.data.trash_id}`);
+  check("delete for good removes the entry", forever.status === 200 && forever.data.purged === 1 && (await call("POST", `/api/trash/${gone.data.trash_id}/restore`)).status === 404);
+  for (const path of [`/api/tasks/${follower.id}`, `/api/events/${evt.id}`, `/api/employees/${emp.id}`, `/api/projects/${proj.id}`]) await call("DELETE", path);
+  const emptied = await call("DELETE", "/api/trash");
+  check("emptying the bin clears everything in it", emptied.status === 200 && emptied.data.purged >= 4 && (await call("GET", "/api/trash")).data.items.length === 0);
+  const cronBin = await call("GET", `/api/cron/reminders?key=${process.env.CRON_SECRET || "local-dev-secret"}`, { noAuth: true });
+  check("the scheduler purges expired entries", typeof cronBin.data.trash_purged === "number");
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
@@ -1000,6 +1069,7 @@ const adminJar = { ...jar };
     const eEventDel = await call("DELETE", `/api/events/${eEvent.data?.id}`);
     check("an editor adds events in the shared profile but cannot delete them (403)", eEvent.status === 201 && eEventDel.status === 403);
     await asAdmin(() => call("DELETE", `/api/events/${eEvent.data.id}`));
+    check("the recycle bin is closed to editors (403)", (await call("GET", "/api/trash")).status === 403);
     const eEdit = await call("PUT", `/api/tasks/${eCreate.data.id}`, { body: { status: "in_progress" } });
     const eDel = await call("DELETE", `/api/tasks/${eCreate.data.id}`);
     check("an editor edits but cannot delete a record (403)", eEdit.status === 200 && eDel.status === 403 && /owner or a manager/.test(eDel.error));
@@ -1012,6 +1082,8 @@ const adminJar = { ...jar };
     const mCand = await call("GET", `/api/profiles/${pid}/candidates`);
     check("a manager may manage members and list candidates", mList.data.can_manage === true && mCand.status === 200 && Array.isArray(mCand.data));
     const mDel = await call("DELETE", `/api/tasks/${eCreate.data.id}`);
+    const mBin = await call("GET", "/api/trash");
+    check("a manager's delete lands in the shared profile's bin, which a manager may open and restore from", mDel.status === 200 && mBin.status === 200 && mBin.data.items.some((i) => i.id === mDel.data.trash_id) && (await call("POST", `/api/trash/${mDel.data.trash_id}/restore`)).status === 200 && (await call("DELETE", `/api/tasks/${eCreate.data.id}`)).status === 200);
     const mInfo = await call("GET", "/api/info");
     check("a manager deletes records, but the vault stays closed", mDel.status === 200 && mInfo.status === 403);
     // employee records linked to accounts: the member is currently a manager inside the owner's profile
@@ -2107,6 +2179,7 @@ console.log("chat (friends by code, one-to-one messages)");
   const notFriends = await as(adminJar, () => call("DELETE", `/api/chat/friends/${userId}`));
   check("unfriending again -> 404", notFriends.status === 404);
 
+  await as(adminJar, () => call("DELETE", "/api/trash")); // everything this run deleted
   // tidy the admin's bell (the smoke user's rows go with the account)
   const bell = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
   for (const n of bell.data.items.filter((x) => ["friend_request", "friend_accepted", "chat_message", "chat_call"].includes(x.type) && (x.actor_id === userId || x.entity_id === convoId))) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
@@ -2133,6 +2206,8 @@ console.log("cleanup");
   check("DELETE project", p.status === 200);
   const nf = await call("GET", `/api/projects/${projectId}`);
   check("project 404 after delete", nf.status === 404);
+  const bin = await call("DELETE", "/api/trash");
+  check("the run empties its recycle bin at the end", bin.status === 200 && (await call("GET", "/api/trash")).data.items.length === 0);
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

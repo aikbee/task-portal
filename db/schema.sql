@@ -420,6 +420,27 @@ CREATE TABLE IF NOT EXISTS task_checklist (
   CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- The recycle bin. A deleted record is stored here as a JSON snapshot (the row, everything that hangs off it and
+-- which other rows pointed at it) and then really deleted, so no query elsewhere has to know about deleted rows.
+-- Restoring puts everything back under the same ids. Attachment files stay on disk until the entry is purged.
+CREATE TABLE IF NOT EXISTS trash (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  profile_id INT UNSIGNED NOT NULL,
+  entity VARCHAR(32) NOT NULL,
+  entity_id INT UNSIGNED NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  detail VARCHAR(255) NULL,
+  deleted_by INT UNSIGNED NULL,
+  deleted_by_name VARCHAR(120) NULL,
+  deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  purge_at DATETIME NOT NULL,
+  file_count INT UNSIGNED NOT NULL DEFAULT 0,
+  snapshot LONGTEXT NOT NULL,
+  KEY idx_trash_profile (profile_id, deleted_at),
+  KEY idx_trash_purge (purge_at),
+  CONSTRAINT fk_trash_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Calendar entries that are not tasks: meetings, holidays, releases. Dates and times are "floating" (what the
 -- clock on the wall says), so everybody sees the same 14:00. user_id is the profile's owner, like on tasks;
 -- only the profile key cascades (deleting the owner deletes the profile, which takes the events along).

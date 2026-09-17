@@ -100,7 +100,7 @@ export default function ProjectRequirements({ project, onChange }) {
         />
       )}
       <RequirementForm open={form.open} onClose={() => setForm({ open: false, initial: null })} initial={form.initial} defaults={{ project_id: project.id }} onSaved={reload} />
-      <ConfirmDialog open={!!toDelete} onClose={() => setToDelete(null)} onConfirm={remove} loading={busy} title={toDelete ? `Delete ${toDelete.code}?` : ""} description="Linked tasks are kept but unlinked." />
+      <ConfirmDialog open={!!toDelete} onClose={() => setToDelete(null)} onConfirm={remove} loading={busy} title={toDelete ? `Delete ${toDelete.code}?` : ""} description="Linked tasks are kept but unlinked." bin />
     </Card>
   );
 }

@@ -136,7 +136,7 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
     setBusyDelete(true);
     try {
       onChange(await api.del(itemUrl(toDelete.id)));
-      toast.success("Attachment deleted");
+      toast.success(tr("Attachment deleted"), tr("Moved to the recycle bin. It stays there for 30 days."));
       setToDelete(null);
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -197,7 +197,8 @@ export default function AttachmentsPanel({ kind = "task", parentId, attachments,
         onConfirm={remove}
         loading={busyDelete}
         title="Delete attachment?"
-        description={toDelete ? `"${toDelete.original_name}" will be permanently removed from disk.` : ""}
+        description={toDelete ? `"${toDelete.original_name}"` : ""}
+        bin
       />
     </Card>
   );

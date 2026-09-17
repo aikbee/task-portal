@@ -1,10 +1,11 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { attachAssignees } from "@/lib/task-assignees";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
 import { nextSortOrder } from "@/lib/ordering";
 import { REQ_FIELDS, REQ_SELECT, normaliseRequirement, assertRequirementRefs, nextRequirementCode, normaliseCode, assertCodeFree, bumpSequence } from "../route";
 import { TASK_SELECT } from "../../tasks/route";
-import { listAttachments, purgeFiles } from "@/lib/attachments";
+import { listAttachments } from "@/lib/attachments";
 import { notifyInvolved } from "@/lib/notifications";
 import { REQ_STATUS } from "@/lib/constants";
 
@@ -66,10 +67,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(after);
 });
 
+/** To the recycle bin with its files; linked tasks lose the link and get it back on restore. */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  await purgeFiles("requirement", "p.id = ? AND p.profile_id = ?", [id, user.profile_id]);
-  const res = await execute("DELETE FROM requirements WHERE id = ? AND profile_id = ?", [id, user.profile_id]);
-  if (!res.affectedRows) throw new HttpError("Requirement not found.", 404);
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "requirement", id);
+  return ok({ id, trash_id });
 });

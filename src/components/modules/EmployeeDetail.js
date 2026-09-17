@@ -19,7 +19,7 @@ import DataTable from "@/components/table/DataTable";
 import { useToast } from "@/components/ui/Toast";
 import EmployeeForm from "./EmployeeForm";
 import TaskForm from "./TaskForm";
-import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask } from "./shared";
+import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask, deletedToast } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete } from "@/lib/auth-context";
@@ -35,7 +35,7 @@ export default function EmployeeDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
-  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch() });
+  const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Employee not found" description={error.message} action={<Button onClick={() => router.push("/employees")}>Back to employees</Button>} />;
   if (loading && !emp) return <DetailSkeleton />;
@@ -47,8 +47,8 @@ export default function EmployeeDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/employees/${id}`);
-      toast.success("Employee deleted");
+      const gone = await api.del(`/api/employees/${id}`);
+      deletedToast({ toast, tr, title: tr("Employee deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/employees/${id}`) });
       router.push("/employees");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -168,8 +168,8 @@ export default function EmployeeDetail({ id }) {
 
       <EmployeeForm open={editOpen} onClose={() => setEditOpen(false)} initial={emp} onSaved={refetch} />
       <TaskForm open={taskForm.open} onClose={() => setTaskForm({ open: false, initial: null })} initial={taskForm.initial} defaults={{ employee_id: emp.id }} onSaved={refetch} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={`Delete ${name}?`} description="Their tasks are kept but become unassigned." />
-      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={`Delete ${name}?`} description="Their tasks are kept; they come off them and off their projects, and a restore puts them back." bin />
+      <ConfirmDialog open={!!taskDel.target} onClose={() => taskDel.setTarget(null)} onConfirm={taskDel.confirm} loading={taskDel.busy} title={tr("Delete task?")} description="Its attachments and outputs will be removed too." bin />
     </>
   );
 }

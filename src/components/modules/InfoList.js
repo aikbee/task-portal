@@ -37,7 +37,7 @@ export default function InfoList() {
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/info", openNew);
   useNewShortcut(openNew);
-  const del = useDeleteFlow("/api/info", { toast, label: "info item", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/info", { toast, label: "info item", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.info;
 
   const columns = [
@@ -120,7 +120,8 @@ export default function InfoList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} items?` : "Delete this info item?"}
-        description="Its notes, attachments and any stored secret are permanently removed."
+        description="Its notes, attachments and any stored secret go with it."
+        bin
       />
     </>
   );

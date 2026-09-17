@@ -35,7 +35,7 @@ export default function RequirementsList() {
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/requirements", openNew);
   useNewShortcut(openNew);
-  const del = useDeleteFlow("/api/requirements", { toast, label: "requirement", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/requirements", { toast, label: "requirement", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.requirements;
 
   const quickUpdate = async (row, patch) => {
@@ -115,7 +115,8 @@ export default function RequirementsList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} requirements?` : "Delete requirement?"}
-        description="Linked tasks are kept but no longer point at this requirement."
+        description="Linked tasks are kept and only lose the link, which a restore brings back."
+        bin
       />
     </>
   );

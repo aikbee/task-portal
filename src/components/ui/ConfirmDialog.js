@@ -14,6 +14,7 @@ export default function ConfirmDialog({
   cancelText = "Cancel",
   danger = true,
   loading = false,
+  bin = false, // the record goes to the recycle bin: say so
 }) {
   const tr = useT();
   return (
@@ -25,6 +26,7 @@ export default function ConfirmDialog({
         <div className="min-w-0">
           <h3 className="text-base font-semibold">{tr(title)}</h3>
           {description ? <p className="mt-1 text-sm text-fg-muted">{description}</p> : null}
+          {bin ? <p className="confirm-bin mt-1 text-sm text-fg-muted">{tr("It goes to the recycle bin and can be restored for 30 days.")}</p> : null}
         </div>
       </div>
       <div className="mt-6 flex justify-end gap-2">

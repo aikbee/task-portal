@@ -121,6 +121,7 @@ Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign every
 | **Info search** | `/info/search` (Search button on the Info page): every word must match somewhere; choose to search titles & summaries, content, notes and/or attachment names; filter by category, project, tag or pinned; results show highlighted snippets per matched field; recent searches are remembered and the query lives in the URL. |
 | **Language** | English or 简体中文 — switch from the globe in the top bar, Preferences → Appearance, or the login page. The choice is saved in a cookie; dates follow the language. Server-generated texts (notifications, API errors) stay English. |
 | **Board** | Kanban board of tasks grouped by status (or priority / assignee). Drag a card to another column to change that field, drag within a column to reorder, quick-add a task at the bottom of any column, click a card to open it and double-click to edit. Filters by text, project, assignee and priority; compact cards option. Reassigning a task — from the assignee selector on the task page or by dragging a card into another person's column on the board — asks for confirmation first, since it moves the work into someone else's workload (the workspace owner is notified when an admin does it on their behalf). |
+| **Recycle bin** | Everything deleted in the active profile during the last 30 days: tasks (with files, outputs, checklist, comments, time, dependencies and history), projects (with requirements and the team list), requirements, employees (with their assignments), draw boards, Info items (owner only), events and single files. **Restore** puts a record back under the same id with everything that hung on it and re-links what pointed at it; **Delete for good** and **Empty the bin** remove entries and their files. Deleting shows an **Undo** toast. Open to the owner and managers of a profile. |
 | **Timeline** | Tasks as bars from start to due date (a diamond when only a due date is set), grouped by project, assignee or flat, at week, month or quarter scale, with a today line, weekend shading, each project's own date range as a band, and arrows for dependencies (red when a task starts before the one it waits for ends). Drag a bar to move it, an edge to change one date, click a day on an undated row to place the task, click a bar to open it. View-only members can look but not drag. |
 | **Calendar** | Tasks by due date in month, week or agenda view; filters by project / assignee / status, hide done, project deadlines as flags. Click a day for its task list (quick status change, edit, new task on that day), double-click or use the + on a day to create a task, and **drag a task to another day to reschedule it**. **Events** (meetings, holidays, releases) sit next to the tasks as coloured chips: all-day, multi-day or timed, with a place, notes, a colour and an optional project; add one with **New event**, click to edit, drag to another day. The owner and the person who added an event are reminded the day before and on the day. |
 | **Split view** | Show 2 or 3 pages side by side (top-bar split menu or Preferences → Layout). The left pane is the main app; each extra pane embeds any page (modules, pinned pages, or “same as main”) and navigates independently. Drag the dividers to resize; pane pages and sizes persist. Pane header buttons: back, reload, swap with main, open in main, close. |
@@ -174,6 +175,9 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT | `/api/auth/pin` | `{ pin }` / `{ pin: null }` keeps a hashed copy of the lock-screen PIN on the account for re-verification |
 | POST/PUT | `/api/info/:id/notes` · PUT/DELETE `/api/info-notes/:id` | notes, like task outputs |
 | POST/PUT | `/api/info/:id/attachments` | uploads; files via `/api/attachments/info/:id` |
+| GET / DELETE | `/api/trash` | entries of the active profile's recycle bin (`label`, `title`, `detail`, `deleted_by_name`, `days_left`, `file_count`) / empty it (files included). Owner and managers only; Info entries only for the owner |
+| POST | `/api/trash/:id/restore` | put the record back (same id, children, links); 409 when what it belonged to is gone ("Restore … first") or its code/email was taken meanwhile |
+| DELETE | `/api/trash/:id` | delete one entry for good |
 | GET / POST | `/api/events` | calendar events that touch `?from=&to=` (`project_id` optional) / create `{ title, start_date, end_date?, all_day?, start_time?, end_time?, location?, description?, color?, project_id? }`; dates and times are floating (no time zones) |
 | GET / PUT / DELETE | `/api/events/:id` | one event / change any subset (validated as a whole; sending only `start_date` keeps the length) / delete (owner and managers in a shared profile) |
 | GET / POST | `/api/tasks/:id/time` | `{ entries[], total_minutes, running }` / log time `{ duration: "1h 30m" \| "0:45" \| "1.5", spent_on?, note? }` or `{ start: true }` to start a timer (my timer running elsewhere is stopped and its time kept) |
@@ -364,6 +368,15 @@ Deployments run `node scripts/setup-db.mjs --no-seed`, which applies the schema 
 migrations only — never the demo logins or sample data. On an empty database it creates
 the first admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`. `npm run db:reset` drops every
 table and must never run on a server.
+
+### Recycle bin
+
+`DELETE` on a task, project, requirement, employee, draw board, Info item, event or attachment answers
+`{ id, trash_id }`: `src/lib/trash.js` writes a JSON snapshot of the row, of every row that dies with it and of the
+ids that pointed at it into the `trash` table, then deletes the record for real (one transaction). No other query has
+to know about deleted rows. Attachment files stay on disk until the entry is purged: after `TRASH_DAYS` (30) by the
+reminders cron, by **Delete for good** / **Empty the bin**, or when the whole profile or account is deleted. A new
+record type joins the bin by adding a spec (table, children, links, references) to `SPECS` in that file.
 
 ### Backups and restore
 

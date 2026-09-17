@@ -1,6 +1,7 @@
 import { query } from "@/lib/db";
 import { readStatus, backupHealth } from "@/lib/backups";
-import { pendingInviteCount } from "@/lib/sharing";
+import { pendingInviteCount, can } from "@/lib/sharing";
+import { trashCount } from "@/lib/trash";
 import { handler, ok } from "@/lib/api-utils";
 import { UNREAD_KIND_SQL } from "@/lib/chat";
 
@@ -31,6 +32,7 @@ export const GET = handler(async (_request, _params, user) => {
 
   if (user.access !== "owner") counts.info = 0; // the Info vault is not shared
   counts.profile_invites = await pendingInviteCount(user.id);
+  counts.trash = can(user, "manager") ? await trashCount(user) : 0;
   // open tasks assigned to me (an employee record linked to my account) in any profile I can open
   counts.mytasks = Number((await query(
     `SELECT COUNT(DISTINCT t.id) AS n FROM tasks t JOIN task_assignees ta ON ta.task_id = t.id JOIN employees e ON e.id = ta.employee_id AND e.linked_user_id = ? JOIN profiles pr ON pr.id = t.profile_id

@@ -23,6 +23,7 @@ import TaskOutputs from "./TaskOutputs";
 import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
+import { deletedToast } from "./shared";
 import ReportButton from "@/components/report/ReportButton";
 
 const NOTE_LABELS = { title: "Notes", singular: "note", plural: "notes", add: "Add note", first: "Add first note", empty: "No notes yet", emptyHint: "Add any number of notes to this topic — steps, snippets, history. Each keeps its own position.", placeholder: "Write a note…" };
@@ -51,8 +52,8 @@ export default function InfoDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/info/${id}`);
-      toast.success("Info deleted");
+      const gone = await api.del(`/api/info/${id}`);
+      deletedToast({ toast, tr, title: tr("Info deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/info/${id}`) });
       router.push("/info");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -114,7 +115,7 @@ export default function InfoDetail({ id }) {
       </div>
 
       <InfoForm open={editOpen} onClose={() => setEditOpen(false)} initial={item} onSaved={refetch} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this info item?")} description="Its notes, attachments and any stored secret are permanently removed." />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this info item?")} description="Its notes, attachments and any stored secret go with it." bin />
     </>
   );
 }

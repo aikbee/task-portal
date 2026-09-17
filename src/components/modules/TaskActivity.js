@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { MessageSquare, History, Send, Pencil, Trash2, Plus, ArrowRight, Paperclip, FileText, CheckSquare, ListChecks } from "lucide-react";
+import { MessageSquare, History, Send, Pencil, Trash2, Plus, ArrowRight, Paperclip, FileText, CheckSquare, ListChecks, RotateCcw } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useAccess } from "@/lib/auth-context";
@@ -20,7 +20,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useT } from "@/lib/i18n";
 
 const FIELD_LABEL = { title: "the title", status: "the status", priority: "the priority", start_date: "the start date", due_date: "the due date", estimate: "the estimate", assignee: "the assignees", project: "the project", requirement: "the requirement", tags: "the tags", repeat: "the repeat setting", repeat_until: "the repeat end date" };
-const ACTION_ICON = { created: Plus, updated: ArrowRight, attachment_added: Paperclip, attachment_removed: Paperclip, output_added: FileText, output_removed: FileText, checklist_added: ListChecks, checklist_removed: ListChecks, checklist_done: CheckSquare, checklist_undone: CheckSquare };
+const ACTION_ICON = { restored: RotateCcw, created: Plus, updated: ArrowRight, attachment_added: Paperclip, attachment_removed: Paperclip, output_added: FileText, output_removed: FileText, checklist_added: ListChecks, checklist_removed: ListChecks, checklist_done: CheckSquare, checklist_undone: CheckSquare };
 
 /** A history row as a sentence. Status and priority are stored as keys and translated here; dates are formatted. */
 function sentence(h, tr) {
@@ -40,6 +40,7 @@ function sentence(h, tr) {
     case "attachment_removed": return tr("{who} removed the file {name}", { who, name: old });
     case "output_added": return next ? tr("{who} added the output “{name}”", { who, name: next }) : tr("{who} added an output", { who });
     case "output_removed": return old ? tr("{who} removed the output “{name}”", { who, name: old }) : tr("{who} removed an output", { who });
+    case "restored": return tr("{who} restored this task from the recycle bin", { who });
     case "repeat_spawned": return tr("{who} completed it, and the next one was created for {date}", { who, date: next ? formatDate(next) : "" });
     case "created_from_repeat": return tr("Created as the next task of a repeating series ({from})", { from: old });
     case "dependency_added": return tr("{who} made this task wait for “{name}”", { who, name: next });

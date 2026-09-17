@@ -1,6 +1,7 @@
 import { queryOne, execute } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
-import { listAttachments, purgeFiles } from "@/lib/attachments";
+import { listAttachments } from "@/lib/attachments";
 import { BOARD_FIELDS, BOARD_SELECT, normaliseBoard, assertBoardProject } from "../route";
 
 async function getBoard(id, profileId, { full = true } = {}) {
@@ -32,11 +33,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(await getBoard(id, user.profile_id, { full: !light }));
 });
 
+/** To the recycle bin with its files. */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  await getBoard(id, user.profile_id, { full: false });
-  // files first (the purge joins the parent row), then the row cascades its attachment rows
-  await purgeFiles("drawboard", "p.id = ? AND p.profile_id = ?", [id, user.profile_id]);
-  await execute("DELETE FROM draw_boards WHERE id = ?", [id]);
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "drawboard", id);
+  return ok({ id, trash_id });
 });

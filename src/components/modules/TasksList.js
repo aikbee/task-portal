@@ -38,7 +38,7 @@ export default function TasksList() {
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/tasks", openNew);
   useNewShortcut(openNew);
-  const del = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.tasks;
 
   const quickUpdate = async (row, patch) => {
@@ -115,7 +115,8 @@ export default function TasksList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} tasks?` : "Delete task?"}
-        description="All attachments and outputs belonging to the task are removed as well."
+        description="Its files, outputs, checklist, comments and logged time go with it."
+        bin
       />
     </>
   );

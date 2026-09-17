@@ -42,7 +42,8 @@ export function useAuth() {
 export function useVisibleModules() {
   const { user } = useAuth();
   const member = Boolean(user?.access && user.access !== "owner");
-  return useMemo(() => modulesForRole(user?.role).filter((m) => !(member && m.key === "info")), [user?.role, member]);
+  const mayDelete = !member || user.access === "manager"; // the recycle bin goes with the right to delete
+  return useMemo(() => modulesForRole(user?.role).filter((m) => !(member && m.key === "info") && !(m.key === "trash" && !mayDelete)), [user?.role, member, mayDelete]);
 }
 
 /**

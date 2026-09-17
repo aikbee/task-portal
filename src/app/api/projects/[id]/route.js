@@ -1,10 +1,10 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { attachAssignees } from "@/lib/task-assignees";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { PROJECT_STATUS } from "@/lib/constants";
 import { ownedEmployeeIds } from "@/lib/ownership";
 import { listRequirements } from "../../requirements/route";
-import { purgeFiles } from "@/lib/attachments";
 import { notifyInvolved } from "@/lib/notifications";
 
 const FIELDS = ["name", "code", "description", "status", "color", "start_date", "end_date", "budget"];
@@ -73,10 +73,9 @@ export const PUT = handler(async (request, params, user) => {
   return ok(after);
 });
 
+/** To the recycle bin, with its team list and requirements; tasks, info, boards and events only lose the link and get it back on restore. */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  await purgeFiles("requirement", "p.project_id = ? AND p.profile_id = ?", [id, user.profile_id]); // requirements cascade with the project
-  const res = await execute("DELETE FROM projects WHERE id = ? AND profile_id = ?", [id, user.profile_id]);
-  if (!res.affectedRows) throw new HttpError("Project not found.", 404);
-  return ok({ id });
+  const { trash_id } = await moveToTrash(user, "project", id);
+  return ok({ id, trash_id });
 });

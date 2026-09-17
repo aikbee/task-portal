@@ -1,4 +1,5 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { purgeTrashOf } from "@/lib/trash";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
 import { purgeFiles } from "@/lib/attachments";
 import { setProfileCookie } from "@/lib/auth";
@@ -38,6 +39,7 @@ export const DELETE = handler(async (_request, params, user) => {
   const profile = await find(id, user.home_id);
   const [{ n }] = await query("SELECT COUNT(*) AS n FROM profiles WHERE user_id = ?", [user.home_id]);
   if (n <= 1) throw new HttpError("You need at least one profile.", 400);
+  await purgeTrashOf("p.id = ?", [id]);
   await purgeFiles("task", "p.profile_id = ?", [id]);
   await purgeFiles("requirement", "p.profile_id = ?", [id]);
   await execute("DELETE FROM profiles WHERE id = ?", [id]);

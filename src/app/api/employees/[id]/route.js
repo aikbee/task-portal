@@ -1,4 +1,5 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { attachAssignees, repairLeads } from "@/lib/task-assignees";
 import { linkableId, autoLinkByEmail } from "@/lib/sharing";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
@@ -54,10 +55,10 @@ export const PUT = handler(async (request, params, user) => {
   return ok(await getEmployee(id, owner));
 });
 
+/** To the recycle bin with project memberships and task assignments; tasks they led pass to the next assignee. */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  const res = await execute("DELETE FROM employees WHERE id = ? AND profile_id = ?", [id, user.profile_id]);
-  if (!res.affectedRows) throw new HttpError("Employee not found.", 404);
+  const { trash_id } = await moveToTrash(user, "employee", id);
   await repairLeads(user.profile_id); // tasks they led pass to the next assignee in line
-  return ok({ id });
+  return ok({ id, trash_id });
 });

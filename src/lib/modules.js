@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2 } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -125,6 +125,15 @@ export const MODULES = [
     icon: ChartGantt,
     color: "#14b8a6",
     description: "Tasks as bars from start to due date, with dependencies. Drag a bar to move it, an edge to stretch it.",
+  },
+  {
+    key: "trash",
+    label: "Recycle bin",
+    singular: "Entry",
+    href: "/trash",
+    icon: Trash2,
+    color: "#64748b",
+    description: "What was deleted in this profile in the last 30 days. Restore it, or delete it for good.",
   },
   {
     key: "profiles",

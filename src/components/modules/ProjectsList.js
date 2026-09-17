@@ -33,7 +33,7 @@ export default function ProjectsList() {
   useNewParam("/projects", openNew);
   useNewShortcut(openNew);
 
-  const del = useDeleteFlow("/api/projects", { toast, label: "project", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/projects", { toast, label: "project", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.projects;
 
   const columns = [
@@ -113,7 +113,8 @@ export default function ProjectsList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} projects?` : "Delete project?"}
-        description="Tasks in this project will be kept but unlinked. Team assignments are removed."
+        description="Its requirements and team list go with it. Tasks are kept and only lose the link, which a restore brings back."
+        bin
       />
     </>
   );

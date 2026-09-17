@@ -17,7 +17,7 @@ import { useToast } from "@/components/ui/Toast";
 import BlockEditor from "@/components/ui/BlockEditor";
 import ReportButton from "@/components/report/ReportButton";
 import DrawBoardForm from "./DrawBoardForm";
-import { ProjectChip } from "./shared";
+import { ProjectChip, deletedToast } from "./shared";
 import { CanEdit, CanDelete } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
@@ -41,8 +41,8 @@ export default function DrawBoardDetail({ id }) {
   const remove = async () => {
     setDeleting(true);
     try {
-      await api.del(`/api/drawboards/${id}`);
-      toast.success(tr("Board deleted"));
+      const gone = await api.del(`/api/drawboards/${id}`);
+      deletedToast({ toast, tr, title: tr("Board deleted"), trashIds: [gone?.trash_id], onRestored: () => router.push(`/drawboards/${id}`) });
       router.push("/drawboards");
     } catch (e) {
       toast.error("Could not delete", e.message);
@@ -91,7 +91,7 @@ export default function DrawBoardDetail({ id }) {
       </div>
 
       <DrawBoardForm open={editOpen} onClose={() => setEditOpen(false)} initial={board} onSaved={() => refetch()} />
-      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this board?")} description={tr("The drawing and its images are permanently removed.")} />
+      <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this board?")} description={tr("The drawing goes with its images.")} bin />
     </>
   );
 }

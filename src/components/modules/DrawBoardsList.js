@@ -30,7 +30,7 @@ export default function DrawBoardsList() {
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/drawboards", openNew);
   useNewShortcut(openNew);
-  const del = useDeleteFlow("/api/drawboards", { toast, label: "board", onDeleted: removeLocal });
+  const del = useDeleteFlow("/api/drawboards", { toast, label: "board", onDeleted: removeLocal, onRestored: refetch });
   const mod = MODULE_MAP.drawboards;
 
   const columns = [
@@ -82,7 +82,8 @@ export default function DrawBoardsList() {
         onConfirm={del.confirm}
         loading={del.busy}
         title={del.target?.ids ? `Delete ${del.target.ids.length} boards?` : tr("Delete this board?")}
-        description={tr("The drawing and its images are permanently removed.")}
+        description={tr("The drawing goes with its images.")}
+        bin
       />
     </>
   );

@@ -1,7 +1,8 @@
 import { execute } from "@/lib/db";
+import { moveToTrash } from "@/lib/trash";
 import { logTask } from "@/lib/task-activity";
 import { handler, ok, readJson, requireId } from "@/lib/api-utils";
-import { readStoredFile, deleteStoredFile } from "@/lib/uploads";
+import { readStoredFile } from "@/lib/uploads";
 import { setPosition, applyOrder } from "@/lib/ordering";
 import { kindOf, findAttachment, listAttachments } from "@/lib/attachments";
 
@@ -32,12 +33,12 @@ export const PATCH = handler(async (request, params, user) => {
   return ok(await listAttachments(params.kind, att.parent_id));
 });
 
+/** A single file goes to the recycle bin too: the row is snapshotted, the file stays on disk until the entry is purged. */
 export const DELETE = handler(async (_req, params, user) => {
   const meta = kindOf(params.kind);
   const att = await findAttachment(params.kind, requireId(params.id), user.profile_id);
-  await execute(`DELETE FROM ${meta.table} WHERE id = ?`, [att.id]);
+  await moveToTrash(user, `${params.kind}_attachment`, att.id);
   if (params.kind === "task") await logTask(user, att.parent_id, { action: "attachment_removed", old: att.original_name });
-  await deleteStoredFile(att.stored_name).catch(() => {});
   await applyOrder(meta.table, att.parent_id, []);
   return ok(await listAttachments(params.kind, att.parent_id));
 });
