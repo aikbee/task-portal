@@ -119,7 +119,7 @@ export default function TopBar() {
               )}
               items={[
                 { label: isPinned ? tr("Unpin this page") : tr("Pin this page"), icon: isPinned ? PinOff : Pin, onClick: () => togglePin({ href: current.href, label: current.label, module: current.module }) },
-                mod.creatable ? { label: tr("New {x}", { x: tr(mod.singular) }), icon: PlusIcon, href: `${mod.href}?new=1` } : null,
+                mod.creatable && (canEdit || !SHARED_DATA.has(mod.key)) ? { label: tr("New {x}", { x: tr(mod.singular) }), icon: PlusIcon, href: `${mod.href}?new=1` } : null,
                 { label: tr("Shortcuts"), icon: Keyboard, onClick: () => toggleTool("shortcuts") },
                 ...(mounted && pins.length ? [{ divider: true }, ...pins.slice(0, 6).map((p) => ({ label: tr(p.label), icon: MODULE_MAP[p.module]?.icon ?? Pin, href: p.href, hint: p.href === pathname ? tr("here") : undefined }))] : []),
               ]}
