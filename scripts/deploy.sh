@@ -76,6 +76,12 @@ log "Building"
 rm -rf .next.new
 NEXT_DIST_DIR=.next.new npm run build
 
+log "Backing up the database before migrating"
+# Never blocks a deploy: a failure is loud here and on the Backups page, and the previous backups stay.
+if ! node --env-file="$ENV_FILE" scripts/backup.mjs --reason deploy; then
+  echo "!!  the pre-deploy backup failed - continuing; check the Backups page"
+fi
+
 log "Applying database migrations"
 # --no-seed: schema and migrations only. Never demo data, never demo logins.
 # (--reset drops every table and must never appear in a deploy.)

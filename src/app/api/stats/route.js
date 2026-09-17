@@ -1,4 +1,5 @@
 import { query } from "@/lib/db";
+import { readStatus, backupHealth } from "@/lib/backups";
 import { handler, ok } from "@/lib/api-utils";
 import { UNREAD_KIND_SQL } from "@/lib/chat";
 
@@ -27,6 +28,10 @@ export const GET = handler(async (_request, _params, user) => {
     [o, o, o, o, o, o, o, o, o, o, o, user.id, o, o, user.id, user.id, user.id]
   );
 
+  if (user.role === "admin") {
+    const state = backupHealth(await readStatus().catch(() => null));
+    counts.backups = state === "failed" || state === "stale" ? 1 : 0; // a badge only when something needs attention
+  }
   if (user.role === "admin") counts.moderation = Number((await query("SELECT COUNT(*) AS n FROM message_reports WHERE status = 'open'"))[0]?.n ?? 0);
   const tasksByStatus = await query("SELECT status, COUNT(*) AS n FROM tasks WHERE profile_id = ? GROUP BY status", [o]);
   const tasksByPriority = await query("SELECT priority, COUNT(*) AS n FROM tasks WHERE profile_id = ? GROUP BY priority", [o]);

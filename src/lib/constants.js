@@ -90,6 +90,7 @@ export const NOTIFICATION_TYPES = {
   user_deleted: { category: "team", label: "Account removed", tone: "rose" },
   security_login: { category: "security", label: "New sign-in", tone: "amber" },
   security_method: { category: "security", label: "Sign-in method changed", tone: "amber" },
+  backup_failed: { category: "security", label: "Backup failed", tone: "rose" },
   friend_request: { category: "chat", label: "Friend request", tone: "sky" },
   friend_accepted: { category: "chat", label: "Friend accepted", tone: "emerald" },
   chat_message: { category: "chat", label: "New message", tone: "indigo" },

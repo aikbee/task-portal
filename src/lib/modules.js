@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -148,6 +148,16 @@ export const MODULES = [
     icon: ShieldAlert,
     color: "#ef4444",
     description: "Reported chat messages, every conversation's size and retention, and a cap on how long chat history is kept.",
+    adminOnly: true,
+  },
+  {
+    key: "backups",
+    label: "Backups",
+    singular: "Backup",
+    href: "/backups",
+    icon: DatabaseBackup,
+    color: "#10b981",
+    description: "Automatic daily backups of the database and uploaded files: check they are running, take one now, download or restore.",
     adminOnly: true,
   },
   {

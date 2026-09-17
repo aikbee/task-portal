@@ -26,7 +26,7 @@ function dosTime(d) {
   return { time, date };
 }
 /** entries: async iterable of { name, data: Buffer | () => Promise<Buffer|null>, mtime? } → yields the ZIP bytes. */
-async function* zipStream(entries) {
+export async function* zipStream(entries) {
   let offset = 0;
   const central = [];
   for await (const e of entries) {

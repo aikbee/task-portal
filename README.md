@@ -80,6 +80,7 @@ Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign every
 | **Tags in outputs / notes** | Type `@` in a paragraph to tag a person, project, task, requirement or Info item (search-as-you-type, arrow keys + Enter). The tag shows inside the paragraph as an inline link (`@Marcus Okafor`) that opens the record when clicked (⌘/Ctrl-click opens a new tab) and deletes as one unit; it is stored in the text as `@[Label](type:id)`. Tagged records are also listed as chips in a "Linked" strip under the block and on the collapsed row. Paragraphs paste as plain text, keep browser undo (⌘Z), and Enter inserts a line break. |
 | **Tables in outputs / notes** | Every output (tasks) and note (Info) block is one document that mixes text and tables, edited in place: paragraphs are plain text, tables are live grids between them (Enter adds a row, Tab moves between cells, hover a row number or column header to delete it, hover the table for Copy-as-TSV and Delete). Add a table with **Insert table** (rows × columns picker at the caret), the **+ Table** handle that appears between paragraphs, or by pasting tabular data — a table copied from a web page or sheet, tab-separated text, CSV, Markdown, or a tab-separated header followed by one cell per line — which becomes a grid at the caret (toast to paste as text instead). Pasting a grid into a cell fills cells from there. Content is stored as Markdown (pipe tables), so it stays searchable, copyable and exportable; blocks saved in the earlier JSON table format are converted by `npm run db:setup`. |
 | **Moderation** (admin) | Reported chat messages with a snapshot of each (delete the message for everyone or dismiss), every conversation's kind, members, message count, file size, retention and open reports (never the text), per-chat retention, full exports, deleting a conversation, an instance-wide cap on how long chat history is kept, the GIPHY / Tenor key that turns on GIF search in chat, and an optional TURN server for calls. The sidebar badge counts open reports. |
+| **Backups** (admin) | Automatic backups of the database and the uploaded files. Shows whether the last backup is up to date, overdue or failed (with a sidebar badge and a notification to administrators when it fails), how many files are protected, the archives kept and the free disk space; **Back up now**, download or delete a single archive, and **Download everything** (one ZIP with the newest database archive, every uploaded file and restore notes) for keeping a copy off the server. |
 | **Backgrounds** (admin) | Controls which of the 34 animated background styles users may pick (twenty are WebGL scenes rendered with three.js, loaded only when active) in Preferences, the default for new browsers, and an optional lock that forces the default on everyone. Live previews of every style. Stored instance-wide in `app_settings`. |
 | **Draw Board** | Freehand boards built on Fabric.js: pen, eraser (drag over strokes to remove them), text, rectangles, ellipses and images — paste a screenshot with ⌘V, drop a file, or Insert image. Select to move, resize (corner handles) and rotate (top handle); bring forward / send backward, duplicate, undo/redo (50 steps), zoom. Export as PNG, JPEG, WebP or SVG at the board's native size. Each board has notes with `@` tags and can be linked to a project; boards are themselves taggable from outputs and notes. Drawings are saved as Fabric JSON (images referenced by their attachment URL) with a JPEG thumbnail for lists and reports. |
 | **Info search** | `/info/search` (Search button on the Info page): every word must match somewhere; choose to search titles & summaries, content, notes and/or attachment names; filter by category, project, tag or pinned; results show highlighted snippets per matched field; recent searches are remembered and the query lives in the URL. |
@@ -148,7 +149,10 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT/DELETE | `/api/notes/:id` | |
 | GET | `/api/search?q=` | projects, employees, tasks |
 | GET | `/api/stats` | dashboard numbers |
-| GET | `/api/health` | DB connectivity (public) |
+| GET | `/api/health` | DB connectivity (public); also `backup: { state: ok\|stale\|failed\|never, lastOkAt }` so monitoring notices a backup that stopped |
+| GET / POST | `/api/backups` | admin: state, archives, policy, disk / back up now (201; 409 while one runs, 500 with the reason when it fails) |
+| GET / DELETE | `/api/backups/:name` | admin: download one `db-YYYYMMDD-HHMMSS-<auto\|manual\|deploy>.sql.gz` / delete it |
+| GET | `/api/backups/archive` | admin: streamed ZIP of the newest database archive plus every uploaded file and a restore README |
 | POST/PUT | `/api/requirements/:id/attachments` | multipart upload (`files`), or `{ order: [ids] }` |
 | GET/PATCH/DELETE | `/api/attachments/:kind/:id` | `kind` = `task` or `requirement` (the old `/api/attachments/:id` still serves task files) |
 | GET/DELETE | `/api/notifications` | list (`?unread=1`, `?limit=`) / clear read |
@@ -305,6 +309,38 @@ Deployments run `node scripts/setup-db.mjs --no-seed`, which applies the schema 
 migrations only — never the demo logins or sample data. On an empty database it creates
 the first admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`. `npm run db:reset` drops every
 table and must never run on a server.
+
+### Backups and restore
+
+`scripts/backup.mjs` backs up the database and the uploaded files. It runs **once a day** (the reminders cron
+endpoint starts it when the last good backup is more than 20 hours old), **before the migrations of every
+deploy**, and on demand from the **Backups** page or the command line:
+
+```bash
+node --env-file=.env scripts/backup.mjs            # add --engine node to force the built-in dumper
+```
+
+- **Database:** a gzip-compressed SQL dump in `BACKUP_DIR/db`, made with `mysqldump` (single transaction, no
+  table locks) or, when that tool is missing or fails, a built-in dumper. Login sessions are never included.
+  Every archive is read back and checked before it counts, and `status.json` records the outcome.
+- **Files:** `BACKUP_DIR/files` mirrors `UPLOAD_DIR` with hard links, so it costs no disk space; a file the app
+  deletes stays restorable for `BACKUP_FILE_GRACE_DAYS` (30). On another filesystem the files are copied instead,
+  up to `BACKUP_FILES_COPY_MAX_MB` (2048).
+- **Rotation:** everything from the last 48 hours, then the newest per day for `BACKUP_KEEP_DAILY` (14) days, per
+  week for `BACKUP_KEEP_WEEKLY` (8) weeks and per month for `BACKUP_KEEP_MONTHLY` (6) months.
+- **Where:** `BACKUP_DIR`, by default a `backups` folder next to `UPLOAD_DIR`, readable by the site user only.
+  That is the same server as the app: it undoes mistakes and bad migrations, not the loss of the server. Use
+  **Download everything** on the Backups page (or copy `BACKUP_DIR`) to keep a copy elsewhere, together with `.env`.
+
+Restore into an empty database (a database that already has tables is refused without `--force`; use
+`--database <name>` to restore next to the live one and look inside a backup first):
+
+```bash
+node --env-file=.env scripts/restore.mjs /path/to/backups/db/db-20260917-020500-auto.sql.gz
+cp -n /path/to/backups/files/* "$UPLOAD_DIR"/
+```
+
+Keep the same `DATA_KEY`. Everybody signs in again afterwards.
 
 Two values in the server's `.env` are permanent: `DATA_KEY` decrypts stored Info
 credentials and `SESSION_SECRET` signs sessions. Attachments live in `UPLOAD_DIR`

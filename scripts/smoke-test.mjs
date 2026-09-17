@@ -553,6 +553,35 @@ console.log("push + reminder scheduler");
   check("scheduler without key -> 401", noauth.status === 401);
   const cron = await call("GET", `/api/cron/reminders?key=${process.env.CRON_SECRET || "local-dev-secret"}`, { noAuth: true });
   check("scheduler with key runs over every profile", cron.status === 200 && cron.data.profiles >= 1 && typeof cron.data.created === "number");
+  check("the scheduler also looks after the daily backup", typeof cron.data.backup?.ran === "boolean" && (cron.data.backup.ran === false || cron.data.backup.ok === true), JSON.stringify(cron.data.backup));
+}
+
+console.log("backups (admin only)");
+{
+  const anon = await call("GET", "/api/backups", { noAuth: true });
+  check("anonymous -> 401", anon.status === 401);
+  const made = await call("POST", "/api/backups", { body: {} });
+  check("back up now -> 201 with a verified archive", made.status === 201 && made.data.result.ok === true && /^db-\d{8}-\d{6}-manual\.sql\.gz$/.test(made.data.result.file) && made.data.result.tables >= 30, JSON.stringify(made.raw).slice(0, 200));
+  const name = made.data?.result?.file;
+  const list = await call("GET", "/api/backups");
+  check("the overview lists it, reports health ok and the retention policy", list.status === 200 && list.data.health === "ok" && list.data.backups.some((b) => b.name === name && b.reason === "manual" && b.bytes > 1000) && list.data.policy.daily >= 1);
+  check("uploaded files are mirrored", typeof list.data.status.files?.total === "number" && ["link", "copy"].includes(list.data.status.files.mode));
+  const dl = await call("GET", `/api/backups/${name}`);
+  const bytes = new Uint8Array(dl.raw);
+  check("an archive downloads as gzip", dl.status === 200 && bytes[0] === 0x1f && bytes[1] === 0x8b && /attachment/.test(dl.headers.get("content-disposition") || ""));
+  const sql = (await import("node:zlib")).gunzipSync(Buffer.from(dl.raw)).toString("utf8");
+  check("the dump holds the tables, ends cleanly and carries no session rows", /CREATE TABLE `tasks`/.test(sql) && /CREATE TABLE `sessions`/.test(sql) && /Dump completed/.test(sql) && !/INSERT INTO `sessions`/.test(sql));
+  const zip = await call("GET", "/api/backups/archive");
+  const zb = new Uint8Array(zip.raw);
+  check("download everything is a ZIP with the database archive and restore notes", zip.status === 200 && zb[0] === 0x50 && zb[1] === 0x4b && Buffer.from(zip.raw).includes(`database/${name}`) && Buffer.from(zip.raw).includes("README.txt"));
+  const trav = await call("GET", "/api/backups/..%2F..%2F.env.local");
+  check("anything that is not a backup name -> 400", trav.status === 400);
+  const ghost = await call("GET", "/api/backups/db-20200101-000000-auto.sql.gz");
+  check("unknown archive -> 404", ghost.status === 404);
+  const health = await call("GET", "/api/health", { noAuth: true });
+  check("health reports the backup state", health.data.backup?.state === "ok" && typeof health.data.backup.lastOkAt === "string");
+  const gone = await call("DELETE", `/api/backups/${name}`);
+  check("an archive can be deleted", gone.status === 200 && !gone.data.backups.some((b) => b.name === name));
 }
 
 console.log("report pages");
@@ -690,6 +719,9 @@ const adminJar = { ...jar };
   const notUser = await call("PUT", "/api/auth/workspace", { body: { user_id: 1 } });
   const bgAsUser = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["none"], default: "none" } });
   check("role user cannot change background settings (403)", bgAsUser.status === 403);
+  const backupsAsUser = await call("GET", "/api/backups");
+  const backupRunAsUser = await call("POST", "/api/backups", { body: {} });
+  check("role user cannot see or run backups (403)", backupsAsUser.status === 403 && backupRunAsUser.status === 403);
   check("role user cannot switch workspace", notUser.status === 403);
 
   const note = await call("POST", "/api/notes", { body: { module: "tasks", title: "mine" } });
