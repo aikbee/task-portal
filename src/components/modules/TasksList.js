@@ -11,7 +11,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Select } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
-import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect, TagChips, ChecklistCount, BlockedMark, putTask, RepeatMark } from "./shared";
+import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect, TagChips, ChecklistCount, BlockedMark, putTask, RepeatMark, AssigneesCell } from "./shared";
 import { TASK_STATUS, TASK_PRIORITY, MODULE_MAP } from "@/lib/modules";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
@@ -62,7 +62,7 @@ export default function TasksList() {
       ),
     },
     { key: "project_name", label: tr("Project"), render: (r) => <ProjectChip id={r.project_id} name={r.project_name} code={r.project_code} color={r.project_color} /> },
-    { key: "assignee_name", label: tr("Assignee"), render: (r) => <PersonCell id={r.employee_id} name={r.assignee_name} color={r.avatar_color} /> },
+    { key: "assignee_names", label: tr("Assignees"), sortValue: (r) => r.assignee_names ?? "", render: (r) => <AssigneesCell task={r} /> },
     { key: "status", label: tr("Status"), sortValue: (r) => Object.keys(TASK_STATUS).indexOf(r.status), render: (r) => <InlineSelect value={r.status} map={TASK_STATUS} onChange={(v) => quickUpdate(r, { status: v })} /> },
     { key: "priority", label: tr("Priority"), sortValue: (r) => Object.keys(TASK_PRIORITY).indexOf(r.priority), render: (r) => <StatusBadge map={TASK_PRIORITY} value={r.priority} /> },
     { key: "due_date", label: tr("Due"), render: (r) => <DueDateCell date={r.due_date} status={r.status} /> },

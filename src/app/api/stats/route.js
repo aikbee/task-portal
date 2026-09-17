@@ -33,7 +33,7 @@ export const GET = handler(async (_request, _params, user) => {
   counts.profile_invites = await pendingInviteCount(user.id);
   // open tasks assigned to me (an employee record linked to my account) in any profile I can open
   counts.mytasks = Number((await query(
-    `SELECT COUNT(*) AS n FROM tasks t JOIN employees e ON e.id = t.employee_id AND e.linked_user_id = ? JOIN profiles pr ON pr.id = t.profile_id
+    `SELECT COUNT(DISTINCT t.id) AS n FROM tasks t JOIN task_assignees ta ON ta.task_id = t.id JOIN employees e ON e.id = ta.employee_id AND e.linked_user_id = ? JOIN profiles pr ON pr.id = t.profile_id
      LEFT JOIN profile_members pm ON pm.profile_id = pr.id AND pm.user_id = ? AND pm.status = 'active'
      WHERE t.status <> 'done' AND (pr.user_id = ? OR pm.user_id IS NOT NULL)`,
     [user.id, user.id, user.id]
@@ -64,7 +64,8 @@ export const GET = handler(async (_request, _params, user) => {
       SUM(t.status = 'done') AS done_count,
       COUNT(t.id) AS total
     FROM employees e
-    LEFT JOIN tasks t ON t.employee_id = e.id
+    LEFT JOIN task_assignees ta ON ta.employee_id = e.id
+    LEFT JOIN tasks t ON t.id = ta.task_id
     WHERE e.profile_id = ? AND e.status = 'active'
     GROUP BY e.id
     ORDER BY open_count DESC, total DESC

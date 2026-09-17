@@ -28,12 +28,14 @@ export async function spawnNext(user, done, { today = todayIso() } = {}) {
     await execute("DELETE FROM tasks WHERE id = ?", [nextId]);
     return null;
   }
+  // everybody who was on the finished task is on the next one, in the same order
+  await execute("INSERT INTO task_assignees (task_id, employee_id, position) SELECT ?, employee_id, position FROM task_assignees WHERE task_id = ?", [nextId, done.id]);
   const items = await query("SELECT title, sort_order FROM task_checklist WHERE task_id = ? ORDER BY sort_order, id", [done.id]);
   if (items.length) await query("INSERT INTO task_checklist (task_id, title, sort_order) VALUES ?", [items.map((k) => [nextId, k.title, k.sort_order])]);
   const when = dates.due_date ?? dates.start_date;
   await logTask(user, nextId, { action: "created_from_repeat", old: `#${done.id}` });
   await logTask(user, done.id, { action: "repeat_spawned", next: when });
   const next = await queryOne("SELECT id, title, start_date, due_date, employee_id FROM tasks WHERE id = ?", [nextId]);
-  notifyInvolved(user, { type: "task_created", title: `Next in the series: ${next.title}`, body: when ? `Due ${when}` : null, href: `/tasks/${nextId}`, entityType: "task", entityId: nextId }, { employeeIds: [next.employee_id] });
+  notifyInvolved(user, { type: "task_created", title: `Next in the series: ${next.title}`, body: when ? `Due ${when}` : null, href: `/tasks/${nextId}`, entityType: "task", entityId: nextId }, { taskIds: [nextId] });
   return { id: next.id, title: next.title, start_date: next.start_date, due_date: next.due_date };
 }

@@ -14,7 +14,8 @@ export const GET = handler(async (request, _params, user) => {
        CONCAT(e.first_name, ' ', e.last_name) AS assignee_name,
        CASE WHEN pr.user_id = ? THEN 'owner' ELSE pm.role END AS access
      FROM tasks t
-     JOIN employees e ON e.id = t.employee_id AND e.linked_user_id = ?
+     JOIN task_assignees ta ON ta.task_id = t.id
+     JOIN employees e ON e.id = ta.employee_id AND e.linked_user_id = ?
      JOIN profiles pr ON pr.id = t.profile_id
      JOIN users o ON o.id = pr.user_id
      LEFT JOIN projects p ON p.id = t.project_id

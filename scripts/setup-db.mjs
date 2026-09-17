@@ -76,9 +76,16 @@ async function main() {
     await seedRequirements(db, ids.adminId);
     await seedDemoWorkspace(db, ids);
   }
+  await syncLeads(db); // the sample data writes tasks.employee_id only
   if (!process.env.SESSION_SECRET) log("WARNING: SESSION_SECRET is not set in .env.local - sessions use an insecure default secret");
   await db.end();
   log("done");
+}
+
+/** Every task's single assignee (tasks.employee_id) is also its lead in task_assignees. Idempotent. */
+async function syncLeads(db) {
+  const [res] = await db.query("INSERT IGNORE INTO task_assignees (task_id, employee_id, position) SELECT id, employee_id, 0 FROM tasks WHERE employee_id IS NOT NULL");
+  if (res.affectedRows) log(`task assignees: ${res.affectedRows} lead(s) copied into task_assignees`);
 }
 
 const hasColumn = async (db, table, col) => (await db.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [col]))[0].length > 0;
@@ -92,6 +99,7 @@ const hasFk = async (db, table, name) =>
 
 /** Incremental changes for databases created by earlier versions of the schema. */
 async function migrate(db, adminId) {
+  await syncLeads(db);
   if (!(await hasColumn(db, "tasks", "repeat_rule"))) {
     log("migrating: tasks.repeat_rule, repeat_until, repeat_series_id, repeat_next_id");
     await db.query("ALTER TABLE tasks ADD COLUMN repeat_rule VARCHAR(16) NULL, ADD COLUMN repeat_until DATE NULL, ADD COLUMN repeat_series_id INT UNSIGNED NULL, ADD COLUMN repeat_next_id INT UNSIGNED NULL, ADD KEY idx_tasks_series (repeat_series_id)");

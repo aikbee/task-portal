@@ -9,10 +9,12 @@ import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { logTask, diffTask } from "@/lib/task-activity";
 import { announceUnblocked } from "@/lib/task-deps";
 import { spawnNext } from "@/lib/task-repeat";
+import { attachAssignees, setAssignees, nextAssignees } from "@/lib/task-assignees";
 
 export async function getTask(id, owner) {
   const task = await queryOne(`${TASK_SELECT} WHERE t.id = ? AND t.profile_id = ?`, [id, owner]);
   if (!task) throw new HttpError("Task not found.", 404);
+  await attachAssignees(task);
   task.attachments = await listAttachments(id);
   task.outputs = await listOutputs(id);
   task.checklist = await listChecklist(id);
@@ -47,8 +49,12 @@ export const PUT = handler(async (request, params, user) => {
   }
   const before = await getTask(id, owner);
   assertDateOrder(data, before);
+  // the list of assignees and the lead (tasks.employee_id) are written together
+  const people = nextAssignees(body, before.assignees.map((p) => p.id));
+  delete data.employee_id;
   const cols = Object.keys(data);
   if (cols.length) await execute(`UPDATE tasks SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND profile_id = ?`, [...cols.map((c) => data[c]), id, owner]);
+  if (people) await setAssignees(id, owner, people);
   const after = await getTask(id, owner);
   await logTask(user, id, diffTask(before, after));
   if (data.status && data.status !== before.status) {
@@ -59,7 +65,7 @@ export const PUT = handler(async (request, params, user) => {
       href: `/tasks/${id}`,
       entityType: "task",
       entityId: id,
-    }, { employeeIds: [after.employee_id] });
+    }, { taskIds: [id] });
   }
   if (after.status === "done" && before.status !== "done") {
     announceUnblocked(user, after);
@@ -71,8 +77,11 @@ export const PUT = handler(async (request, params, user) => {
       after.repeat_next_id = next.id;
     }
   }
-  if ("employee_id" in data && data.employee_id !== before.employee_id && after.assignee_name) {
-    notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${after.assignee_name}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: [after.employee_id], forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
+  // only the people who were just added hear "assigned you"; the owner hears who is on it now
+  const had = new Set(before.assignees.map((p) => p.id));
+  const added = after.assignees.filter((p) => !had.has(p.id));
+  if (added.length) {
+    notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${added.map((p) => p.name).join(", ")}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: added.map((p) => p.id), forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
   }
   return ok(after);
 });

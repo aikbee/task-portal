@@ -1,4 +1,5 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { attachAssignees } from "@/lib/task-assignees";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { PROJECT_STATUS } from "@/lib/constants";
 import { ownedEmployeeIds } from "@/lib/ownership";
@@ -19,19 +20,19 @@ export async function getProject(id, owner) {
   if (!project) throw new HttpError("Project not found.", 404);
   project.employees = await query(
     `SELECT e.id, e.first_name, e.last_name, e.email, e.job_title, e.department, e.status, e.avatar_color, pe.role, pe.assigned_at,
-       (SELECT COUNT(*) FROM tasks t WHERE t.employee_id = e.id AND t.project_id = ?) AS task_count
+       (SELECT COUNT(*) FROM tasks t JOIN task_assignees ta ON ta.task_id = t.id AND ta.employee_id = e.id WHERE t.project_id = ?) AS task_count
      FROM project_employees pe JOIN employees e ON e.id = pe.employee_id
      WHERE pe.project_id = ? ORDER BY e.first_name, e.last_name`,
     [id, id]
   );
-  project.tasks = await query(
+  project.tasks = await attachAssignees(await query(
     `SELECT t.*, CONCAT(e.first_name, ' ', e.last_name) AS assignee_name, e.avatar_color,
        (SELECT COUNT(*) FROM task_attachments a WHERE a.task_id = t.id) AS attachment_count,
        (SELECT COUNT(*) FROM task_outputs o WHERE o.task_id = t.id) AS output_count
      FROM tasks t LEFT JOIN employees e ON e.id = t.employee_id
      WHERE t.project_id = ? ORDER BY t.sort_order, t.id`,
     [id]
-  );
+  ));
   project.requirements = await listRequirements(owner, { project_id: id });
   return project;
 }

@@ -42,7 +42,7 @@ export const POST = handler(async (request, params, user) => {
   const linkedOf = async (ids) => (ids.length ? (await query("SELECT DISTINCT linked_user_id AS id FROM employees WHERE profile_id = ? AND id IN (?) AND linked_user_id IS NOT NULL", [task.profile_id, ids])).map((r) => r.id) : []);
   const mentioned = new Set((await linkedOf(mentionedEmployees)).filter((id) => allowed.has(id) && id !== user.id));
   const earlier = (await query("SELECT DISTINCT user_id FROM task_comments WHERE task_id = ?", [task.id])).map((r) => r.user_id);
-  const followers = new Set([task.owner_id, ...(await linkedOf([task.employee_id].filter(Boolean))), ...earlier].filter((id) => allowed.has(id) && id !== user.id && !mentioned.has(id)));
+  const followers = new Set([task.owner_id, ...(await linkedOf((await query("SELECT employee_id FROM task_assignees WHERE task_id = ?", [task.id])).map((r) => r.employee_id))), ...earlier].filter((id) => allowed.has(id) && id !== user.id && !mentioned.has(id)));
   const preview = displayMentions(body).replace(/\s+/g, " ").slice(0, 200);
   const base = { body: preview, href: `/tasks/${task.id}#activity`, entityType: "task", entityId: task.id, actorId: user.id, profileId: task.profile_id };
   await Promise.all([

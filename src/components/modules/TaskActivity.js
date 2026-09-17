@@ -19,7 +19,7 @@ import { MentionChips } from "@/components/ui/Mentions";
 import { useToast } from "@/components/ui/Toast";
 import { useT } from "@/lib/i18n";
 
-const FIELD_LABEL = { title: "the title", status: "the status", priority: "the priority", start_date: "the start date", due_date: "the due date", estimate: "the estimate", assignee: "the assignee", project: "the project", requirement: "the requirement", tags: "the tags", repeat: "the repeat setting", repeat_until: "the repeat end date" };
+const FIELD_LABEL = { title: "the title", status: "the status", priority: "the priority", start_date: "the start date", due_date: "the due date", estimate: "the estimate", assignee: "the assignees", project: "the project", requirement: "the requirement", tags: "the tags", repeat: "the repeat setting", repeat_until: "the repeat end date" };
 const ACTION_ICON = { created: Plus, updated: ArrowRight, attachment_added: Paperclip, attachment_removed: Paperclip, output_added: FileText, output_removed: FileText, checklist_added: ListChecks, checklist_removed: ListChecks, checklist_done: CheckSquare, checklist_undone: CheckSquare };
 
 /** A history row as a sentence. Status and priority are stored as keys and translated here; dates are formatted. */

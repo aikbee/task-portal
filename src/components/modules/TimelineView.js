@@ -76,7 +76,7 @@ export default function TimelineView() {
       (t) =>
         (!hideDone || t.status !== "done") &&
         (!filters.project_id || String(t.project_id) === filters.project_id) &&
-        (!filters.employee_id || String(t.employee_id) === filters.employee_id) &&
+        (!filters.employee_id || (t.assignees ?? []).some((p) => String(p.id) === filters.employee_id)) &&
         (!q || t.title.toLowerCase().includes(q) || String(t.tags ?? "").includes(q))
     );
   }, [tasksQ.data, filters, hideDone]);
@@ -327,7 +327,7 @@ export default function TimelineView() {
                           className={cn("timeline-bar absolute top-1.5 z-10 flex items-center overflow-hidden rounded-md text-[11px] font-medium text-white shadow-sm", canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer", done && "opacity-50", overdue && "ring-2 ring-rose-500", dragging && "z-20 shadow-app-lg")}
                           style={{ left: span.from * w, width: Math.max(w, (span.to - span.from + 1) * w), height: ROW - 12, background: color, touchAction: "none" }}
                           onPointerDown={(e) => onBarDown(e, t, "move")} onPointerMove={onBarMove} onPointerUp={(e) => onBarUp(e, t)} onPointerCancel={() => setDrag(null)}
-                          title={`${t.title} · ${span.s != null ? formatDate(isoOf(span.s)) : "…"} – ${span.d != null ? formatDate(isoOf(span.d)) : "…"}${t.assignee_name ? ` · ${t.assignee_name}` : ""} · ${tr(TASK_STATUS[t.status]?.label ?? t.status)}`}
+                          title={`${t.title} · ${span.s != null ? formatDate(isoOf(span.s)) : "…"} – ${span.d != null ? formatDate(isoOf(span.d)) : "…"}${t.assignee_names ? ` · ${t.assignee_names}` : ""} · ${tr(TASK_STATUS[t.status]?.label ?? t.status)}`}
                         >
                           {canEdit ? <span className="timeline-handle absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize hover:bg-black/20" onPointerDown={(e) => onBarDown(e, t, "start")} onPointerMove={onBarMove} onPointerUp={(e) => onBarUp(e, t)} /> : null}
                           <span className="pointer-events-none truncate px-2.5">{(span.to - span.from + 1) * w > 60 ? t.title : ""}</span>

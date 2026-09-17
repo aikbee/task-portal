@@ -17,8 +17,8 @@ export async function listEmployees(owner, { status, department, project_id, q, 
   const rows = await query(
     `SELECT e.*, lu.name AS linked_user_name, lu.avatar_color AS linked_user_color, COALESCE(lu.avatar, 'preset:pro') AS linked_user_avatar,
       (SELECT COUNT(*) FROM project_employees pe WHERE pe.employee_id = e.id) AS project_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.employee_id = e.id) AS task_count,
-      (SELECT COUNT(*) FROM tasks t WHERE t.employee_id = e.id AND t.status <> 'done') AS open_task_count
+      (SELECT COUNT(*) FROM task_assignees ta WHERE ta.employee_id = e.id) AS task_count,
+      (SELECT COUNT(*) FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id WHERE ta.employee_id = e.id AND t.status <> 'done') AS open_task_count
      FROM employees e LEFT JOIN users lu ON lu.id = e.linked_user_id WHERE ${where.join(" AND ")}
      ORDER BY e.first_name, e.last_name`,
     args

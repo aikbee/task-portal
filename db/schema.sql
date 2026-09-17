@@ -393,6 +393,19 @@ CREATE TABLE IF NOT EXISTS task_comments (
   CONSTRAINT fk_tc_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Everybody a task is assigned to. Position 0 is the lead, who is also tasks.employee_id (so everything that
+-- knew one assignee keeps working); the application keeps the two in step (src/lib/task-assignees.js).
+CREATE TABLE IF NOT EXISTS task_assignees (
+  task_id INT UNSIGNED NOT NULL,
+  employee_id INT UNSIGNED NOT NULL,
+  position SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id, employee_id),
+  KEY idx_tas_employee (employee_id),
+  CONSTRAINT fk_tas_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tas_employee FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Subtasks of a task: a checklist with its own order.
 CREATE TABLE IF NOT EXISTS task_checklist (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

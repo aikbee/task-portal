@@ -10,17 +10,21 @@ import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { fullName } from "@/lib/utils";
 import { putTask } from "./shared";
 import { REPEAT_RULES } from "@/lib/recurrence";
+import MultiSelect from "@/components/ui/MultiSelect";
 import { useT } from "@/lib/i18n";
 
-const empty = { title: "", description: "", project_id: "", employee_id: "", requirement_id: "", status: "todo", priority: "medium", start_date: "", due_date: "", estimate_hours: "", tags: "", repeat_rule: "", repeat_until: "" };
+const empty = { title: "", description: "", project_id: "", assignee_ids: [], requirement_id: "", status: "todo", priority: "medium", start_date: "", due_date: "", estimate_hours: "", tags: "", repeat_rule: "", repeat_until: "" };
 
 function fromInitial(initial, defaults) {
-  if (!initial) return { ...empty, ...defaults };
+  if (!initial) {
+    const { employee_id, ...rest } = defaults ?? {};
+    return { ...empty, ...rest, assignee_ids: rest.assignee_ids ?? (employee_id ? [Number(employee_id)] : []) };
+  }
   return {
     title: initial.title ?? "",
     description: initial.description ?? "",
     project_id: initial.project_id ?? "",
-    employee_id: initial.employee_id ?? "",
+    assignee_ids: initial.assignees?.length ? initial.assignees.map((p) => p.id) : initial.employee_id ? [initial.employee_id] : [],
     requirement_id: initial.requirement_id ?? "",
     status: initial.status ?? "todo",
     priority: initial.priority ?? "medium",
@@ -60,6 +64,7 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
     const memberIds = new Set((proj?.members ?? []).map((m) => m.id));
     return { members: list.filter((e) => memberIds.has(e.id)), others: list.filter((e) => !memberIds.has(e.id)) };
   }, [employees, projects, form.project_id]);
+  const people = useMemo(() => [...members.map((e) => ({ value: e.id, label: fullName(e), sub: tr("Project member"), color: e.avatar_color })), ...others.map((e) => ({ value: e.id, label: fullName(e), sub: e.job_title, color: e.avatar_color }))], [members, others, tr]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -102,18 +107,8 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
             {(projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
           </Select>
         </Field>
-        <Field label={tr("Assignee")} className="sm:col-span-3">
-          <Select value={form.employee_id ?? ""} onChange={(e) => set("employee_id", e.target.value)}>
-            <option value="">{tr("Unassigned")}</option>
-            {members.length ? (
-              <optgroup label="Project members">
-                {members.map((e) => <option key={e.id} value={e.id}>{fullName(e)} — {e.job_title}</option>)}
-              </optgroup>
-            ) : null}
-            <optgroup label={members.length ? "Everyone else" : "Employees"}>
-              {others.map((e) => <option key={e.id} value={e.id}>{fullName(e)} — {e.job_title}</option>)}
-            </optgroup>
-          </Select>
+        <Field label={tr("Assignees")} className="sm:col-span-3" hint={form.assignee_ids.length > 1 ? tr("The first person leads the task.") : undefined}>
+          <MultiSelect options={people} value={form.assignee_ids} onChange={(v) => set("assignee_ids", v)} placeholder={tr("Unassigned")} className="task-assignees-select" />
         </Field>
         <Field label={tr("Requirement")} className="sm:col-span-6" hint={form.project_id ? "Which requirement this task implements (optional)" : "Pick a project to link a requirement"}>
           <Select value={form.requirement_id ?? ""} onChange={(e) => set("requirement_id", e.target.value)} disabled={!form.project_id}>

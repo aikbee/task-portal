@@ -97,6 +97,36 @@ export function PersonCell({ id, name, color, avatar, sub, link = true, size = "
   return link && id ? <Link href={`/employees/${id}`} onClick={(e) => e.stopPropagation()} className="hover:opacity-80">{inner}</Link> : inner;
 }
 
+/** Everybody on a task as overlapping avatars, lead first; "+2" when there are more than fit. */
+export function AssigneeStack({ people = [], max = 3, size = "xs", className }) {
+  if (!people.length) return null;
+  return (
+    <span className={cn("assignee-stack inline-flex items-center", className)} title={people.map((p) => p.name).join(", ")}>
+      {people.slice(0, max).map((p, i) => <Avatar key={p.id} name={p.name} color={p.avatar_color} size={size} ring className={i ? "-ml-1.5" : ""} />)}
+      {people.length > max ? <span className="-ml-1 grid h-5 min-w-5 place-items-center rounded-full bg-surface-3 px-1 text-[10px] font-medium text-fg-muted ring-2 ring-surface">+{people.length - max}</span> : null}
+    </span>
+  );
+}
+/** Table cell for a task's assignees: the stack, the lead's name and how many others. Falls back to the single assignee of older rows. */
+export function AssigneesCell({ task, link = true }) {
+  const tr = useT();
+  const people = task.assignees ?? (task.employee_id ? [{ id: task.employee_id, name: task.assignee_name, avatar_color: task.avatar_color }] : []);
+  if (!people.length) return <span className="text-xs text-fg-faint">{tr("Unassigned")}</span>;
+  const lead = people[0];
+  const label = (
+    <span className="min-w-0 leading-tight">
+      <span className="block truncate text-sm font-medium">{lead.name}</span>
+      {people.length > 1 ? <span className="block truncate text-[11px] text-fg-muted">{tr("+{n} more", { n: people.length - 1 })}</span> : null}
+    </span>
+  );
+  return (
+    <span className="assignees-cell flex min-w-0 items-center gap-2" title={people.map((p) => p.name).join(", ")}>
+      <AssigneeStack people={people} size="sm" />
+      {link ? <Link href={`/employees/${lead.id}`} onClick={(e) => e.stopPropagation()} className="min-w-0 hover:text-accent">{label}</Link> : label}
+    </span>
+  );
+}
+
 export function DueDateCell({ date, status }) {
   if (!date) return <span className="text-fg-faint">—</span>;
   const overdue = isOverdue(date, status);

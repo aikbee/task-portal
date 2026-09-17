@@ -1,4 +1,4 @@
-import { execute, queryOne } from "@/lib/db";
+import { execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { saveFile } from "@/lib/uploads";
 import { applyOrder, nextSortOrder } from "@/lib/ordering";
@@ -27,7 +27,6 @@ export function attachmentCollectionRoutes(kind) {
       );
     }
     if (kind === "task") await logTask(user, parentId, files.map((f) => ({ action: "attachment_added", next: f.name })));
-    const assignee = kind === "task" ? (await queryOne("SELECT employee_id FROM tasks WHERE id = ?", [parentId]))?.employee_id : null;
     notifyInvolved(user, {
       type: "attachment_added",
       title: `${files.length} file${files.length > 1 ? "s" : ""} attached to a ${kind}`,
@@ -35,7 +34,7 @@ export function attachmentCollectionRoutes(kind) {
       href: `/${meta.apiBase}/${parentId}`,
       entityType: kind,
       entityId: parentId,
-    }, { employeeIds: [assignee] });
+    }, { taskIds: kind === "task" ? [parentId] : [] });
     return ok(await listAttachments(kind, parentId), { status: 201 });
   });
 

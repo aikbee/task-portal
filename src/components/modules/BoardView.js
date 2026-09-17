@@ -18,7 +18,7 @@ import { useToast } from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import TaskForm from "./TaskForm";
 import { CanEdit, useAccess } from "@/lib/auth-context";
-import { TagChips, ChecklistCount, BlockedMark, putTask, RepeatMark } from "./shared";
+import { TagChips, ChecklistCount, BlockedMark, putTask, RepeatMark, AssigneeStack } from "./shared";
 import { useT } from "@/lib/i18n";
 
 const TONE_BAR = { slate: "bg-slate-400", sky: "bg-sky-500", violet: "bg-violet-500", emerald: "bg-emerald-500", amber: "bg-amber-500", rose: "bg-rose-500" };
@@ -64,7 +64,7 @@ export default function BoardView() {
     const q = filters.q.trim().toLowerCase();
     const map = Object.fromEntries(columns.map((c) => [c.key, []]));
     for (const t of tasks ?? []) {
-      if (q && !`${t.title} ${t.description ?? ""} ${t.project_name ?? ""} ${t.assignee_name ?? ""}`.toLowerCase().includes(q)) continue;
+      if (q && !`${t.title} ${t.description ?? ""} ${t.project_name ?? ""} ${t.assignee_names ?? t.assignee_name ?? ""} ${t.tags ?? ""}`.toLowerCase().includes(q)) continue;
       const k = columnKeyOf(t, groupBy);
       (map[k] ??= []).push(t);
     }
@@ -298,7 +298,7 @@ function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpe
         <BlockedMark task={t} />
         <ChecklistCount done={t.checklist_done} total={t.checklist_total} />
         {t.due_date ? <span className={cn("inline-flex items-center gap-0.5", overdue && "font-medium text-rose-500")}><CalendarClock size={11} />{formatDate(t.due_date, { month: "short", day: "numeric" })}</span> : null}
-        {t.assignee_name ? <Avatar name={t.assignee_name} color={t.avatar_color} size="xs" /> : null}
+        {t.assignees?.length ? <AssigneeStack people={t.assignees} max={3} /> : t.assignee_name ? <Avatar name={t.assignee_name} color={t.avatar_color} size="xs" /> : null}
       </div>
     </article>
   );

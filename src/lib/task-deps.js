@@ -44,7 +44,7 @@ export async function announceUnblocked(user, doneTask) {
       [doneTask.id]
     );
     for (const t of freed) {
-      notifyInvolved(user, { type: "task_unblocked", title: `${t.title} is no longer blocked`, body: `${doneTask.title} is done`, href: `/tasks/${t.id}`, entityType: "task", entityId: t.id }, { employeeIds: [t.employee_id] });
+      notifyInvolved(user, { type: "task_unblocked", title: `${t.title} is no longer blocked`, body: `${doneTask.title} is done`, href: `/tasks/${t.id}`, entityType: "task", entityId: t.id }, { taskIds: [t.id] });
     }
   } catch {}
 }

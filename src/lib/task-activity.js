@@ -30,7 +30,8 @@ export function diffTask(before, after) {
   changed("start_date", before.start_date, after.start_date);
   changed("due_date", before.due_date, after.due_date);
   if ((before.estimate_hours ?? null) !== (after.estimate_hours ?? null)) changed("estimate", before.estimate_hours == null ? null : `${before.estimate_hours} h`, after.estimate_hours == null ? null : `${after.estimate_hours} h`);
-  if ((before.employee_id ?? null) !== (after.employee_id ?? null)) out.push({ action: "updated", field: "assignee", old: before.assignee_name, next: after.assignee_name });
+  const people = (t) => (t.assignees ? t.assignees.map((p) => p.name).join(", ") : t.assignee_name) || null;
+  if (people(before) !== people(after)) out.push({ action: "updated", field: "assignee", old: people(before), next: people(after) });
   if ((before.project_id ?? null) !== (after.project_id ?? null)) out.push({ action: "updated", field: "project", old: before.project_name, next: after.project_name });
   if ((before.requirement_id ?? null) !== (after.requirement_id ?? null)) out.push({ action: "updated", field: "requirement", old: before.requirement_code, next: after.requirement_code });
   changed("tags", before.tags, after.tags);

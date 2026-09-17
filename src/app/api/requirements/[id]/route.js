@@ -1,4 +1,5 @@
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
+import { attachAssignees } from "@/lib/task-assignees";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
 import { nextSortOrder } from "@/lib/ordering";
 import { REQ_FIELDS, REQ_SELECT, normaliseRequirement, assertRequirementRefs, nextRequirementCode, normaliseCode, assertCodeFree, bumpSequence } from "../route";
@@ -10,7 +11,7 @@ import { REQ_STATUS } from "@/lib/constants";
 export async function getRequirement(id, owner) {
   const req = await queryOne(`${REQ_SELECT} WHERE r.id = ? AND r.profile_id = ?`, [id, owner]);
   if (!req) throw new HttpError("Requirement not found.", 404);
-  req.tasks = await query(`${TASK_SELECT} WHERE t.requirement_id = ? ORDER BY t.status = 'done', t.due_date IS NULL, t.due_date, t.sort_order`, [id]);
+  req.tasks = await attachAssignees(await query(`${TASK_SELECT} WHERE t.requirement_id = ? ORDER BY t.status = 'done', t.due_date IS NULL, t.due_date, t.sort_order`, [id]));
   req.attachments = await listAttachments("requirement", id);
   return req;
 }

@@ -7,6 +7,7 @@ import { nextSortOrder } from "@/lib/ordering";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { notifyInvolved } from "@/lib/notifications";
 import { logTask } from "@/lib/task-activity";
+import { attachAssignees, setAssignees, nextAssignees } from "@/lib/task-assignees";
 
 export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags", "repeat_rule", "repeat_until"];
 
@@ -54,10 +55,12 @@ export const GET = handler(async (request, _params, user) => {
   const sp = request.nextUrl.searchParams;
   const where = ["t.profile_id = ?"];
   const args = [user.profile_id];
-  for (const f of ["project_id", "employee_id", "status", "priority"]) {
+  for (const f of ["project_id", "status", "priority"]) {
     const v = sp.get(f);
     if (v) { where.push(`t.${f} = ?`); args.push(v); }
   }
+  // anyone on the task counts, not only its lead
+  if (sp.get("employee_id")) { where.push("EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.employee_id = ?)"); args.push(sp.get("employee_id")); }
   const q = sp.get("q");
   if (q) { where.push("(t.title LIKE ? OR t.description LIKE ? OR t.tags LIKE ?)"); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   if (sp.get("tag")) { where.push("FIND_IN_SET(?, t.tags)"); args.push(String(sp.get("tag")).toLowerCase()); }
@@ -66,7 +69,7 @@ export const GET = handler(async (request, _params, user) => {
   if (dueFrom) { where.push("t.due_date >= ?"); args.push(dueFrom); }
   if (dueTo) { where.push("t.due_date <= ?"); args.push(dueTo); }
   if (sp.get("has_due") === "1") where.push("t.due_date IS NOT NULL");
-  return ok(await query(`${TASK_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.updated_at DESC`, args));
+  return ok(await attachAssignees(await query(`${TASK_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.updated_at DESC`, args)));
 });
 
 export const POST = handler(async (request, _params, user) => {
@@ -77,13 +80,16 @@ export const POST = handler(async (request, _params, user) => {
   assertDateOrder(data);
   await assertTaskRequirement(owner, data);
   await assertTaskRefs(owner, data);
+  if (Array.isArray(body.assignee_ids)) data.employee_id = null; // set together with the list, after the insert
   data.user_id = user.owner_id;
   data.profile_id = owner;
   data.sort_order = await nextSortOrder("tasks");
   const cols = Object.keys(data);
   const res = await execute(`INSERT INTO tasks (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => data[c]));
-  const [row] = await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]);
+  const people = nextAssignees(body, []);
+  if (people?.length) await setAssignees(res.insertId, owner, people);
+  const [row] = await attachAssignees(await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]));
   await logTask(user, row.id, { action: "created" });
-  notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_name].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { employeeIds: [row.employee_id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
+  notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_names].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { taskIds: [row.id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
   return ok(row, { status: 201 });
 });

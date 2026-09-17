@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock, Repeat } from "lucide-react";
+import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock, Repeat, X, ArrowUp } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
@@ -40,8 +40,6 @@ export default function TaskDetail({ id }) {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [reassign, setReassign] = useState(null); // { employee_id, name } awaiting confirmation
-  const [reassigning, setReassigning] = useState(false);
   const { data: employees } = useFetch("/api/employees");
 
   if (error) return <EmptyState title="Task not found" description={error.message} action={<Button onClick={() => router.push("/tasks")}>Back to tasks</Button>} />;
@@ -69,27 +67,7 @@ export default function TaskDetail({ id }) {
   };
   const overdue = isOverdue(task.due_date, task.status);
 
-  /** Assignee changes are confirmed first: they move the task in the other person's workload. */
-  const askReassign = (value) => {
-    const employee_id = value ? Number(value) : null;
-    if (employee_id === (task.employee_id ?? null)) return;
-    const emp = (employees ?? []).find((e) => e.id === employee_id);
-    setReassign({ employee_id, name: emp ? fullName(emp) : null });
-  };
-  const confirmReassign = async () => {
-    if (!reassign) return;
-    setReassigning(true);
-    try {
-      const saved = await api.put(`/api/tasks/${id}`, { employee_id: reassign.employee_id });
-      setData(saved);
-      toast.success(reassign.employee_id ? tr("Reassigned to {name}", { name: reassign.name }) : tr("Assignee removed"));
-      setReassign(null);
-    } catch (e) {
-      toast.error("Could not update task", e.message);
-    } finally {
-      setReassigning(false);
-    }
-  };
+  const setPeople = (ids) => patch({ assignee_ids: ids });
   const people = [...(employees ?? [])].sort((a, b) => (a.status === "active") === (b.status === "active") ? fullName(a).localeCompare(fullName(b)) : a.status === "active" ? -1 : 1);
 
   return (
@@ -168,39 +146,31 @@ export default function TaskDetail({ id }) {
               </Select>
               {task.repeat_rule ? <Input type="date" value={task.repeat_until || ""} onChange={(e) => patch({ repeat_until: e.target.value || null })} className="mt-1.5 h-8 text-xs" aria-label={tr("Repeat until")} title={tr("Repeat until")} /> : null}
             </Row>
-            <Row label={tr("Assignee")}>
-              {task.assignee_name ? (
-                <Link href={`/employees/${task.employee_id}`} className="mb-1.5 flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
-                  <Avatar name={task.assignee_name} color={task.avatar_color} size="xs" />
-                  <span className="min-w-0 leading-tight">
-                    <span className="block truncate text-sm font-medium">{task.assignee_name}</span>
-                    <span className="block truncate text-[11px] text-fg-muted">{task.assignee_title}</span>
-                  </span>
-                </Link>
+            <Row label={tr("Assignees")}>
+              {(task.assignees ?? []).length ? (
+                <ul className="task-assignees mb-1.5 space-y-1">
+                  {task.assignees.map((p, i) => (
+                    <li key={p.id} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5">
+                      <Avatar name={p.name} color={p.avatar_color} size="xs" />
+                      <Link href={`/employees/${p.id}`} className="min-w-0 flex-1 leading-tight hover:text-accent">
+                        <span className="block truncate text-sm font-medium">{p.name}</span>
+                        <span className="block truncate text-[11px] text-fg-muted">{[i === 0 && task.assignees.length > 1 ? tr("Lead") : null, p.job_title].filter(Boolean).join(" · ")}</span>
+                      </Link>
+                      {i > 0 ? <Button variant="ghost" size="iconXs" icon={ArrowUp} onClick={() => setPeople([p.id, ...task.assignees.filter((x) => x.id !== p.id).map((x) => x.id)])} aria-label={tr("Make lead")} data-tip={tr("Make lead")} /> : null}
+                      <Button variant="ghost" size="iconXs" icon={X} onClick={() => setPeople(task.assignees.filter((x) => x.id !== p.id).map((x) => x.id))} aria-label={tr("Remove assignee")} data-tip={tr("Remove")} />
+                    </li>
+                  ))}
+                </ul>
               ) : null}
               <div className="relative">
                 <UserRoundPen size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-faint" />
-                <Select value={task.employee_id ?? ""} onChange={(e) => askReassign(e.target.value)} className="h-8 pl-8 text-xs" aria-label={tr("Change assignee")}>
-                  <option value="">{tr("Unassigned")}</option>
-                  {people.map((e) => (
+                <Select value="" onChange={(e) => e.target.value && setPeople([...(task.assignees ?? []).map((x) => x.id), Number(e.target.value)])} className="task-add-assignee h-8 pl-8 text-xs" aria-label={tr("Add assignee")}>
+                  <option value="">{(task.assignees ?? []).length ? tr("Add another person…") : tr("Unassigned: pick someone…")}</option>
+                  {people.filter((e) => !(task.assignees ?? []).some((x) => x.id === e.id)).map((e) => (
                     <option key={e.id} value={e.id}>{fullName(e)}{e.status !== "active" ? ` (${tr(e.status === "on_leave" ? "On leave" : "Inactive").toLowerCase()})` : ""}</option>
                   ))}
                 </Select>
               </div>
-              <ConfirmDialog
-                open={!!reassign}
-                onClose={() => setReassign(null)}
-                onConfirm={confirmReassign}
-                loading={reassigning}
-                danger={false}
-                title={tr(reassign?.employee_id ? "Reassign this task?" : "Remove the assignee?")}
-                description={
-                  reassign?.employee_id
-                    ? tr("“{title}” moves from {from} to {to}. It shows up in their tasks and workload right away.", { title: task.title, from: task.assignee_name ?? tr("Unassigned"), to: reassign.name })
-                    : tr("“{title}” will no longer be assigned to {from}.", { title: task.title, from: task.assignee_name ?? "" })
-                }
-                confirmText={tr(reassign?.employee_id ? "Reassign" : "Remove")}
-              />
             </Row>
             <Row label={tr("Requirement")}>
               {task.requirement_id ? (

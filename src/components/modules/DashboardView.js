@@ -193,7 +193,7 @@ function TaskList({ items, emptyTitle, showDue, showUpdated }) {
               <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.project_color || "var(--line-strong)" }} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{t.title}</span>
-                <span className="block truncate text-[11px] text-fg-muted">{t.project_name || "No project"}{t.assignee_name ? ` · ${t.assignee_name}` : ""}</span>
+                <span className="block truncate text-[11px] text-fg-muted">{t.project_name || "No project"}{t.assignee_names || t.assignee_name ? ` · ${t.assignee_names ?? t.assignee_name}` : ""}</span>
               </span>
               <StatusBadge map={TASK_STATUS} value={t.status} dot={false} />
               {showDue ? <span className={cn("w-20 text-right text-xs tabular-nums", overdue ? "font-medium text-rose-500" : "text-fg-muted")}>{formatDate(t.due_date, { month: "short", day: "numeric" })}</span> : null}

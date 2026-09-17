@@ -20,7 +20,7 @@ import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
 import EventForm from "./EventForm";
-import { InlineSelect, putTask } from "./shared";
+import { InlineSelect, putTask, AssigneeStack } from "./shared";
 import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
@@ -323,7 +323,7 @@ function TaskChip({ task: t, today, dragging, onDragStart, onDragEnd, onOpen }) 
       onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", String(t.id)); } catch {} onDragStart(); }}
       onDragEnd={onDragEnd}
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
-      title={`${t.title}${t.project_name ? ` · ${t.project_name}` : ""}${t.assignee_name ? ` · ${t.assignee_name}` : ""}`}
+      title={`${t.title}${t.project_name ? ` · ${t.project_name}` : ""}${t.assignee_names ? ` · ${t.assignee_names}` : ""}`}
       className={cn(
         "cal-event flex w-full items-center gap-1.5 rounded-md border border-line/70 bg-surface px-1.5 py-1 text-left text-[11px] leading-tight transition hover:border-line-strong hover:bg-surface-2",
         dragging && "opacity-40",
@@ -427,7 +427,7 @@ function DayPanel({ day, today, tasks, events = [], onOpenEvent, onNewEvent, dea
                   <span className="block truncate text-[11px] text-fg-muted">{[t.project_name, t.requirement_code].filter(Boolean).join(" · ") || "No project"}</span>
                 </button>
                 <div className="mt-2 flex items-center gap-2">
-                  {t.assignee_name ? <Avatar name={t.assignee_name} color={t.avatar_color} size="xs" /> : null}
+                  {t.assignees?.length ? <AssigneeStack people={t.assignees} /> : null}
                   <StatusBadge map={TASK_PRIORITY} value={t.priority} dot={false} />
                   <span className="flex-1" />
                   <InlineSelect value={t.status} map={TASK_STATUS} onChange={(v) => onStatus(t, v)} />
@@ -474,7 +474,7 @@ function Agenda({ days, byDay, eventsByDay = {}, onOpenEvent, deadlinesByDay, to
                     <span className="h-8 w-1 shrink-0 rounded-full" style={{ background: t.project_color || "var(--line-strong)" }} />
                     <button onClick={() => onOpen(t)} className="min-w-0 flex-1 text-left">
                       <span className={cn("block truncate text-sm font-medium", t.status === "done" && "line-through opacity-60", overdue && "text-rose-500")}>{t.title}</span>
-                      <span className="block truncate text-[11px] text-fg-muted">{[t.project_name, t.assignee_name].filter(Boolean).join(" · ") || "No project"} · updated {relativeTime(t.updated_at)}</span>
+                      <span className="block truncate text-[11px] text-fg-muted">{[t.project_name, t.assignee_names].filter(Boolean).join(" · ") || "No project"} · updated {relativeTime(t.updated_at)}</span>
                     </button>
                     <StatusBadge map={TASK_PRIORITY} value={t.priority} dot={false} />
                     <InlineSelect value={t.status} map={TASK_STATUS} onChange={(v) => onStatus(t, v)} />

@@ -711,6 +711,44 @@ console.log("planning: calendar events");
   check("events can be deleted", (await call("GET", "/api/events?from=2026-10-01&to=2026-10-31")).data.filter((e) => /^Ev /.test(e.title)).length === 0);
 }
 
+console.log("several assignees");
+{
+  const mkE = async (first) => (await call("POST", "/api/employees", { body: { first_name: first, last_name: "Multi", email: `${first.toLowerCase()}.multi@example.com` } })).data;
+  const ana = await mkE("Ana"), ben = await mkE("Ben"), cy = await mkE("Cy");
+  const made = await call("POST", "/api/tasks", { body: { title: "Multi shared task", assignee_ids: [ana.id, ben.id] } });
+  check("a task takes several assignees; the first leads", made.status === 201 && made.data.employee_id === ana.id && made.data.assignees.map((p) => p.name).join() === "Ana Multi,Ben Multi" && made.data.assignee_names === "Ana Multi, Ben Multi", JSON.stringify(made.raw).slice(0, 200));
+  const mid = made.data.id;
+  const legacy = await call("POST", "/api/tasks", { body: { title: "Multi legacy task", employee_id: cy.id } });
+  check("the older single employee_id still works and becomes the lead", legacy.status === 201 && legacy.data.employee_id === cy.id && legacy.data.assignees.length === 1);
+  const swap = await call("PUT", `/api/tasks/${mid}`, { body: { employee_id: cy.id } });
+  check("setting employee_id swaps the lead and keeps the others", swap.data.assignees.map((p) => p.id).join() === [cy.id, ben.id].join() && swap.data.employee_id === cy.id);
+  const listed = await call("PUT", `/api/tasks/${mid}`, { body: { assignee_ids: [ben.id, ana.id, cy.id, ana.id] } });
+  check("an explicit list sets the order (duplicates dropped)", listed.data.assignees.map((p) => p.id).join() === [ben.id, ana.id, cy.id].join() && listed.data.employee_id === ben.id);
+  const untouched = await call("PUT", `/api/tasks/${mid}`, { body: { priority: "high" } });
+  check("other edits leave the assignees alone", untouched.data.assignees.length === 3);
+  const foreign = await call("PUT", `/api/tasks/${mid}`, { body: { assignee_ids: [999999] } });
+  const tooMany = await call("PUT", `/api/tasks/${mid}`, { body: { assignee_ids: Array.from({ length: 13 }, (_, i) => i + 1) } });
+  check("unknown employees and more than 12 people -> 400", foreign.status === 400 && tooMany.status === 400 && (await call("GET", `/api/tasks/${mid}`)).data.assignees.length === 3);
+  const byCy = await call("GET", `/api/tasks?employee_id=${cy.id}`);
+  check("filtering by a person finds tasks they co-own, not only the ones they lead", byCy.data.some((t) => t.id === mid) && byCy.data.some((t) => t.id === legacy.data.id));
+  const emps = (await call("GET", "/api/employees")).data;
+  check("employee task counts include co-assignments", emps.find((e) => e.id === ana.id).task_count === 1 && emps.find((e) => e.id === cy.id).task_count === 2 && emps.find((e) => e.id === cy.id).open_task_count === 2);
+  const cyPage = await call("GET", `/api/employees/${cy.id}`);
+  check("an employee's page lists every task they are on, with everybody", cyPage.data.tasks.length === 2 && cyPage.data.tasks.find((t) => t.id === mid).assignees.length === 3);
+  const hist = (await call("GET", `/api/tasks/${mid}/history`)).data.filter((h) => h.field === "assignee");
+  check("history names the people before and after", hist.length === 2 && hist[1].old_value === "Cy Multi, Ben Multi" && hist[1].new_value === "Ben Multi, Ana Multi, Cy Multi", JSON.stringify(hist.map((h) => [h.old_value, h.new_value])));
+  const gone = await call("DELETE", `/api/employees/${ben.id}`);
+  const afterGone = await call("GET", `/api/tasks/${mid}`);
+  check("deleting the lead's employee record passes the lead to the next in line", gone.status === 200 && afterGone.data.employee_id === ana.id && afterGone.data.assignees.map((p) => p.id).join() === [ana.id, cy.id].join());
+  const repeat = await call("PUT", `/api/tasks/${mid}`, { body: { repeat_rule: "weekly", due_date: "2026-09-14", status: "done", today: "2026-09-18" } });
+  const next = await call("GET", `/api/tasks/${repeat.data.next_task?.id}`);
+  check("a repeating task hands everybody on to the next one", next.status === 200 && next.data.assignees.map((p) => p.id).join() === [ana.id, cy.id].join() && next.data.employee_id === ana.id);
+  const cleared = await call("PUT", `/api/tasks/${legacy.data.id}`, { body: { employee_id: null } });
+  check("employee_id: null unassigns everyone", cleared.data.assignees.length === 0 && cleared.data.employee_id === null && cleared.data.assignee_names === null);
+  for (const t of (await call("GET", "/api/tasks?q=Multi ")).data) await call("DELETE", `/api/tasks/${t.id}`);
+  for (const e of [ana, cy]) await call("DELETE", `/api/employees/${e.id}`);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
@@ -991,6 +1029,10 @@ const adminJar = { ...jar };
     const mineTasks = await call("GET", "/api/tasks/mine?open=1");
     check("My tasks lists it with profile, owner and my access", mineTasks.status === 200 && mineTasks.data.some((t) => t.id === given.data.id && t.profile_id === pid && t.profile_owner_name === adminMe.data.name && t.access === "manager"));
     check("…and counts it", (await call("GET", "/api/stats")).data.counts.mytasks >= 1);
+    const someoneElse = (await asAdmin(() => call("GET", "/api/employees"))).data.find((e) => e.id !== emp.data.id)?.id;
+    const coTask = await asAdmin(() => call("POST", "/api/tasks", { body: { title: "Co-assigned to the linked person", assignee_ids: [someoneElse, emp.data.id].filter(Boolean) } }));
+    check("being one of several assignees is enough for My tasks and the bell", coTask.status === 201 && (await call("GET", "/api/tasks/mine?open=1")).data.some((t) => t.id === coTask.data.id) && Boolean(await poll(async () => (await call("GET", "/api/notifications?limit=30")).data.items.find((n) => n.type === "task_assigned" && n.entity_id === coTask.data.id))));
+    await asAdmin(() => call("DELETE", `/api/tasks/${coTask.data.id}`));
     await asAdmin(() => call("PUT", `/api/tasks/${given.data.id}`, { body: { status: "review" } }));
     check("a status change reaches the assignee too", Boolean(await poll(async () => (await call("GET", "/api/notifications?limit=30")).data.items.find((n) => n.type === "task_status" && n.entity_id === given.data.id))));
     // comments and history on that task (the member is a manager here, the employee record is linked to them)

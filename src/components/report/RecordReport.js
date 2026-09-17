@@ -52,7 +52,7 @@ export default function RecordReport({ module, id }) {
 function build(module, d, tr) {
   const taskCols = [
     { key: "title", label: tr("Task") },
-    { key: "assignee_name", label: tr("Assignee") },
+    { key: "assignee_names", label: tr("Assignees"), render: (t) => t.assignee_names ?? t.assignee_name ?? "—" },
     { key: "status", label: tr("Status"), render: (t) => label(TASK_STATUS, t.status) },
     { key: "priority", label: tr("Priority"), render: (t) => label(TASK_PRIORITY, t.priority) },
     { key: "due_date", label: tr("Due"), render: (t) => (t.due_date ? formatDate(t.due_date) : "—") },
@@ -67,7 +67,7 @@ function build(module, d, tr) {
       subtitle: d.project_name ? `${d.project_name}${d.project_code ? ` (${d.project_code})` : ""}` : null,
       badges: [label(TASK_STATUS, d.status), label(TASK_PRIORITY, d.priority), d.due_date ? `${tr("Due")} ${formatDate(d.due_date)}` : null],
       sections: [
-        { key: "details", label: tr("Details"), render: () => <KV items={[[tr("Project"), d.project_name], [tr("Assignee"), d.assignee_name ? `${d.assignee_name}${d.assignee_title ? ` · ${d.assignee_title}` : ""}` : tr("Unassigned")], [tr("Requirement"), d.requirement_code ? `${d.requirement_code} · ${d.requirement_title}` : null], [tr("Status"), label(TASK_STATUS, d.status)], [tr("Priority"), label(TASK_PRIORITY, d.priority)], [tr("Start date"), d.start_date ? formatDate(d.start_date) : null], [tr("Due date"), d.due_date ? formatDate(d.due_date) : null], [tr("Estimate (hours)"), d.estimate_hours != null ? String(d.estimate_hours) : null], [tr("Tags"), d.tags ? d.tags.split(",").map((t) => `#${t}`).join("  ") : null], [tr("Created"), formatDateTime(d.created_at)], [tr("Updated"), formatDateTime(d.updated_at)]]} /> },
+        { key: "details", label: tr("Details"), render: () => <KV items={[[tr("Project"), d.project_name], [tr("Assignees"), d.assignees?.length ? d.assignees.map((p) => `${p.name}${p.job_title ? ` (${p.job_title})` : ""}`).join(", ") : tr("Unassigned")], [tr("Requirement"), d.requirement_code ? `${d.requirement_code} · ${d.requirement_title}` : null], [tr("Status"), label(TASK_STATUS, d.status)], [tr("Priority"), label(TASK_PRIORITY, d.priority)], [tr("Start date"), d.start_date ? formatDate(d.start_date) : null], [tr("Due date"), d.due_date ? formatDate(d.due_date) : null], [tr("Estimate (hours)"), d.estimate_hours != null ? String(d.estimate_hours) : null], [tr("Tags"), d.tags ? d.tags.split(",").map((t) => `#${t}`).join("  ") : null], [tr("Created"), formatDateTime(d.created_at)], [tr("Updated"), formatDateTime(d.updated_at)]]} /> },
         { key: "description", label: tr("Description"), render: () => <Blocks text={d.description} /> },
         ...((d.checklist ?? []).length ? [{ key: "checklist", label: tr("Checklist"), count: d.checklist.length, render: () => <ul className="space-y-1 text-sm">{d.checklist.map((k) => <li key={k.id} className="flex gap-2"><span className="font-mono">{k.done ? "[x]" : "[ ]"}</span><span className={k.done ? "text-fg-muted line-through" : ""}>{k.title}</span></li>)}</ul> }] : []),
         { key: "outputs", label: tr("Outputs"), list: { items: d.outputs ?? [], label: (o) => o.title || firstLine(o.content) || `${tr("Untitled output")} #${o.id}`, sub: (o) => formatDateTime(o.updated_at), render: (items) => textList(items, "task", tr("Untitled output")) } },

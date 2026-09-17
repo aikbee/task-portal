@@ -21,7 +21,7 @@ import RequirementForm from "./RequirementForm";
 import TaskForm from "./TaskForm";
 import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
-import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow, putTask } from "./shared";
+import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow, putTask, AssigneesCell } from "./shared";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
@@ -74,7 +74,7 @@ export default function RequirementDetail({ id }) {
 
   const taskColumns = [
     { key: "title", label: tr("Task"), hideable: false, render: (r) => <span className="block max-w-md truncate font-medium">{r.title}</span> },
-    { key: "assignee_name", label: tr("Assignee"), render: (r) => <PersonCell id={r.employee_id} name={r.assignee_name} color={r.avatar_color} /> },
+    { key: "assignee_names", label: tr("Assignees"), sortValue: (r) => r.assignee_names ?? "", render: (r) => <AssigneesCell task={r} /> },
     { key: "status", label: tr("Status"), render: (r) => <InlineSelect value={r.status} map={TASK_STATUS} onChange={(v) => quickUpdateTask(r, { status: v })} /> },
     { key: "priority", label: tr("Priority"), render: (r) => <StatusBadge map={TASK_PRIORITY} value={r.priority} /> },
     { key: "due_date", label: tr("Due"), render: (r) => <DueDateCell date={r.due_date} status={r.status} /> },
