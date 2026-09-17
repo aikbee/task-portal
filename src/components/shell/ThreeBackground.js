@@ -1903,7 +1903,324 @@ function citydrive(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive };
+/* ---------- Neural network: hundreds of glowing nodes, links that come and go, signals hopping along them ---------- */
+const NEURAL_COMMON = /* glsl */ `
+  uniform vec3 uC1; uniform vec3 uC2; uniform vec3 uC3;
+  uniform vec2 uPointer; uniform float uPointerOn; uniform float uAspect;
+  attribute float aHue;
+  varying vec3 vCol;
+  /* hue < 0 leans to the third colour, > 0 to the second, 0 is the accent */
+  vec3 hueColor(float h) { return mix(uC1, h < 0.0 ? uC3 : uC2, abs(h)); }
+  /* 1 next to the mouse pointer, 0 away from it (screen space, so it costs nothing on the CPU) */
+  float nearPointer(vec4 clip) {
+    vec2 d = (clip.xy / clip.w - uPointer) * vec2(uAspect, 1.0);
+    return exp(-dot(d, d) * 14.0) * uPointerOn;
+  }
+  float depthFade(float viewZ) { return mix(1.0, 0.36, clamp((-viewZ - 10.0) / 13.0, 0.0, 1.0)); }
+`;
+const NEURAL_POINT_VS = /* glsl */ `
+  ${NEURAL_COMMON}
+  uniform float uTime; uniform float uPx;
+  attribute float aSize; attribute float aSeed; attribute float aAct;
+  varying float vGlow; varying float vAct;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    vAct = clamp(aAct + nearPointer(gl_Position) * 0.7, 0.0, 1.0);
+    vGlow = depthFade(mv.z) * (0.82 + 0.18 * sin(uTime * 0.9 + aSeed));
+    vCol = hueColor(aHue);
+    gl_PointSize = min(128.0, aSize * (1.0 + vAct * 0.6) * uPx / -mv.z);
+  }
+`;
+const NEURAL_POINT_FS = /* glsl */ `
+  uniform float uDark;
+  varying vec3 vCol; varying float vGlow; varying float vAct;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+    float core = 1.0 - smoothstep(0.15, 0.3, sqrt(r2));
+    float halo = exp(-r2 * 5.0) * (1.0 - r2);
+    if (uDark > 0.5) {
+      float k = clamp(halo * (0.5 + vAct) + core, 0.0, 1.0);
+      gl_FragColor = vec4(vCol + vec3(core * (0.2 + 0.8 * vAct)), k * vGlow);
+    } else {
+      float a = clamp(core * 0.9 + halo * (0.28 + 0.6 * vAct), 0.0, 1.0);
+      gl_FragColor = vec4(vCol * (1.0 - core * vAct * 0.45), a * vGlow); // on a pale page a firing node deepens instead of whitening
+    }
+    #include <colorspace_fragment>
+  }
+`;
+const NEURAL_LINE_VS = /* glsl */ `
+  ${NEURAL_COMMON}
+  attribute float aAlpha;
+  varying float vA;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    vCol = hueColor(aHue);
+    vA = min(1.0, aAlpha * (1.0 + nearPointer(gl_Position) * 1.6)) * depthFade(mv.z);
+  }
+`;
+const NEURAL_LINE_FS = /* glsl */ `
+  uniform float uLine;
+  varying vec3 vCol; varying float vA;
+  void main() {
+    gl_FragColor = vec4(vCol, vA * uLine);
+    #include <colorspace_fragment>
+  }
+`;
+
+function neural(THREE, scene, camera, pal, preview) {
+  const MAXN = preview ? 70 : 340; // nodes; how many are live depends on the window's shape
+  const MAXL = preview ? 320 : 1600; // link segments
+  const MAXP = preview ? 10 : 48; // signals in flight
+  const NB = 6; // neighbours remembered per node: where a signal may hop next
+  const DOT = preview ? 2 : 1; // a preview tile is a few hundred pixels wide: bigger dots keep it readable
+  const CAM_Z = 14, Z_FAR = -8, Z_NEAR = 3, MARGIN = 1.18, LINKS_PER_NODE = 5.2;
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.position.set(0, 0, CAM_Z);
+  camera.lookAt(0, 0, -2);
+
+  // Nodes live in a unit box (u, v in -1..1) that is stretched over the view frustum at their own
+  // depth, so the net fills a phone in portrait as well as an ultra-wide monitor.
+  const u = new Float32Array(MAXN), v = new Float32Array(MAXN), z0 = new Float32Array(MAXN);
+  const heading = new Float32Array(MAXN), turn = new Float32Array(MAXN), speed = new Float32Array(MAXN);
+  const seed = new Float32Array(MAXN), hub = new Float32Array(MAXN), reach = new Float32Array(MAXN);
+  const pos = new Float32Array(MAXN * 3), hue = new Float32Array(MAXN), size = new Float32Array(MAXN), act = new Float32Array(MAXN);
+  const nb = new Int16Array(MAXN * NB), nbCount = new Uint8Array(MAXN);
+  const hubs = [];
+  for (let i = 0; i < MAXN; i++) {
+    u[i] = rand(-1, 1); v[i] = rand(-1, 1);
+    z0[i] = CAM_Z - Math.cbrt(rand((CAM_Z - Z_NEAR) ** 3, (CAM_Z - Z_FAR) ** 3)); // even density: the far end of the frustum is wider
+    heading[i] = rand(0, 6.28); turn[i] = rand(-0.12, 0.12); speed[i] = rand(0.12, 0.36);
+    seed[i] = rand(0, 6.28);
+    const isHub = i % 17 === 5; // spread through the index range, so every live count keeps a few
+    hub[i] = isHub ? 1.4 : 1;
+    if (isHub) hubs.push(i);
+    size[i] = (isHub ? rand(1.05, 1.35) : rand(0.46, 0.72)) * DOT;
+    const h = Math.random();
+    hue[i] = h < 0.5 ? rand(0, 0.25) : h < 0.8 ? rand(0.45, 1) : -rand(0.45, 1);
+  }
+
+  const uni = {
+    uC1: { value: new THREE.Color() }, uC2: { value: new THREE.Color() }, uC3: { value: new THREE.Color() },
+    uDark: { value: 1 }, uLine: { value: 0.5 }, uTime: { value: 0 }, uPx: { value: 700 }, uAspect: { value: camera.aspect },
+    uPointer: { value: new THREE.Vector2(0, 0) }, uPointerOn: { value: 0 },
+  };
+  const shader = (vs, fs) => new THREE.ShaderMaterial({ uniforms: uni, vertexShader: vs, fragmentShader: fs, transparent: true, depthWrite: false, depthTest: false });
+  const pointMat = shader(NEURAL_POINT_VS, NEURAL_POINT_FS);
+  const lineMat = shader(NEURAL_LINE_VS, NEURAL_LINE_FS);
+  const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+
+  const nodeGeo = new THREE.BufferGeometry();
+  const nodePos = dyn(pos, 3), nodeAct = dyn(act, 1);
+  nodeGeo.setAttribute("position", nodePos);
+  nodeGeo.setAttribute("aHue", new THREE.BufferAttribute(hue, 1));
+  nodeGeo.setAttribute("aSize", new THREE.BufferAttribute(size, 1));
+  nodeGeo.setAttribute("aSeed", new THREE.BufferAttribute(seed, 1));
+  nodeGeo.setAttribute("aAct", nodeAct);
+  const nodes = new THREE.Points(nodeGeo, pointMat);
+
+  const lPos = new Float32Array(MAXL * 6), lHue = new Float32Array(MAXL * 2), lAlpha = new Float32Array(MAXL * 2);
+  const lineGeo = new THREE.BufferGeometry();
+  const linePos = dyn(lPos, 3), lineHue = dyn(lHue, 1), lineAlpha = dyn(lAlpha, 1);
+  lineGeo.setAttribute("position", linePos);
+  lineGeo.setAttribute("aHue", lineHue);
+  lineGeo.setAttribute("aAlpha", lineAlpha);
+  const lines = new THREE.LineSegments(lineGeo, lineMat);
+
+  // signals: bright sparks that run from one node to a neighbour and make it fire in turn
+  const pFrom = new Int16Array(MAXP).fill(-1), pTo = new Int16Array(MAXP), pHops = new Uint8Array(MAXP);
+  const pT = new Float32Array(MAXP), pRate = new Float32Array(MAXP);
+  const pPos = new Float32Array(MAXP * 3), pHue = new Float32Array(MAXP), pSize = new Float32Array(MAXP);
+  const pulseGeo = new THREE.BufferGeometry();
+  const pulsePos = dyn(pPos, 3), pulseHue = dyn(pHue, 1), pulseSize = dyn(pSize, 1);
+  pulseGeo.setAttribute("position", pulsePos);
+  pulseGeo.setAttribute("aHue", pulseHue);
+  pulseGeo.setAttribute("aSize", pulseSize);
+  pulseGeo.setAttribute("aSeed", new THREE.BufferAttribute(new Float32Array(MAXP), 1));
+  pulseGeo.setAttribute("aAct", new THREE.BufferAttribute(new Float32Array(MAXP).fill(1), 1));
+  const pulses = new THREE.Points(pulseGeo, pointMat);
+
+  [lines, nodes, pulses].forEach((o, i) => { o.frustumCulled = false; o.renderOrder = i + 1; scene.add(o); });
+  const buf = new THREE.Vector2();
+  lines.onBeforeRender = (renderer) => {
+    renderer.getDrawingBufferSize(buf);
+    uni.uPx.value = buf.y / (2 * TAN);
+    uni.uAspect.value = buf.x / Math.max(1, buf.y);
+  };
+
+  // a few big soft glows far behind the net give it depth
+  const glow = glowTexture(THREE);
+  const hazes = [];
+  for (let i = 0; i < (preview ? 2 : 3); i++) {
+    const mat = new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, depthTest: false });
+    const s = new THREE.Sprite(mat);
+    s.scale.setScalar(rand(20, 28));
+    s.position.set([-0.55, 0.6, 0.05][i], [0.3, -0.35, 0.75][i], -12);
+    s.renderOrder = 0;
+    scene.add(s);
+    hazes.push({ s, mat, x: s.position.x, y: s.position.y, phase: rand(0, 6.28) });
+  }
+
+  function applyPalette(p) {
+    pal = p;
+    uni.uC1.value.set(p.dark ? p.accent : p.strong);
+    uni.uC2.value.set(p.dark ? p.second : "#0891b2");
+    uni.uC3.value.set(p.dark ? p.third : "#db2777");
+    uni.uDark.value = p.dark ? 1 : 0;
+    uni.uLine.value = (p.dark ? 0.8 : 0.62) * (preview ? 1.25 : 1);
+    blend(THREE, pointMat, p.dark);
+    blend(THREE, lineMat, p.dark);
+    hazes.forEach((h, i) => {
+      h.mat.color.set([p.accent, p.second, p.third][i]);
+      h.mat.opacity = p.dark ? 0.17 : 0.13;
+      blend(THREE, h.mat, p.dark);
+    });
+  }
+  applyPalette(pal);
+
+  let n = MAXN; // live nodes
+  function launch(from, to, hops) {
+    for (let k = 0; k < MAXP; k++) {
+      if (pFrom[k] >= 0) continue;
+      const dx = pos[to * 3] - pos[from * 3], dy = pos[to * 3 + 1] - pos[from * 3 + 1], dz = pos[to * 3 + 2] - pos[from * 3 + 2];
+      pFrom[k] = from; pTo[k] = to; pHops[k] = hops; pT[k] = 0;
+      pRate[k] = 4.2 / Math.max(0.6, Math.sqrt(dx * dx + dy * dy + dz * dz)); // about 4 units a second
+      pHue[k] = hue[from];
+      return;
+    }
+  }
+  /** Node i lights up and, while the signal has hops left, passes it on to one or more neighbours. */
+  function fire(i, hops, from) {
+    act[i] = 1;
+    const c = nbCount[i];
+    if (!hops || !c) return;
+    const outs = from < 0 ? (hub[i] > 1 ? 3 : 2) : Math.random() < 0.28 ? 2 : 1;
+    for (let o = 0; o < outs; o++) {
+      const j = nb[i * NB + ((Math.random() * c) | 0)];
+      if (j !== from && j < n) launch(i, j, hops - 1);
+    }
+  }
+
+  let nextSpark = 0.2, nextBurst = preview ? 3 : 6;
+  function step(dt, t) {
+    const aspect = camera.aspect;
+    n = preview ? MAXN : Math.max(90, Math.min(MAXN, Math.round(165 * aspect)));
+    // link radius that gives each node LINKS_PER_NODE neighbours on average in the frustum slab
+    const vol = (4 * TAN * TAN * MARGIN * MARGIN * aspect * ((CAM_Z - Z_FAR) ** 3 - (CAM_Z - Z_NEAR) ** 3)) / 3;
+    const R = Math.min(6, Math.max(2.6, Math.cbrt((3 * LINKS_PER_NODE * vol) / (4 * Math.PI * n))));
+    const decay = Math.exp(-dt * 2.1);
+
+    for (let i = 0; i < n; i++) {
+      heading[i] += (turn[i] + 0.22 * Math.sin(t * 0.21 + seed[i])) * dt;
+      const z = z0[i] + Math.sin(t * 0.17 + seed[i] * 2) * 1.3;
+      const halfH = (CAM_Z - z) * TAN * MARGIN, halfW = halfH * aspect;
+      u[i] += (Math.cos(heading[i]) * speed[i] * dt) / halfW;
+      v[i] += (Math.sin(heading[i]) * speed[i] * dt) / halfH;
+      if (u[i] > 1 || u[i] < -1) { u[i] = Math.max(-1, Math.min(1, u[i])); heading[i] = Math.PI - heading[i]; }
+      if (v[i] > 1 || v[i] < -1) { v[i] = Math.max(-1, Math.min(1, v[i])); heading[i] = -heading[i]; }
+      pos[i * 3] = u[i] * halfW; pos[i * 3 + 1] = v[i] * halfH; pos[i * 3 + 2] = z;
+      // every node's reach breathes, so links come and go even between nodes that barely move
+      reach[i] = R * hub[i] * (0.92 + 0.28 * Math.sin(t * 0.31 + seed[i] * 3));
+      act[i] *= decay;
+    }
+
+    let L = 0;
+    nbCount.fill(0);
+    for (let a = 0; a < n; a++) {
+      const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2], ra = reach[a];
+      for (let b = a + 1; b < n; b++) {
+        const D = (ra + reach[b]) * 0.5;
+        const dx = pos[b * 3] - ax;
+        if (dx > D || dx < -D) continue;
+        const dy = pos[b * 3 + 1] - ay;
+        if (dy > D || dy < -D) continue;
+        const dz = pos[b * 3 + 2] - az;
+        const k = 1 - (dx * dx + dy * dy + dz * dz) / (D * D);
+        if (k <= 0) continue;
+        if (nbCount[a] < NB) nb[a * NB + nbCount[a]++] = b;
+        if (nbCount[b] < NB) nb[b * NB + nbCount[b]++] = a;
+        if (L >= MAXL) continue;
+        const alpha = Math.min(1, k * 1.5) * (1 + 1.8 * Math.max(act[a], act[b])); // a firing node flashes its links
+        const o = L * 6;
+        lPos[o] = ax; lPos[o + 1] = ay; lPos[o + 2] = az;
+        lPos[o + 3] = ax + dx; lPos[o + 4] = ay + dy; lPos[o + 5] = az + dz;
+        lHue[L * 2] = hue[a]; lHue[L * 2 + 1] = hue[b];
+        lAlpha[L * 2] = alpha; lAlpha[L * 2 + 1] = alpha;
+        L++;
+      }
+    }
+
+    for (let k = 0; k < MAXP; k++) {
+      if (pFrom[k] < 0) { pSize[k] = 0; continue; }
+      pT[k] += dt * pRate[k];
+      const a = pFrom[k], b = pTo[k];
+      if (pT[k] >= 1 || a >= n || b >= n) {
+        pFrom[k] = -1; pSize[k] = 0;
+        if (b < n) fire(b, pHops[k], a);
+        continue;
+      }
+      const e = pT[k] * pT[k] * (3 - 2 * pT[k]);
+      for (let c = 0; c < 3; c++) pPos[k * 3 + c] = pos[a * 3 + c] + (pos[b * 3 + c] - pos[a * 3 + c]) * e;
+      pSize[k] = (0.34 + 0.2 * Math.sin(Math.PI * pT[k])) * DOT;
+    }
+    nextSpark -= dt;
+    if (nextSpark <= 0) {
+      nextSpark = preview ? rand(0.7, 1.5) : rand(0.3, 0.8);
+      fire((Math.random() * n) | 0, 2 + ((Math.random() * 4) | 0), -1);
+    }
+    nextBurst -= dt;
+    if (nextBurst <= 0) { // now and then a hub sets off a longer chain: a "thought" crossing the net
+      nextBurst = rand(9, 15);
+      const live = hubs.filter((i) => i < n);
+      if (live.length) fire(live[(Math.random() * live.length) | 0], 8, -1);
+    }
+
+    const hazeH = (CAM_Z + 12) * TAN;
+    for (const h of hazes) h.s.position.set(h.x * hazeH * aspect + Math.sin(t * 0.05 + h.phase) * 2, h.y * hazeH + Math.cos(t * 0.04 + h.phase) * 1.5, -12);
+
+    nodeGeo.setDrawRange(0, n);
+    lineGeo.setDrawRange(0, L * 2);
+    nodePos.needsUpdate = nodeAct.needsUpdate = true;
+    linePos.needsUpdate = lineHue.needsUpdate = lineAlpha.needsUpdate = true;
+    pulsePos.needsUpdate = pulseHue.needsUpdate = pulseSize.needsUpdate = true;
+    uni.uTime.value = t;
+  }
+  // warm up, so the very first frame (and the still frame shown when animation is off) is already a living net
+  for (let i = 0; i < 45; i++) step(1 / 30, i / 30);
+
+  // the net notices the mouse: nodes and links near the pointer glow a little (done in the shaders)
+  const target = new THREE.Vector2();
+  let movedAt = -1e9;
+  const onMove = (e) => {
+    if (e.pointerType && e.pointerType !== "mouse") return;
+    target.set((e.clientX / Math.max(1, window.innerWidth)) * 2 - 1, 1 - (e.clientY / Math.max(1, window.innerHeight)) * 2);
+    movedAt = performance.now();
+  };
+  if (!preview) window.addEventListener("pointermove", onMove, { passive: true });
+
+  return {
+    update(dt, t) {
+      step(dt, t);
+      const on = performance.now() - movedAt < 3500 ? 1 : 0;
+      uni.uPointerOn.value += (on - uni.uPointerOn.value) * Math.min(1, dt * 3);
+      uni.uPointer.value.lerp(target, Math.min(1, dt * 7));
+      camera.position.set(Math.sin(t * 0.07) * 0.9 * Math.min(1, camera.aspect), Math.cos(t * 0.05) * 0.5, CAM_Z);
+      camera.lookAt(0, 0, -2);
+    },
+    setPalette: applyPalette,
+    dispose() {
+      window.removeEventListener("pointermove", onMove);
+      [nodeGeo, lineGeo, pulseGeo, pointMat, lineMat, glow].forEach((d) => d.dispose());
+      hazes.forEach((h) => h.mat.dispose());
+    },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

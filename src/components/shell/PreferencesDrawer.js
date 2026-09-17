@@ -1,5 +1,5 @@
 "use client";
-import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper, Lollipop, Heart, Fish, Ghost, Aperture, Flame, Eclipse, Table2, Sprout, Car } from "lucide-react";
+import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper, Lollipop, Heart, Fish, Ghost, Aperture, Flame, Eclipse, Table2, Sprout, Car, BrainCircuit } from "lucide-react";
 import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
@@ -13,7 +13,7 @@ import NotificationSettings from "./NotificationSettings";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/Toast";
 
-const BG_ICONS = { aurora: Wind, mesh: Blend, orbs: CircleDashed, bubbles: Droplets, stars: Star, waves: Waves, hexagons: Hexagon, sunrise: Sunrise, grid: Grid3x3, rain: CloudRain, snow: Snowflake, topography: Mountain, circuit: Cpu, confetti: PartyPopper, galaxy: Orbit, terrain: MountainSnow, crystals: Gem, earth: Globe, neon: Zap, island: TreePalm, bloodmoon: Moon, ocean: Sailboat, balloons: Lollipop, hearts: Heart, jellyfish: Fish, ghosts: Ghost, portal: Aperture, wisps: Flame, saturn: Eclipse, nebula: Sparkles, orbits: Sun, meadow: Sprout, citydrive: Car, none: Ban };
+const BG_ICONS = { aurora: Wind, mesh: Blend, orbs: CircleDashed, bubbles: Droplets, stars: Star, waves: Waves, hexagons: Hexagon, sunrise: Sunrise, grid: Grid3x3, rain: CloudRain, snow: Snowflake, topography: Mountain, circuit: Cpu, confetti: PartyPopper, galaxy: Orbit, terrain: MountainSnow, crystals: Gem, earth: Globe, neon: Zap, island: TreePalm, bloodmoon: Moon, ocean: Sailboat, balloons: Lollipop, hearts: Heart, jellyfish: Fish, ghosts: Ghost, portal: Aperture, wisps: Flame, saturn: Eclipse, nebula: Sparkles, orbits: Sun, meadow: Sprout, citydrive: Car, neural: BrainCircuit, none: Ban };
 
 export default function PreferencesDrawer() {
   const tr = useT();
@@ -105,7 +105,7 @@ export default function PreferencesDrawer() {
                     active ? "is-active border-accent bg-accent/8 ring-1 ring-accent/40" : "border-line hover:bg-surface-2"
                   )}
                 >
-                  <Icon size={16} className={active ? "text-accent" : "text-fg-muted"} />
+                  <Icon size={16} className={cn("mt-px shrink-0", active ? "text-accent" : "text-fg-muted")} />
                   <span>
                     <span className="block text-xs font-medium">{tr(b.label)}</span>
                     <span className="block text-[11px] text-fg-muted">{tr(b.desc)}</span>

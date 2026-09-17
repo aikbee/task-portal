@@ -33,6 +33,7 @@ export const BG_STYLES = [
   { value: "orbits", label: "Solar system", desc: "3D planets circling a bright sun", three: true },
   { value: "meadow", label: "Grassland", desc: "3D quiet prairie: wind in the grass, cows grazing and wandering", three: true },
   { value: "citydrive", label: "City drive", desc: "3D driver's view cruising through a city at an easy pace", three: true },
+  { value: "neural", label: "Neural network", desc: "3D web of glowing nodes: links come and go, signals hop between them", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
