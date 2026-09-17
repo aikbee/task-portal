@@ -2406,7 +2406,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   const moonMat = keep(new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, fog: false }));
   const moon = new THREE.Sprite(moonMat);
   const moonCore = new THREE.Sprite(moonMat);
-  moon.position.set(-44, 94, -200); // close enough to the middle that a phone in portrait still sees it
+  moon.position.set(-40, 101, -180); // in front of the aurora, clear of the summits, and near enough to the middle for a phone in portrait
   moonCore.position.copy(moon.position);
   moon.renderOrder = moonCore.renderOrder = -1;
   scene.add(moon, moonCore);
@@ -2534,7 +2534,7 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
     moonMat.color.set(p.dark ? "#dbe7ff" : "#fff4d6"); moonMat.opacity = p.dark ? 0.7 : 0.9;
     moon.scale.setScalar(p.dark ? 52 : 120); moonCore.scale.setScalar(p.dark ? 14 : 34);
     for (const a of auroras) { a.mat.uniforms.uLow.value.set("#34d399"); a.mat.uniforms.uHigh.value.set(p.accent); a.mat.uniforms.uOpacity.value = p.dark ? 0.85 * a.strength : 0; }
-    lakeMat.color.copy(mixed.set("#7dd3fc").lerp(tmp.set(p.accent), 0.25)); lakeMat.opacity = p.dark ? 1 : 0.5;
+    lakeMat.color.copy(mixed.set("#7dd3fc").lerp(tmp.set(p.accent), 0.12)); lakeMat.opacity = p.dark ? 1 : 0.5;
     lakeHalo.material.color.copy(lakeMat.color); lakeHalo.material.opacity = p.dark ? 0.95 : 0.2;
     blend(THREE, lakeMat, p.dark); blend(THREE, lakeHalo.material, p.dark);
     mistMat.color.set(p.dark ? "#4473cf" : "#ffffff"); mistMat.opacity = p.dark ? 0.36 : 0.6;
