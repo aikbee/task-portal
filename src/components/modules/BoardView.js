@@ -18,7 +18,7 @@ import { useToast } from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import TaskForm from "./TaskForm";
 import { CanEdit, useAccess } from "@/lib/auth-context";
-import { TagChips, ChecklistCount } from "./shared";
+import { TagChips, ChecklistCount, BlockedMark } from "./shared";
 import { useT } from "@/lib/i18n";
 
 const TONE_BAR = { slate: "bg-slate-400", sky: "bg-sky-500", violet: "bg-violet-500", emerald: "bg-emerald-500", amber: "bg-amber-500", rose: "bg-rose-500" };
@@ -294,6 +294,7 @@ function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpe
         {t.attachment_count ? <span className="inline-flex items-center gap-0.5"><Paperclip size={11} />{t.attachment_count}</span> : null}
         {t.output_count ? <span className="inline-flex items-center gap-0.5"><FileText size={11} />{t.output_count}</span> : null}
         {t.comment_count ? <span className="inline-flex items-center gap-0.5"><MessageSquare size={11} />{t.comment_count}</span> : null}
+        <BlockedMark task={t} />
         <ChecklistCount done={t.checklist_done} total={t.checklist_total} />
         {t.due_date ? <span className={cn("inline-flex items-center gap-0.5", overdue && "font-medium text-rose-500")}><CalendarClock size={11} />{formatDate(t.due_date, { month: "short", day: "numeric" })}</span> : null}
         {t.assignee_name ? <Avatar name={t.assignee_name} color={t.avatar_color} size="xs" /> : null}

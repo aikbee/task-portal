@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -116,6 +116,15 @@ export const MODULES = [
     icon: CalendarDays,
     color: "#0ea5e9",
     description: "Tasks by due date — month, week and agenda views. Drag a task to reschedule it.",
+  },
+  {
+    key: "timeline",
+    label: "Timeline",
+    singular: "Timeline",
+    href: "/timeline",
+    icon: ChartGantt,
+    color: "#14b8a6",
+    description: "Tasks as bars from start to due date, with dependencies. Drag a bar to move it, an edge to stretch it.",
   },
   {
     key: "profiles",

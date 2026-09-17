@@ -402,6 +402,17 @@ CREATE TABLE IF NOT EXISTS task_checklist (
   CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- "task_id waits for depends_on_id". Both live in the same profile; cycles are refused in code.
+CREATE TABLE IF NOT EXISTS task_dependencies (
+  task_id INT UNSIGNED NOT NULL,
+  depends_on_id INT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id, depends_on_id),
+  KEY idx_td_dep (depends_on_id),
+  CONSTRAINT fk_td_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_td_dep FOREIGN KEY (depends_on_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Who changed what on a task: one row per change (field, old and new value as readable text).
 CREATE TABLE IF NOT EXISTS task_activity (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

@@ -77,6 +77,7 @@ export const NOTIFICATION_TYPES = {
   task_status: { category: "tasks", label: "Task status", tone: "violet" },
   task_done: { category: "tasks", label: "Task completed", tone: "emerald" },
   attachment_added: { category: "tasks", label: "Attachment added", tone: "slate" },
+  task_unblocked: { category: "tasks", label: "Unblocked", tone: "emerald" },
   task_comment: { category: "tasks", label: "Comment", tone: "sky" },
   task_mention: { category: "tasks", label: "Mentioned", tone: "amber" },
   requirement_created: { category: "requirements", label: "Requirement created", tone: "sky" },

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useNav } from "@/lib/nav";
-import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare, ListChecks } from "lucide-react";
+import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare, ListChecks, Lock } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { cn, formatDate, isOverdue } from "@/lib/utils";
@@ -132,6 +132,12 @@ export function TagChips({ tags, onPick, className, max = 6 }) {
       {list.length > max ? <span className="text-[10px] text-fg-faint">+{list.length - max}</span> : null}
     </span>
   );
+}
+/** A small lock while a task still waits for unfinished tasks. */
+export function BlockedMark({ task, className }) {
+  const tr = useT();
+  if (!(Number(task?.blocked_by_open) > 0) || task.status === "done") return null;
+  return <span className={cn("task-blocked-mark inline-flex items-center gap-0.5 text-amber-500", className)} data-tip={tr("Waiting for {n}", { n: task.blocked_by_open })}><Lock size={11} /></span>;
 }
 /** "3/5" with a tick once everything is done; nothing when the task has no checklist. */
 export function ChecklistCount({ done = 0, total = 0, className }) {

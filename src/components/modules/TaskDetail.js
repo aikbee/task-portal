@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare } from "lucide-react";
+import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
@@ -21,6 +21,7 @@ import AttachmentsPanel from "./AttachmentsPanel";
 import TaskOutputs from "./TaskOutputs";
 import TaskActivity from "./TaskActivity";
 import TaskChecklist from "./TaskChecklist";
+import TaskDependencies from "./TaskDependencies";
 import { TagChips } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
@@ -107,6 +108,7 @@ export default function TaskDetail({ id }) {
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-muted">
           <StatusBadge map={TASK_STATUS} value={task.status} />
           <StatusBadge map={TASK_PRIORITY} value={task.priority} dot={false} />
+          {Number(task.blocked_by_open) > 0 && task.status !== "done" ? <span className="task-blocked inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600"><Lock size={11} /> {tr("Blocked")}</span> : null}
           {task.project_name ? (
             <Link href={`/projects/${task.project_id}`} className="inline-flex items-center gap-1 hover:text-accent">
               <span className="h-2 w-2 rounded-full" style={{ background: task.project_color }} /> {task.project_name}
@@ -125,7 +127,7 @@ export default function TaskDetail({ id }) {
           <TaskChecklist taskId={task.id} items={task.checklist ?? []} onChange={(checklist) => setData((t) => ({ ...t, checklist, checklist_total: checklist.length, checklist_done: checklist.filter((i) => i.done).length }))} />
           <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} />
           <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} />
-          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
+          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.dependency_count}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
         </div>
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
@@ -217,6 +219,7 @@ export default function TaskDetail({ id }) {
             </Row>
             </fieldset>
           </Card>
+          <TaskDependencies taskId={task.id} onChange={(d) => setData((t) => ({ ...t, blocked_by_open: d.open, dependency_count: d.blocked_by.length }))} />
           <Card className="space-y-2 text-xs text-fg-muted">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>
             <p className="flex items-center gap-2"><Paperclip size={13} /> {task.attachments.length} attachment{task.attachments.length === 1 ? "" : "s"}</p>

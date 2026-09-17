@@ -575,6 +575,40 @@ console.log("task depth: checklist, tags, dates");
   check("deleting the task takes its checklist along", del.status === 200 && (await call("PUT", `/api/tasks/${tid}/checklist/${b.id}`, { body: { done: false } })).status === 404);
 }
 
+console.log("planning: dependencies");
+{
+  const mk = async (title, extra = {}) => (await call("POST", "/api/tasks", { body: { title, ...extra } })).data;
+  const a = await mk("Dep A design"), b = await mk("Dep B build"), c = await mk("Dep C ship");
+  const ab = await call("POST", `/api/tasks/${b.id}/dependencies`, { body: { depends_on_id: a.id } });
+  check("B waits for A -> 201 with both directions listed", ab.status === 201 && ab.data.blocked_by.length === 1 && ab.data.blocked_by[0].id === a.id && ab.data.open === 1);
+  const bc = await call("POST", `/api/tasks/${c.id}/dependencies`, { body: { depends_on_id: b.id } });
+  check("C waits for B", bc.status === 201);
+  const dup = await call("POST", `/api/tasks/${b.id}/dependencies`, { body: { depends_on_id: a.id } });
+  const self = await call("POST", `/api/tasks/${a.id}/dependencies`, { body: { depends_on_id: a.id } });
+  const ghost = await call("POST", `/api/tasks/${a.id}/dependencies`, { body: { depends_on_id: 999999 } });
+  const junk = await call("POST", `/api/tasks/${a.id}/dependencies`, { body: {} });
+  check("duplicate 409, itself 400, unknown task 404, nothing 400", dup.status === 409 && self.status === 400 && ghost.status === 404 && junk.status === 400);
+  const loop = await call("POST", `/api/tasks/${a.id}/dependencies`, { body: { depends_on_id: c.id } });
+  check("a loop through two hops is refused (409) and says why", loop.status === 409 && /loop/.test(loop.error) && /Dep C ship/.test(loop.error));
+  const ofB = await call("GET", `/api/tasks/${b.id}/dependencies`);
+  check("a task lists what it waits for and what needs it", ofB.data.blocked_by[0].title === "Dep A design" && ofB.data.blocking[0].title === "Dep C ship");
+  const rowB = (await call("GET", "/api/tasks")).data.find((t) => t.id === b.id);
+  check("list rows carry dependency_count and blocked_by_open", Number(rowB.dependency_count) === 1 && Number(rowB.blocked_by_open) === 1);
+  const pairs = await call("GET", "/api/tasks/dependencies");
+  check("every pair of the profile is listed for the timeline", pairs.status === 200 && pairs.data.some((p) => p.task_id === b.id && p.depends_on_id === a.id) && pairs.data.some((p) => p.task_id === c.id && p.depends_on_id === b.id));
+  await call("PUT", `/api/tasks/${a.id}`, { body: { status: "done" } });
+  check("finishing the blocker unblocks the waiting task", Number((await call("GET", `/api/tasks/${b.id}`)).data.blocked_by_open) === 0);
+  const hist = (await call("GET", `/api/tasks/${b.id}/history`)).data;
+  check("history records the dependency", hist.some((h) => h.action === "dependency_added" && h.new_value === "Dep A design"));
+  const rm = await call("DELETE", `/api/tasks/${c.id}/dependencies/${b.id}`);
+  const rmAgain = await call("DELETE", `/api/tasks/${c.id}/dependencies/${b.id}`);
+  check("a dependency can be removed once", rm.status === 200 && rm.data.blocked_by.length === 0 && rmAgain.status === 404);
+  await call("DELETE", `/api/tasks/${a.id}`);
+  check("deleting a task removes the dependencies that pointed at it", (await call("GET", `/api/tasks/${b.id}/dependencies`)).data.blocked_by.length === 0);
+  await call("DELETE", `/api/tasks/${b.id}`);
+  await call("DELETE", `/api/tasks/${c.id}`);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
@@ -799,6 +833,8 @@ const adminJar = { ...jar };
     const vComment = await call("POST", `/api/tasks/${taskId}/comments`, { body: { body: "viewer speaks" } });
     const vHistory = await call("GET", `/api/tasks/${taskId}/history`);
     check("a viewer reads comments and history but cannot comment (403)", vComments.status === 200 && vHistory.status === 200 && vComment.status === 403);
+    const vDep = await call("POST", `/api/tasks/${taskId}/dependencies`, { body: { depends_on_id: taskId } });
+    check("a viewer reads dependencies but cannot change them (403)", vDep.status === 403 && (await call("GET", `/api/tasks/${taskId}/dependencies`)).status === 200 && (await call("GET", "/api/tasks/dependencies")).status === 200);
     const vInfo = await call("GET", "/api/info");
     const vInfoSearch = await call("GET", "/api/info/search?q=a");
     const vSearch = await call("GET", "/api/search?q=a");

@@ -45,6 +45,9 @@ export const DEFAULT_PREFS = {
   autosaveSeconds: 3, // outputs & sticky notes save this long after you stop typing (0 = manual)
   boardGroupBy: "status", // status | priority | assignee
   boardCompact: false, // compact cards on the board
+  timelineZoom: "month", // week | month | quarter
+  timelineGroup: "project", // project | assignee | none
+  timelineHideDone: false,
   calendarView: "month", // month | week | agenda
   calendarHideDone: false,
   calendarShowDeadlines: true, // project end dates on the calendar

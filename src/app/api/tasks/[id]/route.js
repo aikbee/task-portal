@@ -7,6 +7,7 @@ import { notifyInvolved } from "@/lib/notifications";
 import { TASK_STATUS } from "@/lib/constants";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { logTask, diffTask } from "@/lib/task-activity";
+import { announceUnblocked } from "@/lib/task-deps";
 
 export async function getTask(id, owner) {
   const task = await queryOne(`${TASK_SELECT} WHERE t.id = ? AND t.profile_id = ?`, [id, owner]);
@@ -59,6 +60,7 @@ export const PUT = handler(async (request, params, user) => {
       entityId: id,
     }, { employeeIds: [after.employee_id] });
   }
+  if (after.status === "done" && before.status !== "done") announceUnblocked(user, after);
   if ("employee_id" in data && data.employee_id !== before.employee_id && after.assignee_name) {
     notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${after.assignee_name}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: [after.employee_id], forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
   }

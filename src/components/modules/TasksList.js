@@ -11,7 +11,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Select } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
-import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect, TagChips, ChecklistCount } from "./shared";
+import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect, TagChips, ChecklistCount, BlockedMark } from "./shared";
 import { TASK_STATUS, TASK_PRIORITY, MODULE_MAP } from "@/lib/modules";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
@@ -54,7 +54,7 @@ export default function TasksList() {
       key: "title", label: tr("Task"), hideable: false,
       render: (r) => (
         <span className="block max-w-md leading-tight">
-          <span className="flex items-center gap-1.5"><span className="truncate font-medium">{r.title}</span><ChecklistCount done={r.checklist_done} total={r.checklist_total} className="shrink-0 text-[11px] text-fg-muted" /></span>
+          <span className="flex items-center gap-1.5"><span className="truncate font-medium">{r.title}</span><BlockedMark task={r} className="shrink-0" /><ChecklistCount done={r.checklist_done} total={r.checklist_total} className="shrink-0 text-[11px] text-fg-muted" /></span>
           {r.description ? <span className="block truncate text-[11px] text-fg-muted">{r.description}</span> : null}
           <TagChips tags={r.tags} className="mt-0.5" onPick={(t) => setFilter("tag")({ target: { value: t } })} />
         </span>

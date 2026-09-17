@@ -38,6 +38,8 @@ function sentence(h, tr) {
     case "attachment_removed": return tr("{who} removed the file {name}", { who, name: old });
     case "output_added": return next ? tr("{who} added the output “{name}”", { who, name: next }) : tr("{who} added an output", { who });
     case "output_removed": return old ? tr("{who} removed the output “{name}”", { who, name: old }) : tr("{who} removed an output", { who });
+    case "dependency_added": return tr("{who} made this task wait for “{name}”", { who, name: next });
+    case "dependency_removed": return tr("{who} removed the dependency on “{name}”", { who, name: old });
     case "checklist_added": return tr("{who} added the checklist item “{name}”", { who, name: next });
     case "checklist_removed": return tr("{who} removed the checklist item “{name}”", { who, name: old });
     case "checklist_done": return tr("{who} ticked off “{name}”", { who, name: next });
