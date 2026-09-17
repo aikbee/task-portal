@@ -6,6 +6,7 @@ import { listAttachments as listKind } from "@/lib/attachments";
 import { notifyInvolved } from "@/lib/notifications";
 import { TASK_STATUS } from "@/lib/constants";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
+import { logTask, diffTask } from "@/lib/task-activity";
 
 export async function getTask(id, owner) {
   const task = await queryOne(`${TASK_SELECT} WHERE t.id = ? AND t.profile_id = ?`, [id, owner]);
@@ -42,6 +43,7 @@ export const PUT = handler(async (request, params, user) => {
   const cols = Object.keys(data);
   if (cols.length) await execute(`UPDATE tasks SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND profile_id = ?`, [...cols.map((c) => data[c]), id, owner]);
   const after = await getTask(id, owner);
+  await logTask(user, id, diffTask(before, after));
   if (data.status && data.status !== before.status) {
     notifyInvolved(user, {
       type: after.status === "done" ? "task_done" : "task_status",

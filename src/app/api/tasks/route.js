@@ -4,6 +4,7 @@ import { TASK_STATUS, TASK_PRIORITY } from "@/lib/constants";
 import { nextSortOrder } from "@/lib/ordering";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { notifyInvolved } from "@/lib/notifications";
+import { logTask } from "@/lib/task-activity";
 
 export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "due_date"];
 
@@ -12,7 +13,8 @@ export const TASK_SELECT = `
     CONCAT(e.first_name, ' ', e.last_name) AS assignee_name, e.avatar_color, e.job_title AS assignee_title,
     r.code AS requirement_code, r.title AS requirement_title,
     (SELECT COUNT(*) FROM task_attachments a WHERE a.task_id = t.id) AS attachment_count,
-    (SELECT COUNT(*) FROM task_outputs o WHERE o.task_id = t.id) AS output_count
+    (SELECT COUNT(*) FROM task_outputs o WHERE o.task_id = t.id) AS output_count,
+    (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id) AS comment_count
   FROM tasks t
   LEFT JOIN projects p ON p.id = t.project_id
   LEFT JOIN employees e ON e.id = t.employee_id
@@ -58,6 +60,7 @@ export const POST = handler(async (request, _params, user) => {
   const cols = Object.keys(data);
   const res = await execute(`INSERT INTO tasks (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => data[c]));
   const [row] = await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]);
+  await logTask(user, row.id, { action: "created" });
   notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_name].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { employeeIds: [row.employee_id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
   return ok(row, { status: 201 });
 });

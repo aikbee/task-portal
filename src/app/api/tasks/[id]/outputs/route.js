@@ -1,4 +1,5 @@
 import { execute } from "@/lib/db";
+import { logTask } from "@/lib/task-activity";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { applyOrder, nextSortOrder } from "@/lib/ordering";
 import { ownedTask } from "@/lib/ownership";
@@ -13,6 +14,7 @@ export const POST = handler(async (request, params, user) => {
   const order = await nextSortOrder("task_outputs", taskId);
   const b = blockPatch({ title: body.title ?? "", content: body.content ?? null, format: body.format ?? "text" });
   const res = await execute("INSERT INTO task_outputs (task_id, title, content, format, sort_order) VALUES (?, ?, ?, ?, ?)", [taskId, b.title, b.content, b.format, order]);
+  await logTask(user, taskId, { action: "output_added", next: b.title || null });
   return ok({ items: await listOutputs(taskId), created_id: res.insertId }, { status: 201 });
 });
 

@@ -1,4 +1,5 @@
 import { execute } from "@/lib/db";
+import { logTask } from "@/lib/task-activity";
 import { handler, ok, readJson, requireId } from "@/lib/api-utils";
 import { readStoredFile, deleteStoredFile } from "@/lib/uploads";
 import { setPosition, applyOrder } from "@/lib/ordering";
@@ -35,6 +36,7 @@ export const DELETE = handler(async (_req, params, user) => {
   const meta = kindOf(params.kind);
   const att = await findAttachment(params.kind, requireId(params.id), user.profile_id);
   await execute(`DELETE FROM ${meta.table} WHERE id = ?`, [att.id]);
+  if (params.kind === "task") await logTask(user, att.parent_id, { action: "attachment_removed", old: att.original_name });
   await deleteStoredFile(att.stored_name).catch(() => {});
   await applyOrder(meta.table, att.parent_id, []);
   return ok(await listAttachments(params.kind, att.parent_id));

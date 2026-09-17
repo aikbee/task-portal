@@ -1,4 +1,5 @@
 import { queryOne, execute } from "@/lib/db";
+import { logTask } from "@/lib/task-activity";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { setPosition, applyOrder } from "@/lib/ordering";
 import { listOutputs } from "../../tasks/[id]/route";
@@ -24,6 +25,7 @@ export const PUT = handler(async (request, params, user) => {
 export const DELETE = handler(async (_req, params, user) => {
   const out = await find(requireId(params.id), user.profile_id);
   await execute("DELETE FROM task_outputs WHERE id = ?", [out.id]);
+  await logTask(user, out.task_id, { action: "output_removed", old: out.title || null });
   await applyOrder("task_outputs", out.task_id, []);
   return ok(await listOutputs(out.task_id));
 });

@@ -71,7 +71,7 @@ export default function ProjectDetail({ id }) {
     { key: "status", label: tr("Status"), render: (r) => <InlineSelect value={r.status} map={TASK_STATUS} onChange={(v) => quickUpdateTask(r, { status: v })} /> },
     { key: "priority", label: tr("Priority"), render: (r) => <StatusBadge map={TASK_PRIORITY} value={r.priority} /> },
     { key: "due_date", label: tr("Due"), render: (r) => <DueDateCell date={r.due_date} status={r.status} /> },
-    { key: "counts", label: tr("Files / Outputs"), sortable: false, render: (r) => <CountsCell attachments={r.attachment_count} outputs={r.output_count} /> },
+    { key: "counts", label: tr("Files / Outputs / Comments"), sortable: false, render: (r) => <CountsCell attachments={r.attachment_count} outputs={r.output_count} comments={r.comment_count} /> },
     { key: "updated_at", label: tr("Updated"), render: (r) => <span className="text-fg-muted">{relativeTime(r.updated_at)}</span> },
   ];
 

@@ -371,6 +371,35 @@ CREATE TABLE IF NOT EXISTS task_outputs (
   CONSTRAINT fk_out_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Discussion on a task. user_id carries no foreign key (deleting a user already cascades close to InnoDB's
+-- table limit); author_name keeps the comment readable after the account is gone.
+CREATE TABLE IF NOT EXISTS task_comments (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  author_name VARCHAR(120) NOT NULL,
+  body TEXT NOT NULL,
+  edited_at TIMESTAMP NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_tc_task (task_id, id),
+  CONSTRAINT fk_tc_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Who changed what on a task: one row per change (field, old and new value as readable text).
+CREATE TABLE IF NOT EXISTS task_activity (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NULL,
+  actor_name VARCHAR(120) NULL,
+  action VARCHAR(32) NOT NULL,
+  field VARCHAR(32) NULL,
+  old_value VARCHAR(255) NULL,
+  new_value VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_ta_task (task_id, id),
+  CONSTRAINT fk_ta_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Sticky notes scoped to a module (dashboard / projects / employees / tasks), private to a user
 CREATE TABLE IF NOT EXISTS notes (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

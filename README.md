@@ -173,6 +173,9 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT | `/api/auth/pin` | `{ pin }` / `{ pin: null }` keeps a hashed copy of the lock-screen PIN on the account for re-verification |
 | POST/PUT | `/api/info/:id/notes` · PUT/DELETE `/api/info-notes/:id` | notes, like task outputs |
 | POST/PUT | `/api/info/:id/attachments` | uploads; files via `/api/attachments/info/:id` |
+| GET / POST | `/api/tasks/:id/comments` | the discussion, oldest first (`mine`, `can_delete` per comment) / `{ body }` adds a comment (editors and up; `@[Name](employee:id)` tags notify the linked account, everyone else involved gets "commented on") |
+| PUT / DELETE | `/api/tasks/:id/comments/:commentId` | the author edits (marked `edited_at`) / the author, the owner or a manager deletes |
+| GET | `/api/tasks/:id/history` | who changed what: `action` (created, updated, attachment_added…), `field`, `old_value`, `new_value`, `actor_name` |
 | GET | `/api/tasks/mine` | tasks assigned to me (employee records linked to my account) in every profile I can open; `?open=1` hides finished ones |
 | PUT | `/api/tasks/reorder` | `{ order: [ids] }` sets board order (active profile only) |
 | GET/POST | `/api/tasks` | filters: `project_id`, `employee_id`, `status`, `priority`, `q`, `due_from`, `due_to`, `has_due=1` |

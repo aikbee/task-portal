@@ -63,7 +63,7 @@ export default function TasksList() {
     { key: "status", label: tr("Status"), sortValue: (r) => Object.keys(TASK_STATUS).indexOf(r.status), render: (r) => <InlineSelect value={r.status} map={TASK_STATUS} onChange={(v) => quickUpdate(r, { status: v })} /> },
     { key: "priority", label: tr("Priority"), sortValue: (r) => Object.keys(TASK_PRIORITY).indexOf(r.priority), render: (r) => <StatusBadge map={TASK_PRIORITY} value={r.priority} /> },
     { key: "due_date", label: tr("Due"), render: (r) => <DueDateCell date={r.due_date} status={r.status} /> },
-    { key: "counts", label: tr("Files / Outputs"), sortable: false, searchable: false, render: (r) => <CountsCell attachments={r.attachment_count} outputs={r.output_count} /> },
+    { key: "counts", label: tr("Files / Outputs / Comments"), sortable: false, searchable: false, render: (r) => <CountsCell attachments={r.attachment_count} outputs={r.output_count} comments={r.comment_count} /> },
     { key: "requirement_code", label: tr("Requirement"), defaultHidden: true, sortValue: (r) => r.requirement_code, render: (r) => r.requirement_id ? <Link href={`/requirements/${r.requirement_id}`} onClick={(e) => e.stopPropagation()} className="font-mono text-xs hover:text-accent" title={r.requirement_title}>{r.requirement_code}</Link> : <span className="text-fg-faint">—</span> },
     { key: "created_at", label: tr("Created"), defaultHidden: true, render: (r) => formatDate(r.created_at) },
     { key: "updated_at", label: tr("Updated"), render: (r) => <span className="text-fg-muted">{relativeTime(r.updated_at)}</span> },

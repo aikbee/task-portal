@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useNav } from "@/lib/nav";
-import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock } from "lucide-react";
+import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { cn, formatDate, isOverdue } from "@/lib/utils";
@@ -106,11 +106,12 @@ export function DueDateCell({ date, status }) {
   );
 }
 
-export function CountsCell({ attachments = 0, outputs = 0 }) {
+export function CountsCell({ attachments = 0, outputs = 0, comments }) {
   return (
     <span className="inline-flex items-center gap-3 text-xs text-fg-muted">
       <span className={cn("inline-flex items-center gap-1", attachments > 0 && "text-fg")}><Paperclip size={13} /> {attachments}</span>
       <span className={cn("inline-flex items-center gap-1", outputs > 0 && "text-fg")}><FileText size={13} /> {outputs}</span>
+      {comments != null ? <span className={cn("inline-flex items-center gap-1", comments > 0 && "text-fg")}><MessageSquare size={13} /> {comments}</span> : null}
     </span>
   );
 }

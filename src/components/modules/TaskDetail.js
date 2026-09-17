@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen } from "lucide-react";
+import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
@@ -19,6 +19,7 @@ import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
 import AttachmentsPanel from "./AttachmentsPanel";
 import TaskOutputs from "./TaskOutputs";
+import TaskActivity from "./TaskActivity";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -121,6 +122,7 @@ export default function TaskDetail({ id }) {
           </Card>
           <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} />
           <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} />
+          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.attachments.length}:${task.outputs.length}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
         </div>
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
@@ -206,6 +208,7 @@ export default function TaskDetail({ id }) {
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>
             <p className="flex items-center gap-2"><Paperclip size={13} /> {task.attachments.length} attachment{task.attachments.length === 1 ? "" : "s"}</p>
             <p className="flex items-center gap-2"><FileText size={13} /> {task.outputs.length} output{task.outputs.length === 1 ? "" : "s"}</p>
+            <p className="flex items-center gap-2"><MessageSquare size={13} /> {task.comment_count ?? 0} comment{task.comment_count === 1 ? "" : "s"}</p>
             <p className="flex items-center gap-2"><Flag size={13} /> Sort order #{task.sort_order}</p>
             <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(task.created_at)}</p>
             <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(task.updated_at)}</p>
