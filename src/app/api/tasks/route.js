@@ -1,13 +1,14 @@
 import { query, execute } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf, HttpError } from "@/lib/api-utils";
 import { normaliseTags } from "@/lib/tags";
+import { REPEAT_RULES } from "@/lib/recurrence";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/constants";
 import { nextSortOrder } from "@/lib/ordering";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { notifyInvolved } from "@/lib/notifications";
 import { logTask } from "@/lib/task-activity";
 
-export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags"];
+export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags", "repeat_rule", "repeat_until"];
 
 export const TASK_SELECT = `
   SELECT t.*, p.name AS project_name, p.color AS project_color, p.code AS project_code,
@@ -38,7 +39,8 @@ export function normaliseTask(data) {
     if (!Number.isFinite(n) || n < 0 || n > 9999) throw new HttpError("The estimate must be between 0 and 9999 hours.", 400);
     data.estimate_hours = Math.round(n * 100) / 100;
   }
-  for (const f of ["start_date", "due_date"]) if (data[f] != null && !/^\d{4}-\d{2}-\d{2}$/.test(data[f])) throw new HttpError(`${f} must be a date (YYYY-MM-DD).`, 400);
+  if ("repeat_rule" in data && data.repeat_rule != null && !REPEAT_RULES[data.repeat_rule]) throw new HttpError(`Unknown repeat rule: ${data.repeat_rule}.`, 400);
+  for (const f of ["start_date", "due_date", "repeat_until"]) if (data[f] != null && !/^\d{4}-\d{2}-\d{2}$/.test(data[f])) throw new HttpError(`${f} must be a date (YYYY-MM-DD).`, 400);
   return data;
 }
 /** A task cannot start after it is due. `current` is the stored row when only one of the two dates is being changed. */

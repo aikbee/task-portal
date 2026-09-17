@@ -20,7 +20,7 @@ import ProjectMembers from "./ProjectMembers";
 import ProjectRequirements from "./ProjectRequirements";
 import ProjectInfo from "./ProjectInfo";
 import TaskForm from "./TaskForm";
-import { RowActions, PersonCell, DueDateCell, CountsCell, InlineSelect, useDeleteFlow } from "./shared";
+import { RowActions, PersonCell, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask } from "./shared";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
@@ -58,7 +58,7 @@ export default function ProjectDetail({ id }) {
 
   const quickUpdateTask = async (row, patch) => {
     try {
-      const saved = await api.put(`/api/tasks/${row.id}`, patch);
+      const saved = await putTask(row.id, patch, { toast, tr, onNext: refetch });
       setData((p) => ({ ...p, tasks: p.tasks.map((t) => (t.id === row.id ? { ...t, ...saved } : t)), done_count: p.tasks.filter((t) => (t.id === row.id ? saved.status : t.status) === "done").length }));
     } catch (e) {
       toast.error("Could not update task", e.message);

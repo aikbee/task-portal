@@ -21,7 +21,7 @@ import RequirementForm from "./RequirementForm";
 import TaskForm from "./TaskForm";
 import AttachmentsPanel from "./AttachmentsPanel";
 import { DetailSkeleton } from "./ProjectDetail";
-import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow } from "./shared";
+import { RowActions, PersonCell, DueDateCell, InlineSelect, useDeleteFlow, putTask } from "./shared";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
@@ -62,7 +62,7 @@ export default function RequirementDetail({ id }) {
   };
   const quickUpdateTask = async (row, p) => {
     try {
-      const saved = await api.put(`/api/tasks/${row.id}`, p);
+      const saved = await putTask(row.id, p, { toast, tr, onNext: refetch });
       setData((r) => ({ ...r, tasks: r.tasks.map((t) => (t.id === row.id ? { ...t, ...saved } : t)) }));
     } catch (e) {
       toast.error("Could not update task", e.message);

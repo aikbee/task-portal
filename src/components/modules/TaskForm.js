@@ -8,9 +8,11 @@ import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { fullName } from "@/lib/utils";
+import { putTask } from "./shared";
+import { REPEAT_RULES } from "@/lib/recurrence";
 import { useT } from "@/lib/i18n";
 
-const empty = { title: "", description: "", project_id: "", employee_id: "", requirement_id: "", status: "todo", priority: "medium", start_date: "", due_date: "", estimate_hours: "", tags: "" };
+const empty = { title: "", description: "", project_id: "", employee_id: "", requirement_id: "", status: "todo", priority: "medium", start_date: "", due_date: "", estimate_hours: "", tags: "", repeat_rule: "", repeat_until: "" };
 
 function fromInitial(initial, defaults) {
   if (!initial) return { ...empty, ...defaults };
@@ -26,6 +28,8 @@ function fromInitial(initial, defaults) {
     due_date: initial.due_date ?? "",
     estimate_hours: initial.estimate_hours ?? "",
     tags: String(initial.tags ?? "").split(",").filter(Boolean).join(", "),
+    repeat_rule: initial.repeat_rule ?? "",
+    repeat_until: initial.repeat_until ?? "",
   };
 }
 
@@ -62,8 +66,8 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
     setSaving(true);
     setError(null);
     try {
-      const payload = { ...form, start_date: form.start_date || null, due_date: form.due_date || null, estimate_hours: form.estimate_hours === "" ? null : form.estimate_hours };
-      const saved = initial ? await api.put(`/api/tasks/${initial.id}`, payload) : await api.post("/api/tasks", payload);
+      const payload = { ...form, start_date: form.start_date || null, due_date: form.due_date || null, estimate_hours: form.estimate_hours === "" ? null : form.estimate_hours, repeat_rule: form.repeat_rule || null, repeat_until: form.repeat_rule ? form.repeat_until || null : null };
+      const saved = initial ? await putTask(initial.id, payload, { toast, tr }) : await api.post("/api/tasks", payload);
       toast.success(initial ? "Task updated" : "Task created", saved.title);
       onSaved?.(saved, !initial);
       onClose();
@@ -139,6 +143,15 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
         <Field label={tr("Tags")} className="sm:col-span-2" hint={tr("Comma separated")}>
           <Input value={form.tags ?? ""} onChange={(e) => set("tags", e.target.value)} placeholder="bug, client-x" list="task-tag-suggestions" className="task-tags-input" />
           <datalist id="task-tag-suggestions">{(knownTags ?? []).map((t) => <option key={t.tag} value={t.tag} />)}</datalist>
+        </Field>
+        <Field label={tr("Repeats")} className="sm:col-span-3" hint={form.repeat_rule ? tr("Completing it creates the next one, counted from the due date.") : undefined}>
+          <Select value={form.repeat_rule ?? ""} onChange={(e) => set("repeat_rule", e.target.value)} className="task-repeat-select">
+            <option value="">{tr("Does not repeat")}</option>
+            {Object.entries(REPEAT_RULES).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+          </Select>
+        </Field>
+        <Field label={tr("Repeat until")} className="sm:col-span-3">
+          <Input type="date" value={form.repeat_until || ""} min={form.due_date || undefined} disabled={!form.repeat_rule} onChange={(e) => set("repeat_until", e.target.value)} />
         </Field>
         <Field label={tr("Description")} className="sm:col-span-6">
           <Textarea value={form.description ?? ""} onChange={(e) => set("description", e.target.value)} rows={4} placeholder="Context, acceptance criteria, links…" />

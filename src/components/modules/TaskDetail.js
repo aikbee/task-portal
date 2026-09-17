@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock } from "lucide-react";
+import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock, Repeat } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
@@ -23,7 +23,8 @@ import TaskActivity from "./TaskActivity";
 import TaskChecklist from "./TaskChecklist";
 import TaskDependencies from "./TaskDependencies";
 import TaskTime from "./TaskTime";
-import { TagChips } from "./shared";
+import { REPEAT_RULES } from "@/lib/recurrence";
+import { TagChips, putTask } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -49,7 +50,7 @@ export default function TaskDetail({ id }) {
 
   const patch = async (p) => {
     try {
-      const saved = await api.put(`/api/tasks/${id}`, p);
+      const saved = await putTask(id, p, { toast, tr });
       setData(saved);
     } catch (e) {
       toast.error("Could not update task", e.message);
@@ -109,6 +110,8 @@ export default function TaskDetail({ id }) {
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-fg-muted">
           <StatusBadge map={TASK_STATUS} value={task.status} />
           <StatusBadge map={TASK_PRIORITY} value={task.priority} dot={false} />
+          {task.repeat_rule ? <span className="task-repeats inline-flex items-center gap-1 rounded-full bg-sky-500/12 px-2 py-0.5 text-[11px] font-medium text-sky-600"><Repeat size={11} /> {tr(REPEAT_RULES[task.repeat_rule]?.label ?? "Repeats")}</span> : null}
+          {task.repeat_next_id ? <Link href={`/tasks/${task.repeat_next_id}`} className="task-next inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] hover:border-accent hover:text-accent">{tr("Next in the series")} →</Link> : null}
           {Number(task.blocked_by_open) > 0 && task.status !== "done" ? <span className="task-blocked inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600"><Lock size={11} /> {tr("Blocked")}</span> : null}
           {task.project_name ? (
             <Link href={`/projects/${task.project_id}`} className="inline-flex items-center gap-1 hover:text-accent">
@@ -157,6 +160,13 @@ export default function TaskDetail({ id }) {
             <Row label={tr("Tags")}>
               <TagChips tags={task.tags} className="mb-1.5" max={20} />
               <Input key={`tags-${task.tags}`} defaultValue={String(task.tags ?? "").split(",").filter(Boolean).join(", ")} placeholder={tr("bug, client-x")} onBlur={(e) => { const next = e.target.value; if (next.split(",").map((x) => x.trim().toLowerCase().replace(/\s+/g, "-")).filter(Boolean).join(",") !== (task.tags ?? "")) patch({ tags: next }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="task-tags-inline h-8 text-xs" />
+            </Row>
+            <Row label={tr("Repeats")}>
+              <Select value={task.repeat_rule ?? ""} onChange={(e) => patch({ repeat_rule: e.target.value || null })} className="task-repeat-inline h-8 text-xs">
+                <option value="">{tr("Does not repeat")}</option>
+                {Object.entries(REPEAT_RULES).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+              </Select>
+              {task.repeat_rule ? <Input type="date" value={task.repeat_until || ""} onChange={(e) => patch({ repeat_until: e.target.value || null })} className="mt-1.5 h-8 text-xs" aria-label={tr("Repeat until")} title={tr("Repeat until")} /> : null}
             </Row>
             <Row label={tr("Assignee")}>
               {task.assignee_name ? (

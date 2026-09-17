@@ -92,6 +92,10 @@ const hasFk = async (db, table, name) =>
 
 /** Incremental changes for databases created by earlier versions of the schema. */
 async function migrate(db, adminId) {
+  if (!(await hasColumn(db, "tasks", "repeat_rule"))) {
+    log("migrating: tasks.repeat_rule, repeat_until, repeat_series_id, repeat_next_id");
+    await db.query("ALTER TABLE tasks ADD COLUMN repeat_rule VARCHAR(16) NULL, ADD COLUMN repeat_until DATE NULL, ADD COLUMN repeat_series_id INT UNSIGNED NULL, ADD COLUMN repeat_next_id INT UNSIGNED NULL, ADD KEY idx_tasks_series (repeat_series_id)");
+  }
   if (!(await hasColumn(db, "tasks", "start_date"))) {
     log("migrating: tasks.start_date, estimate_hours, tags");
     await db.query("ALTER TABLE tasks ADD COLUMN start_date DATE NULL AFTER priority, ADD COLUMN estimate_hours DECIMAL(6,2) NULL AFTER due_date, ADD COLUMN tags VARCHAR(255) NULL AFTER estimate_hours");

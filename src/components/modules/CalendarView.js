@@ -18,7 +18,7 @@ import Avatar from "@/components/ui/Avatar";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
-import { InlineSelect } from "./shared";
+import { InlineSelect, putTask } from "./shared";
 import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
@@ -112,7 +112,7 @@ export default function CalendarView() {
   };
   const quickStatus = async (t, status) => {
     try {
-      const saved = await api.put(`/api/tasks/${t.id}`, { status });
+      const saved = await putTask(t.id, { status }, { toast, tr, onNext: refetch });
       setData((list) => list.map((x) => (x.id === t.id ? { ...x, ...saved } : x)));
     } catch (e) {
       toast.error("Could not update task", e.message);

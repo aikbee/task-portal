@@ -646,6 +646,38 @@ console.log("planning: time tracking");
   await call("DELETE", `/api/tasks/${t2.id}`);
 }
 
+console.log("planning: repeating tasks");
+{
+  const badRule = await call("POST", "/api/tasks", { body: { title: "Repeat bad", repeat_rule: "hourly" } });
+  check("an unknown repeat rule -> 400", badRule.status === 400);
+  const made = await call("POST", "/api/tasks", { body: { title: "Repeat weekly report", repeat_rule: "weekly", start_date: "2026-08-29", due_date: "2026-08-31", estimate_hours: 1, tags: "report", priority: "high" } });
+  check("a task can repeat", made.status === 201 && made.data.repeat_rule === "weekly" && made.data.repeat_next_id === null);
+  const rid = made.data.id;
+  const list = await call("POST", `/api/tasks/${rid}/checklist`, { body: { title: "Collect numbers\nWrite summary" } });
+  await call("PUT", `/api/tasks/${rid}/checklist/${list.data[0].id}`, { body: { done: true } });
+  const moved = await call("PUT", `/api/tasks/${rid}`, { body: { status: "in_progress" } });
+  check("moving it without finishing makes nothing", moved.status === 200 && !moved.data.next_task);
+  const done = await call("PUT", `/api/tasks/${rid}`, { body: { status: "done", today: "2026-09-18" } });
+  check("completing it creates the next one: same weekday, first date not in the past, start date moved along", done.status === 200 && done.data.next_task?.due_date === "2026-09-21" && done.data.next_task.start_date === "2026-09-19" && done.data.repeat_next_id === done.data.next_task.id, JSON.stringify(done.data.next_task));
+  const next = await call("GET", `/api/tasks/${done.data.next_task.id}`);
+  check("the next task copies what matters and starts fresh", next.data.status === "todo" && next.data.priority === "high" && next.data.tags === "report" && Number(next.data.estimate_hours) === 1 && next.data.repeat_rule === "weekly" && next.data.repeat_series_id === rid && next.data.checklist.map((k) => `${k.title}:${k.done}`).join() === "Collect numbers:0,Write summary:0" && Number(next.data.comment_count) === 0);
+  await call("PUT", `/api/tasks/${rid}`, { body: { status: "todo" } });
+  const again = await call("PUT", `/api/tasks/${rid}`, { body: { status: "done", today: "2026-09-18" } });
+  check("reopening and completing again does not make a second one", again.status === 200 && !again.data.next_task && (await call("GET", "/api/tasks?q=Repeat weekly report")).data.length === 2);
+  const hist = (await call("GET", `/api/tasks/${rid}/history`)).data;
+  check("history says the next one was created", hist.some((h) => h.action === "repeat_spawned" && h.new_value === "2026-09-21") && (await call("GET", `/api/tasks/${next.data.id}/history`)).data[0].action === "created_from_repeat");
+  const ending = await call("POST", "/api/tasks", { body: { title: "Repeat ending", repeat_rule: "monthly", due_date: "2026-09-10", repeat_until: "2026-10-01" } });
+  const ended = await call("PUT", `/api/tasks/${ending.data.id}`, { body: { status: "done", today: "2026-09-18" } });
+  check("a series stops at its end date", ended.status === 200 && !ended.data.next_task);
+  const monthEnd = await call("POST", "/api/tasks", { body: { title: "Repeat month end", repeat_rule: "monthly", due_date: "2027-01-31" } });
+  const feb = await call("PUT", `/api/tasks/${monthEnd.data.id}`, { body: { status: "done", today: "2027-01-31" } });
+  check("monthly from the 31st lands on the last day of a shorter month", feb.data.next_task?.due_date === "2027-02-28");
+  const off = await call("PUT", `/api/tasks/${next.data.id}`, { body: { repeat_rule: null } });
+  const offDone = await call("PUT", `/api/tasks/${next.data.id}`, { body: { status: "done" } });
+  check("turning repeat off ends the series", off.data.repeat_rule === null && !offDone.data.next_task);
+  for (const t of (await call("GET", "/api/tasks?q=Repeat ")).data) await call("DELETE", `/api/tasks/${t.id}`);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");

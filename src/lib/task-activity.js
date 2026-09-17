@@ -34,6 +34,8 @@ export function diffTask(before, after) {
   if ((before.project_id ?? null) !== (after.project_id ?? null)) out.push({ action: "updated", field: "project", old: before.project_name, next: after.project_name });
   if ((before.requirement_id ?? null) !== (after.requirement_id ?? null)) out.push({ action: "updated", field: "requirement", old: before.requirement_code, next: after.requirement_code });
   changed("tags", before.tags, after.tags);
+  changed("repeat", before.repeat_rule, after.repeat_rule);
+  changed("repeat_until", before.repeat_until, after.repeat_until);
   return out;
 }
 

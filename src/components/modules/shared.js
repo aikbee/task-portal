@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useNav } from "@/lib/nav";
-import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare, ListChecks, Lock } from "lucide-react";
+import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare, ListChecks, Lock, Repeat } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { cn, formatDate, isOverdue } from "@/lib/utils";
@@ -11,6 +11,8 @@ import Button from "@/components/ui/Button";
 import Avatar from "@/components/ui/Avatar";
 import { useT } from "@/lib/i18n";
 import { useAccess } from "@/lib/auth-context";
+import { todayIso } from "@/lib/dates";
+import { REPEAT_RULES } from "@/lib/recurrence";
 
 /** List-page data + delete helpers. */
 export function useCrudList(url) {
@@ -132,6 +134,25 @@ export function TagChips({ tags, onPick, className, max = 6 }) {
       {list.length > max ? <span className="text-[10px] text-fg-faint">+{list.length - max}</span> : null}
     </span>
   );
+}
+/**
+ * Save a change to a task. Completing one sends the browser's date (a repeating task counts its next date from
+ * "today" as the person sees it) and, when that made the next task of a series, says so and calls onNext.
+ */
+export async function putTask(id, patch, { toast, tr = (x) => x, onNext } = {}) {
+  const saved = await api.put(`/api/tasks/${id}`, patch?.status === "done" ? { ...patch, today: todayIso() } : patch);
+  if (saved?.next_task) {
+    const when = saved.next_task.due_date ?? saved.next_task.start_date;
+    toast?.success(tr("The next one is ready"), when ? tr("“{title}” is due {date}", { title: saved.next_task.title, date: formatDate(when) }) : saved.next_task.title);
+    onNext?.(saved.next_task);
+  }
+  return saved;
+}
+/** A small repeat sign on tasks that make their successor when completed. */
+export function RepeatMark({ task, className }) {
+  const tr = useT();
+  if (!task?.repeat_rule) return null;
+  return <span className={cn("task-repeat-mark inline-flex items-center text-sky-500", className)} data-tip={tr(REPEAT_RULES[task.repeat_rule]?.label ?? "Repeats")}><Repeat size={11} /></span>;
 }
 /** A small lock while a task still waits for unfinished tasks. */
 export function BlockedMark({ task, className }) {

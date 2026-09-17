@@ -241,6 +241,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   due_date DATE NULL,
   estimate_hours DECIMAL(6,2) NULL,
   tags VARCHAR(255) NULL, -- lower-case, comma separated, no spaces (see src/lib/tags.js); filtered with FIND_IN_SET
+  repeat_rule VARCHAR(16) NULL, -- daily | weekdays | weekly | biweekly | monthly | quarterly | yearly (see src/lib/recurrence.js)
+  repeat_until DATE NULL,
+  repeat_series_id INT UNSIGNED NULL, -- id of the first task of the series (plain column, no self-referencing key)
+  repeat_next_id INT UNSIGNED NULL, -- the task that was created when this one was completed: it is made only once
   sort_order INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -251,6 +255,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   KEY idx_tasks_owner (user_id),
   KEY idx_tasks_profile (profile_id),
   KEY idx_tasks_requirement (requirement_id),
+  KEY idx_tasks_series (repeat_series_id),
   CONSTRAINT fk_tasks_owner FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_tasks_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
   CONSTRAINT fk_tasks_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,

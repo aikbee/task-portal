@@ -19,7 +19,7 @@ import DataTable from "@/components/table/DataTable";
 import { useToast } from "@/components/ui/Toast";
 import EmployeeForm from "./EmployeeForm";
 import TaskForm from "./TaskForm";
-import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow } from "./shared";
+import { RowActions, ProjectChip, DueDateCell, CountsCell, InlineSelect, useDeleteFlow, putTask } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { useT } from "@/lib/i18n";
 import { CanEdit, CanDelete } from "@/lib/auth-context";
@@ -57,7 +57,7 @@ export default function EmployeeDetail({ id }) {
   };
   const quickUpdateTask = async (row, patch) => {
     try {
-      const saved = await api.put(`/api/tasks/${row.id}`, patch);
+      const saved = await putTask(row.id, patch, { toast, tr, onNext: refetch });
       setData((p) => ({ ...p, tasks: p.tasks.map((t) => (t.id === row.id ? { ...t, ...saved } : t)) }));
     } catch (e) {
       toast.error("Could not update task", e.message);

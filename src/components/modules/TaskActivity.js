@@ -6,6 +6,7 @@ import { useFetch } from "@/lib/hooks";
 import { useAccess } from "@/lib/auth-context";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/constants";
 import { displayMentions } from "@/lib/mentions";
+import { REPEAT_RULES } from "@/lib/recurrence";
 import { cn, formatDate, formatDateTime, relativeTime } from "@/lib/utils";
 import Card, { CardHeader } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -18,7 +19,7 @@ import { MentionChips } from "@/components/ui/Mentions";
 import { useToast } from "@/components/ui/Toast";
 import { useT } from "@/lib/i18n";
 
-const FIELD_LABEL = { title: "the title", status: "the status", priority: "the priority", start_date: "the start date", due_date: "the due date", estimate: "the estimate", assignee: "the assignee", project: "the project", requirement: "the requirement", tags: "the tags" };
+const FIELD_LABEL = { title: "the title", status: "the status", priority: "the priority", start_date: "the start date", due_date: "the due date", estimate: "the estimate", assignee: "the assignee", project: "the project", requirement: "the requirement", tags: "the tags", repeat: "the repeat setting", repeat_until: "the repeat end date" };
 const ACTION_ICON = { created: Plus, updated: ArrowRight, attachment_added: Paperclip, attachment_removed: Paperclip, output_added: FileText, output_removed: FileText, checklist_added: ListChecks, checklist_removed: ListChecks, checklist_done: CheckSquare, checklist_undone: CheckSquare };
 
 /** A history row as a sentence. Status and priority are stored as keys and translated here; dates are formatted. */
@@ -27,7 +28,8 @@ function sentence(h, tr) {
     if (v == null) return "";
     if (h.field === "status") return tr(TASK_STATUS[v]?.label ?? v);
     if (h.field === "priority") return tr(TASK_PRIORITY[v]?.label ?? v);
-    if (h.field === "start_date" || h.field === "due_date") return formatDate(v);
+    if (h.field === "start_date" || h.field === "due_date" || h.field === "repeat_until") return formatDate(v);
+    if (h.field === "repeat") return tr(REPEAT_RULES[v]?.label ?? v);
     return v;
   };
   const who = h.actor_name || tr("Someone");
@@ -38,6 +40,8 @@ function sentence(h, tr) {
     case "attachment_removed": return tr("{who} removed the file {name}", { who, name: old });
     case "output_added": return next ? tr("{who} added the output “{name}”", { who, name: next }) : tr("{who} added an output", { who });
     case "output_removed": return old ? tr("{who} removed the output “{name}”", { who, name: old }) : tr("{who} removed an output", { who });
+    case "repeat_spawned": return tr("{who} completed it, and the next one was created for {date}", { who, date: next ? formatDate(next) : "" });
+    case "created_from_repeat": return tr("Created as the next task of a repeating series ({from})", { from: old });
     case "dependency_added": return tr("{who} made this task wait for “{name}”", { who, name: next });
     case "dependency_removed": return tr("{who} removed the dependency on “{name}”", { who, name: old });
     case "checklist_added": return tr("{who} added the checklist item “{name}”", { who, name: next });
