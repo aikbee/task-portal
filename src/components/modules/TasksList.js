@@ -11,7 +11,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Select } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
-import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect } from "./shared";
+import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell, ProjectChip, DueDateCell, CountsCell, InlineSelect, TagChips, ChecklistCount } from "./shared";
 import { TASK_STATUS, TASK_PRIORITY, MODULE_MAP } from "@/lib/modules";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
@@ -24,12 +24,13 @@ export default function TasksList() {
   const tr = useT();
   const router = useNav();
   const toast = useToast();
-  const [f, setF] = useState({ status: "", priority: "", project_id: "", employee_id: "" });
+  const [f, setF] = useState({ status: "", priority: "", project_id: "", employee_id: "", tag: "" });
   const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
   const url = `/api/tasks${qs.toString() ? `?${qs}` : ""}`;
   const { rows, loading, error, refetch, removeLocal, setData } = useCrudList(url);
   const { data: projects } = useFetch("/api/projects");
   const { data: employees } = useFetch("/api/employees");
+  const { data: tags } = useFetch("/api/tasks/tags");
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -53,8 +54,9 @@ export default function TasksList() {
       key: "title", label: tr("Task"), hideable: false,
       render: (r) => (
         <span className="block max-w-md leading-tight">
-          <span className="block truncate font-medium">{r.title}</span>
+          <span className="flex items-center gap-1.5"><span className="truncate font-medium">{r.title}</span><ChecklistCount done={r.checklist_done} total={r.checklist_total} className="shrink-0 text-[11px] text-fg-muted" /></span>
           {r.description ? <span className="block truncate text-[11px] text-fg-muted">{r.description}</span> : null}
+          <TagChips tags={r.tags} className="mt-0.5" onPick={(t) => setFilter("tag")({ target: { value: t } })} />
         </span>
       ),
     },
@@ -97,6 +99,7 @@ export default function TasksList() {
             <Select value={f.priority} onChange={setFilter("priority")} className="h-9 w-32"><option value="">{tr("Any priority")}</option>{Object.entries(TASK_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}</Select>
             <Select value={f.project_id} onChange={setFilter("project_id")} className="h-9 w-44"><option value="">{tr("All projects")}</option>{(projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>
             <Select value={f.employee_id} onChange={setFilter("employee_id")} className="h-9 w-44"><option value="">{tr("Anyone")}</option>{(employees ?? []).map((e) => <option key={e.id} value={e.id}>{fullName(e)}</option>)}</Select>
+            {(tags ?? []).length || f.tag ? <Select value={f.tag ?? ""} onChange={setFilter("tag")} className="task-tag-filter h-9 w-36"><option value="">{tr("Any tag")}</option>{(tags ?? []).map((t) => <option key={t.tag} value={t.tag}>#{t.tag} ({t.count})</option>)}</Select> : null}
           </>
         }
         emptyTitle={tr("No tasks yet")}

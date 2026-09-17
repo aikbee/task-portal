@@ -1,12 +1,13 @@
 import { query, execute } from "@/lib/db";
-import { handler, ok, readJson, pick, requireFields, oneOf } from "@/lib/api-utils";
+import { handler, ok, readJson, pick, requireFields, oneOf, HttpError } from "@/lib/api-utils";
+import { normaliseTags } from "@/lib/tags";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/constants";
 import { nextSortOrder } from "@/lib/ordering";
 import { assertTaskRefs, assertTaskRequirement } from "@/lib/ownership";
 import { notifyInvolved } from "@/lib/notifications";
 import { logTask } from "@/lib/task-activity";
 
-export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "due_date"];
+export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags"];
 
 export const TASK_SELECT = `
   SELECT t.*, p.name AS project_name, p.color AS project_color, p.code AS project_code,
@@ -14,7 +15,9 @@ export const TASK_SELECT = `
     r.code AS requirement_code, r.title AS requirement_title,
     (SELECT COUNT(*) FROM task_attachments a WHERE a.task_id = t.id) AS attachment_count,
     (SELECT COUNT(*) FROM task_outputs o WHERE o.task_id = t.id) AS output_count,
-    (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id) AS comment_count
+    (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id) AS comment_count,
+    (SELECT COUNT(*) FROM task_checklist k WHERE k.task_id = t.id) AS checklist_total,
+    (SELECT COUNT(*) FROM task_checklist k WHERE k.task_id = t.id AND k.done = 1) AS checklist_done
   FROM tasks t
   LEFT JOIN projects p ON p.id = t.project_id
   LEFT JOIN employees e ON e.id = t.employee_id
@@ -26,7 +29,20 @@ export function normaliseTask(data) {
   if ("requirement_id" in data) data.requirement_id = data.requirement_id ? Number(data.requirement_id) : null;
   oneOf(data.status, Object.keys(TASK_STATUS), "status");
   oneOf(data.priority, Object.keys(TASK_PRIORITY), "priority");
+  if ("tags" in data) data.tags = normaliseTags(data.tags);
+  if ("estimate_hours" in data && data.estimate_hours != null) {
+    const n = Number(data.estimate_hours);
+    if (!Number.isFinite(n) || n < 0 || n > 9999) throw new HttpError("The estimate must be between 0 and 9999 hours.", 400);
+    data.estimate_hours = Math.round(n * 100) / 100;
+  }
+  for (const f of ["start_date", "due_date"]) if (data[f] != null && !/^\d{4}-\d{2}-\d{2}$/.test(data[f])) throw new HttpError(`${f} must be a date (YYYY-MM-DD).`, 400);
   return data;
+}
+/** A task cannot start after it is due. `current` is the stored row when only one of the two dates is being changed. */
+export function assertDateOrder(data, current = {}) {
+  const start = "start_date" in data ? data.start_date : current.start_date;
+  const due = "due_date" in data ? data.due_date : current.due_date;
+  if (start && due && start > due) throw new HttpError("The start date is after the due date.", 400);
 }
 
 export const GET = handler(async (request, _params, user) => {
@@ -38,7 +54,8 @@ export const GET = handler(async (request, _params, user) => {
     if (v) { where.push(`t.${f} = ?`); args.push(v); }
   }
   const q = sp.get("q");
-  if (q) { where.push("(t.title LIKE ? OR t.description LIKE ?)"); args.push(`%${q}%`, `%${q}%`); }
+  if (q) { where.push("(t.title LIKE ? OR t.description LIKE ? OR t.tags LIKE ?)"); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+  if (sp.get("tag")) { where.push("FIND_IN_SET(?, t.tags)"); args.push(String(sp.get("tag")).toLowerCase()); }
   const dueFrom = sp.get("due_from");
   const dueTo = sp.get("due_to");
   if (dueFrom) { where.push("t.due_date >= ?"); args.push(dueFrom); }
@@ -52,6 +69,7 @@ export const POST = handler(async (request, _params, user) => {
   const body = await readJson(request);
   const data = normaliseTask(pick(body, TASK_FIELDS));
   requireFields(data, ["title"]);
+  assertDateOrder(data);
   await assertTaskRequirement(owner, data);
   await assertTaskRefs(owner, data);
   data.user_id = user.owner_id;

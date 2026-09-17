@@ -3,6 +3,7 @@ import { withTransaction, query } from "./db";
 const TABLES = {
   task_attachments: { parent: "task_id" },
   task_outputs: { parent: "task_id" },
+  task_checklist: { parent: "task_id" },
   notes: { parent: "module" }, // note: notes are additionally scoped per user by the routes
   requirements: { parent: "project_id" },
   requirement_attachments: { parent: "requirement_id" },

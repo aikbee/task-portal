@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useNav } from "@/lib/nav";
-import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare } from "lucide-react";
+import { Eye, Pencil, Trash2, Paperclip, FileText, CalendarClock, MessageSquare, ListChecks } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { cn, formatDate, isOverdue } from "@/lib/utils";
@@ -114,6 +114,29 @@ export function CountsCell({ attachments = 0, outputs = 0, comments }) {
       {comments != null ? <span className={cn("inline-flex items-center gap-1", comments > 0 && "text-fg")}><MessageSquare size={13} /> {comments}</span> : null}
     </span>
   );
+}
+
+/** "client-x,infra" as small chips; `onPick(tag)` makes them filter buttons. */
+export function TagChips({ tags, onPick, className, max = 6 }) {
+  const list = String(tags ?? "").split(",").filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <span className={cn("task-tags inline-flex flex-wrap items-center gap-1", className)}>
+      {list.slice(0, max).map((t) =>
+        onPick ? (
+          <button key={t} type="button" onClick={(e) => { e.stopPropagation(); onPick(t); }} className="rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent hover:bg-accent/20">#{t}</button>
+        ) : (
+          <span key={t} className="rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent">#{t}</span>
+        )
+      )}
+      {list.length > max ? <span className="text-[10px] text-fg-faint">+{list.length - max}</span> : null}
+    </span>
+  );
+}
+/** "3/5" with a tick once everything is done; nothing when the task has no checklist. */
+export function ChecklistCount({ done = 0, total = 0, className }) {
+  if (!total) return null;
+  return <span className={cn("inline-flex items-center gap-0.5", Number(done) === Number(total) && "text-emerald-500", className)}><ListChecks size={12} />{done}/{total}</span>;
 }
 
 /** Small inline status/priority <select> that PUTs immediately. */

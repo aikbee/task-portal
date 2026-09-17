@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus, Paperclip, FileText, CalendarClock, Search, X, Rows3, LayoutGrid } from "lucide-react";
+import { Plus, Paperclip, FileText, CalendarClock, Search, X, Rows3, LayoutGrid, MessageSquare } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useNav } from "@/lib/nav";
@@ -18,6 +18,7 @@ import { useToast } from "@/components/ui/Toast";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import TaskForm from "./TaskForm";
 import { CanEdit, useAccess } from "@/lib/auth-context";
+import { TagChips, ChecklistCount } from "./shared";
 import { useT } from "@/lib/i18n";
 
 const TONE_BAR = { slate: "bg-slate-400", sky: "bg-sky-500", violet: "bg-violet-500", emerald: "bg-emerald-500", amber: "bg-amber-500", rose: "bg-rose-500" };
@@ -280,6 +281,7 @@ function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpe
         <p className={cn("min-w-0 flex-1 text-sm font-medium leading-snug", t.status === "done" && "line-through", compact && "truncate")}>{t.title}</p>
       </div>
       {!compact && t.description ? <p className="mt-1 line-clamp-2 pl-4 text-[11px] text-fg-muted">{t.description}</p> : null}
+      {!compact && t.tags ? <TagChips tags={t.tags} max={4} className="mt-1.5 pl-4" /> : null}
       <div className="mt-2 flex items-center gap-2 pl-4 text-[11px] text-fg-muted">
         {t.project_name ? (
           <Link href={`/projects/${t.project_id}`} onClick={(e) => e.stopPropagation()} className="inline-flex min-w-0 items-center gap-1 hover:text-fg">
@@ -291,6 +293,8 @@ function Card({ task: t, compact, today, dragging, onDragStart, onDragEnd, onOpe
         <span className="flex-1" />
         {t.attachment_count ? <span className="inline-flex items-center gap-0.5"><Paperclip size={11} />{t.attachment_count}</span> : null}
         {t.output_count ? <span className="inline-flex items-center gap-0.5"><FileText size={11} />{t.output_count}</span> : null}
+        {t.comment_count ? <span className="inline-flex items-center gap-0.5"><MessageSquare size={11} />{t.comment_count}</span> : null}
+        <ChecklistCount done={t.checklist_done} total={t.checklist_total} />
         {t.due_date ? <span className={cn("inline-flex items-center gap-0.5", overdue && "font-medium text-rose-500")}><CalendarClock size={11} />{formatDate(t.due_date, { month: "short", day: "numeric" })}</span> : null}
         {t.assignee_name ? <Avatar name={t.assignee_name} color={t.avatar_color} size="xs" /> : null}
       </div>

@@ -92,6 +92,10 @@ const hasFk = async (db, table, name) =>
 
 /** Incremental changes for databases created by earlier versions of the schema. */
 async function migrate(db, adminId) {
+  if (!(await hasColumn(db, "tasks", "start_date"))) {
+    log("migrating: tasks.start_date, estimate_hours, tags");
+    await db.query("ALTER TABLE tasks ADD COLUMN start_date DATE NULL AFTER priority, ADD COLUMN estimate_hours DECIMAL(6,2) NULL AFTER due_date, ADD COLUMN tags VARCHAR(255) NULL AFTER estimate_hours");
+  }
   if (!(await hasColumn(db, "employees", "linked_user_id"))) {
     log("migrating: employees.linked_user_id (the portal account behind an employee record)");
     await db.query("ALTER TABLE employees ADD COLUMN linked_user_id INT UNSIGNED NULL AFTER hired_at, ADD KEY idx_employees_linked (linked_user_id)");

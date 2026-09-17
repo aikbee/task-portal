@@ -1,6 +1,6 @@
 import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
-import { TASK_FIELDS, TASK_SELECT, normaliseTask } from "../route";
+import { TASK_FIELDS, TASK_SELECT, normaliseTask, assertDateOrder } from "../route";
 import { deleteStoredFile } from "@/lib/uploads";
 import { listAttachments as listKind } from "@/lib/attachments";
 import { notifyInvolved } from "@/lib/notifications";
@@ -13,11 +13,15 @@ export async function getTask(id, owner) {
   if (!task) throw new HttpError("Task not found.", 404);
   task.attachments = await listAttachments(id);
   task.outputs = await listOutputs(id);
+  task.checklist = await listChecklist(id);
   return task;
 }
 
 export function listAttachments(taskId) {
   return listKind("task", taskId);
+}
+export function listChecklist(taskId) {
+  return query("SELECT k.id, k.task_id, k.title, k.done, k.done_at, k.done_by, u.name AS done_by_name, k.sort_order FROM task_checklist k LEFT JOIN users u ON u.id = k.done_by WHERE k.task_id = ? ORDER BY k.sort_order, k.id", [taskId]);
 }
 export function listOutputs(taskId) {
   return query("SELECT * FROM task_outputs WHERE task_id = ? ORDER BY sort_order, id", [taskId]);
@@ -40,6 +44,7 @@ export const PUT = handler(async (request, params, user) => {
     if (cur?.requirement_id && cur.project_id !== data.project_id) data.requirement_id = null;
   }
   const before = await getTask(id, owner);
+  assertDateOrder(data, before);
   const cols = Object.keys(data);
   if (cols.length) await execute(`UPDATE tasks SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND profile_id = ?`, [...cols.map((c) => data[c]), id, owner]);
   const after = await getTask(id, owner);

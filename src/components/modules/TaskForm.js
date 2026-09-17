@@ -10,7 +10,7 @@ import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { fullName } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
-const empty = { title: "", description: "", project_id: "", employee_id: "", requirement_id: "", status: "todo", priority: "medium", due_date: "" };
+const empty = { title: "", description: "", project_id: "", employee_id: "", requirement_id: "", status: "todo", priority: "medium", start_date: "", due_date: "", estimate_hours: "", tags: "" };
 
 function fromInitial(initial, defaults) {
   if (!initial) return { ...empty, ...defaults };
@@ -22,7 +22,10 @@ function fromInitial(initial, defaults) {
     requirement_id: initial.requirement_id ?? "",
     status: initial.status ?? "todo",
     priority: initial.priority ?? "medium",
+    start_date: initial.start_date ?? "",
     due_date: initial.due_date ?? "",
+    estimate_hours: initial.estimate_hours ?? "",
+    tags: String(initial.tags ?? "").split(",").filter(Boolean).join(", "),
   };
 }
 
@@ -35,6 +38,7 @@ export default function TaskForm({ open, onClose, initial = null, defaults = {},
 function TaskFormInner({ onClose, initial, defaults, onSaved }) {
   const tr = useT();
   const [form, setForm] = useState(() => fromInitial(initial, defaults));
+  const { data: knownTags } = useFetch(open ? "/api/tasks/tags" : null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const toast = useToast();
@@ -58,7 +62,8 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
     setSaving(true);
     setError(null);
     try {
-      const saved = initial ? await api.put(`/api/tasks/${initial.id}`, form) : await api.post("/api/tasks", form);
+      const payload = { ...form, start_date: form.start_date || null, due_date: form.due_date || null, estimate_hours: form.estimate_hours === "" ? null : form.estimate_hours };
+      const saved = initial ? await api.put(`/api/tasks/${initial.id}`, payload) : await api.post("/api/tasks", payload);
       toast.success(initial ? "Task updated" : "Task created", saved.title);
       onSaved?.(saved, !initial);
       onClose();
@@ -122,8 +127,18 @@ function TaskFormInner({ onClose, initial, defaults, onSaved }) {
             {Object.entries(TASK_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
           </Select>
         </Field>
+        <Field label={tr("Start date")} className="sm:col-span-2">
+          <Input type="date" value={form.start_date || ""} max={form.due_date || undefined} onChange={(e) => set("start_date", e.target.value)} />
+        </Field>
         <Field label={tr("Due date")} className="sm:col-span-2">
-          <Input type="date" value={form.due_date || ""} onChange={(e) => set("due_date", e.target.value)} />
+          <Input type="date" value={form.due_date || ""} min={form.start_date || undefined} onChange={(e) => set("due_date", e.target.value)} />
+        </Field>
+        <Field label={tr("Estimate (hours)")} className="sm:col-span-2">
+          <Input type="number" min="0" max="9999" step="0.25" inputMode="decimal" value={form.estimate_hours ?? ""} onChange={(e) => set("estimate_hours", e.target.value)} placeholder="—" />
+        </Field>
+        <Field label={tr("Tags")} className="sm:col-span-2" hint={tr("Comma separated")}>
+          <Input value={form.tags ?? ""} onChange={(e) => set("tags", e.target.value)} placeholder="bug, client-x" list="task-tag-suggestions" className="task-tags-input" />
+          <datalist id="task-tag-suggestions">{(knownTags ?? []).map((t) => <option key={t.tag} value={t.tag} />)}</datalist>
         </Field>
         <Field label={tr("Description")} className="sm:col-span-6">
           <Textarea value={form.description ?? ""} onChange={(e) => set("description", e.target.value)} rows={4} placeholder="Context, acceptance criteria, links…" />

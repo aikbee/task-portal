@@ -173,12 +173,15 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT | `/api/auth/pin` | `{ pin }` / `{ pin: null }` keeps a hashed copy of the lock-screen PIN on the account for re-verification |
 | POST/PUT | `/api/info/:id/notes` · PUT/DELETE `/api/info-notes/:id` | notes, like task outputs |
 | POST/PUT | `/api/info/:id/attachments` | uploads; files via `/api/attachments/info/:id` |
+| GET | `/api/tasks/tags` | tags used on tasks of the active profile with their counts |
+| POST / PUT | `/api/tasks/:id/checklist` | `{ title }` adds a subtask (several lines add several, bullets and `[ ]` are stripped) / `{ order: [ids] }` reorders |
+| PUT / DELETE | `/api/tasks/:id/checklist/:itemId` | `{ title?, done? }` rename or tick off (records who and when) / delete |
 | GET / POST | `/api/tasks/:id/comments` | the discussion, oldest first (`mine`, `can_delete` per comment) / `{ body }` adds a comment (editors and up; `@[Name](employee:id)` tags notify the linked account, everyone else involved gets "commented on") |
 | PUT / DELETE | `/api/tasks/:id/comments/:commentId` | the author edits (marked `edited_at`) / the author, the owner or a manager deletes |
 | GET | `/api/tasks/:id/history` | who changed what: `action` (created, updated, attachment_added…), `field`, `old_value`, `new_value`, `actor_name` |
 | GET | `/api/tasks/mine` | tasks assigned to me (employee records linked to my account) in every profile I can open; `?open=1` hides finished ones |
 | PUT | `/api/tasks/reorder` | `{ order: [ids] }` sets board order (active profile only) |
-| GET/POST | `/api/tasks` | filters: `project_id`, `employee_id`, `status`, `priority`, `q`, `due_from`, `due_to`, `has_due=1` |
+| GET/POST | `/api/tasks` | filters: `project_id`, `employee_id`, `status`, `priority`, `tag`, `q` (title, description, tags), `due_from`, `due_to`, `has_due=1`; rows carry `comment_count`, `checklist_done` / `checklist_total`; fields include `start_date` (not after `due_date`), `estimate_hours`, `tags` (normalised: lower case, dashes, unique) |
 | GET/PUT/DELETE | `/api/tasks/:id` | detail includes ordered `attachments[]` and `outputs[]` |
 | POST/PUT | `/api/tasks/:id/attachments` | multipart upload (`files`), or `{ order: [ids] }` to reorder |
 | GET/PATCH/DELETE | `/api/attachments/:id` | serve file (`?download=1`), rename / `{ position }`, delete |

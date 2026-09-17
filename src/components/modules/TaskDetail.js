@@ -20,6 +20,8 @@ import TaskForm from "./TaskForm";
 import AttachmentsPanel from "./AttachmentsPanel";
 import TaskOutputs from "./TaskOutputs";
 import TaskActivity from "./TaskActivity";
+import TaskChecklist from "./TaskChecklist";
+import { TagChips } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -120,9 +122,10 @@ export default function TaskDetail({ id }) {
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Description")}</p>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{task.description || <span className="text-fg-faint">No description. Click Edit to add one.</span>}</p>
           </Card>
+          <TaskChecklist taskId={task.id} items={task.checklist ?? []} onChange={(checklist) => setData((t) => ({ ...t, checklist, checklist_total: checklist.length, checklist_done: checklist.filter((i) => i.done).length }))} />
           <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} />
           <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} />
-          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.attachments.length}:${task.outputs.length}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
+          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
         </div>
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
@@ -139,8 +142,18 @@ export default function TaskDetail({ id }) {
                 {Object.entries(TASK_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
               </Select>
             </Row>
+            <Row label={tr("Start date")}>
+              <Input type="date" value={task.start_date || ""} max={task.due_date || undefined} onChange={(e) => patch({ start_date: e.target.value || null })} className="h-8 text-xs" />
+            </Row>
             <Row label={tr("Due date")}>
               <Input type="date" value={task.due_date || ""} onChange={(e) => patch({ due_date: e.target.value || null })} className={cn("h-8 text-xs", overdue && "border-rose-500 text-rose-500")} />
+            </Row>
+            <Row label={tr("Estimate (hours)")}>
+              <Input type="number" min="0" max="9999" step="0.25" inputMode="decimal" key={`est-${task.estimate_hours}`} defaultValue={task.estimate_hours ?? ""} placeholder="—" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== (task.estimate_hours ?? null)) patch({ estimate_hours: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="h-8 text-xs" />
+            </Row>
+            <Row label={tr("Tags")}>
+              <TagChips tags={task.tags} className="mb-1.5" max={20} />
+              <Input key={`tags-${task.tags}`} defaultValue={String(task.tags ?? "").split(",").filter(Boolean).join(", ")} placeholder={tr("bug, client-x")} onBlur={(e) => { const next = e.target.value; if (next.split(",").map((x) => x.trim().toLowerCase().replace(/\s+/g, "-")).filter(Boolean).join(",") !== (task.tags ?? "")) patch({ tags: next }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="task-tags-inline h-8 text-xs" />
             </Row>
             <Row label={tr("Assignee")}>
               {task.assignee_name ? (

@@ -237,7 +237,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   requirement_id INT UNSIGNED NULL,
   status ENUM('todo','in_progress','review','done') NOT NULL DEFAULT 'todo',
   priority ENUM('low','medium','high','urgent') NOT NULL DEFAULT 'medium',
+  start_date DATE NULL,
   due_date DATE NULL,
+  estimate_hours DECIMAL(6,2) NULL,
+  tags VARCHAR(255) NULL, -- lower-case, comma separated, no spaces (see src/lib/tags.js); filtered with FIND_IN_SET
   sort_order INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -383,6 +386,20 @@ CREATE TABLE IF NOT EXISTS task_comments (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_tc_task (task_id, id),
   CONSTRAINT fk_tc_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Subtasks of a task: a checklist with its own order.
+CREATE TABLE IF NOT EXISTS task_checklist (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_id INT UNSIGNED NOT NULL,
+  title VARCHAR(300) NOT NULL,
+  done TINYINT(1) NOT NULL DEFAULT 0,
+  done_by INT UNSIGNED NULL,
+  done_at DATETIME NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_tcl_task (task_id, sort_order),
+  CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Who changed what on a task: one row per change (field, old and new value as readable text).

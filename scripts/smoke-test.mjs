@@ -532,6 +532,49 @@ console.log("draw boards");
   check("image gone after delete", gone.status === 404);
 }
 
+console.log("task depth: checklist, tags, dates");
+{
+  const made = await call("POST", "/api/tasks", { body: { title: "Depth task", start_date: "2026-10-01", due_date: "2026-10-15", estimate_hours: "12.5", tags: "Release, Client X, release, #QA" } });
+  check("a task takes a start date, an estimate and normalised tags", made.status === 201 && made.data.start_date === "2026-10-01" && Number(made.data.estimate_hours) === 12.5 && made.data.tags === "release,client-x,qa", JSON.stringify(made.raw).slice(0, 220));
+  const tid = made.data.id;
+  const badOrder = await call("PUT", `/api/tasks/${tid}`, { body: { start_date: "2026-11-01" } });
+  const badEst = await call("PUT", `/api/tasks/${tid}`, { body: { estimate_hours: -1 } });
+  const badDate = await call("PUT", `/api/tasks/${tid}`, { body: { start_date: "soon" } });
+  check("start after due, a negative estimate and a non-date -> 400", badOrder.status === 400 && /after the due date/.test(badOrder.error) && badEst.status === 400 && badDate.status === 400);
+  const byTag = await call("GET", "/api/tasks?tag=Client-X");
+  const byOther = await call("GET", "/api/tasks?tag=client");
+  check("the list filters by exact tag", byTag.data.some((t) => t.id === tid) && !byOther.data.some((t) => t.id === tid));
+  check("…and search matches tags", (await call("GET", "/api/tasks?q=client-x")).data.some((t) => t.id === tid));
+  const tags = await call("GET", "/api/tasks/tags");
+  check("the tag list counts usage", tags.status === 200 && tags.data.some((t) => t.tag === "release" && t.count >= 1) && tags.data.some((t) => t.tag === "qa"));
+  const cleared = await call("PUT", `/api/tasks/${tid}`, { body: { tags: "", estimate_hours: null, start_date: null } });
+  check("tags, estimate and start date can be cleared", cleared.data.tags === null && cleared.data.estimate_hours === null && cleared.data.start_date === null);
+  const noTitle = await call("POST", `/api/tasks/${tid}/checklist`, { body: { title: "   " } });
+  check("an empty checklist item -> 400", noTitle.status === 400);
+  const one = await call("POST", `/api/tasks/${tid}/checklist`, { body: { title: "Write the changelog" } });
+  const many = await call("POST", `/api/tasks/${tid}/checklist`, { body: { title: "- Tag the build\n- [ ] Notify the client\n3. Update the docs\n\n" } });
+  check("one item, then a pasted list becomes one item per line without its bullets", one.status === 201 && one.data.length === 1 && many.status === 201 && many.data.map((i) => i.title).join("|") === "Write the changelog|Tag the build|Notify the client|Update the docs", JSON.stringify(many.data?.map((i) => i.title)));
+  const [a, b, c, d] = many.data;
+  const tick = await call("PUT", `/api/tasks/${tid}/checklist/${b.id}`, { body: { done: true } });
+  check("ticking an item records who and when", tick.status === 200 && tick.data.find((i) => i.id === b.id).done === 1 && tick.data.find((i) => i.id === b.id).done_by_name === "Admin User" && tick.data.find((i) => i.id === b.id).done_at !== null);
+  const renamed = await call("PUT", `/api/tasks/${tid}/checklist/${c.id}`, { body: { title: "Notify the client by email" } });
+  const blank = await call("PUT", `/api/tasks/${tid}/checklist/${c.id}`, { body: { title: "" } });
+  check("an item can be renamed, not blanked", renamed.data.find((i) => i.id === c.id).title === "Notify the client by email" && blank.status === 400);
+  const order = await call("PUT", `/api/tasks/${tid}/checklist`, { body: { order: [d.id, a.id] } });
+  check("reordering keeps unlisted items after the listed ones", order.status === 200 && order.data.map((i) => i.id).join() === [d.id, a.id, b.id, c.id].join());
+  const gone = await call("DELETE", `/api/tasks/${tid}/checklist/${a.id}`);
+  check("an item can be deleted", gone.status === 200 && gone.data.length === 3);
+  const detail = await call("GET", `/api/tasks/${tid}`);
+  const inList = (await call("GET", "/api/tasks")).data.find((t) => t.id === tid);
+  check("the task carries its checklist and the list carries the progress", detail.data.checklist.length === 3 && Number(inList.checklist_total) === 3 && Number(inList.checklist_done) === 1);
+  const hist = await call("GET", `/api/tasks/${tid}/history`);
+  const acts = hist.data.map((h) => `${h.action}:${h.field ?? ""}`);
+  check("history covers tags, dates, estimate and the checklist", ["created:", "updated:tags", "updated:start_date", "updated:estimate", "checklist_added:", "checklist_done:", "checklist_removed:"].every((k) => acts.includes(k)), acts.join(" "));
+  check("a checklist item of another task -> 404", (await call("PUT", `/api/tasks/${taskId}/checklist/${b.id}`, { body: { done: false } })).status === 404);
+  const del = await call("DELETE", `/api/tasks/${tid}`);
+  check("deleting the task takes its checklist along", del.status === 200 && (await call("PUT", `/api/tasks/${tid}/checklist/${b.id}`, { body: { done: false } })).status === 404);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
