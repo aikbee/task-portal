@@ -1,24 +1,25 @@
 import { query, queryOne, execute } from "./db";
 import { NOTIFICATION_TYPES } from "./constants";
 import { sendPush } from "./push";
+import { sendNotificationEmail, EMAIL_TYPES } from "./mail";
 
 /** Types a user sees even for their own actions (milestones, reminders, security). */
 const SELF_VISIBLE = new Set(["task_done", "requirement_done", "project_completed", "task_due", "task_overdue", "security_login"]);
 
-async function mutedCategories(userId) {
-  const row = await queryOne("SELECT notification_prefs FROM users WHERE id = ?", [userId]);
+async function recipient(userId) {
+  const row = await queryOne("SELECT email, status, notification_prefs FROM users WHERE id = ?", [userId]);
   const prefs = typeof row?.notification_prefs === "string" ? JSON.parse(row.notification_prefs) : row?.notification_prefs;
-  return new Set(prefs?.muted ?? []);
+  return { muted: new Set(prefs?.muted ?? []), email: row?.status === "active" && prefs?.email !== false ? row.email : null };
 }
 
 /**
  * Create a notification for one user. Skips self-generated noise (unless the
  * type is self-visible), muted categories, and duplicates by dedupe key.
  */
-export async function notify({ userId, type, title, body = null, href = null, entityType = null, entityId = null, actorId = null, dedupeKey = null, profileId = null, tag = null }) {
+export async function notify({ userId, type, title, body = null, href = null, entityType = null, entityId = null, actorId = null, dedupeKey = null, profileId = null, tag = null, email = true }) {
   if (!userId || !NOTIFICATION_TYPES[type]) return false;
   if (actorId && actorId === userId && !SELF_VISIBLE.has(type)) return false;
-  const muted = await mutedCategories(userId);
+  const { muted, email: address } = await recipient(userId);
   if (muted.has(NOTIFICATION_TYPES[type].category)) return false;
   if (dedupeKey) {
     const exists = await queryOne("SELECT id FROM notifications WHERE user_id = ? AND dedupe_key = ?", [userId, dedupeKey]);
@@ -30,6 +31,8 @@ export async function notify({ userId, type, title, body = null, href = null, en
   );
   // devices that opted in get the same notification as a push (fire and forget)
   sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type }).catch(() => {});
+  // the important ones also go out by email when the portal has a mail account and the person did not opt out
+  if (email && address && EMAIL_TYPES.has(type)) sendNotificationEmail({ id: res.insertId, to: address, type, title: title.slice(0, 200), body }).catch(() => {});
   return true;
 }
 

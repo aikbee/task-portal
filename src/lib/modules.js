@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2 } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2, Mail } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -185,6 +185,16 @@ export const MODULES = [
     icon: DatabaseBackup,
     color: "#10b981",
     description: "Automatic daily backups of the database and uploaded files: check they are running, take one now, download or restore.",
+    adminOnly: true,
+  },
+  {
+    key: "mail",
+    label: "Email",
+    singular: "Email",
+    href: "/mail",
+    icon: Mail,
+    color: "#0ea5e9",
+    description: "The mail account the portal sends from: password reset links, notification emails and invitations.",
     adminOnly: true,
   },
   {

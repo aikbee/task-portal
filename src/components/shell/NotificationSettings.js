@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { Volume2, Send } from "lucide-react";
 import { api } from "@/lib/api";
+import { useFetch } from "@/lib/hooks";
 import { usePrefs } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
 import { NOTIFICATION_CATEGORIES } from "@/lib/modules";
@@ -21,6 +22,7 @@ export default function NotificationSettings() {
   const setPrefs = usePrefs((s) => s.set);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const mail = useFetch("/api/auth/methods"); // says whether this portal sends notification emails at all
   // push state for THIS device: unknown | unsupported | off | on | blocked | busy
   const [push, setPush] = useState(() => (pushSupported() ? "unknown" : "unsupported"));
   useEffect(() => {
@@ -57,6 +59,17 @@ export default function NotificationSettings() {
   const prefs = typeof user?.notification_prefs === "string" ? JSON.parse(user.notification_prefs) : user?.notification_prefs;
   const muted = new Set(prefs?.muted ?? []);
 
+  const toggleEmail = async (on) => {
+    setBusy(true);
+    try {
+      const saved = await api.put("/api/auth/profile", { notification_prefs: { email: on } });
+      setUser((u) => ({ ...u, notification_prefs: saved.notification_prefs }));
+    } catch (e) {
+      toast.error("Could not save notification settings", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const toggleCategory = async (key, on) => {
     const next = new Set(muted);
     if (on) next.delete(key);
@@ -87,6 +100,12 @@ export default function NotificationSettings() {
       {Object.entries(NOTIFICATION_CATEGORIES).map(([key, cat]) => (
         <Toggle key={key} checked={!muted.has(key)} onChange={(v) => toggleCategory(key, v)} label={tr(cat.label)} description={tr(cat.description)} className={busy ? "opacity-70" : ""} />
       ))}
+      {mail.data?.mail?.notifications ? (
+        <>
+          <p className="pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Email")}</p>
+          <Toggle checked={prefs?.email !== false} onChange={toggleEmail} label={tr("Email me the important ones")} description={tr("Assignments, mentions, due dates, invitations and security, to {email}", { email: user?.email })} className={`notify-email ${busy ? "opacity-70" : ""}`} />
+        </>
+      ) : null}
       <p className="pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Announce (this browser)")}</p>
       <div className="flex items-center gap-3">
         <Toggle className="flex-1" checked={notifySound} onChange={(v) => setPrefs({ notifySound: v })} label={tr("Play a chime")} description={tr("When a new notification arrives")} />

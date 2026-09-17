@@ -1,3 +1,4 @@
+import { rememberOrigin } from "./origin";
 import { NextResponse } from "next/server";
 import { HttpError } from "./http-error";
 import { requireUser, requireRole } from "./auth";
@@ -22,6 +23,7 @@ export function handler(fn, { auth = true, role } = {}) {
   return async (request, context) => {
     try {
       const params = context?.params ? await context.params : {};
+      rememberOrigin(request);
       let user = null;
       if (auth) {
         user = await requireUser(request);

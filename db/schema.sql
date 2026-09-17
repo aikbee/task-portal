@@ -420,6 +420,40 @@ CREATE TABLE IF NOT EXISTS task_checklist (
   CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Every email the portal tried to send: who to, what about, whether it went. Bodies are never stored (they can
+-- carry sign-in links).
+CREATE TABLE IF NOT EXISTS mail_log (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  to_email VARCHAR(190) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  status ENUM('sent','failed') NOT NULL,
+  error VARCHAR(500) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_mail_log_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One-time links sent by email: password resets (user_id set) and invitations to join (profile_id + email set).
+-- Only the SHA-256 of the token is stored. user_id / invited_by carry no foreign key (see profile_members).
+CREATE TABLE IF NOT EXISTS mail_tokens (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  purpose ENUM('reset','join') NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  user_id INT UNSIGNED NULL,
+  email VARCHAR(190) NULL,
+  profile_id INT UNSIGNED NULL,
+  role VARCHAR(16) NULL,
+  invited_by INT UNSIGNED NULL,
+  ip VARCHAR(45) NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_mail_tokens_hash (token_hash),
+  KEY idx_mail_tokens_user (user_id, created_at),
+  KEY idx_mail_tokens_profile (profile_id, email),
+  CONSTRAINT fk_mail_tokens_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- The recycle bin. A deleted record is stored here as a JSON snapshot (the row, everything that hangs off it and
 -- which other rows pointed at it) and then really deleted, so no query elsewhere has to know about deleted rows.
 -- Restoring puts everything back under the same ids. Attachment files stay on disk until the entry is purged.

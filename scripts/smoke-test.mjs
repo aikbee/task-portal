@@ -1009,8 +1009,12 @@ const adminJar = { ...jar };
     const adminMe = await asAdmin(() => call("GET", "/api/auth/me"));
     const pid = (await asAdmin(() => call("GET", "/api/profiles"))).data.items.find((p) => p.is_default).id;
     const myEmail = (await call("GET", "/api/auth/me")).data.email;
-    const ghost = await asAdmin(() => call("POST", `/api/profiles/${pid}/members`, { body: { email: "nobody@nowhere.test" } }));
-    check("inviting an email without an account -> 404", ghost.status === 404);
+    // (where an administrator allows invitations by email the address would get a link instead: see the email section)
+    const mailInvites = (await call("GET", "/api/auth/methods")).data.mail?.invites;
+    if (!mailInvites) {
+      const ghost = await asAdmin(() => call("POST", `/api/profiles/${pid}/members`, { body: { email: "nobody@nowhere.test" } }));
+      check("inviting an email without an account -> 404", ghost.status === 404);
+    }
     const badRole = await asAdmin(() => call("POST", `/api/profiles/${pid}/members`, { body: { user_id: userId, role: "boss" } }));
     check("unknown role -> 400", badRole.status === 400);
     const self = await asAdmin(() => call("POST", `/api/profiles/${pid}/members`, { body: { user_id: adminMe.data.id } }));
@@ -2184,6 +2188,156 @@ console.log("chat (friends by code, one-to-one messages)");
   const bell = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
   for (const n of bell.data.items.filter((x) => ["friend_request", "friend_accepted", "chat_message", "chat_call"].includes(x.type) && (x.actor_id === userId || x.entity_id === convoId))) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
   jar = { ...adminJar };
+}
+
+console.log("email (password reset, invitations, notification emails)");
+{
+  const net = await import("node:net");
+  // a throwaway SMTP server inside the test: accepts everything and keeps the messages in memory
+  const inbox = [];
+  const server = net.createServer((sock) => {
+    let buf = "", data = null, to = [];
+    const say = (l) => sock.write(l + "\r\n");
+    say("220 sink ESMTP");
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      for (;;) {
+        if (data != null) {
+          const end = buf.indexOf("\r\n.\r\n");
+          if (end < 0) return;
+          inbox.push({ to: to.join(" "), raw: data + buf.slice(0, end), body: (data + buf.slice(0, end)).replace(/=\r\n/g, "").replace(/=3D/g, "=") });
+          buf = buf.slice(end + 5); data = null; to = [];
+          say("250 OK queued");
+          continue;
+        }
+        const nl = buf.indexOf("\r\n");
+        if (nl < 0) return;
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 2);
+        const cmd = line.toUpperCase();
+        if (cmd.startsWith("EHLO") || cmd.startsWith("HELO")) sock.write("250-sink\r\n250 8BITMIME\r\n");
+        else if (cmd.startsWith("RCPT TO")) { to.push(line.slice(8)); say("250 OK"); }
+        else if (cmd === "DATA") { data = ""; say("354 go ahead"); }
+        else if (cmd === "QUIT") { say("221 bye"); sock.end(); }
+        else say("250 OK");
+      }
+    });
+    sock.on("error", () => {});
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  const mailTo = async (addr, from = 0, ms = 6000) => { const t = Date.now(); while (Date.now() - t < ms) { const m = inbox.slice(from).find((x) => x.to.includes(addr)); if (m) return m; await new Promise((r) => setTimeout(r, 150)); } return null; };
+  const as = async (j, fn) => { const keep = jar; jar = { ...j }; try { return await fn(); } finally { jar = keep; } };
+  const anon = (fn) => as({}, fn);
+
+  const before = await call("GET", "/api/mail");
+  check("GET /api/mail as admin never carries the password", before.status === 200 && !("password" in before.data.settings) && !("password_enc" in before.data.settings));
+  const prev = before.data.settings;
+  if (prev.password_set || (prev.enabled && prev.host && prev.host !== "127.0.0.1")) {
+    console.log("  - a real mail account is configured here: the email checks leave it alone and are skipped");
+  } else {
+    const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+    jar = {};
+    await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+    const userJar = { ...jar };
+    jar = { ...adminJar };
+    check("the Email page is for administrators", (await as(userJar, () => call("GET", "/api/mail"))).status === 403 && (await as(userJar, () => call("POST", "/api/mail/test", { body: {} }))).status === 403);
+    check("turning email on without a server -> 400", (await call("PUT", "/api/mail", { body: { enabled: true, host: "", from_email: "" } })).status === 400);
+    const off = await call("PUT", "/api/mail", { body: { enabled: false, host: "127.0.0.1", port, secure: "none", username: "", from_email: "portal@example.test", allow_reset: true, allow_notifications: true, allow_invites: true } });
+    check("PUT /api/mail saves the account", off.status === 200 && off.data.settings.host === "127.0.0.1" && off.data.settings.configured);
+    const offFlags = await anon(() => call("GET", "/api/auth/methods"));
+    check("while email is off nothing is offered", offFlags.data.reset === false && offFlags.data.mail.invites === false);
+    check("…and asking for a reset link -> 503", (await anon(() => call("POST", "/api/auth/forgot", { body: { email: smokeEmail } }))).status === 503);
+    const test = await call("POST", "/api/mail/test", { body: { to: "probe@example.test" } });
+    check("the test message goes out even before email is switched on", test.status === 200 && Boolean(await mailTo("probe@example.test")));
+    check("a server that does not answer -> 502 with the reason", (await call("POST", "/api/mail/test", { body: { to: "probe@example.test", port: 1 } })).status === 502);
+    await call("PUT", "/api/mail", { body: { enabled: true } });
+    const onFlags = await anon(() => call("GET", "/api/auth/methods"));
+    check("switched on: the sign-in page may offer the reset link", onFlags.data.reset === true && onFlags.data.mail.invites === true && onFlags.data.mail.notifications === true);
+
+    // password reset
+    let from = inbox.length;
+    const ghost = await anon(() => call("POST", "/api/auth/forgot", { body: { email: `nobody.${suffix.toLowerCase()}@example.test` } }));
+    const real = await anon(() => call("POST", "/api/auth/forgot", { body: { email: smokeEmail } }));
+    check("forgot answers the same for unknown and known addresses", ghost.status === 200 && real.status === 200 && JSON.stringify(ghost.data) === JSON.stringify(real.data));
+    const resetMail = await mailTo(smokeEmail, from);
+    const resetToken = resetMail?.body.match(/reset\?token=([A-Za-z0-9_-]+)/)?.[1];
+    check("only the real account gets a link", Boolean(resetToken) && !inbox.slice(from).some((m) => m.to.includes("nobody.")));
+    const look = await anon(() => call("GET", `/api/auth/reset?token=${resetToken}`));
+    check("GET /api/auth/reset: valid, address only hinted", look.data.valid === true && look.data.email_hint.includes("•") && !look.data.email_hint.includes(smokeEmail.split("@")[0]));
+    check("a made-up token is not valid", (await anon(() => call("GET", `/api/auth/reset?token=${"A".repeat(43)}`))).data.valid === false);
+    check("short new password -> 400", (await anon(() => call("POST", "/api/auth/reset", { body: { token: resetToken, password: "123" } }))).status === 400);
+    from = inbox.length;
+    const done = await anon(() => call("POST", "/api/auth/reset", { body: { token: resetToken, password: "smoke789" } }));
+    check("POST /api/auth/reset changes the password", done.status === 200);
+    check("the link works once -> 410", (await anon(() => call("POST", "/api/auth/reset", { body: { token: resetToken, password: "smoke000" } }))).status === 410);
+    check("every device was signed out", (await as(userJar, () => call("GET", "/api/auth/me"))).status === 401);
+    check("the old password is dead, the new one signs in", (await anon(() => call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true }))).status === 401);
+    jar = {};
+    const relog = await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke789" }, noAuth: true });
+    const userJar2 = { ...jar };
+    jar = { ...adminJar };
+    check("…new password signs in", relog.status === 200);
+    check("a confirmation is mailed", Boolean(await mailTo(smokeEmail, from)));
+
+    // invitations: somebody without an account
+    const space = await call("POST", "/api/profiles", { body: { name: `Mail space ${suffix}`, color: "#0ea5e9" } });
+    const spaceId = space.data.id;
+    const newbie = `joiner.${suffix.toLowerCase()}@example.test`;
+    from = inbox.length;
+    const inv = await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: newbie, role: "editor" } });
+    check("an unknown address gets an invitation by email", inv.status === 201 && inv.data.invited_by_email === newbie && inv.data.pending.length === 1);
+    const joinToken = (await mailTo(newbie, from))?.body.match(/join\?token=([A-Za-z0-9_-]+)/)?.[1];
+    const peek = await anon(() => call("GET", `/api/auth/join?token=${joinToken}`));
+    check("GET /api/auth/join names the workspace and the role", peek.data.valid && peek.data.email === newbie && peek.data.role === "editor" && peek.data.profile_name === `Mail space ${suffix}`);
+    check("join: short password -> 400", (await anon(() => call("POST", "/api/auth/join", { body: { token: joinToken, name: "Joy", password: "1" } }))).status === 400);
+    jar = {};
+    const joined = await call("POST", "/api/auth/join", { body: { token: joinToken, name: "Joy Joiner", password: "joiner123" }, noAuth: true });
+    const joinerJar = { ...jar };
+    jar = { ...adminJar };
+    check("POST /api/auth/join creates the account and signs in", joined.status === 201 && Object.keys(joinerJar).length > 0);
+    const jme = await as(joinerJar, () => call("GET", "/api/auth/me"));
+    check("…as a plain user, inside the shared workspace with the invited role", jme.data.role === "user" && jme.data.profile_id === spaceId && jme.data.access === "editor");
+    check("the invitation works once -> 410", (await anon(() => call("POST", "/api/auth/join", { body: { token: joinToken, name: "Again", password: "joiner123" } }))).status === 410);
+    const roster = await call("GET", `/api/profiles/${spaceId}/members`);
+    check("the member list shows them active, nothing pending", roster.data.members.some((m) => m.email === newbie && m.status === "active") && roster.data.pending.length === 0);
+    // withdraw
+    from = inbox.length;
+    const ghostAddr = `ghost.${suffix.toLowerCase()}@example.test`;
+    const inv2 = await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: ghostAddr, role: "viewer" } });
+    const ghostToken = (await mailTo(ghostAddr, from))?.body.match(/join\?token=([A-Za-z0-9_-]+)/)?.[1];
+    check("members cannot withdraw invitations", (await as(joinerJar, () => call("DELETE", `/api/profiles/${spaceId}/invites/${inv2.data.pending[0].id}`))).status === 403);
+    const wd = await call("DELETE", `/api/profiles/${spaceId}/invites/${inv2.data.pending[0].id}`);
+    check("DELETE invitation kills its link", wd.status === 200 && wd.data.pending.length === 0 && (await anon(() => call("GET", `/api/auth/join?token=${ghostToken}`))).data.valid === false);
+    await call("PUT", "/api/mail", { body: { enabled: true, allow_invites: false } });
+    check("with invitations off an unknown address -> 404", (await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: `late.${suffix.toLowerCase()}@example.test`, role: "viewer" } })).status === 404);
+    await call("PUT", "/api/mail", { body: { enabled: true, allow_invites: true } });
+
+    // notification emails
+    from = inbox.length;
+    const invited = await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: smokeEmail, role: "viewer" } });
+    const noteMail = await mailTo(smokeEmail, from);
+    const noteId = noteMail?.body.match(/\/n\/(\d+)/)?.[1];
+    check("an invitation to an existing account is also mailed, linking through /n/:id", invited.status === 201 && Boolean(noteId));
+    check("that entry opens for its owner only", (await as(userJar2, () => call("PUT", `/api/notifications/${noteId}`, { body: { read: true } }))).status === 200 && (await as(joinerJar, () => call("PUT", `/api/notifications/${noteId}`, { body: { read: true } }))).status === 404);
+    const optOut = await as(userJar2, () => call("PUT", "/api/auth/profile", { body: { notification_prefs: { email: false } } }));
+    check("PUT /api/auth/profile keeps the email switch", JSON.stringify(optOut.data.notification_prefs).includes('"email":false'));
+    await call("DELETE", `/api/profiles/${spaceId}/members/${userId}`);
+    from = inbox.length;
+    await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: smokeEmail, role: "viewer" } });
+    check("no email once the person opted out", (await mailTo(smokeEmail, from, 1500)) === null);
+    const log = await call("GET", "/api/mail");
+    check("the log lists what went out, without bodies", log.data.log.some((m) => m.kind === "join" && m.to_email === newbie && m.status === "sent") && log.data.log.some((m) => m.kind === "reset") && !("body" in log.data.log[0]));
+
+    // tidy up (the password goes back to what the rest of the suite expects)
+    await call("PUT", `/api/users/${userId}`, { body: { password: "smoke456" } });
+    check("DELETE the invited account", (await call("DELETE", `/api/users/${jme.data.id}`)).status === 200);
+    check("DELETE the shared profile", (await call("DELETE", `/api/profiles/${spaceId}`)).status === 200);
+    const bell = await call("GET", "/api/notifications?limit=50");
+    for (const n of bell.data.items.filter((x) => /Joy Joiner/.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+    const back = await call("PUT", "/api/mail", { body: { enabled: prev.enabled, host: prev.host, port: prev.port, secure: prev.secure, username: prev.username, from_name: prev.from_name, from_email: prev.from_email, app_url: prev.app_url, allow_reset: prev.allow_reset, allow_notifications: prev.allow_notifications, allow_invites: prev.allow_invites } });
+    check("the mail settings are put back as they were", back.status === 200 && back.data.settings.enabled === prev.enabled && back.data.settings.host === prev.host);
+  }
+  server.close();
 }
 
 console.log("cleanup");

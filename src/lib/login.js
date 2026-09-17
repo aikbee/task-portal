@@ -1,4 +1,4 @@
-import { query, execute } from "./db";
+import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { createSession, pruneSessions } from "./auth";
 import { notify } from "./notifications";
@@ -55,6 +55,10 @@ export async function finishLogin(request, user, { remember = false, method = "p
     throw new HttpError("This account is disabled.", 403);
   }
   const ua = request.headers.get("user-agent") || "";
+  // an email only for a browser this account has not signed in with before (and never for the very first sign-in)
+  const d = describeUserAgent(ua);
+  const seen = await queryOne("SELECT COUNT(*) AS total, COALESCE(SUM(browser <=> ? AND os <=> ?), 0) AS same FROM login_events WHERE user_id = ? AND success = 1", [d.browser, d.os, user.id]).catch(() => null);
+  const newDevice = Boolean(seen && Number(seen.total) > 0 && Number(seen.same) === 0);
   const sessionId = await createSession(user.id, { remember, userAgent: ua, response, ip: clientIp(request) });
   await execute("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]);
   await recordLoginEvent(request, user.id, { method, success: true, sessionId });
@@ -67,5 +71,6 @@ export async function finishLogin(request, user, { remember = false, method = "p
     href: "/notifications",
     entityType: "user",
     entityId: user.id,
+    email: newDevice,
   }).catch(() => {});
 }

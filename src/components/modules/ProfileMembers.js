@@ -11,6 +11,7 @@ import Badge from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { useT } from "@/lib/i18n";
+import { formatDate } from "@/lib/utils";
 
 export const MEMBER_ROLE = {
   owner: { label: "Owner", tone: "amber", hint: "Everything, including the Info vault" },
@@ -33,10 +34,18 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("editor");
   const [busy, setBusy] = useState(false);
+  const withdraw = async (inv) => {
+    try {
+      apply(await api.del(`/api/profiles/${profile.id}/invites/${inv.id}`));
+      toast.success(tr("Invitation withdrawn"));
+    } catch (e) {
+      toast.error(tr("Could not withdraw"), e.message);
+    }
+  };
   const roles = myRole === "owner" ? ASSIGNABLE : ["viewer", "editor"]; // managers are the owner's call
 
   const apply = (next) => {
-    setData((d) => ({ ...d, members: next.members }));
+    setData((d) => ({ ...d, members: next.members ?? d.members, pending: next.pending ?? d.pending }));
     friends.refetch();
     onChanged?.();
   };
@@ -44,8 +53,10 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
     if (!pick && !email.trim()) return;
     setBusy(true);
     try {
-      apply(await api.post(`/api/profiles/${profile.id}/members`, pick ? { user_id: Number(pick), role } : { email: email.trim(), role }));
-      toast.success(tr("Invitation sent"), tr("They join once they accept it on their Profiles page."));
+      const next = await api.post(`/api/profiles/${profile.id}/members`, pick ? { user_id: Number(pick), role } : { email: email.trim(), role });
+      apply(next);
+      if (next.invited_by_email) toast.success(tr("Invitation emailed"), tr("{email} has no account yet. The link in the message creates one and works for 7 days.", { email: next.invited_by_email }));
+      else toast.success(tr("Invitation sent"), tr("They join once they accept it on their Profiles page."));
       setPick("");
       setEmail("");
     } catch (e) {
@@ -86,7 +97,7 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
                 </select>
                 <label className="relative block">
                   <Mail size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint" />
-                  <input className="control member-email pl-9" type="email" placeholder={tr("…or the email of an account")} value={email} onChange={(e) => { setEmail(e.target.value); if (e.target.value) setPick(""); }} onKeyDown={(e) => e.key === "Enter" && invite()} />
+                  <input className="control member-email pl-9" type="email" placeholder={data.can_invite_new ? tr("…or any email address") : tr("…or the email of an account")} value={email} onChange={(e) => { setEmail(e.target.value); if (e.target.value) setPick(""); }} onKeyDown={(e) => e.key === "Enter" && invite()} />
                 </label>
                 <select className="control member-role w-auto" value={role} onChange={(e) => setRole(e.target.value)} aria-label={tr("Role")}>
                   {roles.map((r) => <option key={r} value={r}>{tr(MEMBER_ROLE[r].label)}</option>)}
@@ -121,7 +132,22 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
               );
             })}
           </ul>
-          {data.members.length === 1 ? <p className="flex items-center gap-2 text-xs text-fg-muted"><Users size={13} /> {tr("Only you can see this profile so far.")}</p> : null}
+          {data.pending?.length ? (
+            <div className="member-pending">
+              <p className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-faint"><Mail size={13} /> {tr("Invited by email, no account yet")}</p>
+              <ul className="divide-y divide-line rounded-app border border-dashed border-line">
+                {data.pending.map((inv) => (
+                  <li key={inv.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{inv.email}</span>
+                    <Badge tone={MEMBER_ROLE[inv.role]?.tone ?? "slate"}>{tr(MEMBER_ROLE[inv.role]?.label ?? inv.role)}</Badge>
+                    <span className="hidden text-xs text-fg-muted sm:inline">{tr("until {date}", { date: formatDate(inv.expires_at) })}</span>
+                    <Button variant="dangerGhost" size="iconSm" icon={Trash2} onClick={() => withdraw(inv)} aria-label={tr("Withdraw invitation")} data-tip={tr("Withdraw invitation")} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {data.members.length === 1 && !data.pending?.length ? <p className="flex items-center gap-2 text-xs text-fg-muted"><Users size={13} /> {tr("Only you can see this profile so far.")}</p> : null}
         </div>
       ) : null}
     </Modal>

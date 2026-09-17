@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { Mail, LockKeyhole, Eye, EyeOff, LogIn, ShieldCheck, User, Fingerprint, ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePrefs } from "@/lib/store";
@@ -201,7 +202,10 @@ function LoginCard({ demo }) {
                 </button>
               </div>
             </Field>
-            <Checkbox checked={remember} onChange={setRemember} label={tr("Keep me signed in for 30 days")} />
+            <div className="flex items-center justify-between gap-3">
+              <Checkbox checked={remember} onChange={setRemember} label={tr("Keep me signed in for 30 days")} />
+              {methods?.reset ? <Link href="/forgot" className="login-forgot shrink-0 text-xs text-accent hover:underline">{tr("Forgot password?")}</Link> : null}
+            </div>
             {error || paramError ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500 anim-pop">{error || paramError}</p> : null}
             <Button type="submit" size="lg" className="w-full" icon={LogIn} loading={busy}>
               {tr("Sign in")}

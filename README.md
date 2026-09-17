@@ -54,7 +54,7 @@ Sign-in is required for every page and API route (a request proxy redirects to `
 ### Sharing a profile
 
 A profile can be shared with other accounts from **Profiles → Share**. Pick one of your chat friends or type the
-email of an existing account, choose a role, and the person gets an invitation (bell, push and a badge on
+email of an existing account (or, when [email](#email) invitations are on, any address), choose a role, and the person gets an invitation (bell, push and a badge on
 Profiles). Once they accept, the profile appears under **Shared with me** in the profile switcher and on their
 Profiles page; while they are inside it a blue banner says whose profile it is and what they may do.
 
@@ -116,6 +116,7 @@ Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign every
 | **Tables in outputs / notes** | Every output (tasks) and note (Info) block is one document that mixes text and tables, edited in place: paragraphs are plain text, tables are live grids between them (Enter adds a row, Tab moves between cells, hover a row number or column header to delete it, hover the table for Copy-as-TSV and Delete). Add a table with **Insert table** (rows × columns picker at the caret), the **+ Table** handle that appears between paragraphs, or by pasting tabular data — a table copied from a web page or sheet, tab-separated text, CSV, Markdown, or a tab-separated header followed by one cell per line — which becomes a grid at the caret (toast to paste as text instead). Pasting a grid into a cell fills cells from there. Content is stored as Markdown (pipe tables), so it stays searchable, copyable and exportable; blocks saved in the earlier JSON table format are converted by `npm run db:setup`. |
 | **Moderation** (admin) | Reported chat messages with a snapshot of each (delete the message for everyone or dismiss), every conversation's kind, members, message count, file size, retention and open reports (never the text), per-chat retention, full exports, deleting a conversation, an instance-wide cap on how long chat history is kept, the GIPHY / Tenor key that turns on GIF search in chat, and an optional TURN server for calls. The sidebar badge counts open reports. |
 | **Backups** (admin) | Automatic backups of the database and the uploaded files. Shows whether the last backup is up to date, overdue or failed (with a sidebar badge and a notification to administrators when it fails), how many files are protected, the archives kept and the free disk space; **Back up now**, download or delete a single archive, and **Download everything** (one ZIP with the newest database archive, every uploaded file and restore notes) for keeping a copy off the server. |
+| **Email** (admin) | The mail account the portal sends from (any SMTP server; the password is stored encrypted and never shown again), the address used in links, and three switches: password reset links, notification emails, invitations to people without an account. **Send test** tries the values in the form before they are saved; the log lists the last messages (recipient, subject, kind, result, never the text). Email is off until an administrator sets it up. |
 | **Backgrounds** (admin) | Controls which of the 35 animated background styles users may pick (twenty-one are WebGL scenes rendered with three.js, loaded only when active) in Preferences, the default for new browsers, and an optional lock that forces the default on everyone. Live previews of every style. Stored instance-wide in `app_settings`. |
 | **Draw Board** | Freehand boards built on Fabric.js: pen, eraser (drag over strokes to remove them), text, rectangles, ellipses and images — paste a screenshot with ⌘V, drop a file, or Insert image. Select to move, resize (corner handles) and rotate (top handle); bring forward / send backward, duplicate, undo/redo (50 steps), zoom. Export as PNG, JPEG, WebP or SVG at the board's native size. Each board has notes with `@` tags and can be linked to a project; boards are themselves taggable from outputs and notes. Drawings are saved as Fabric JSON (images referenced by their attachment URL) with a JPEG thumbnail for lists and reports. |
 | **Info search** | `/info/search` (Search button on the Info page): every word must match somewhere; choose to search titles & summaries, content, notes and/or attachment names; filter by category, project, tag or pinned; results show highlighted snippets per matched field; recent searches are remembered and the query lives in the URL. |
@@ -208,6 +209,9 @@ All endpoints return `{ data }` or `{ error }`.
 | GET / POST | `/api/backups` | admin: state, archives, policy, disk / back up now (201; 409 while one runs, 500 with the reason when it fails) |
 | GET / DELETE | `/api/backups/:name` | admin: download one `db-YYYYMMDD-HHMMSS-<auto\|manual\|deploy>.sql.gz` / delete it |
 | GET | `/api/backups/archive` | admin: streamed ZIP of the newest database archive plus every uploaded file and a restore README |
+| GET / PUT | `/api/mail` | admin: `{ settings, log }` (never the password, only `password_set`) / save; an empty `password` keeps the stored one |
+| POST | `/api/mail/test` | admin: `{ to?, …form values }` sends a test message with the values given (saved or not); 502 carries the mail server's reason |
+| DELETE | `/api/profiles/:id/invites/:inviteId` | owner / manager: withdraw an invitation that was mailed to somebody without an account |
 | POST/PUT | `/api/requirements/:id/attachments` | multipart upload (`files`), or `{ order: [ids] }` |
 | GET/PATCH/DELETE | `/api/attachments/:kind/:id` | `kind` = `task` or `requirement` (the old `/api/attachments/:id` still serves task files) |
 | GET/DELETE | `/api/notifications` | list (`?unread=1`, `?limit=`) / clear read |
@@ -217,10 +221,13 @@ All endpoints return `{ data }` or `{ error }`.
 | POST | `/api/auth/login` | `{ email, password, remember }` (public) |
 | POST | `/api/auth/logout` | ends the session |
 | GET | `/api/auth/me` | current user |
-| PUT | `/api/auth/profile` | own name / avatar colour |
+| PUT | `/api/auth/profile` | own name / avatar colour / `notification_prefs: { muted?: [categories], email?: boolean }` |
 | PUT/POST/DELETE | `/api/auth/avatar` | `{ avatar: "preset:<key>" \| "initials" }` / multipart `file` photo / back to the default badge |
 | GET | `/api/avatars/user/:id` · `/api/avatars/group/:id` | an uploaded picture (group pictures for members only) |
 | PUT | `/api/auth/password` | `{ current_password, new_password }` |
+| POST | `/api/auth/forgot` | public: `{ email }` mails a one-hour, single-use link to `/reset?token=…`. The answer is the same whether the address has an account or not; 3 links per account and 10 per IP an hour; 503 while reset by email is not set up |
+| GET / POST | `/api/auth/reset` | public: `?token=` → `{ valid, email_hint, min_length }` / `{ token, password }` sets the password, signs every device out and mails a confirmation; 410 for a used or expired link |
+| GET / POST | `/api/auth/join` | public: what the invitation behind `?token=` is about / `{ token, name, password }` creates the account (role user), joins the profile with the invited role and signs in; 410 for a dead link, 409 when the address got an account meanwhile |
 | PUT | `/api/auth/workspace` | admin only: `{ user_id }` to work inside that user's workspace, `{ user_id: null }` to return |
 | GET/POST | `/api/profiles` | your profiles with counts and `member_count` (`active_id` = current), plus `shared[]` (profiles others share with you) and `invites[]` (open invitations) / create |
 | PUT/DELETE | `/api/profiles/:id` | rename, colour, description, `is_default` / delete with all its data |
@@ -341,6 +348,31 @@ search, a module filter and the list of every note beside a wall of all notes (o
 a large editor); Timer gets a big clock with durations and alert settings beside it; Calculator
 gets a large keypad with its history beside it. "Collapse to panel" returns to the popover; the
 choice is remembered. On phones tools always open as the workspace.
+
+## Email
+
+Email is optional and off by default. An administrator opens **Email**, enters an SMTP account, sends a test
+and turns it on. The settings live in `app_settings` (the password encrypted with `DATA_KEY`); `SMTP_HOST`,
+`SMTP_PORT`, `SMTP_SECURE` (`starttls` \| `tls` \| `none`), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` and
+`SMTP_FROM_NAME` work as a fallback until something is saved on the page. Links in messages use the portal
+address from the page, else `APP_URL`, else the address the portal was last opened at.
+
+- **Password reset.** With email on, the sign-in page shows **Forgot password?**. The link works once and for one
+  hour, only its SHA-256 hash is stored (`mail_tokens`), using it signs every device out, and the account gets a
+  confirmation by mail and in the bell. Unknown addresses get the same answer and no mail. Two-factor
+  authentication still applies at the next sign-in.
+- **Notification emails.** The entries that wait for a person also go out by email: task assigned, mention,
+  unblocked, due / overdue, event reminder, profile invitation, role change, access removed, a sign-in from a
+  browser the account has not used before, sign-in method changes, a failed backup, chat mentions. Each person
+  can turn theirs off under Preferences → Notifications → **Email**; muted categories are never mailed. The
+  button in a message goes through `/n/:id`, which switches to the right workspace first.
+- **Invitations.** Sharing a profile with an address that has no account mails a 7-day link to `/join`, where the
+  person picks a name and a password and lands in the shared workspace with the invited role (account role
+  *user*). Pending invitations are listed in the share dialog and can be withdrawn; inviting the same address
+  again replaces the link. An administrator can switch this off, then only administrators create accounts.
+- **Limits and records.** At most 40 messages per recipient an hour, 10 join invitations per inviter an hour and
+  25 pending per profile. `mail_log` keeps recipient, subject, kind and result for 60 days, never the text.
+  Messages are in English.
 
 ## Push notifications
 
