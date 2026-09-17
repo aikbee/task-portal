@@ -16,8 +16,8 @@ export const MEMBER_ROLES = ["viewer", "editor", "manager"];
 export const ACCESS_RANK = { viewer: 1, editor: 2, manager: 3, owner: 4 };
 export const can = (user, level) => (ACCESS_RANK[user?.access ?? "owner"] ?? 0) >= ACCESS_RANK[level];
 
-const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|info|info-notes|attachments|outputs)(\/|$)/;
-const WHOLE_RECORD = /^\/api\/(projects|tasks|requirements|employees|drawboards)\/\d+\/?$/;
+const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|events|info|info-notes|attachments|outputs)(\/|$)/;
+const WHOLE_RECORD = /^\/api\/(projects|tasks|requirements|employees|drawboards|events)\/\d+\/?$/;
 
 /** The access a request needs inside the active profile, or null for routes that are not workspace data. */
 export function requiredAccess(method, pathname) {

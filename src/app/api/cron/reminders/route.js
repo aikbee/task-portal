@@ -3,6 +3,7 @@ import { handler, ok, HttpError } from "@/lib/api-utils";
 import { ensureReminders } from "@/lib/notifications";
 import { sweepRetention } from "@/lib/chat";
 import { ensureDailyBackup } from "@/lib/backups";
+import { ensureEventReminders } from "@/lib/events";
 
 /**
  * Scheduler entry point: generates due/overdue reminders for every profile so pushes go
@@ -16,10 +17,14 @@ export const GET = handler(
     if (!secret || given !== secret) throw new HttpError("Unauthorized.", 401);
     const profiles = await query("SELECT id, user_id FROM profiles");
     let created = 0;
-    for (const p of profiles) created += await ensureReminders(p.user_id, p.id);
+    let events = 0;
+    for (const p of profiles) {
+      created += await ensureReminders(p.user_id, p.id);
+      events += await ensureEventReminders(p.user_id, p.id).catch(() => 0);
+    }
     const chatPurged = (await sweepRetention({ force: true })) ?? 0;
     const backup = await ensureDailyBackup().catch((e) => ({ ran: true, ok: false, error: e.message }));
-    return ok({ profiles: profiles.length, created, chat_purged: chatPurged, backup, at: new Date().toISOString() });
+    return ok({ profiles: profiles.length, created, event_reminders: events, chat_purged: chatPurged, backup, at: new Date().toISOString() });
   },
   { auth: false }
 );

@@ -42,7 +42,7 @@ export default function TaskForm({ open, onClose, initial = null, defaults = {},
 function TaskFormInner({ onClose, initial, defaults, onSaved }) {
   const tr = useT();
   const [form, setForm] = useState(() => fromInitial(initial, defaults));
-  const { data: knownTags } = useFetch(open ? "/api/tasks/tags" : null);
+  const { data: knownTags } = useFetch("/api/tasks/tags"); // this inner form only mounts while the dialog is open
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const toast = useToast();

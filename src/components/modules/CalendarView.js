@@ -1,7 +1,8 @@
 "use client";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, CalendarDays, Plus, Flag, List, LayoutGrid, Rows3, X, CalendarCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, CalendarDays, Plus, Flag, List, LayoutGrid, Rows3, X, CalendarCheck, Clock, MapPin } from "lucide-react";
 import { useFetch, useMediaQuery } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useNav } from "@/lib/nav";
@@ -18,6 +19,7 @@ import Avatar from "@/components/ui/Avatar";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
+import EventForm from "./EventForm";
 import { InlineSelect, putTask } from "./shared";
 import { CanEdit, useAccess } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
@@ -54,7 +56,18 @@ export default function CalendarView() {
   const narrow = useMediaQuery("(max-width: 767px)"); // phones: coloured dots in the cells, details in the day panel below
   const [taskForm, setTaskForm] = useState({ open: false, initial: null, defaults: {} });
   const [dragId, setDragId] = useState(null);
+  const [dragEventId, setDragEventId] = useState(null);
   const [overDay, setOverDay] = useState(null);
+  const [eventForm, setEventForm] = useState({ open: false, initial: null, defaults: {} });
+  // /calendar?day=2026-10-02 (event reminders link here) opens on that day
+  const wantedDay = useSearchParams().get("day");
+  const [seenDay, setSeenDay] = useState(null);
+  if (wantedDay && wantedDay !== seenDay && /^\d{4}-\d{2}-\d{2}$/.test(wantedDay)) {
+    // derived from the URL while rendering (React's "adjust state when a prop changes" pattern), not in an effect
+    setSeenDay(wantedDay);
+    setSelected(wantedDay);
+    setCursor(parseIso(wantedDay));
+  }
 
   const { start, end } = rangeFor(view, cursor);
   const qs = new URLSearchParams({ due_from: isoDate(start), due_to: isoDate(end), has_due: "1" });
@@ -62,8 +75,34 @@ export default function CalendarView() {
   const { data: tasks, loading, error, setData, refetch } = useFetch(`/api/tasks?${qs}`);
   const { data: projects } = useFetch("/api/projects");
   const { data: employees } = useFetch("/api/employees");
+  const evQs = new URLSearchParams({ from: isoDate(start), to: isoDate(end) });
+  if (filters.project_id) evQs.set("project_id", filters.project_id);
+  const { data: events, setData: setEvents, refetch: refetchEvents } = useFetch(`/api/events?${evQs}`);
 
   const today = todayIso();
+  // an event sits on every day it touches
+  const eventsByDay = useMemo(() => {
+    const map = {};
+    const lo = isoDate(start), hi = isoDate(end);
+    for (const ev of events ?? []) {
+      for (let d = parseIso(ev.start_date < lo ? lo : ev.start_date); isoDate(d) <= (ev.end_date > hi ? hi : ev.end_date); d = addDays(d, 1)) (map[isoDate(d)] ??= []).push(ev);
+    }
+    return map;
+  }, [events, start, end]);
+  const moveEvent = async (eventId, day) => {
+    const ev = (events ?? []).find((x) => x.id === eventId);
+    if (!ev || ev.start_date === day) return;
+    try {
+      const saved = await api.put(`/api/events/${eventId}`, { start_date: day });
+      setEvents((list) => (list ?? []).map((x) => (x.id === eventId ? saved : x)));
+      toast.success(tr("Event moved"), `${ev.title} → ${formatDate(day)}`);
+    } catch (e) {
+      toast.error(tr("Could not move the event"), e.message);
+      refetchEvents();
+    }
+  };
+  const openEvent = (ev) => setEventForm({ open: true, initial: ev, defaults: {} });
+  const newEvent = (day) => setEventForm({ open: true, initial: null, defaults: { start_date: day || selected || today } });
   const byDay = useMemo(() => {
     const map = {};
     for (const t of tasks ?? []) {
@@ -137,7 +176,7 @@ export default function CalendarView() {
         icon={mod.icon}
         color={mod.color}
         crumbs={[]}
-        actions={<CanEdit><Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: { due_date: selected || today } })}>{tr("New task")}</Button></CanEdit>}
+        actions={<CanEdit><Button variant="secondary" icon={CalendarDays} onClick={() => newEvent()} className="cal-new-event">{tr("New event")}</Button><Button icon={Plus} onClick={() => setTaskForm({ open: true, initial: null, defaults: { due_date: selected || today } })}>{tr("New task")}</Button></CanEdit>}
       />
 
       {/* toolbar */}
@@ -171,7 +210,7 @@ export default function CalendarView() {
 
       <div className={cn("grid grid-cols-1 gap-4", view !== "agenda" && "xl:grid-cols-[1fr_320px]")}>
         {view === "agenda" ? (
-          <Agenda days={days} byDay={byDay} deadlinesByDay={deadlinesByDay} today={today} loading={loading && !tasks} onOpen={(t) => router.push(`/tasks/${t.id}`)} onStatus={quickStatus} onNew={(day) => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })} />
+          <Agenda days={days} byDay={byDay} eventsByDay={eventsByDay} onOpenEvent={openEvent} deadlinesByDay={deadlinesByDay} today={today} loading={loading && !tasks} onOpen={(t) => router.push(`/tasks/${t.id}`)} onStatus={quickStatus} onNew={(day) => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })} />
         ) : (
           <Card padding={false} className="cal-grid overflow-x-auto">
             <div className="cal-head grid grid-cols-7 border-b border-line bg-surface-2/60 text-center text-[10px] font-semibold uppercase tracking-wider text-fg-muted md:min-w-[640px] md:text-[11px]">
@@ -182,25 +221,28 @@ export default function CalendarView() {
                 const d = parseIso(day);
                 const inMonth = view !== "month" || d.getMonth() === cursor.getMonth();
                 const list = byDay[day] ?? [];
+                const dayEvents = eventsByDay[day] ?? [];
                 const deadlines = deadlinesByDay[day] ?? [];
                 const isToday = day === today;
                 const isSelected = day === selected;
                 const max = view === "week" ? 50 : 3;
-                const overflow = list.length - max;
+                const shownEvents = dayEvents.slice(0, max);
+                const taskRoom = Math.max(0, max - shownEvents.length);
+                const overflow = dayEvents.length + list.length - shownEvents.length - Math.min(list.length, taskRoom);
                 return (
                   <div
                     key={day}
                     onClick={() => setSelected(day)}
                     onDoubleClick={() => setTaskForm({ open: true, initial: null, defaults: { due_date: day } })}
-                    onDragOver={(e) => { if (dragId != null) { e.preventDefault(); setOverDay(day); } }}
+                    onDragOver={(e) => { if (dragId != null || dragEventId != null) { e.preventDefault(); setOverDay(day); } }}
                     onDragLeave={() => setOverDay((o) => (o === day ? null : o))}
-                    onDrop={(e) => { e.preventDefault(); if (dragId != null) reschedule(dragId, day); setDragId(null); setOverDay(null); }}
+                    onDrop={(e) => { e.preventDefault(); if (dragId != null) reschedule(dragId, day); if (dragEventId != null) moveEvent(dragEventId, day); setDragId(null); setDragEventId(null); setOverDay(null); }}
                     className={cn(
                       "cal-day group relative flex min-h-[64px] cursor-pointer flex-col border-b border-r border-line/70 p-1 transition-colors md:min-h-[112px] md:p-1.5",
                       view === "week" && "min-h-[320px] md:min-h-[520px]",
                       !inMonth && "bg-surface-2/40 text-fg-faint",
                       isSelected && "is-selected bg-accent/6",
-                      overDay === day && dragId != null && "bg-accent/15 ring-2 ring-inset ring-accent/50"
+                      overDay === day && (dragId != null || dragEventId != null) && "bg-accent/15 ring-2 ring-inset ring-accent/50"
                     )}
                   >
                     <div className="mb-1 flex items-center justify-between">
@@ -222,8 +264,9 @@ export default function CalendarView() {
                       </span>
                     </div>
                     {narrow ? (
-                      list.length ? (
-                        <div className="cal-dots flex flex-wrap items-center gap-1 px-0.5 pt-0.5" aria-label={`${list.length} tasks`}>
+                      list.length || dayEvents.length ? (
+                        <div className="cal-dots flex flex-wrap items-center gap-1 px-0.5 pt-0.5" aria-label={`${list.length} tasks, ${dayEvents.length} events`}>
+                          {dayEvents.slice(0, 3).map((ev) => <span key={`e${ev.id}`} className="h-1.5 w-2.5 rounded-sm" style={{ background: ev.color || ev.project_color || "#0ea5e9" }} />)}
                           {list.slice(0, 6).map((t) => (
                             <span key={t.id} className="h-1.5 w-1.5 rounded-full" style={{ background: t.project_color || "var(--accent)" }} />
                           ))}
@@ -232,7 +275,8 @@ export default function CalendarView() {
                       ) : null
                     ) : (
                       <div className="flex flex-1 flex-col gap-1">
-                        {list.slice(0, max).map((t) => (
+                        {shownEvents.map((ev) => <EventChip key={`e${ev.id}`} event={ev} day={day} dragging={dragEventId === ev.id} onDragStart={() => setDragEventId(ev.id)} onDragEnd={() => { setDragEventId(null); setOverDay(null); }} onOpen={() => openEvent(ev)} />)}
+                        {list.slice(0, taskRoom).map((t) => (
                           <TaskChip key={t.id} task={t} today={today} dragging={dragId === t.id} onDragStart={() => setDragId(t.id)} onDragEnd={() => { setDragId(null); setOverDay(null); }} onOpen={() => router.push(`/tasks/${t.id}`)} />
                         ))}
                         {overflow > 0 ? <span className="px-1 text-[11px] font-medium text-fg-muted">+{overflow} more</span> : null}
@@ -250,6 +294,9 @@ export default function CalendarView() {
             day={selected}
             today={today}
             tasks={selectedTasks}
+            events={eventsByDay[selected] ?? []}
+            onOpenEvent={openEvent}
+            onNewEvent={() => newEvent(selected)}
             deadlines={deadlinesByDay[selected] ?? []}
             loading={loading && !tasks}
             onClose={() => setSelected(null)}
@@ -262,6 +309,7 @@ export default function CalendarView() {
       </div>
 
       <TaskForm open={taskForm.open} onClose={() => setTaskForm({ open: false, initial: null, defaults: {} })} initial={taskForm.initial} defaults={taskForm.defaults} onSaved={refetch} />
+      <EventForm open={eventForm.open} onClose={() => setEventForm({ open: false, initial: null, defaults: {} })} initial={eventForm.initial} defaults={eventForm.defaults} onSaved={refetchEvents} />
     </>
   );
 }
@@ -290,7 +338,47 @@ function TaskChip({ task: t, today, dragging, onDragStart, onDragEnd, onOpen }) 
   );
 }
 
-function DayPanel({ day, today, tasks, deadlines, loading, onClose, onOpen, onStatus, onNew, onEdit }) {
+/** "09:00 – 10:30", "All day", or "Day 2 of 3" for the middle of a long event. */
+function eventWhen(ev, day, tr) {
+  const multi = ev.start_date !== ev.end_date;
+  if (ev.all_day) return multi ? `${formatDate(ev.start_date, { month: "short", day: "numeric" })} – ${formatDate(ev.end_date, { month: "short", day: "numeric" })}` : tr("All day");
+  if (multi && day !== ev.start_date) return day === ev.end_date && ev.end_time ? tr("until {t}", { t: ev.end_time }) : tr("All day");
+  return `${ev.start_time}${ev.end_time && !multi ? ` – ${ev.end_time}` : ""}`;
+}
+function EventChip({ event: ev, day, dragging, onDragStart, onDragEnd, onOpen }) {
+  const tr = useT();
+  const { canEdit } = useAccess();
+  const color = ev.color || ev.project_color || "#0ea5e9";
+  return (
+    <button
+      draggable={canEdit}
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", `event:${ev.id}`); } catch {} onDragStart(); }}
+      onDragEnd={onDragEnd}
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+      title={`${ev.title} · ${eventWhen(ev, day, tr)}${ev.location ? ` · ${ev.location}` : ""}`}
+      className={cn("cal-event cal-event-entry flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] font-medium leading-tight transition hover:brightness-95", dragging && "opacity-40")}
+      style={{ background: `color-mix(in srgb, ${color} 18%, transparent)`, color: `color-mix(in srgb, ${color} 70%, var(--fg))` }}
+    >
+      {!ev.all_day && day === ev.start_date ? <span className="shrink-0 tabular-nums opacity-80">{ev.start_time}</span> : null}
+      <span className="min-w-0 flex-1 truncate">{ev.title}</span>
+    </button>
+  );
+}
+function EventRow({ event: ev, day, onOpen, className }) {
+  const tr = useT();
+  const color = ev.color || ev.project_color || "#0ea5e9";
+  return (
+    <button type="button" onClick={onOpen} className={cn("cal-event-row flex w-full items-center gap-3 text-left hover:bg-surface-2", className)}>
+      <span className="h-8 w-1 shrink-0 rounded-full" style={{ background: color }} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{ev.title}</span>
+        <span className="flex flex-wrap items-center gap-x-2 text-[11px] text-fg-muted"><span className="inline-flex items-center gap-1"><Clock size={10} /> {eventWhen(ev, day, tr)}</span>{ev.location ? <span className="inline-flex min-w-0 items-center gap-1"><MapPin size={10} /> <span className="truncate">{ev.location}</span></span> : null}{ev.project_name ? <span>{ev.project_name}</span> : null}</span>
+      </span>
+    </button>
+  );
+}
+
+function DayPanel({ day, today, tasks, events = [], onOpenEvent, onNewEvent, deadlines, loading, onClose, onOpen, onStatus, onNew, onEdit }) {
   const tr = useT();
   if (!day) {
     return (
@@ -309,7 +397,7 @@ function DayPanel({ day, today, tasks, deadlines, loading, onClose, onOpen, onSt
           <h3 className="text-lg font-semibold tracking-tight">{formatDate(day, { month: "long", day: "numeric", year: "numeric" })}</h3>
         </div>
         <div className="flex items-center gap-1">
-          <CanEdit><Button size="sm" icon={Plus} onClick={onNew}>{tr("New task")}</Button></CanEdit>
+          <CanEdit><Button size="sm" variant="secondary" icon={CalendarDays} onClick={onNewEvent} aria-label={tr("New event")} data-tip={tr("New event")} /><Button size="sm" icon={Plus} onClick={onNew}>{tr("New task")}</Button></CanEdit>
           <Button variant="ghost" size="iconSm" icon={X} onClick={onClose} aria-label={tr("Close")} />
         </div>
       </div>
@@ -325,6 +413,7 @@ function DayPanel({ day, today, tasks, deadlines, loading, onClose, onOpen, onSt
           ))}
         </ul>
       ) : null}
+      {events.length ? <ul className="day-events mb-3 space-y-1.5">{events.map((ev) => <li key={ev.id}><EventRow event={ev} day={day} onOpen={() => onOpenEvent?.(ev)} className="rounded-app border border-line p-2" /></li>)}</ul> : null}
       {loading ? <div className="space-y-2">{[0, 1].map((i) => <Skeleton key={i} className="h-14" />)}</div> : tasks.length === 0 ? (
         <EmptyState compact icon={CalendarCheck} title={tr("Nothing due")} description={tr("No tasks are due on this day.")} />
       ) : (
@@ -353,9 +442,9 @@ function DayPanel({ day, today, tasks, deadlines, loading, onClose, onOpen, onSt
   );
 }
 
-function Agenda({ days, byDay, deadlinesByDay, today, loading, onOpen, onStatus, onNew }) {
+function Agenda({ days, byDay, eventsByDay = {}, onOpenEvent, deadlinesByDay, today, loading, onOpen, onStatus, onNew }) {
   const tr = useT();
-  const rows = days.filter((day) => (byDay[day]?.length || deadlinesByDay[day]?.length));
+  const rows = days.filter((day) => (byDay[day]?.length || deadlinesByDay[day]?.length || eventsByDay[day]?.length));
   if (loading) return <div className="space-y-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-20" />)}</div>;
   if (!rows.length) return <Card><EmptyState icon={CalendarDays} title={tr("Nothing scheduled")} description="No tasks are due in the next six weeks. Move the range with the arrows or add a task." /></Card>;
   return (
@@ -377,6 +466,7 @@ function Agenda({ days, byDay, deadlinesByDay, today, loading, onOpen, onStatus,
                   <span><b>{p.name}</b> deadline</span>
                 </Link>
               ))}
+              {(eventsByDay[day] ?? []).map((ev) => <EventRow key={`e${ev.id}`} event={ev} day={day} onOpen={() => onOpenEvent?.(ev)} className="px-3 py-2" />)}
               {(byDay[day] ?? []).map((t) => {
                 const overdue = t.status !== "done" && t.due_date < today;
                 return (

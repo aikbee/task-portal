@@ -678,6 +678,39 @@ console.log("planning: repeating tasks");
   for (const t of (await call("GET", "/api/tasks?q=Repeat ")).data) await call("DELETE", `/api/tasks/${t.id}`);
 }
 
+console.log("planning: calendar events");
+{
+  const noTitle = await call("POST", "/api/events", { body: { start_date: "2026-10-05" } });
+  const noDate = await call("POST", "/api/events", { body: { title: "Ev nothing" } });
+  const backwards = await call("POST", "/api/events", { body: { title: "Ev backwards", start_date: "2026-10-05", end_date: "2026-10-01" } });
+  const noTime = await call("POST", "/api/events", { body: { title: "Ev timed", start_date: "2026-10-05", all_day: false } });
+  const badTime = await call("POST", "/api/events", { body: { title: "Ev timed", start_date: "2026-10-05", all_day: false, start_time: "25:00" } });
+  const endsEarly = await call("POST", "/api/events", { body: { title: "Ev timed", start_date: "2026-10-05", all_day: false, start_time: "14:00", end_time: "13:00" } });
+  const strangerProject = await call("POST", "/api/events", { body: { title: "Ev project", start_date: "2026-10-05", project_id: 999999 } });
+  check("no title, no date, ends before it starts, missing/odd times, a foreign project -> 400", [noTitle, noDate, backwards, noTime, badTime, endsEarly, strangerProject].every((r) => r.status === 400), [noTitle, noDate, backwards, noTime, badTime, endsEarly, strangerProject].map((r) => r.status).join());
+  const holiday = await call("POST", "/api/events", { body: { title: "Ev Public holiday", start_date: "2026-10-05" } });
+  check("an all-day event needs only a title and a day", holiday.status === 201 && holiday.data.all_day === 1 && holiday.data.end_date === "2026-10-05" && holiday.data.start_time === null && holiday.data.created_by_name === "Admin User");
+  const workshop = await call("POST", "/api/events", { body: { title: "Ev Workshop", start_date: "2026-10-07", end_date: "2026-10-09", location: "KL office", color: "#f97316", project_id: projectId } });
+  const review = await call("POST", "/api/events", { body: { title: "Ev Sprint review", start_date: "2026-10-08", all_day: false, start_time: "14:00", end_time: "15:30", description: "Demo the release" } });
+  check("multi-day and timed events keep their fields", workshop.status === 201 && workshop.data.project_id === projectId && workshop.data.color === "#f97316" && review.status === 201 && review.data.all_day === 0 && review.data.start_time === "14:00" && review.data.end_time === "15:30");
+  const day8 = await call("GET", "/api/events?from=2026-10-08&to=2026-10-08");
+  check("a range lists every event that touches it, all-day first", day8.status === 200 && day8.data.map((e) => e.title).join("|") === "Ev Workshop|Ev Sprint review", day8.data?.map((e) => e.title).join("|"));
+  const before = await call("GET", "/api/events?from=2026-10-01&to=2026-10-04");
+  check("…and nothing outside it", !before.data.some((e) => /^Ev /.test(e.title)));
+  const byProject = await call("GET", `/api/events?from=2026-10-01&to=2026-10-31&project_id=${projectId}`);
+  check("events filter by project", byProject.data.length >= 1 && byProject.data.every((e) => e.project_id === projectId));
+  const moved = await call("PUT", `/api/events/${workshop.data.id}`, { body: { start_date: "2026-10-12" } });
+  check("moving only the start keeps the length (dragging on the calendar)", moved.status === 200 && moved.data.start_date === "2026-10-12" && moved.data.end_date === "2026-10-14");
+  const broken = await call("PUT", `/api/events/${workshop.data.id}`, { body: { end_date: "2026-10-01" } });
+  check("an edit is validated as a whole", broken.status === 400);
+  const toTimed = await call("PUT", `/api/events/${holiday.data.id}`, { body: { all_day: false, start_time: "09:00" } });
+  const backAllDay = await call("PUT", `/api/events/${holiday.data.id}`, { body: { all_day: true } });
+  check("all-day and timed can be switched; all-day drops the times", toTimed.data.start_time === "09:00" && backAllDay.data.start_time === null && backAllDay.data.all_day === 1);
+  check("an unknown event -> 404", (await call("GET", "/api/events/999999")).status === 404);
+  for (const e of [holiday, workshop, review]) await call("DELETE", `/api/events/${e.data.id}`);
+  check("events can be deleted", (await call("GET", "/api/events?from=2026-10-01&to=2026-10-31")).data.filter((e) => /^Ev /.test(e.title)).length === 0);
+}
+
 console.log("push + reminder scheduler");
 {
   const key = await call("GET", "/api/push/key");
@@ -906,6 +939,8 @@ const adminJar = { ...jar };
     check("a viewer reads dependencies but cannot change them (403)", vDep.status === 403 && (await call("GET", `/api/tasks/${taskId}/dependencies`)).status === 200 && (await call("GET", "/api/tasks/dependencies")).status === 200);
     const vTime = await call("POST", `/api/tasks/${taskId}/time`, { body: { duration: "1h" } });
     check("a viewer sees logged time but cannot log any (403)", vTime.status === 403 && (await call("GET", `/api/tasks/${taskId}/time`)).status === 200);
+    const vEvent = await call("POST", "/api/events", { body: { title: "viewer event", start_date: "2026-10-05" } });
+    check("a viewer sees the calendar's events but cannot add one (403)", vEvent.status === 403 && (await call("GET", "/api/events?from=2026-10-01&to=2026-10-31")).status === 200);
     const vInfo = await call("GET", "/api/info");
     const vInfoSearch = await call("GET", "/api/info/search?q=a");
     const vSearch = await call("GET", "/api/search?q=a");
@@ -923,6 +958,10 @@ const adminJar = { ...jar };
     const eCreate = await call("POST", "/api/tasks", { body: { title: "Made by a shared editor", project_id: projectId } });
     const ownerSees = await asAdmin(() => call("GET", `/api/tasks/${eCreate.data?.id}`));
     check("an editor creates inside the owner's profile", eCreate.status === 201 && ownerSees.status === 200 && ownerSees.data.title === "Made by a shared editor");
+    const eEvent = await call("POST", "/api/events", { body: { title: "Editor's event", start_date: "2026-10-06" } });
+    const eEventDel = await call("DELETE", `/api/events/${eEvent.data?.id}`);
+    check("an editor adds events in the shared profile but cannot delete them (403)", eEvent.status === 201 && eEventDel.status === 403);
+    await asAdmin(() => call("DELETE", `/api/events/${eEvent.data.id}`));
     const eEdit = await call("PUT", `/api/tasks/${eCreate.data.id}`, { body: { status: "in_progress" } });
     const eDel = await call("DELETE", `/api/tasks/${eCreate.data.id}`);
     check("an editor edits but cannot delete a record (403)", eEdit.status === 200 && eDel.status === 403 && /owner or a manager/.test(eDel.error));

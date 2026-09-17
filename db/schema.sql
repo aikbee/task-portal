@@ -407,6 +407,33 @@ CREATE TABLE IF NOT EXISTS task_checklist (
   CONSTRAINT fk_tcl_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Calendar entries that are not tasks: meetings, holidays, releases. Dates and times are "floating" (what the
+-- clock on the wall says), so everybody sees the same 14:00. user_id is the profile's owner, like on tasks;
+-- only the profile key cascades (deleting the owner deletes the profile, which takes the events along).
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  profile_id INT UNSIGNED NOT NULL,
+  project_id INT UNSIGNED NULL,
+  title VARCHAR(200) NOT NULL,
+  description TEXT NULL,
+  location VARCHAR(200) NULL,
+  all_day TINYINT(1) NOT NULL DEFAULT 1,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  start_time TIME NULL,
+  end_time TIME NULL,
+  color VARCHAR(16) NULL,
+  created_by INT UNSIGNED NULL,
+  created_by_name VARCHAR(120) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_ce_profile_dates (profile_id, start_date, end_date),
+  KEY idx_ce_project (project_id),
+  CONSTRAINT fk_ce_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ce_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Time spent on a task. A row with started_at set and minutes = 0 is a running timer (one per user at most);
 -- stopping it fills in the minutes. user_id carries no foreign key; user_name keeps the entry readable.
 CREATE TABLE IF NOT EXISTS time_entries (

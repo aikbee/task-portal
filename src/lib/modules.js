@@ -115,7 +115,7 @@ export const MODULES = [
     href: "/calendar",
     icon: CalendarDays,
     color: "#0ea5e9",
-    description: "Tasks by due date — month, week and agenda views. Drag a task to reschedule it.",
+    description: "Tasks by due date and events such as meetings and holidays, in month, week and agenda views. Drag to reschedule.",
   },
   {
     key: "timeline",

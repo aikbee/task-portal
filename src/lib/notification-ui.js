@@ -1,5 +1,5 @@
 "use client";
-import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell, UserCheck, MessageCircle, Heart, AtSign, Phone, DatabaseBackup, Share2, UserMinus, UserCog, MessageSquare, LockOpen } from "lucide-react";
+import { CheckSquare, UserPlus, ArrowRightLeft, CircleCheckBig, Paperclip, ClipboardList, FolderKanban, Users, CalendarClock, AlertTriangle, ShieldCheck, ShieldAlert, LogIn, Bell, UserCheck, MessageCircle, Heart, AtSign, Phone, DatabaseBackup, Share2, UserMinus, UserCog, MessageSquare, LockOpen, CalendarDays } from "lucide-react";
 import { NOTIFICATION_TYPES } from "./constants";
 
 const ICONS = {
@@ -20,6 +20,7 @@ const ICONS = {
   project_member: Users,
   task_due: CalendarClock,
   task_overdue: AlertTriangle,
+  event_reminder: CalendarDays,
   user_created: ShieldCheck,
   user_updated: ShieldCheck,
   user_deleted: ShieldAlert,

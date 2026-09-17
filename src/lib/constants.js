@@ -89,6 +89,7 @@ export const NOTIFICATION_TYPES = {
   project_member: { category: "projects", label: "Team change", tone: "indigo" },
   task_due: { category: "reminders", label: "Due soon", tone: "amber" },
   task_overdue: { category: "reminders", label: "Overdue", tone: "rose" },
+  event_reminder: { category: "reminders", label: "Event", tone: "sky" },
   user_created: { category: "team", label: "Account created", tone: "sky" },
   user_updated: { category: "team", label: "Account changed", tone: "violet" },
   user_deleted: { category: "team", label: "Account removed", tone: "rose" },
