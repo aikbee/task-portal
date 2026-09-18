@@ -146,6 +146,10 @@ export async function getSessionUser(request) {
 async function tokenUser(bearer) {
   const t = await resolveToken(bearer);
   if (!t) return null;
+  if (t.usage.over) {
+    const what = t.usage.scope === "day" ? "today" : "this minute";
+    throw new HttpError(`This token has made too many requests ${what}. Try again in ${t.usage.retry_after} seconds.`, 429, { limit: t.usage.limit, retry_after: t.usage.retry_after }, { "Retry-After": String(t.usage.retry_after), "X-RateLimit-Limit": String(t.usage.limit), "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(Math.floor(Date.now() / 1000) + t.usage.retry_after) });
+  }
   const row = await queryOne(`SELECT ${PUBLIC_USER_FIELDS}, NULL AS session_id, NULL AS expires_at, 0 AS secrets_unlocked FROM users u WHERE u.id = ? AND u.status = 'active'`, [t.user_id]);
   if (!row) return null;
   const home_id = row.id;
@@ -164,7 +168,7 @@ async function tokenUser(bearer) {
     shared = { owner: lent.owner, role: lent.role };
   }
   profile ??= profiles.find((p) => p.is_default) ?? profiles[0];
-  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: false, owner_id, home_id, workspace: null, profile_id: profile.id, profile, profiles, shared_profiles, access, shared, token: { id: t.id, scope: t.scope } };
+  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: false, owner_id, home_id, workspace: null, profile_id: profile.id, profile, profiles, shared_profiles, access, shared, token: { id: t.id, scope: t.scope, usage: t.usage } };
 }
 
 export async function requireUser(request) {

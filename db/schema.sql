@@ -469,6 +469,12 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   profile_id INT UNSIGNED NULL, -- the profile the token works in (null = the person's default profile)
   last_used_at DATETIME NULL,
   expires_at DATETIME NULL,
+  -- rate limiting: requests in the current minute and day (UTC), and all time
+  minute_start DATETIME NULL,
+  minute_count INT UNSIGNED NOT NULL DEFAULT 0,
+  day_start DATE NULL,
+  day_count INT UNSIGNED NOT NULL DEFAULT 0,
+  total_count INT UNSIGNED NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_api_tokens_hash (token_hash),
   KEY idx_api_tokens_user (user_id)

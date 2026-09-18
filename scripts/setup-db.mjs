@@ -112,6 +112,10 @@ async function migrate(db, adminId) {
     log("migrating: employees.email may be empty (people imported from a spreadsheet)");
     await db.query("ALTER TABLE employees MODIFY email VARCHAR(190) NULL");
   }
+  if ((await hasColumn(db, "api_tokens", "id")) && !(await hasColumn(db, "api_tokens", "minute_start"))) {
+    log("migrating: api_tokens rate-limit counters");
+    await db.query("ALTER TABLE api_tokens ADD COLUMN minute_start DATETIME NULL AFTER expires_at, ADD COLUMN minute_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER minute_start, ADD COLUMN day_start DATE NULL AFTER minute_count, ADD COLUMN day_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER day_start, ADD COLUMN total_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER day_count");
+  }
   if (!(await hasColumn(db, "employees", "linked_user_id"))) {
     log("migrating: employees.linked_user_id (the portal account behind an employee record)");
     await db.query("ALTER TABLE employees ADD COLUMN linked_user_id INT UNSIGNED NULL AFTER hired_at, ADD KEY idx_employees_linked (linked_user_id)");

@@ -61,7 +61,7 @@ export default function ApiTokens() {
   return (
     <section className="ui-card card api-tokens p-5">
       <h2 className="text-base font-semibold">{tr("API tokens")}</h2>
-      <p className="mb-4 text-xs text-fg-muted">{tr("For scripts, spreadsheets and other tools. A token uses the same API as this app, inside one profile, as you. Read tokens can only read; no token can change your account or administration settings.")}</p>
+      <p className="mb-4 text-xs text-fg-muted">{tr("For scripts, spreadsheets and other tools. A token uses the same API as this app, inside one profile, as you. Read tokens can only read; no token can change your account or administration settings.")} {list[0]?.limits ? tr("Each token may make {m} requests a minute and {d} a day; over that the API answers 429 with a Retry-After header.", { m: list[0].limits.perMinute, d: list[0].limits.perDay }) : null}</p>
       {fresh ? (
         <div className="token-fresh mb-4 rounded-app border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm">
           <p className="font-medium">{tr("Copy the token now: it is not shown again.")}</p>
@@ -86,7 +86,7 @@ export default function ApiTokens() {
               <KeyRound size={16} className="shrink-0 text-fg-muted" />
               <span className="min-w-0 flex-1">
                 <span className="flex flex-wrap items-center gap-2 font-medium">{t.name} <code className="rounded bg-surface-2 px-1.5 font-mono text-[11px] text-fg-muted">{t.prefix}…</code></span>
-                <span className="block text-xs text-fg-muted">{profileName(t.profile_id)} · {t.last_used_at ? tr("used {when}", { when: relativeTime(t.last_used_at) }) : tr("never used")} · {t.expires_at ? tr("expires {date}", { date: formatDate(t.expires_at) }) : tr("no expiry")}</span>
+                <span className="block text-xs text-fg-muted">{profileName(t.profile_id)} · {t.last_used_at ? tr("used {when}", { when: relativeTime(t.last_used_at) }) : tr("never used")} · {t.expires_at ? tr("expires {date}", { date: formatDate(t.expires_at) }) : tr("no expiry")}{t.requests_total ? ` · ${tr("{n} requests today, {t} in all", { n: t.requests_today, t: t.requests_total })}` : ""}</span>
               </span>
               <Badge tone={t.scope === "write" ? "amber" : "sky"}>{t.scope === "write" ? tr("Read & write") : tr("Read")}</Badge>
               <Button variant="dangerGhost" size="iconSm" icon={Trash2} onClick={() => revoke(t)} aria-label={tr("Revoke")} data-tip={tr("Revoke")} className="token-revoke" />

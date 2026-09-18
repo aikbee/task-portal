@@ -222,7 +222,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET / POST | `/api/views` | `?module=` → my saved views in this profile plus the shared ones (`mine`, `is_default` per person) / `{ module, name, state: { filters, query, sort, date }, shared?, is_default? }` |
 | PUT / DELETE | `/api/views/:id` | `{ name?, state?, shared?, is_default? }` (changing or deleting somebody else's view takes a manager; a default has to be your own) / delete |
 | GET | `/api/time/report` | `?from=&to=` (default this month), `&group=person\|project\|task\|day`, `&project_id=`, `&user_id=` → `total_minutes`, `groups[]` (minutes, entries, people, tasks, share, estimate_minutes), `days[]`, `entries[]` (newest first, at most 5000), `people[]` |
-| GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
+| GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry, `requests_today`, `requests_total`, `limits`) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
 | DELETE | `/api/tokens/:id` | revoke |
 | GET / POST | `/api/profiles/:id/webhooks` | owner / managers: the profile's webhooks and the event list / `{ url, events?: [...]\|"*" }` → the hook with its secret, shown once |
 | PUT / DELETE | `/api/profiles/:id/webhooks/:hid` | `{ url?, events?, active? }` (turning a paused hook on clears its failures) / remove |
@@ -399,6 +399,13 @@ who made it: `curl -H "Authorization: Bearer tp_…" https://your-portal/api/tas
 a *read & write* token creates and changes records like the person could (sharing roles still apply). No token
 can use account, user, mail, backup, chat or profile-management routes, and the Info vault stays locked.
 Tokens can expire, are listed with their last use, and are revoked with one click.
+
+Every token is rate limited: 60 requests a minute and 5000 a day (UTC), counted per token in the database, so
+several server processes agree. Each answer carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+`X-RateLimit-Reset` (unix seconds); over the limit the API answers `429` with `Retry-After`. Requests over the
+limit still count. An address that sends 30 wrong tokens within ten minutes waits ten minutes before any bearer
+request from it is looked at again (browser sessions are not affected). `API_RATE_PER_MINUTE` and
+`API_RATE_PER_DAY` change the limits. The Security page shows each token's requests today and in all.
 
 **Webhooks** (Profiles → the webhook button on a profile; owner and managers) tell another system what happens
 in a profile: `task.created`, `task.updated`, `task.completed`, `task.deleted`, `task.comment`,

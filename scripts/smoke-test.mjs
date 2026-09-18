@@ -2209,6 +2209,20 @@ console.log("API tokens + webhooks");
   check("write token creates a task", made.status === 201 && made.data.project_id === projectId);
   check("the list shows the last use", (await call("GET", "/api/tokens")).data.find((r) => r.id === t1.data.row.id).last_used_at != null);
   check("DELETE /api/tokens/:id revokes", (await call("DELETE", `/api/tokens/${t1.data.row.id}`)).status === 200 && (await rd("GET", "/api/tasks")).status === 401);
+  // rate limits: 60 a minute per token, answered with headers; wrong tokens lock an address out
+  const raw = (tok, headers = {}) => fetch(BASE + "/api/tasks", { headers: { Authorization: `Bearer ${tok}`, ...headers } });
+  const t3 = await call("POST", "/api/tokens", { body: { name: `Smoke rate ${suffix}`, scope: "read" } });
+  const r1 = await raw(t3.data.token);
+  check("token answers carry X-RateLimit-* headers", r1.status === 200 && r1.headers.get("x-ratelimit-limit") === "60" && r1.headers.get("x-ratelimit-remaining") === "59" && r1.headers.get("x-ratelimit-reset"));
+  let rl;
+  for (let i = 0; i < 60; i++) rl = await raw(t3.data.token);
+  check("the 61st request in a minute -> 429 with Retry-After", rl.status === 429 && Number(rl.headers.get("retry-after")) >= 1 && Number(rl.headers.get("retry-after")) <= 60 && /this minute/.test((await rl.json()).error));
+  check("usage is shown on the token", (await call("GET", "/api/tokens")).data.find((r) => r.id === t3.data.row.id).requests_today === 61);
+  const spoof = { "X-Forwarded-For": `203.0.113.${(Date.now() % 200) + 1}` };
+  let bad;
+  for (let i = 0; i < 31; i++) bad = await raw("tp_" + "z".repeat(40), spoof);
+  check("31 wrong tokens from one address -> 429, other addresses unaffected", bad.status === 429 && (await raw("tp_" + "z".repeat(40))).status === 401);
+  await call("DELETE", `/api/tokens/${t3.data.row.id}`);
 
   // webhooks: a receiver inside the test
   const got = [];

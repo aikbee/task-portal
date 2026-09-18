@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { HttpError } from "./http-error";
 import { requireUser, requireRole } from "./auth";
 import { assertAccess } from "./sharing";
+import { bearerOf, badTokenWait, noteBadToken, requestIp } from "./api-tokens";
 
 export { HttpError };
 
@@ -10,9 +11,11 @@ export function ok(data, init) {
   return NextResponse.json({ data }, init);
 }
 
-export function fail(message, status = 400, details) {
-  return NextResponse.json({ error: message, ...(details ? { details } : {}) }, { status });
+export function fail(message, status = 400, details, headers) {
+  return NextResponse.json({ error: message, ...(details ? { details } : {}) }, { status, headers });
 }
+/** What a token's response tells the caller about its budget. */
+const rateHeaders = (usage) => ({ "X-RateLimit-Limit": String(usage.limit), "X-RateLimit-Remaining": String(usage.remaining), "X-RateLimit-Reset": String(Math.floor(Date.now() / 1000) + usage.reset) });
 
 /**
  * Wrap a route handler: awaits params, enforces the session (unless
@@ -25,16 +28,29 @@ export function handler(fn, { auth = true, role } = {}) {
       const params = context?.params ? await context.params : {};
       rememberOrigin(request);
       let user = null;
+      const bearer = auth ? bearerOf(request) : null;
+      if (bearer) {
+        // an address that keeps sending wrong tokens waits before the database is asked again
+        const wait = badTokenWait(requestIp(request));
+        if (wait) throw new HttpError(`Too many wrong tokens from this address. Try again in ${wait} seconds.`, 429, { retry_after: wait }, { "Retry-After": String(wait) });
+      }
       if (auth) {
-        user = await requireUser(request);
+        try {
+          user = await requireUser(request);
+        } catch (e) {
+          if (bearer && e?.status === 401) noteBadToken(requestIp(request));
+          throw e;
+        }
         if (user.token) assertTokenMay(user, request.method, new URL(request.url).pathname);
         if (role) requireRole(user, role);
         // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
         if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);
       }
-      return await fn(request, params, user);
+      const res = await fn(request, params, user);
+      if (user?.token?.usage) for (const [k, v] of Object.entries(rateHeaders(user.token.usage))) res.headers.set(k, v);
+      return res;
     } catch (err) {
-      if (err instanceof HttpError) return fail(err.message, err.status, err.details);
+      if (err instanceof HttpError) return fail(err.message, err.status, err.details, err.headers);
       if (err?.code === "ER_DUP_ENTRY") return fail("A record with that unique value already exists.", 409);
       if (err?.code === "ER_NO_REFERENCED_ROW_2") return fail("Referenced record does not exist.", 400);
       if (err?.code === "ECONNREFUSED" || err?.code === "ER_BAD_DB_ERROR") {
