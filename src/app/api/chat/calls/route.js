@@ -3,6 +3,7 @@ import { handler, ok, readJson, HttpError } from "@/lib/api-utils";
 import { conversationFor, assertFriends, publish, PEER_FIELDS } from "@/lib/chat";
 import { busyCallFor, shapeCall, callLabel, tellMembers, CALL_KINDS } from "@/lib/calls";
 import { notify } from "@/lib/notifications";
+import { CALL_PUSH, GROUP_CALL_PUSH } from "@/lib/push";
 
 /**
  * Start a call: { conversation_id, kind: "audio" | "video" }. A direct chat rings the other person (one call per
@@ -35,7 +36,8 @@ export const POST = handler(async (request, _params, user) => {
   if (group) await tellMembers({ conversation_id: cid }, { action: "started", call_id: call.id, kind, count: 1 });
   const title = group ? `${me.name} started a ${callLabel(kind)} in “${convo.title}”` : `${me.name} is calling you (${callLabel(kind)})`;
   for (const id of others) {
-    notify({ userId: id, type: "chat_call", title, body: group ? "Open the group to join." : "Open the chat to answer.", href: `/chat?c=${cid}`, entityType: "conversation", entityId: cid, actorId: user.id, dedupeKey: `call:${call.id}`, tag: `call-${call.id}` }).catch(() => {});
+    // the push is what reaches a closed or sleeping app: urgent, gone after the ringing time, shown as a call by the service worker
+    notify({ userId: id, type: "chat_call", title, body: group ? "Tap to join." : "Tap to answer.", href: `/chat?c=${cid}&call=${call.id}`, entityType: "conversation", entityId: cid, actorId: user.id, dedupeKey: `call:${call.id}`, tag: `call-${call.id}`, push: { ...(group ? GROUP_CALL_PUSH : CALL_PUSH), data: { ring: true, call_id: call.id, conversation_id: cid, group, call_kind: kind } } }).catch(() => {});
   }
   return ok({ ...call, peer: group ? null : { id: convo.user_id, name: convo.name, avatar: convo.avatar, avatar_color: convo.avatar_color }, title: group ? convo.title : null }, { status: 201 });
 });

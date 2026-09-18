@@ -34,3 +34,26 @@ export async function disablePush() {
   await api.post("/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
   await sub.unsubscribe();
 }
+
+/* ---------- call banners ---------- */
+const registration = async () => (typeof navigator !== "undefined" && "serviceWorker" in navigator ? navigator.serviceWorker.getRegistration().catch(() => null) : null);
+
+/** Take the "is calling you" banner(s) away: one call's, or every ringing one when no id is given. Missed-call banners stay. */
+export async function closeCallBanners(callId = null) {
+  try {
+    const reg = await registration();
+    const list = (await reg?.getNotifications?.()) ?? [];
+    for (const n of list) if (n.data?.ring && (callId == null || n.data.call_id === callId)) n.close();
+  } catch {}
+}
+
+/** A ring while this tab is hidden (a background tab may not play the ring tone): the same banner the push would show. */
+export async function showRingBanner({ callId, conversationId, group, title, body }) {
+  try {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const reg = await registration();
+    const options = { body, icon: "/icons/icon-192.png", badge: "/icons/badge-96.png", tag: `call-${callId}`, requireInteraction: true, renotify: true, data: { href: `/chat?c=${conversationId}&call=${callId}`, ring: true, call_id: callId, group: Boolean(group) } };
+    if (reg?.showNotification) await reg.showNotification(title, { ...options, actions: group ? [{ action: "answer", title: "Join" }, { action: "decline", title: "Dismiss" }] : [{ action: "answer", title: "Answer" }, { action: "decline", title: "Decline" }] });
+    else new Notification(title, options);
+  } catch {}
+}

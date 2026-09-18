@@ -66,7 +66,10 @@ export function ChatLiveProvider({ locked = false, children }) {
         }
       });
     }
-    es.onopen = () => setConnected(true);
+    es.onopen = () => {
+      setConnected(true);
+      callsRef.current.recover?.(); // a ring sent while the stream was down was never seen
+    };
     es.onerror = () => setConnected(false); // the browser retries on its own
     return () => es.close();
   }, [user?.id, setCounts]);

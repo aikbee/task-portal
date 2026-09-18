@@ -18,7 +18,7 @@ async function recipient(userId) {
  * Create a notification for one user. Skips self-generated noise (unless the
  * type is self-visible), muted categories, and duplicates by dedupe key.
  */
-export async function notify({ userId, type, title, body = null, href = null, entityType = null, entityId = null, actorId = null, dedupeKey = null, profileId = null, tag = null, email = true }) {
+export async function notify({ userId, type, title, body = null, href = null, entityType = null, entityId = null, actorId = null, dedupeKey = null, profileId = null, tag = null, email = true, push = null }) {
   if (!userId || !NOTIFICATION_TYPES[type]) return false;
   if (actorId && actorId === userId && !SELF_VISIBLE.has(type)) return false;
   const { muted, email: address } = await recipient(userId);
@@ -32,7 +32,8 @@ export async function notify({ userId, type, title, body = null, href = null, en
     [userId, type, title.slice(0, 200), body ? String(body).slice(0, 500) : null, href, entityType, entityId, profileId, actorId, dedupeKey]
   );
   // devices that opted in get the same notification as a push (fire and forget)
-  sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type }).catch(() => {});
+  // `push`: { ttl, urgency, topic, data } — calls go out urgent and short-lived and carry what the banner needs
+  sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type, ...(push?.data ?? {}) }, push ?? undefined).catch(() => {});
   // the important ones also go out by email when the portal has a mail account and the person did not opt out
   if (email && address && EMAIL_TYPES.has(type)) sendNotificationEmail({ id: res.insertId, to: address, type, title: title.slice(0, 200), body }).catch(() => {});
   return true;

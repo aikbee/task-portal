@@ -143,7 +143,16 @@ export async function finishCall(call, status, { by = null } = {}) {
   await execute("DELETE FROM notifications WHERE type = 'chat_call' AND dedupe_key = ?", [`call:${done.id}`]);
   if (status === "missed" && !isGroupCall(done)) {
     const caller = await queryOne("SELECT name FROM users WHERE id = ?", [done.caller_id]);
-    await notify({ userId: done.callee_id, type: "chat_call", title: `Missed ${callLabel(done.kind)} from ${caller?.name ?? "someone"}`, body: null, href: `/chat?c=${done.conversation_id}`, entityType: "conversation", entityId: done.conversation_id, actorId: done.caller_id, dedupeKey: `missed:${done.id}`, tag: `call-${done.id}` }).catch(() => {});
+    // same tag as the ringing banner, so on the phone "is calling you" turns into "missed call"
+    await notify({ userId: done.callee_id, type: "chat_call", title: `Missed ${callLabel(done.kind)} from ${caller?.name ?? "someone"}`, body: null, href: `/chat?c=${done.conversation_id}`, entityType: "conversation", entityId: done.conversation_id, actorId: done.caller_id, tag: `call-${done.id}`, push: { urgency: "high", data: { missed: true, call_id: done.id } } }).catch(() => {});
+  }
+  if (isGroupCall(done)) {
+    // members who were rung and never joined: their "started a call" banner is out of date now
+    const missedBy = await query("SELECT user_id FROM call_participants WHERE call_id = ? AND status = 'missed'", [done.id]);
+    if (missedBy.length) {
+      const caller = await queryOne("SELECT name FROM users WHERE id = ?", [done.caller_id]);
+      for (const m of missedBy) await notify({ userId: m.user_id, type: "chat_call", title: `Missed group ${callLabel(done.kind)}${convo?.title ? ` in “${convo.title}”` : ""}`, body: caller?.name ? `Started by ${caller.name}` : null, href: `/chat?c=${done.conversation_id}`, entityType: "conversation", entityId: done.conversation_id, actorId: done.caller_id, tag: `call-${done.id}`, push: { urgency: "high", data: { missed: true, call_id: done.id } } }).catch(() => {});
+    }
   }
   return done;
 }

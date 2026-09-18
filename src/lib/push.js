@@ -19,11 +19,16 @@ function setup() {
   return true;
 }
 
+/** How a call is pushed: at once or not at all. Normal urgency is held back while a phone sleeps, and a ring that arrives an hour late is worse than none. */
+export const CALL_PUSH = { urgency: "high", ttl: 50 };
+export const GROUP_CALL_PUSH = { urgency: "high", ttl: 90 };
+
 /**
- * Send a payload ({ title, body, href, tag }) to every device a user opted in with.
- * Subscriptions the push service reports as gone (404/410) are removed. Never throws.
+ * Send a payload ({ title, body, href, tag, … }) to every device a user opted in with. `options`: { ttl (seconds),
+ * urgency: very-low | low | normal | high, topic }. Subscriptions the push service reports as gone (404/410)
+ * are removed. Never throws.
  */
-export async function sendPush(userId, payload) {
+export async function sendPush(userId, payload, { ttl = 12 * 3600, urgency = "normal", topic = undefined } = {}) {
   try {
     if (!setup()) return { sent: 0, total: 0 };
     const subs = await query("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?", [userId]);
@@ -31,7 +36,7 @@ export async function sendPush(userId, payload) {
     await Promise.all(
       subs.map(async (s) => {
         try {
-          await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify(payload), { TTL: 12 * 3600 });
+          await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify(payload), { TTL: ttl, urgency, ...(topic ? { topic } : {}) });
           sent++;
           execute("UPDATE push_subscriptions SET last_used_at = NOW() WHERE id = ?", [s.id]).catch(() => {});
         } catch (e) {

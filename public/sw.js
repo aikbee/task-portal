@@ -4,7 +4,7 @@
  *  - caches immutable static assets (/_next/static, icons) cache-first, and
  *  - shows Web Push notifications and opens the linked page on tap.
  */
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE = `task-portal-${VERSION}`;
 const OFFLINE_URL = "/offline";
 const PRECACHE = [OFFLINE_URL, "/icon.svg", "/icons/icon-192.png"];
@@ -70,20 +70,36 @@ self.addEventListener("push", (event) => {
     data = { body: event.data ? event.data.text() : "" };
   }
   const title = data.title || "Task Portal";
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body: data.body || "",
-      icon: "/icons/icon-192.png",
-      badge: "/icons/badge-96.png",
-      tag: data.tag || undefined,
-      data: { href: data.href || "/notifications" },
-    })
-  );
+  const base = { body: data.body || "", icon: "/icons/icon-192.png", badge: "/icons/badge-96.png", tag: data.tag || undefined, data: { href: data.href || "/notifications" } };
+  // An incoming call: stays on screen, buzzes like a ring, and can be answered or declined from the banner
+  // (platforms without action buttons, like iOS, open the app on tap and the app shows the call).
+  const options = data.ring
+    ? {
+        ...base,
+        requireInteraction: true,
+        renotify: true,
+        vibrate: [500, 250, 500, 250, 500, 250, 900, 400, 500, 250, 500, 250, 900],
+        timestamp: Date.now(),
+        actions: data.group ? [{ action: "answer", title: "Join" }, { action: "decline", title: "Dismiss" }] : [{ action: "answer", title: "Answer" }, { action: "decline", title: "Decline" }],
+        data: { href: data.href || "/chat", ring: true, call_id: data.call_id, group: Boolean(data.group) },
+      }
+    : data.missed
+      ? { ...base, renotify: true, data: { ...base.data, call_id: data.call_id } } // replaces the ringing banner (same tag)
+      : base;
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = new URL(event.notification.data?.href || "/", self.location.origin).href;
+  const info = event.notification.data || {};
+  // "Decline" on a call banner answers the server and never opens the app
+  if (info.ring && event.action === "decline") {
+    event.waitUntil(fetch(`/api/chat/calls/${info.call_id}/decline`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {}));
+    return;
+  }
+  const target = new URL(info.href || "/", self.location.origin);
+  if (info.ring && event.action === "answer") target.searchParams.set("answer", "1");
+  const url = target.href;
   event.waitUntil(
     (async () => {
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });

@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { closeCallBanners, showRingBanner } from "@/lib/push-client";
 import { createPortal } from "react-dom";
 import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff, PhoneIncoming, SwitchCamera, Minimize2, Maximize2, GripHorizontal, Users } from "lucide-react";
 import Avatar from "@/components/ui/Avatar";
@@ -128,6 +129,7 @@ export function useCalls({ me, tr, toast }) {
     clearTimeout(s.ringTimer);
     s.ringTimer = null;
     stopTone();
+    closeCallBanners(callRef.current?.id ?? null); // the banner on this device is out of date whatever happened
     for (const uid of [...s.pcs.keys()]) closePeer(uid);
     s.ice = null;
     s.local?.getTracks().forEach((t) => t.stop());
@@ -340,9 +342,10 @@ export function useCalls({ me, tr, toast }) {
   const accept = useCallback(async () => {
     const c = callRef.current;
     if (!c || c.role !== "callee" || c.status !== "ringing") return;
-    if (c.group) return join(c.id, null);
+    if (c.group) { closeCallBanners(c.id); return join(c.id, null); }
     stopTone();
     clearTimeout(s.ringTimer);
+    closeCallBanners(c.id);
     let local;
     try {
       local = await getMedia(c.kind);
@@ -439,12 +442,15 @@ export function useCalls({ me, tr, toast }) {
         setCall({ id: ev.call.id, kind: ev.call.kind, group, title: ev.conversation_title ?? null, role: "callee", peer: ev.from, conversation_id: ev.call.conversation_id, status: "ringing", muted: false, cameraOff: false, facing: "user", peers: (ev.call.participants ?? []).filter((p) => p.id !== me?.id).map(peerOf) });
         s.tone = makeTone([1000, 2000], [440, 480]);
         s.tone.start();
+        // a hidden tab may not be allowed to sound: show the system banner as well (same tag as the push, so never two)
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") showRingBanner({ callId: ev.call.id, conversationId: ev.call.conversation_id, group, title: group ? `${ev.from?.name ?? ""} · ${ev.conversation_title ?? ""}` : `${ev.from?.name ?? ""}`, body: ev.call.kind === "video" ? "Video call" : "Voice call" });
         s.ringTimer = setTimeout(() => {
           if (group) {
             stopTone();
+            closeCallBanners(ev.call.id);
             setCall((x) => (x && x.status === "ringing" ? null : x));
           } else finish("missed");
-        }, RING_MS + 5000);
+        }, (ev.ms_left ?? RING_MS) + 5000); // `ms_left`: the call was already ringing when this app opened
         return;
       }
       if (!cur || ev.call_id !== cur.id) return;
@@ -505,6 +511,47 @@ export function useCalls({ me, tr, toast }) {
     [s, me?.id, tr, post, finish, offerTo, handleSignal, closePeer, stopTone]
   );
 
+  /**
+   * The ring is a live event, so an app that was closed or asleep when it was sent never saw it. Ask the server
+   * whether somebody is ringing me: on start, when the app comes back to the foreground and when the live stream
+   * reconnects. `?answer=1&call=<id>` (the banner's Answer button) picks up straight away.
+   */
+  const acceptRef = useRef(accept);
+  useEffect(() => {
+    acceptRef.current = accept;
+  }, [accept]);
+  const recover = useCallback(async () => {
+    if (!me?.id || callRef.current) return;
+    let res;
+    try {
+      res = await api.get("/api/chat/calls/incoming");
+    } catch {
+      return;
+    }
+    if (!res?.call) return closeCallBanners(); // nothing rings any more: old banners go
+    if (callRef.current) return;
+    await handleEvent({ action: "ring", call: res.call, from: res.from, conversation_title: res.conversation_title, ms_left: res.ms_left });
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("answer") === "1" && Number(sp.get("call")) === res.call.id) {
+      sp.delete("answer");
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${sp.toString() ? `?${sp}` : ""}`);
+      // the ringing state has to be on screen before it can be answered
+      for (let i = 0; i < 20 && callRef.current?.id !== res.call.id; i++) await new Promise((r) => setTimeout(r, 50));
+      if (callRef.current?.id === res.call.id && callRef.current.status === "ringing") acceptRef.current();
+    }
+  }, [me?.id, handleEvent]);
+  useEffect(() => {
+    const t = setTimeout(recover, 300);
+    const onVisible = () => document.visibilityState === "visible" && recover();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [recover]);
+
   // call timer
   useEffect(() => {
     if (call?.status !== "active" || !call.since) return;
@@ -523,7 +570,7 @@ export function useCalls({ me, tr, toast }) {
   }, []);
   useEffect(() => () => teardown(), [teardown]);
 
-  return { call, localStream, remoteStreams, elapsed, start, join, accept, decline, hangUp, toggleMute, toggleCamera, switchCamera, handleEvent };
+  return { call, localStream, remoteStreams, elapsed, start, join, accept, decline, hangUp, toggleMute, toggleCamera, switchCamera, handleEvent, recover };
 }
 
 /** One other person's video (or avatar while there is no video), used by the group grid and the direct layout. */
