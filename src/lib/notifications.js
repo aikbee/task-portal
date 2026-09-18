@@ -2,16 +2,19 @@ import { query, queryOne, execute } from "./db";
 import { NOTIFICATION_TYPES } from "./constants";
 import { sendPush } from "./push";
 import { sendNotificationEmail, EMAIL_TYPES } from "./mail";
+import { moduleAllowed } from "./access-control";
 
 /** Types a user sees even for their own actions (milestones, reminders, security). */
 const SELF_VISIBLE = new Set(["task_done", "requirement_done", "project_completed", "task_due", "task_overdue", "security_login"]);
 
 async function recipient(userId) {
-  const row = await queryOne("SELECT email, status, notification_prefs FROM users WHERE id = ?", [userId]);
+  const row = await queryOne("SELECT email, status, role, notification_prefs, module_access FROM users WHERE id = ?", [userId]);
   const prefs = typeof row?.notification_prefs === "string" ? JSON.parse(row.notification_prefs) : row?.notification_prefs;
   // email right away only in "instant" mode (the old boolean `email` still counts when no mode is stored)
   const instant = prefs?.email_mode ? prefs.email_mode === "instant" : prefs?.email !== false;
-  return { muted: new Set(prefs?.muted ?? []), email: row?.status === "active" && instant ? row.email : null };
+  const muted = new Set(prefs?.muted ?? []);
+  if (row && !moduleAllowed(row, "chat")) muted.add("chat"); // chat is turned off for this account
+  return { muted, email: row?.status === "active" && instant ? row.email : null };
 }
 
 /**

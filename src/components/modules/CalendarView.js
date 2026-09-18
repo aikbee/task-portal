@@ -21,7 +21,7 @@ import { useToast } from "@/components/ui/Toast";
 import TaskForm from "./TaskForm";
 import EventForm from "./EventForm";
 import { InlineSelect, putTask, AssigneeStack } from "./shared";
-import { CanEdit, useAccess } from "@/lib/auth-context";
+import { CanEdit, useAccess, useModuleOn } from "@/lib/auth-context";
 import { useT } from "@/lib/i18n";
 
 const PRIORITY_DOT = { low: "bg-slate-400", medium: "bg-sky-500", high: "bg-amber-500", urgent: "bg-rose-500" };
@@ -72,7 +72,8 @@ export default function CalendarView() {
   const { start, end } = rangeFor(view, cursor);
   const qs = new URLSearchParams({ due_from: isoDate(start), due_to: isoDate(end), has_due: "1" });
   for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
-  const { data: tasks, loading, error, setData, refetch } = useFetch(`/api/tasks?${qs}`);
+  const tasksOn = useModuleOn("tasks"); // with Tasks off for this account the calendar shows events only
+  const { data: tasks, loading, error, setData, refetch } = useFetch(`/api/tasks?${qs}`, { enabled: tasksOn });
   const { data: projects } = useFetch("/api/projects");
   const { data: employees } = useFetch("/api/employees");
   const evQs = new URLSearchParams({ from: isoDate(start), to: isoDate(end) });

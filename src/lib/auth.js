@@ -4,13 +4,14 @@ import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { signSessionId, verifySessionToken, SESSION_COOKIE, sessionSecret } from "./session-token";
 import { bearerOf, resolveToken } from "./api-tokens";
+import { featureAllowed } from "./access-control";
 import { sharedProfilesOf } from "./sharing";
 
 const DAY = 86_400_000;
 export const WORKSPACE_COOKIE = "ap_workspace";
 export const PROFILE_COOKIE = "ap_profile";
 
-export const PUBLIC_USER_FIELDS = "u.id, u.name, u.email, u.role, u.status, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.employee_id, u.notification_prefs, (u.pin_hash IS NOT NULL) AS has_pin, (u.google_sub IS NOT NULL) AS has_google, (u.totp_secret IS NOT NULL) AS has_totp, u.last_login_at, u.created_at, u.updated_at";
+export const PUBLIC_USER_FIELDS = "u.id, u.name, u.email, u.role, u.status, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.employee_id, u.notification_prefs, u.module_access, (u.pin_hash IS NOT NULL) AS has_pin, (u.google_sub IS NOT NULL) AS has_google, (u.totp_secret IS NOT NULL) AS has_totp, u.last_login_at, u.created_at, u.updated_at";
 
 /** Create a DB session for the user and set the signed cookie (on `response` when given, else via next/headers). */
 export async function createSession(userId, { remember = false, userAgent = "", response = null, ip = null } = {}) {
@@ -152,6 +153,7 @@ async function tokenUser(bearer) {
   }
   const row = await queryOne(`SELECT ${PUBLIC_USER_FIELDS}, NULL AS session_id, NULL AS expires_at, 0 AS secrets_unlocked FROM users u WHERE u.id = ? AND u.status = 'active'`, [t.user_id]);
   if (!row) return null;
+  if (!featureAllowed(row, "api_tokens")) return null; // an administrator turned API tokens off for this account
   const home_id = row.id;
   const profiles = await profilesOf(home_id);
   const shared_profiles = await sharedProfilesOf(row.id);

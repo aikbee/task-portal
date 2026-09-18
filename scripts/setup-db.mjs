@@ -112,6 +112,10 @@ async function migrate(db, adminId) {
     log("migrating: employees.email may be empty (people imported from a spreadsheet)");
     await db.query("ALTER TABLE employees MODIFY email VARCHAR(190) NULL");
   }
+  if (!(await hasColumn(db, "users", "module_access"))) {
+    log("migrating: users.module_access (modules and features an administrator turned off for one account)");
+    await db.query("ALTER TABLE users ADD COLUMN module_access JSON NULL AFTER notification_prefs");
+  }
   if ((await hasColumn(db, "api_tokens", "id")) && !(await hasColumn(db, "api_tokens", "minute_start"))) {
     log("migrating: api_tokens rate-limit counters");
     await db.query("ALTER TABLE api_tokens ADD COLUMN minute_start DATETIME NULL AFTER expires_at, ADD COLUMN minute_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER minute_start, ADD COLUMN day_start DATE NULL AFTER minute_count, ADD COLUMN day_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER day_start, ADD COLUMN total_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER day_count");

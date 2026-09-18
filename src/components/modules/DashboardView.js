@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { ProgressBar, Skeleton, EmptyState } from "@/components/ui/Misc";
 import { useUI } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
+import { moduleAllowed } from "@/lib/access-control";
 import { useT } from "@/lib/i18n";
 
 const TONE_HEX = { slate: "#94a3b8", sky: "#0ea5e9", violet: "#8b5cf6", emerald: "#10b981", amber: "#f59e0b", rose: "#f43f5e", indigo: "#6366f1" };
@@ -21,6 +22,7 @@ export default function DashboardView() {
   const { data, loading, error } = useFetch("/api/stats");
   const setActiveTool = useUI((s) => s.setActiveTool);
   const { user } = useAuth();
+  const on = (key) => moduleAllowed(user, key); // modules an administrator turned off for this account are left out
 
   if (error) return <EmptyState title="Could not load dashboard" description={error.message} />;
   if (loading && !data) return <DashboardSkeleton />;
@@ -70,10 +72,10 @@ export default function DashboardView() {
       </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4 anim-stagger">
-        <Link href="/projects"><StatCard label={tr("Projects")} value={counts.projects} hint={tr("{n} active", { n: counts.active_projects })} icon={FolderKanban} color={MODULE_MAP.projects.color} onClick={() => {}} /></Link>
-        <Link href="/employees"><StatCard label={tr("Employees")} value={counts.employees} hint={tr("{n} active", { n: counts.active_employees })} icon={Users} color={MODULE_MAP.employees.color} onClick={() => {}} /></Link>
-        <Link href="/tasks"><StatCard label={tr("Open tasks")} value={counts.open_tasks} hint={tr("{n} total", { n: counts.tasks })} icon={CheckSquare} color={MODULE_MAP.tasks.color} onClick={() => {}} /></Link>
-        <Link href="/tasks"><StatCard label={tr("Overdue")} value={counts.overdue_tasks} hint={tr(counts.overdue_tasks ? "Needs attention" : "All on track")} icon={AlertTriangle} color={counts.overdue_tasks ? "#f43f5e" : "#10b981"} onClick={() => {}} /></Link>
+        {on("projects") ? <Link href="/projects"><StatCard label={tr("Projects")} value={counts.projects} hint={tr("{n} active", { n: counts.active_projects })} icon={FolderKanban} color={MODULE_MAP.projects.color} onClick={() => {}} /></Link> : null}
+        {on("employees") ? <Link href="/employees"><StatCard label={tr("Employees")} value={counts.employees} hint={tr("{n} active", { n: counts.active_employees })} icon={Users} color={MODULE_MAP.employees.color} onClick={() => {}} /></Link> : null}
+        {on("tasks") ? <Link href="/tasks"><StatCard label={tr("Open tasks")} value={counts.open_tasks} hint={tr("{n} total", { n: counts.tasks })} icon={CheckSquare} color={MODULE_MAP.tasks.color} onClick={() => {}} /></Link> : null}
+        {on("tasks") ? <Link href="/tasks"><StatCard label={tr("Overdue")} value={counts.overdue_tasks} hint={tr(counts.overdue_tasks ? "Needs attention" : "All on track")} icon={AlertTriangle} color={counts.overdue_tasks ? "#f43f5e" : "#10b981"} onClick={() => {}} /></Link> : null}
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3 anim-stagger">

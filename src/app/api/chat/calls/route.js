@@ -4,6 +4,8 @@ import { conversationFor, assertFriends, publish, PEER_FIELDS } from "@/lib/chat
 import { busyCallFor, shapeCall, callLabel, tellMembers, CALL_KINDS } from "@/lib/calls";
 import { notify } from "@/lib/notifications";
 import { CALL_PUSH, GROUP_CALL_PUSH } from "@/lib/push";
+import { query } from "@/lib/db";
+import { featureAllowed } from "@/lib/access-control";
 
 /**
  * Start a call: { conversation_id, kind: "audio" | "video" }. A direct chat rings the other person (one call per
@@ -19,6 +21,10 @@ export const POST = handler(async (request, _params, user) => {
   const group = convo.kind === "group";
   if (!group && !convo.user_id) throw new HttpError("There is nobody to call in this chat.", 400);
   if (!group) await assertFriends(user.id, convo.user_id);
+  // people an administrator took calls (or chat) away from are not rung
+  const memberIds = convo.members.filter((m) => m.id !== user.id).map((m) => m.id);
+  const reachable = new Set((memberIds.length ? await query("SELECT id, role, module_access FROM users WHERE id IN (?)", [memberIds]) : []).filter((u) => featureAllowed(u, "calls")).map((u) => u.id));
+  if (!group && !reachable.has(convo.user_id)) throw new HttpError(`${convo.name} cannot take calls.`, 409);
   if (await busyCallFor(user.id)) throw new HttpError("You are already in a call.", 409);
   if (!group && (await busyCallFor(convo.user_id))) throw new HttpError(`${convo.name} is in another call.`, 409);
   if (group) {
@@ -26,7 +32,7 @@ export const POST = handler(async (request, _params, user) => {
     if (running) throw new HttpError("A call is already going on in this group — join it instead.", 409, { call_id: running.id });
   }
   const r = await execute("INSERT INTO calls (conversation_id, caller_id, callee_id, kind, status, answered_at) VALUES (?, ?, ?, ?, ?, ?)", [cid, user.id, group ? null : convo.user_id, kind, group ? "active" : "ringing", group ? new Date() : null]);
-  const others = convo.members.filter((m) => m.id !== user.id).map((m) => m.id);
+  const others = convo.members.filter((m) => m.id !== user.id && reachable.has(m.id)).map((m) => m.id);
   const values = [[r.insertId, user.id, "joined", new Date()], ...others.map((id) => [r.insertId, id, "ringing", null])];
   await execute(`INSERT INTO call_participants (call_id, user_id, status, joined_at) VALUES ${values.map(() => "(?, ?, ?, ?)").join(", ")}`, values.flat());
   const call = await shapeCall(await queryOne("SELECT * FROM calls WHERE id = ?", [r.insertId]));

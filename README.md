@@ -51,6 +51,22 @@ Sign-in is required for every page and API route (a request proxy redirects to `
 | **admin** | Everything, plus the **Users** module: create accounts, set roles, disable, reset passwords, see each account's sign-in methods (passkeys, Google, 2FA), remove a lost passkey, unlink Google, reset two-factor authentication or sign the account out everywhere (the account keeps its password and is notified), delete (the last active admin and your own account are protected) |
 | **user** | Projects, employees and tasks |
 
+### What each account can use
+
+An administrator can turn modules and features off for one person: **Users → the sliders button on a row**.
+Switchable modules: Projects, Requirements, Employees, Tasks, My tasks, Board, Calendar, Timeline, Time, Info,
+Draw Board, Chat and Recycle bin (Dashboard, Profiles and Notifications are always on; Board, Timeline, My tasks and
+Time go with Tasks). Switchable features: spreadsheet import, export and reports, bulk edit, sharing profiles,
+calls, API tokens and webhooks. What is off disappears from that person's menus, dashboard, search and buttons,
+the page shows a "turned off for your account" notice, and the API answers 403: one table in
+`src/lib/access-control.js` (`apiRule`, `moduleOfPath`) drives both sides. It applies in every profile the person
+opens, shared ones included. Administrators always have everything. Two deliberate softenings: with Projects,
+Employees or Requirements off their plain lists stay readable, because a task's project and assignees are picked
+from them (details, pages and every change are closed); and CSV export is only hidden, since the rows are already
+in the browser. With Chat off the person gets no chat notifications and cannot be rung; with API tokens off their
+existing tokens stop working. **Copy from another user…** applies somebody else's set; only what is off is stored
+(`users.module_access`), so modules added later are on for everyone.
+
 ### Sharing a profile
 
 A profile can be shared with other accounts from **Profiles → Share**. Pick one of your chat friends or type the
@@ -225,6 +241,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET | `/api/time/report` | `?from=&to=` (default this month), `&group=person\|project\|task\|day`, `&project_id=`, `&user_id=` → `total_minutes`, `groups[]` (minutes, entries, people, tasks, share, estimate_minutes), `days[]`, `entries[]` (newest first, at most 5000), `people[]` |
 | POST | `/api/tasks/bulk` | `{ ids: [...], patch }` or `{ items: [{ id, patch }] }` (at most 200). patch: `status`, `priority`, `project_id` (null = none), `due_date` / `start_date` (null clears), `shift_days`, `assignee_mode: replace\|add\|remove` + `assignee_ids`, `add_tags`, `remove_tags` → `{ updated, failed: [{ id, title, error }], completed, spawned, tasks, undo }` (`undo` is an `items` list that restores the previous values) |
 | GET | `/api/chat/calls/incoming` | the call that is ringing me right now (direct, or a group call started within the ringing time that I neither joined nor dismissed): `{ call, from, conversation_title, ms_left }` or `{ call: null }` |
+| GET / PUT | `/api/users/:id/access` | admin: what is turned off for an account `{ access: { modules_off, features_off }, effective, modules, features, needs }` / `{ modules_off: [...], features_off: [...] }` (unknown keys are dropped; empty = everything on) |
 | GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry, `requests_today`, `requests_total`, `limits`) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
 | DELETE | `/api/tokens/:id` | revoke |
 | GET / POST | `/api/profiles/:id/webhooks` | owner / managers: the profile's webhooks and the event list / `{ url, events?: [...]\|"*" }` → the hook with its secret, shown once |

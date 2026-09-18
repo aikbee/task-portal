@@ -1,4 +1,5 @@
 "use client";
+import ModuleGate from "./ModuleGate";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { EmbedContext } from "@/lib/nav";
@@ -64,7 +65,7 @@ export default function EmbedShell({ user, children }) {
       <ToastProvider>
         <ThemeApplier />
         <div className="embed-bg" aria-hidden />
-        <div className="relative z-10 min-h-screen px-4 py-4">{children}</div>
+        <div className="relative z-10 min-h-screen px-4 py-4"><ModuleGate>{children}</ModuleGate></div>
       </ToastProvider>
       </AuthProvider>
     </EmbedContext.Provider>

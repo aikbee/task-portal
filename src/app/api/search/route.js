@@ -1,3 +1,4 @@
+import { moduleAllowed } from "@/lib/access-control";
 import { query } from "@/lib/db";
 import { handler, ok } from "@/lib/api-utils";
 
@@ -35,5 +36,6 @@ export const GET = handler(async (request, _params, user) => {
     ),
   ]);
   // the Info vault is private to the owner of a shared profile
-  return ok({ projects, employees, tasks, requirements, info: user.access === "owner" ? info : [], drawboards });
+  const on = (key) => moduleAllowed(user, key); // modules turned off for this account are not searched
+  return ok({ projects: on("projects") ? projects : [], employees: on("employees") ? employees : [], tasks: on("tasks") ? tasks : [], requirements: on("requirements") ? requirements : [], info: user.access === "owner" && on("info") ? info : [], drawboards: on("drawboards") ? drawboards : [] });
 });

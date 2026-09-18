@@ -17,6 +17,7 @@ import { toCsv } from "@/lib/csv";
 import { formatDate, cn } from "@/lib/utils";
 import { PersonCell, ProjectChip } from "./shared";
 import { useT } from "@/lib/i18n";
+import { useFeature } from "@/lib/auth-context";
 
 const iso = (d) => d.toISOString().slice(0, 10);
 /** Date bounds of a preset, in UTC dates (DATE columns compare as plain strings). */
@@ -40,6 +41,7 @@ export default function TimeReport() {
   const tr = useT();
   const router = useNav();
   const mod = MODULE_MAP.time;
+  const mayExport = useFeature("export");
   const [preset, setPreset] = useState("month");
   const [custom, setCustom] = useState(null); // { from, to } when the person typed dates
   const [group, setGroup] = useState("person");
@@ -84,7 +86,7 @@ export default function TimeReport() {
 
   return (
     <>
-      <PageHeader title={tr("Time")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><a href={`/report/time?${qs}`} target="_blank" rel="noreferrer" className="time-report-link"><Button variant="outline" icon={FileText}>{tr("Report")}</Button></a><Button variant="secondary" icon={Download} onClick={exportGroups} disabled={!data?.groups?.length} className="time-export">{tr("Export totals")}</Button></>} />
+      <PageHeader title={tr("Time")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={!mayExport ? null : <><a href={`/report/time?${qs}`} target="_blank" rel="noreferrer" className="time-report-link"><Button variant="outline" icon={FileText}>{tr("Report")}</Button></a><Button variant="secondary" icon={Download} onClick={exportGroups} disabled={!data?.groups?.length} className="time-export">{tr("Export totals")}</Button></>} />
       <div className="time-toolbar mb-4 flex flex-wrap items-center gap-2">
         <Select value={custom ? "custom" : preset} onChange={(e) => { if (e.target.value === "custom") setCustom([from, to]); else { setCustom(null); setPreset(e.target.value); } }} className="time-preset h-9 w-40">
           {presets.map(([k, l]) => <option key={k} value={k}>{tr(l)}</option>)}

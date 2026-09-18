@@ -1,4 +1,5 @@
 "use client";
+import { moduleAllowed, featureAllowed } from "./access-control";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { api } from "./api";
 import { usePrefs } from "./store";
@@ -43,7 +44,22 @@ export function useVisibleModules() {
   const { user } = useAuth();
   const member = Boolean(user?.access && user.access !== "owner");
   const mayDelete = !member || user.access === "manager"; // the recycle bin goes with the right to delete
-  return useMemo(() => modulesForRole(user?.role).filter((m) => !(member && m.key === "info") && !(m.key === "trash" && !mayDelete)), [user?.role, member, mayDelete]);
+  const access = user?.module_access;
+  // …and an administrator may have turned modules off for this account
+  return useMemo(() => modulesForRole(user?.role).filter((m) => !(member && m.key === "info") && !(m.key === "trash" && !mayDelete) && moduleAllowed({ role: user?.role, module_access: access }, m.key)), [user?.role, member, mayDelete, access]);
+}
+/** Is this module / feature available to the signed-in account? (An administrator can turn them off per person.) */
+export function useModuleOn(key) {
+  const { user } = useAuth();
+  return moduleAllowed(user, key);
+}
+export function useFeature(key) {
+  const { user } = useAuth();
+  return featureAllowed(user, key);
+}
+/** Renders its children only when the feature is on for this account. */
+export function Feature({ name, children, fallback = null }) {
+  return useFeature(name) ? children : fallback;
 }
 
 /**

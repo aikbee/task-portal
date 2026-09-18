@@ -4,6 +4,7 @@ import { HttpError } from "./http-error";
 import { requireUser, requireRole } from "./auth";
 import { assertAccess } from "./sharing";
 import { bearerOf, badTokenWait, noteBadToken, requestIp } from "./api-tokens";
+import { refusalFor, FEATURES } from "./access-control";
 
 export { HttpError };
 
@@ -42,6 +43,9 @@ export function handler(fn, { auth = true, role } = {}) {
           throw e;
         }
         if (user.token) assertTokenMay(user, request.method, new URL(request.url).pathname);
+        // modules and features an administrator turned off for this account
+        const refused = refusalFor(user, request.method, new URL(request.url).pathname);
+        if (refused) throw new HttpError(refused.kind === "module" ? "This module is turned off for your account." : `${FEATURES[refused.key]?.label ?? "This feature"} is turned off for your account.`, 403, { off: refused });
         if (role) requireRole(user, role);
         // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
         if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);

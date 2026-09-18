@@ -2201,6 +2201,39 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("what each account can use (modules and features per user)");
+{
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  const st = async (m, p, body) => (await as(userJar, () => call(m, p, body ? { body } : {}))).status;
+  const own = await as(userJar, () => call("POST", "/api/tasks", { body: { title: `Access task ${suffix}` } }));
+  const tok = await as(userJar, () => call("POST", "/api/tokens", { body: { name: `Access token ${suffix}`, scope: "read" } }));
+  const bearer = (path) => fetch(BASE + path, { headers: { Authorization: `Bearer ${tok.data.token}` } }).then((r) => r.status);
+  check("only administrators set access", (await st("GET", `/api/users/${userId}/access`)) === 403 && (await st("PUT", `/api/users/${userId}/access`, { modules_off: [] })) === 403);
+  const shape = await call("GET", `/api/users/${userId}/access`);
+  check("GET /api/users/:id/access lists the switches", shape.status === 200 && shape.data.modules.includes("tasks") && Boolean(shape.data.features.import) && shape.data.needs.board === "tasks" && shape.data.access.modules_off.length === 0);
+  const put = await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: ["tasks", "projects", "chat", "dashboard", "bogus"], features_off: ["import", "api_tokens", "sharing", "bogus"] } });
+  check("PUT keeps known keys, reports what goes with them", put.status === 200 && put.data.access.modules_off.length === 3 && put.data.access.features_off.length === 3 && ["board", "timeline", "mytasks", "time"].every((k) => put.data.effective.modules_off.includes(k)) && ["calls", "bulk_edit"].every((k) => put.data.effective.features_off.includes(k)), JSON.stringify(put.raw).slice(0, 240));
+  check("the session carries it at once", (await as(userJar, () => call("GET", "/api/auth/me"))).data.module_access.modules_off.includes("tasks"));
+  check("Tasks off -> 403 on tasks, my tasks, bulk edit and the time report", (await st("GET", "/api/tasks")) === 403 && (await st("GET", `/api/tasks/${own.data.id}`)) === 403 && (await st("GET", "/api/tasks/mine")) === 403 && (await st("POST", "/api/tasks/bulk", { ids: [own.data.id], patch: { status: "done" } })) === 403 && (await st("GET", "/api/time/report")) === 403);
+  check("Projects off -> the list stays for pickers, the rest is closed", (await st("GET", "/api/projects")) === 200 && (await st("POST", "/api/projects", { name: "n", code: `N${suffix.slice(-4)}` })) === 403);
+  check("Chat off -> 403, calls included", (await st("GET", "/api/chat/conversations")) === 403 && (await st("GET", "/api/chat/calls/incoming")) === 403);
+  check("features off -> import and tokens closed, the old token stops", (await st("POST", "/api/import", { kind: "tasks", columns: ["title"], rows: [["x"]], options: { dry: true } })) === 403 && (await st("GET", "/api/tokens")) === 403 && (await bearer("/api/employees")) === 401);
+  check("what is on still works", (await st("GET", "/api/employees")) === 200 && (await st("GET", "/api/events")) === 200 && (await st("GET", "/api/notifications")) === 200);
+  const stats = await as(userJar, () => call("GET", "/api/stats"));
+  check("dashboard and search leave the closed modules out", stats.data.counts.tasks === 0 && stats.data.recentTasks.length === 0 && (await as(userJar, () => call("GET", `/api/search?q=Access`))).data.tasks.length === 0);
+  check("administrators are never limited", (await call("GET", "/api/tasks")).status === 200);
+  const reset = await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: [] } });
+  check("everything on again", reset.status === 200 && reset.data.effective.modules_off.length === 0 && (await st("GET", "/api/tasks")) === 200 && (await bearer("/api/tasks")) === 200);
+  await as(userJar, () => call("DELETE", `/api/tokens/${tok.data.row.id}`));
+  await as(userJar, () => call("DELETE", `/api/tasks/${own.data.id}`));
+  await as(userJar, () => call("DELETE", "/api/trash"));
+}
+
 console.log("bulk edit of tasks");
 {
   const mk = async (title, extra = {}) => (await call("POST", "/api/tasks", { body: { title: `${title} ${suffix}`, ...extra } })).data;

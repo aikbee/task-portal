@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
 import { useT } from "@/lib/i18n";
 import { useCalls, CallOverlay } from "@/components/modules/ChatCalls";
+import { moduleAllowed } from "@/lib/access-control";
 
 /**
  * One live stream (Server-Sent Events from /api/chat/stream) for the whole app, so calls ring and unread badges
@@ -22,7 +23,8 @@ export function ChatLiveProvider({ locked = false, children }) {
   const setCounts = useUI((s) => s.setCounts);
   const listeners = useRef(new Map()); // event type -> Set of handlers
   const [connected, setConnected] = useState(false);
-  const calls = useCalls({ me: user, tr, toast });
+  const chatOn = moduleAllowed(user, "chat");
+  const calls = useCalls({ me: chatOn ? user : null, tr, toast });
   const callsRef = useRef(calls);
   useEffect(() => {
     callsRef.current = calls;
@@ -43,7 +45,7 @@ export function ChatLiveProvider({ locked = false, children }) {
   }, []);
 
   useEffect(() => {
-    if (!user?.id || typeof EventSource === "undefined") return;
+    if (!user?.id || typeof EventSource === "undefined" || !chatOn) return; // chat turned off for this account: no stream, no calls
     const es = new EventSource("/api/chat/stream");
     for (const type of EVENT_TYPES) {
       es.addEventListener(type, (e) => {
@@ -72,7 +74,7 @@ export function ChatLiveProvider({ locked = false, children }) {
     };
     es.onerror = () => setConnected(false); // the browser retries on its own
     return () => es.close();
-  }, [user?.id, setCounts]);
+  }, [user?.id, setCounts, chatOn]);
 
   return (
     <LiveContext.Provider value={{ on, connected, calls }}>

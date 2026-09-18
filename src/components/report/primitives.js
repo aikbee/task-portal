@@ -9,9 +9,13 @@ import { displayMentions } from "@/lib/mentions";
 import { useAuth } from "@/lib/auth-context";
 import { cn, formatDateTime, formatDate, formatBytes } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ModuleGate from "@/components/shell/ModuleGate";
 
 /** Paper on the right, controls on the left (or a bottom bar on phones). Print hides the controls. */
-export function ReportShell({ title, backHref, controls, children }) {
+export function ReportShell(props) {
+  return <ModuleGate><ReportShellInner {...props} /></ModuleGate>;
+}
+function ReportShellInner({ title, backHref, controls, children }) {
   const tr = useT();
   const [open, setOpen] = useState(false);
   useEffect(() => {

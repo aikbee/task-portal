@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, KeyRound, Briefcase, Fingerprint, Unlink, ShieldCheck, ShieldOff, LogOut } from "lucide-react";
+import { Plus, KeyRound, Briefcase, Fingerprint, Unlink, ShieldCheck, ShieldOff, LogOut, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import DataTable from "@/components/table/DataTable";
 import PageHeader from "@/components/ui/PageHeader";
@@ -15,6 +15,8 @@ import UserForm from "./UserForm";
 import { useCrudList, useNewParam, useNewShortcut, RowActions, useDeleteFlow, PersonCell } from "./shared";
 import { USER_ROLES, USER_STATUS, MODULE_MAP } from "@/lib/modules";
 import { useAuth } from "@/lib/auth-context";
+import { isLimited } from "@/lib/access-control";
+import UserAccessDialog from "./UserAccessDialog";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -22,6 +24,7 @@ export default function UsersList() {
   const tr = useT();
   const toast = useToast();
   const { user: me, isAdmin } = useAuth();
+  const [accessOf, setAccessOf] = useState(null); // the account whose modules and features are being set
   const [role, setRole] = useState("");
   const { rows, loading, error, refetch, removeLocal } = useCrudList(isAdmin ? "/api/users" : null);
   const [formOpen, setFormOpen] = useState(false);
@@ -56,7 +59,7 @@ export default function UsersList() {
   const filtered = role ? rows.filter((r) => r.role === role) : rows;
   const columns = [
     { key: "name", label: tr("User"), hideable: false, render: (r) => <PersonCell name={r.name} color={r.avatar_color} avatar={r.avatar} sub={r.email} link={false} size="md" /> },
-    { key: "role", label: tr("Role"), render: (r) => <span className="inline-flex items-center gap-1.5"><StatusBadge map={USER_ROLES} value={r.role} dot={false} />{r.id === me?.id ? <Badge tone="accent">you</Badge> : null}</span> },
+    { key: "role", label: tr("Role"), render: (r) => <span className="inline-flex items-center gap-1.5"><StatusBadge map={USER_ROLES} value={r.role} dot={false} />{isLimited(r) ? <Badge tone="amber" className="user-limited">{tr("Limited")}</Badge> : null}{r.id === me?.id ? <Badge tone="accent">you</Badge> : null}</span> },
     { key: "status", label: tr("Status"), render: (r) => <StatusBadge map={USER_STATUS} value={r.status} /> },
     { key: "employee_name", label: tr("Linked employee"), render: (r) => r.employee_name ? <PersonCell id={r.employee_id} name={r.employee_name} color={r.employee_color} /> : <span className="text-fg-faint">—</span> },
     {
@@ -136,6 +139,7 @@ export default function UsersList() {
             {r.active_sessions > 0 && r.id !== me?.id ? (
               <Button variant="ghost" size="iconXs" icon={LogOut} aria-label={tr("Sign out everywhere")} data-tip={tr("Sign out everywhere")} onClick={() => setMethodTarget({ user: r, kind: "sessions" })} />
             ) : null}
+            <Button variant="ghost" size="iconXs" icon={SlidersHorizontal} aria-label={tr("What they can use")} data-tip={tr("What they can use")} onClick={() => setAccessOf(r)} className="user-access-open" />
             <RowActions workspace={false} onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={r.id === me?.id ? undefined : () => del.setTarget(r)} />
           </>
         )}
@@ -149,6 +153,7 @@ export default function UsersList() {
         emptyAction={<Button icon={Plus} onClick={openNew}>{tr("New user")}</Button>}
       />
       <UserForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
+      <UserAccessDialog user={accessOf} users={rows} open={Boolean(accessOf)} onClose={() => setAccessOf(null)} onSaved={refetch} />
       <ConfirmDialog
         open={!!methodTarget}
         onClose={() => setMethodTarget(null)}

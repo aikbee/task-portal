@@ -1,3 +1,4 @@
+import { moduleAllowed } from "@/lib/access-control";
 import { query } from "@/lib/db";
 import { readStatus, backupHealth } from "@/lib/backups";
 import { pendingInviteCount, can } from "@/lib/sharing";
@@ -101,5 +102,12 @@ export const GET = handler(async (_request, _params, user) => {
     [o]
   );
 
-  return ok({ counts, tasksByStatus, tasksByPriority, projects, workload, recentTasks, upcoming });
+  // modules an administrator turned off for this account show nothing on the dashboard or the sidebar
+  const on = (key) => moduleAllowed(user, key);
+  for (const key of ["projects", "requirements", "employees", "tasks", "info", "drawboards", "chat", "mytasks", "trash"]) if (!on(key) && key in counts) counts[key] = 0;
+  if (!on("projects")) counts.active_projects = 0;
+  if (!on("employees")) counts.active_employees = 0;
+  if (!on("tasks")) { counts.open_tasks = 0; counts.overdue_tasks = 0; }
+  const none = [];
+  return ok({ counts, tasksByStatus: on("tasks") ? tasksByStatus : none, tasksByPriority: on("tasks") ? tasksByPriority : none, projects: on("projects") ? projects : none, workload: on("employees") && on("tasks") ? workload : none, recentTasks: on("tasks") ? recentTasks : none, upcoming: on("tasks") ? upcoming : none });
 });

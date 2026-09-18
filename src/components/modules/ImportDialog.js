@@ -11,6 +11,7 @@ import { parseCsv, sniffDelimiter, toCsv } from "@/lib/csv";
 import { IMPORT_KINDS, IMPORT_MAX_ROWS, autoMap, looksLikeHeader, templateRows } from "@/lib/import-fields";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { useFeature } from "@/lib/auth-context";
 
 /**
  * Bring records in from a spreadsheet: paste or drop a CSV, match its columns to fields, look at what the
@@ -233,6 +234,8 @@ export default function ImportDialog({ kind, open, onClose, onImported }) {
 export function ImportButton({ kind, onImported }) {
   const tr = useT();
   const [open, setOpen] = useState(false);
+  const allowed = useFeature("import");
+  if (!allowed) return null;
   return (
     <>
       <Button variant="secondary" icon={Upload} onClick={() => setOpen(true)} className="import-open">{tr("Import")}</Button>

@@ -5,7 +5,7 @@ import { USER_ROLES, USER_STATUS } from "@/lib/constants";
 import { notifyAdmins } from "@/lib/notifications";
 
 export const USER_SELECT = `
-  SELECT u.id, u.name, u.email, u.role, u.status, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.employee_id, u.last_login_at, u.created_at, u.updated_at,
+  SELECT u.id, u.name, u.email, u.role, u.status, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.employee_id, u.module_access, u.last_login_at, u.created_at, u.updated_at,
     CONCAT(e.first_name, ' ', e.last_name) AS employee_name, e.avatar_color AS employee_color,
     (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > NOW()) AS active_sessions,
     (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS project_count,

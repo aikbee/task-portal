@@ -11,13 +11,15 @@ import { useToast } from "@/components/ui/Toast";
 import { Spinner } from "@/components/ui/Misc";
 import { formatDate, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { featureAllowed } from "@/lib/access-control";
 
 /** Security page: personal API tokens for scripts and other tools. The token is shown once, right after it is made. */
 export default function ApiTokens() {
   const tr = useT();
   const toast = useToast();
   const { user } = useAuth();
-  const tokens = useFetch("/api/tokens");
+  const allowed = featureAllowed(user, "api_tokens");
+  const tokens = useFetch("/api/tokens", { enabled: allowed });
   const [name, setName] = useState("");
   const [scope, setScope] = useState("read");
   const [profileId, setProfileId] = useState("");
@@ -58,6 +60,7 @@ export default function ApiTokens() {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const list = tokens.data ?? [];
 
+  if (!allowed) return null;
   return (
     <section className="ui-card card api-tokens p-5">
       <h2 className="text-base font-semibold">{tr("API tokens")}</h2>

@@ -8,6 +8,7 @@ import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import PinBar from "./PinBar";
 import WorkspaceBanner from "./WorkspaceBanner";
+import ModuleGate from "./ModuleGate";
 import BottomBar from "./BottomBar";
 import PreferencesDrawer from "./PreferencesDrawer";
 import LockScreen from "./LockScreen";
@@ -99,7 +100,7 @@ export default function AppShell({ user, children }) {
             <TopBar />
             <PinBar />
             <WorkspaceBanner />
-            <SplitView>{children}</SplitView>
+            <SplitView><ModuleGate>{children}</ModuleGate></SplitView>
             <BottomBar />
           </div>
         </div>

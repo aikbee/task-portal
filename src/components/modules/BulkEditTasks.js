@@ -11,6 +11,7 @@ import { useFetch } from "@/lib/hooks";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { fullName } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { useFeature } from "@/lib/auth-context";
 
 const blank = { status: "", priority: "", project: "", people_mode: "", people: [], due_mode: "", due_date: "", shift: "", start_mode: "", start_date: "", add_tags: "", remove_tags: "" };
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -103,6 +104,8 @@ export default function BulkEditTasks({ ids, open, onClose, onDone }) {
 export function BulkEditButton({ ids, clear, onDone }) {
   const tr = useT();
   const [open, setOpen] = useState(false);
+  const allowed = useFeature("bulk_edit");
+  if (!allowed) return null;
   return (
     <>
       <Button size="xs" variant="secondary" icon={Pencil} onClick={() => setOpen(true)} className="bulk-open">{tr("Edit")}</Button>

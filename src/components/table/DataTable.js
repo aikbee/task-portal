@@ -28,7 +28,7 @@ import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 import { isoDate } from "@/lib/dates";
 import { useMediaQuery } from "@/lib/hooks";
-import { useAccess } from "@/lib/auth-context";
+import { useAccess, useFeature } from "@/lib/auth-context";
 
 /**
  * Full-width data table with sortable columns, a column-visibility dropdown,
@@ -83,6 +83,7 @@ export default function DataTable({
   dense,
 }) {
   const { canDelete, canEdit } = useAccess();
+  const mayExport = useFeature("export");
   const mayDelete = canDelete || !workspace;
   const selectable = wantSelectable && (mayDelete || (canEdit && Boolean(bulkActions)));
   const tr = useT();
@@ -380,9 +381,11 @@ export default function DataTable({
             </div>
           ) : null}
           {toolbar}
-          <Button variant="outline" size="sm" icon={Download} onClick={exportCsv} title={tr("Export the visible columns as CSV")} className="dt-btn">
-            <span className="hidden sm:inline">{tr("Export")}</span>
-          </Button>
+          {mayExport ? (
+            <Button variant="outline" size="sm" icon={Download} onClick={exportCsv} title={tr("Export the visible columns as CSV")} className="dt-btn dt-export">
+              <span className="hidden sm:inline">{tr("Export")}</span>
+            </Button>
+          ) : null}
           <Popover
             width="w-80"
             trigger={({ toggle, open }) => (

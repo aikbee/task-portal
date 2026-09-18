@@ -5,6 +5,7 @@ import WebhooksDialog from "./WebhooksDialog";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useAuth } from "@/lib/auth-context";
+import { featureAllowed } from "@/lib/access-control";
 import { MODULE_MAP } from "@/lib/modules";
 import { cn, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
@@ -24,6 +25,8 @@ export default function ProfilesList() {
   const tr = useT();
   const toast = useToast();
   const { user, switchProfile, setUser } = useAuth();
+  const maySharing = featureAllowed(user, "sharing");
+  const mayWebhooks = featureAllowed(user, "webhooks");
   const { data, loading, error, refetch } = useFetch("/api/profiles");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -158,9 +161,9 @@ export default function ProfilesList() {
                 ) : (
                   <Button size="sm" icon={ArrowRightLeft} onClick={() => switchProfile(p.id, "/")}>Switch</Button>
                 )}
-                <Button size="sm" variant="secondary" icon={Share2} onClick={() => setSharing(p)} className="profile-share">{p.member_count ? tr("Shared · {n}", { n: p.member_count }) : tr("Share")}</Button>
+                {maySharing ? <Button size="sm" variant="secondary" icon={Share2} onClick={() => setSharing(p)} className="profile-share">{p.member_count ? tr("Shared · {n}", { n: p.member_count }) : tr("Share")}</Button> : null}
                 <span className="flex-1" />
-                <Button size="iconSm" variant="ghost" icon={Webhook} onClick={() => setHooks(p)} aria-label={tr("Webhooks")} title={tr("Webhooks")} className="profile-webhooks" />
+                {mayWebhooks ? <Button size="iconSm" variant="ghost" icon={Webhook} onClick={() => setHooks(p)} aria-label={tr("Webhooks")} title={tr("Webhooks")} className="profile-webhooks" /> : null}
                 {!p.is_default ? <Button size="iconSm" variant="ghost" icon={Star} onClick={() => makeDefault(p)} aria-label="Make default" title="Make default" /> : null}
                 <Button size="iconSm" variant="ghost" icon={Pencil} onClick={() => { setEditing(p); setFormOpen(true); }} aria-label={tr("Edit")} title={tr("Edit")} />
                 <Button size="iconSm" variant="dangerGhost" icon={Trash2} onClick={() => setToDelete(p)} aria-label={tr("Delete")} title={tr("Delete")} disabled={items.length <= 1} />

@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation, Phone, Video } from "lucide-react";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
+import { useAuth, useFeature } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
 import { MODULE_MAP } from "@/lib/modules";
 import PageHeader from "@/components/ui/PageHeader";
@@ -2116,6 +2116,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
     if (el) el.scrollIntoView({ block: "center" });
   }, [convo.id, unreadFrom]);
   const canChat = group || !convo.friend_status || convo.friend_status === "accepted";
+  const mayCall = useFeature("calls"); // an administrator can take calls away from an account
 
   const addFiles = async (list) => {
     const files = [...(list ?? [])].filter((f) => f && f.size > 0);
@@ -2265,7 +2266,7 @@ function Thread({ tr, me, convo, messages, onBack, onSent, onLoadEarlier, friend
                   : convo.email}
           </span>
         </span>
-        {canChat && !convo.active_call ? (
+        {canChat && mayCall && !convo.active_call ? (
           <>
             <Button variant="ghost" size="iconSm" icon={Phone} onClick={() => onCall?.(convo, "audio")} disabled={inCall} aria-label={tr("Voice call")} data-tip={tr("Voice call")} className="chat-call-audio" />
             <Button variant="ghost" size="iconSm" icon={Video} onClick={() => onCall?.(convo, "video")} disabled={inCall} aria-label={tr("Video call")} data-tip={tr("Video call")} className="chat-call-video" />

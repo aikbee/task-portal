@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar VARCHAR(255) NULL, -- NULL = the default "pro" icon · 'initials' · 'preset:<key>' · 'upload:user:<id>:<stored file>'
   employee_id INT UNSIGNED NULL,
   notification_prefs JSON NULL, -- { muted: ["tasks", ...] }
+  module_access JSON NULL, -- { modules_off: [...], features_off: [...] } set by an administrator (see src/lib/access-control.js)
   pin_hash VARCHAR(255) NULL, -- lock-screen PIN (scrypt) so secrets can be re-verified server-side
   google_sub VARCHAR(64) NULL, -- Google account id once "Continue with Google" has been used or connected
   totp_secret VARCHAR(255) NULL, -- encrypted authenticator secret while two-factor authentication is on
