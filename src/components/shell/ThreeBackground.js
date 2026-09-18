@@ -2582,7 +2582,381 @@ function frostpeaks(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks };
+/* ---------- Lucky cat: a beckoning maneki-neko among gold, with coins and notes raining down ---------- */
+const LUCKY_SPARK_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform float uMaxPx;
+  attribute float aPhase; attribute float aSize;
+  varying float vA;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float tw = 0.5 + 0.5 * sin(uTime * 2.6 + aPhase); // each sparkle blinks on its own beat
+    vA = tw * tw;
+    gl_PointSize = clamp(aSize * (0.5 + tw) * uPx / -mv.z, 2.0, uMaxPx);
+  }
+`;
+const LUCKY_SPARK_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uColor; uniform float uOpacity;
+  varying float vA;
+  void main() {
+    vec4 t = texture2D(uMap, gl_PointCoord);
+    gl_FragColor = vec4(uColor, t.a * vA * uOpacity);
+    #include <colorspace_fragment>
+  }
+`;
+/** Draw with a 2D canvas and hand it over as a texture. */
+function canvasTexture(THREE, w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** Several placed geometries as one, so a whole ingot or lantern is a single draw. */
+function mergeParts(THREE, parts) {
+  const chunks = parts.map(([geo, m]) => { const g = geo.toNonIndexed(); g.applyMatrix4(m); return g; });
+  const n = chunks.reduce((s, g) => s + g.attributes.position.count, 0);
+  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), uv = new Float32Array(n * 2);
+  let o = 0;
+  for (const g of chunks) {
+    pos.set(g.attributes.position.array, o * 3); nrm.set(g.attributes.normal.array, o * 3);
+    if (g.attributes.uv) uv.set(g.attributes.uv.array, o * 2);
+    o += g.attributes.position.count;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  out.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+  out.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  return out;
+}
+
+function luckycat(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), E = new THREE.Euler(), S = new THREE.Vector3();
+  const place = (x, y, z, rx = 0, ry = 0, rz = 0, s = 1) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(s, s, s));
+
+  // shared shapes and materials
+  const sphere = keep(new THREE.SphereGeometry(1, 28, 20));
+  const blob = keep(new THREE.SphereGeometry(1, 14, 10)); // for the small merged shapes
+  const box = keep(new THREE.BoxGeometry(1, 1, 1));
+  const fur = keep(new THREE.MeshStandardMaterial({ color: 0xfffaf4, roughness: 0.62 }));
+  const pink = keep(new THREE.MeshStandardMaterial({ color: 0xffa3b1, roughness: 0.7 }));
+  const blushMat = keep(new THREE.MeshBasicMaterial({ color: 0xffb3bd, transparent: true, opacity: 0.8 }));
+  const dark = keep(new THREE.MeshStandardMaterial({ color: 0x3b2a2a, roughness: 0.5 }));
+  const red = keep(new THREE.MeshStandardMaterial({ color: 0xe0343f, roughness: 0.55 }));
+  const gold = keep(new THREE.MeshPhongMaterial({ color: 0xf6c544, specular: 0xfff0c2, shininess: 80, emissive: 0x4a3205 }));
+  const accentMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.5 }));
+
+  const mesh = (geo, mat, x, y, z, sx = 1, sy = sx, sz = sx, parent = scene) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.scale.set(sx, sy, sz);
+    parent.add(m);
+    return m;
+  };
+
+  /* --- the cat --- */
+  const cat = new THREE.Group();
+  scene.add(cat);
+  mesh(sphere, fur, 0, 1.02, 0, 1.08, 1, 0.95); // body
+  const headPivot = new THREE.Group();
+  headPivot.position.set(0, 1.85, 0.05);
+  cat.add(headPivot);
+  const head = mesh(sphere, fur, 0, 0.55, 0, 1.02, 0.9, 0.92, headPivot);
+  const face = new THREE.Group(); // features sit just outside the head sphere
+  face.position.set(0, 0.55, 0);
+  headPivot.add(face);
+  const earGeo = keep(new THREE.ConeGeometry(0.27, 0.62, 18));
+  for (const side of [-1, 1]) {
+    const ear = mesh(earGeo, fur, side * 0.6, 1.2, -0.05, 1, 1, 0.75, headPivot);
+    ear.rotation.z = -side * 0.45;
+    mesh(earGeo, pink, 0, -0.02, 0.09, 0.55, 0.6, 0.35, ear); // inner ear
+  }
+  const arc = keep(new THREE.TorusGeometry(0.15, 0.03, 8, 20, Math.PI));
+  for (const side of [-1, 1]) {
+    const eye = mesh(arc, dark, side * 0.34, 0.12, 0.84, 1, 1, 1, face); // ^ ^ happy closed eyes
+    eye.rotation.set(0, 0, 0);
+    mesh(sphere, blushMat, side * 0.6, -0.14, 0.72, 0.17, 0.11, 0.06, face); // blush
+    for (let w = 0; w < 3; w++) mesh(box, red, side * 0.78, -0.02 - w * 0.09, 0.62, 0.22, 0.026, 0.03, face).rotation.set(0, side * 0.5, side * (w - 1) * 0.35); // whisker marks
+  }
+  mesh(sphere, pink, 0, -0.06, 0.92, 0.075, 0.05, 0.05, face); // nose
+  const smile = mesh(arc, dark, 0, -0.16, 0.9, 0.55, 0.5, 0.6, face);
+  smile.rotation.set(0, 0, Math.PI); // arc bowing down = smile
+  mesh(sphere, red, 0, -0.27, 0.9, 0.07, 0.05, 0.04, face); // tongue
+  // collar with a bell and a bow in the accent colour
+  const collar = mesh(keep(new THREE.TorusGeometry(0.8, 0.075, 10, 40)), accentMat, 0, 1.98, 0.08, 1, 1, 1, cat);
+  collar.rotation.x = Math.PI / 2 - 0.42;
+  const bell = mesh(sphere, gold, 0, 1.72, 0.84, 0.13, 0.13, 0.13, cat);
+  const bow = new THREE.Group();
+  bow.position.set(0.5, 1.9, 0.66);
+  bow.rotation.y = 0.6;
+  cat.add(bow);
+  mesh(sphere, accentMat, -0.16, 0.05, 0, 0.17, 0.11, 0.07, bow);
+  mesh(sphere, accentMat, 0.16, 0.05, 0, 0.17, 0.11, 0.07, bow);
+  mesh(sphere, accentMat, 0, 0.03, 0.02, 0.07, 0.07, 0.07, bow);
+  // ingot on the head, like a little crown
+  const ingotGeo = keep(mergeParts(THREE, [
+    [blob, place(0, 0, 0, 0, 0, 0, 1).scale(new THREE.Vector3(0.5, 0.2, 0.3))],
+    [blob, place(0, 0.14, 0, 0, 0, 0, 1).scale(new THREE.Vector3(0.28, 0.2, 0.24))],
+    [blob, place(-0.44, 0.14, 0, 0, 0, 0, 1).scale(new THREE.Vector3(0.14, 0.17, 0.2))],
+    [blob, place(0.44, 0.14, 0, 0, 0, 0, 1).scale(new THREE.Vector3(0.14, 0.17, 0.2))],
+  ]));
+  mesh(ingotGeo, gold, 0, 1.36, 0.1, 0.55, 0.55, 0.55, headPivot);
+  // the beckoning paw: pivot at the shoulder, waving from the elbow
+  const arm = new THREE.Group();
+  arm.position.set(0.86, 1.55, 0.25);
+  cat.add(arm);
+  const capsule = keep(new THREE.CapsuleGeometry(0.24, 0.5, 6, 14));
+  mesh(capsule, fur, 0, 0.35, 0, 1, 1, 1, arm);
+  const paw = new THREE.Group();
+  paw.position.set(0, 0.78, 0);
+  arm.add(paw);
+  mesh(sphere, fur, 0, 0, 0, 0.3, 0.28, 0.24, paw);
+  mesh(sphere, pink, 0, -0.03, 0.2, 0.13, 0.11, 0.05, paw); // big pad
+  for (let i = 0; i < 3; i++) mesh(sphere, pink, (i - 1) * 0.13, 0.16 - Math.abs(i - 1) * 0.03, 0.2, 0.055, 0.055, 0.04, paw);
+  // the other paw rests on a plaque
+  const restArm = new THREE.Group();
+  restArm.position.set(-0.7, 1.5, 0.3);
+  restArm.rotation.set(0.95, 0, -0.2);
+  cat.add(restArm);
+  mesh(capsule, fur, 0, -0.3, 0, 1, 1, 1, restArm);
+  mesh(sphere, fur, 0, -0.66, 0, 0.26, 0.22, 0.26, restArm); // the paw resting on the plaque
+  const plaqueTex = keep(canvasTexture(THREE, 256, 256, (g, w, h) => {
+    g.fillStyle = "#fffaf2"; g.fillRect(0, 0, w, h);
+    g.lineWidth = 14; g.strokeStyle = "#c9a227"; g.strokeRect(14, 14, w - 28, h - 28);
+    g.fillStyle = "#d4a017"; g.font = "bold 170px 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif";
+    g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("發", w / 2, h / 2 + 10);
+  }));
+  const plaqueMat = keep(new THREE.MeshStandardMaterial({ map: plaqueTex, roughness: 0.6 }));
+  const plaqueGeo = keep(new THREE.BoxGeometry(1, 1, 1));
+  const plaque = new THREE.Mesh(plaqueGeo, [fur, fur, fur, fur, plaqueMat, fur]);
+  plaque.position.set(-0.55, 0.62, 0.95);
+  plaque.scale.set(0.78, 0.88, 0.08);
+  plaque.rotation.set(-0.08, 0.12, 0);
+  cat.add(plaque);
+  // feet and tail
+  for (const side of [-1, 1]) {
+    const foot = mesh(sphere, fur, side * 0.55, 0.3, 0.72, 0.36, 0.3, 0.34, cat);
+    mesh(sphere, pink, 0, 0.1, 0.8, 0.45, 0.4, 0.2, foot);
+  }
+  const tail = mesh(keep(new THREE.TorusGeometry(0.5, 0.14, 10, 24, Math.PI * 0.9)), fur, 0.7, 0.5, -0.55, 1, 1, 1, cat);
+  tail.rotation.set(0.3, 0.9, 0.2);
+  // shadow blob under the cat
+  const shadowTex = keep(glowTexture(THREE, "rgba(0,0,0,1)", "rgba(0,0,0,0)"));
+  const shadow = mesh(keep(new THREE.PlaneGeometry(1, 1)), keep(new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.35, depthWrite: false })), 0, 0.01, 0.1, 3.4, 2.2, 1);
+  shadow.rotation.x = -Math.PI / 2;
+
+  /* --- the wealthy room: sunburst, floor, lanterns, piles of gold --- */
+  const burstTex = keep(canvasTexture(THREE, 512, 512, (g, w) => {
+    const c = w / 2;
+    for (let i = 0; i < 24; i++) {
+      const a0 = (i / 24) * Math.PI * 2, a1 = a0 + Math.PI / 24;
+      g.beginPath(); g.moveTo(c, c); g.arc(c, c, c, a0, a1); g.closePath();
+      g.fillStyle = "rgba(255,255,255,0.9)"; g.fill();
+    }
+    const fade = g.createRadialGradient(c, c, 0, c, c, c);
+    fade.addColorStop(0, "rgba(255,255,255,0)"); fade.addColorStop(0.25, "rgba(255,255,255,0)"); fade.addColorStop(1, "rgba(255,255,255,1)");
+    g.globalCompositeOperation = "destination-out"; g.fillStyle = fade; g.fillRect(0, 0, w, w);
+  }));
+  const burstMat = keep(new THREE.MeshBasicMaterial({ map: burstTex, transparent: true, depthWrite: false, fog: false }));
+  const burst = mesh(keep(new THREE.PlaneGeometry(1, 1)), burstMat, 0, 2, -3, 14, 14, 1);
+  const glow = keep(glowTexture(THREE));
+  const discMat = keep(new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, fog: false }));
+  const disc = new THREE.Sprite(discMat);
+  disc.position.set(0, 2.1, -2.5);
+  disc.scale.setScalar(7.5);
+  scene.add(disc);
+  const wallMat = keep(new THREE.MeshBasicMaterial({ fog: false }));
+  const wall = mesh(keep(new THREE.PlaneGeometry(1, 1)), wallMat, 0, 4, -8, 70, 40, 1);
+  const floorMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.75 }));
+  const floor = mesh(keep(new THREE.PlaneGeometry(1, 1)), floorMat, 0, 0, 0, 70, 40, 1);
+  floor.rotation.x = -Math.PI / 2;
+  const sheen = mesh(keep(new THREE.PlaneGeometry(1, 1)), keep(new THREE.MeshBasicMaterial({ map: glow, transparent: true, opacity: 0.35, depthWrite: false, color: 0xffd58a })), 0, 0.02, 0.4, 9, 5, 1);
+  sheen.rotation.x = -Math.PI / 2;
+  wall.renderOrder = -2; burst.renderOrder = -1;
+
+  const lanternGeo = keep(mergeParts(THREE, [
+    [blob, place(0, 0, 0).scale(new THREE.Vector3(0.5, 0.42, 0.5))],
+    [keep(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 16)), place(0, 0.42, 0)],
+    [keep(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 16)), place(0, -0.42, 0)],
+  ]));
+  const lanterns = [];
+  for (const side of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(side * 3.6, 5.6, -1.2);
+    scene.add(pivot);
+    mesh(lanternGeo, red, 0, -1.4, 0, 1, 1, 1, pivot);
+    mesh(box, gold, 0, -0.95, 0, 0.05, 0.9, 0.05, pivot); // cord
+    mesh(box, gold, 0, -2.05, 0, 0.05, 0.4, 0.05, pivot); // tassel
+    lanterns.push({ pivot, phase: side });
+  }
+  // gold at the cat's feet: ingots and stacks of coins
+  const coinTex = keep(canvasTexture(THREE, 256, 256, (g, w) => {
+    const c = w / 2;
+    g.fillStyle = "#f6c544"; g.beginPath(); g.arc(c, c, c, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#b8860b"; g.lineWidth = 10; g.beginPath(); g.arc(c, c, c - 12, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = "#8a6508"; g.fillRect(c - 34, c - 34, 68, 68); // the square hole
+    g.strokeStyle = "#8a6508"; g.lineWidth = 8; g.strokeRect(c - 50, c - 50, 100, 100);
+    g.fillStyle = "#7a5a06"; g.font = "bold 48px 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', serif"; g.textAlign = "center"; g.textBaseline = "middle";
+    [["福", c, 60], ["財", c, w - 60], ["招", 60, c], ["進", w - 60, c]].forEach(([t, x, y]) => g.fillText(t, x, y));
+  }));
+  const coinMat = keep(new THREE.MeshPhongMaterial({ map: coinTex, specular: 0xfff0c2, shininess: 70 }));
+  const coinGeo = keep(new THREE.CylinderGeometry(0.24, 0.24, 0.05, 28));
+  const N_PILE_INGOTS = 14, N_PILE_COINS = 34;
+  const pileIngots = new THREE.InstancedMesh(ingotGeo, gold, N_PILE_INGOTS);
+  const pileCoins = new THREE.InstancedMesh(coinGeo, coinMat, N_PILE_COINS);
+  scene.add(pileIngots, pileCoins);
+  for (let i = 0; i < N_PILE_INGOTS; i++) {
+    const a = -0.5 + (i / (N_PILE_INGOTS - 1)) * (Math.PI + 1), r = 1.75 + (i % 3) * 0.35;
+    pileIngots.setMatrixAt(i, place(Math.cos(a) * r * 1.15, 0.08 + (i % 2) * 0.1, 0.9 + Math.sin(a) * r * 0.55, 0, a + i, 0, 0.42 + (i % 3) * 0.08));
+  }
+  let ci = 0;
+  for (const [sx, sz, n] of [[-2.4, 1.6, 7], [2.5, 1.5, 6], [-1.7, 2.4, 5], [1.9, 2.5, 8], [-3.1, 0.6, 4], [3.2, 0.7, 4]]) {
+    for (let k = 0; k < n && ci < N_PILE_COINS; k++, ci++) pileCoins.setMatrixAt(ci, place(sx + (k % 2) * 0.03, 0.03 + k * 0.05, sz, 0, k * 0.4, 0));
+  }
+  pileIngots.instanceMatrix.needsUpdate = pileCoins.instanceMatrix.needsUpdate = true;
+
+  /* --- money raining down --- */
+  const noteTex = keep(canvasTexture(THREE, 256, 128, (g, w, h) => {
+    g.fillStyle = "#d9ecc9"; g.fillRect(0, 0, w, h);
+    g.strokeStyle = "#5f8f5a"; g.lineWidth = 6; g.strokeRect(10, 10, w - 20, h - 20);
+    g.strokeStyle = "#8db989"; g.lineWidth = 2; g.strokeRect(20, 20, w - 40, h - 40);
+    g.fillStyle = "#6c9a67"; g.beginPath(); g.arc(w / 2, h / 2, 34, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#f2f7ea"; g.font = "bold 44px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("$", w / 2, h / 2 + 2);
+    g.fillStyle = "#5f8f5a"; g.font = "bold 22px sans-serif"; g.fillText("100", 42, 40); g.fillText("100", w - 42, h - 40);
+  }));
+  const noteMat = keep(new THREE.MeshStandardMaterial({ map: noteTex, roughness: 0.8, side: THREE.DoubleSide }));
+  const noteGeo = keep(new THREE.PlaneGeometry(0.66, 0.33));
+  const N_COINS = preview ? 18 : 56, N_NOTES = preview ? 8 : 26, N_INGOTS = preview ? 4 : 10;
+  const rainCoins = new THREE.InstancedMesh(coinGeo, coinMat, N_COINS);
+  const rainNotes = new THREE.InstancedMesh(noteGeo, noteMat, N_NOTES);
+  const rainIngots = new THREE.InstancedMesh(ingotGeo, gold, N_INGOTS);
+  for (const m of [rainCoins, rainNotes, rainIngots]) { m.frustumCulled = false; scene.add(m); }
+  const TOP = 8, FLOOR = 0.08;
+  let spreadX = 5;
+  const drops = [];
+  const spawn = (d, fresh) => {
+    d.x = rand(-spreadX, spreadX); d.z = rand(-2.6, 1.1);
+    d.y = fresh ? rand(FLOOR, TOP) : TOP + rand(0, 2);
+    d.rx = rand(0, 6.28); d.ry = rand(0, 6.28); d.rz = rand(0, 6.28);
+    d.phase = rand(0, 6.28);
+    d.speed = d.kind === 1 ? rand(0.55, 0.95) : d.kind === 2 ? rand(1.2, 1.7) : rand(1.1, 2);
+    d.spin = d.kind === 1 ? rand(1, 2) : rand(2, 5);
+  };
+  [[rainCoins, N_COINS, 0], [rainNotes, N_NOTES, 1], [rainIngots, N_INGOTS, 2]].forEach(([m, n, kind]) => {
+    for (let i = 0; i < n; i++) { const d = { m, i, kind }; spawn(d, true); drops.push(d); }
+  });
+  function placeDrops(t) {
+    for (const d of drops) {
+      const sway = d.kind === 1 ? Math.sin(t * 1.3 + d.phase) * 0.35 : Math.sin(t * 0.8 + d.phase) * 0.1;
+      const k = Math.min(1, (d.y - FLOOR) / 0.35); // shrink away as it reaches the floor
+      V.set(d.x + sway, d.y, d.z);
+      if (d.kind === 1) E.set(Math.sin(t * 2.1 + d.phase) * 0.9 + 0.3, d.ry + Math.sin(t * 0.7 + d.phase) * 0.6, Math.sin(t * 1.7 + d.phase) * 0.5);
+      else E.set(d.rx, d.ry, d.rz);
+      S.setScalar(k * (d.kind === 2 ? 0.5 : 1));
+      M4.compose(V, Q.setFromEuler(E), S);
+      d.m.setMatrixAt(d.i, M4);
+    }
+    rainCoins.instanceMatrix.needsUpdate = rainNotes.instanceMatrix.needsUpdate = rainIngots.instanceMatrix.needsUpdate = true;
+  }
+  placeDrops(0);
+
+  /* --- sparkles --- */
+  const sparkTex = keep(canvasTexture(THREE, 64, 64, (g, w) => {
+    const c = w / 2;
+    const rg = g.createRadialGradient(c, c, 0, c, c, c);
+    rg.addColorStop(0, "rgba(255,255,255,1)"); rg.addColorStop(0.3, "rgba(255,255,255,0.35)"); rg.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = rg; g.fillRect(0, 0, w, w);
+    g.strokeStyle = "rgba(255,255,255,0.95)"; g.lineWidth = 3; g.lineCap = "round";
+    g.beginPath(); g.moveTo(c, 4); g.lineTo(c, w - 4); g.moveTo(4, c); g.lineTo(w - 4, c); g.stroke();
+  }));
+  const N_SPARK = preview ? 16 : 40;
+  const sPos = new Float32Array(N_SPARK * 3), sPhase = new Float32Array(N_SPARK), sSize = new Float32Array(N_SPARK);
+  for (let i = 0; i < N_SPARK; i++) { sPos.set([rand(-4.5, 4.5), rand(0.3, 6), rand(-2, 2.5)], i * 3); sPhase[i] = rand(0, 6.28); sSize[i] = rand(0.08, 0.2); }
+  const sparkGeo = keep(new THREE.BufferGeometry());
+  sparkGeo.setAttribute("position", new THREE.BufferAttribute(sPos, 3));
+  sparkGeo.setAttribute("aPhase", new THREE.BufferAttribute(sPhase, 1));
+  sparkGeo.setAttribute("aSize", new THREE.BufferAttribute(sSize, 1));
+  const sparkUni = { uTime: { value: 0 }, uPx: { value: 700 }, uMaxPx: { value: 24 }, uMap: { value: sparkTex }, uColor: { value: new THREE.Color() }, uOpacity: { value: 0.9 } };
+  const sparkMat = keep(new THREE.ShaderMaterial({ uniforms: sparkUni, vertexShader: LUCKY_SPARK_VS, fragmentShader: LUCKY_SPARK_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const sparks = new THREE.Points(sparkGeo, sparkMat);
+  sparks.frustumCulled = false;
+  const buf = new THREE.Vector2();
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  sparks.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); sparkUni.uPx.value = buf.y / (2 * TAN); sparkUni.uMaxPx.value = 22 * renderer.getPixelRatio(); };
+  scene.add(sparks);
+
+  /* --- light and colour --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const key = new THREE.DirectionalLight(0xffffff, 1);
+  key.position.set(-4, 7, 6);
+  const fill = new THREE.DirectionalLight(0xffffff, 1);
+  fill.position.set(5, 3, 4);
+  scene.add(hemi, key, fill);
+  scene.fog = new THREE.Fog(0xffffff, 9, 18); // the far floor melts into the wall, so there is no hard horizon
+  const tmp = new THREE.Color();
+  function applyPalette(p) {
+    pal = p;
+    accentMat.color.set(p.accent);
+    wallMat.color.set(p.dark ? "#2a0810" : "#fff1de"); scene.fog.color.copy(wallMat.color);
+    floorMat.color.set(p.dark ? "#4a0f1c" : "#e6c28f");
+    burstMat.color.set(p.dark ? "#ffb347" : "#ffd591"); burstMat.opacity = p.dark ? 0.35 : 0.55;
+    blend(THREE, burstMat, p.dark);
+    discMat.color.set(p.dark ? "#ff9f43" : "#ffe3a8"); discMat.opacity = p.dark ? 0.55 : 0.8;
+    blend(THREE, discMat, p.dark);
+    sheen.material.opacity = p.dark ? 0.5 : 0.35;
+    blend(THREE, sheen.material, p.dark);
+    hemi.color.set(p.dark ? "#d8c8d4" : "#fff6ea"); hemi.groundColor.set(p.dark ? "#5a2a30" : "#c9a37c"); hemi.intensity = p.dark ? 1.2 : 1.15;
+    key.color.set(p.dark ? "#fff6e8" : "#fff3dc"); key.intensity = p.dark ? 3.4 : 2.3;
+    fill.color.set(p.dark ? "#ffb08a" : "#ffdcc2"); fill.intensity = p.dark ? 0.8 : 0.8;
+    sparkUni.uColor.value.copy(tmp.set(p.dark ? "#fff1b8" : "#e2a522").lerp(new THREE.Color(p.accent), 0.25));
+    sparkUni.uOpacity.value = p.dark ? 1 : 0.8;
+    blend(THREE, sparkMat, p.dark);
+    fur.emissive.set(p.dark ? "#2a2226" : "#000000"); // lifts the shadow side at night so the cat stays white
+    shadow.material.opacity = p.dark ? 0.5 : 0.3;
+  }
+  applyPalette(pal);
+
+  const CAM = { y: 1.9, z: 7.4 };
+  camera.position.set(0, CAM.y, CAM.z);
+  camera.lookAt(0, 1.7, 0);
+  return {
+    update(dt, t) {
+      // the beckoning wave, a bob and a little head tilt
+      arm.rotation.x = -0.35 + Math.sin(t * 5.2) * 0.4;
+      arm.rotation.z = -0.25 + Math.sin(t * 5.2 + 1) * 0.08;
+      paw.rotation.x = Math.sin(t * 5.2 + 0.6) * 0.35;
+      cat.position.y = Math.sin(t * 2.6) * 0.03;
+      headPivot.rotation.z = 0.06 + Math.sin(t * 1.3) * 0.06;
+      headPivot.rotation.y = Math.sin(t * 0.7) * 0.08;
+      bell.position.x = Math.sin(t * 5.2 - 0.5) * 0.03;
+      tail.rotation.y = 0.9 + Math.sin(t * 1.9) * 0.25;
+      for (const l of lanterns) l.pivot.rotation.z = Math.sin(t * 1.1 + l.phase) * 0.08;
+      burst.rotation.z = t * 0.05;
+      disc.scale.setScalar(7.5 + Math.sin(t * 1.4) * 0.3);
+      sparkUni.uTime.value = t;
+      // money keeps falling; the sideways spread follows the window shape
+      spreadX = Math.max(2.4, Math.min(9, 4.4 * camera.aspect));
+      for (const d of drops) {
+        d.y -= dt * d.speed;
+        if (d.kind !== 1) { d.rx += dt * d.spin; d.ry += dt * d.spin * 0.6; }
+        if (d.y < FLOOR - 0.05) spawn(d, false);
+      }
+      placeDrops(t);
+      // portrait phones step back so the whole cat stays in frame
+      const back = Math.max(0, 1 / camera.aspect - 1) * 3.4;
+      camera.position.set(Math.sin(t * 0.25) * 0.25, CAM.y + Math.sin(t * 0.4) * 0.08, CAM.z + back);
+      camera.lookAt(0, 1.7, 0);
+    },
+    setPalette: applyPalette,
+    dispose() { disposables.forEach((d) => d.dispose()); scene.fog = null; },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
