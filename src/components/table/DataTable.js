@@ -71,6 +71,7 @@ export default function DataTable({
   selectable: wantSelectable = false,
   workspace = true, // false for tables that are not shared profile data (users)
   onDeleteSelected,
+  bulkActions, // (selectedIds, clearSelection) => buttons shown next to "N selected" (for people who may edit)
   emptyTitle = "Nothing here yet",
   emptyDescription,
   emptyAction,
@@ -81,8 +82,9 @@ export default function DataTable({
   className,
   dense,
 }) {
-  const { canDelete } = useAccess();
-  const selectable = wantSelectable && (canDelete || !workspace);
+  const { canDelete, canEdit } = useAccess();
+  const mayDelete = canDelete || !workspace;
+  const selectable = wantSelectable && (mayDelete || (canEdit && Boolean(bulkActions)));
   const tr = useT();
   const bodyRef = useRef(null);
   // The table body scrolls internally and takes exactly the space left in the pane below the
@@ -366,7 +368,8 @@ export default function DataTable({
           {selectable && selectedIds.length > 0 ? (
             <div className="flex items-center gap-2 rounded-app-sm bg-accent/10 px-2 py-1 text-xs font-medium text-accent anim-pop">
               {selectedIds.length} selected
-              {onDeleteSelected ? (
+              {bulkActions ? bulkActions(selectedIds, () => setSelected(new Set())) : null}
+              {onDeleteSelected && mayDelete ? (
                 <Button size="xs" variant="danger" icon={Trash2} onClick={() => onDeleteSelected(selectedIds, () => setSelected(new Set()))}>
                   {tr("Delete")}
                 </Button>

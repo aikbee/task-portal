@@ -19,6 +19,7 @@ import { formatDate, relativeTime, fullName, cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { CanEdit } from "@/lib/auth-context";
 import { ImportButton } from "./ImportDialog";
+import { BulkEditButton } from "./BulkEditTasks";
 import { formatMinutes } from "@/lib/duration";
 import ReportButton from "@/components/report/ReportButton";
 
@@ -96,6 +97,7 @@ export default function TasksList() {
         onRowClick={(r) => router.push(`/tasks/${r.id}`)}
         selectable
         onDeleteSelected={(ids) => del.setTarget({ ids })}
+        bulkActions={(ids, clear) => <BulkEditButton ids={ids} clear={clear} onDone={refetch} />}
         rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={() => del.setTarget(r)} />}
         filters={
           <>

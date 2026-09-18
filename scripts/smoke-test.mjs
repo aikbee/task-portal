@@ -2190,6 +2190,34 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("bulk edit of tasks");
+{
+  const mk = async (title, extra = {}) => (await call("POST", "/api/tasks", { body: { title: `${title} ${suffix}`, ...extra } })).data;
+  const b1 = await mk("Bulk one", { project_id: projectId, due_date: "2031-07-10", start_date: "2031-07-01", tags: "keep, old", employee_id: employeeId });
+  const b2 = await mk("Bulk two", { due_date: "2031-07-20" });
+  const b3 = await mk("Bulk three", { start_date: "2031-08-01" });
+  const bulkIds = [b1.id, b2.id, b3.id];
+  check("POST /api/tasks/bulk: empty patch, no ids, bad values -> 400", (await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: {} } })).status === 400 && (await call("POST", "/api/tasks/bulk", { body: { ids: [], patch: { status: "done" } } })).status === 400 && (await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { priority: "huge" } } })).status === 400 && (await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { due_date: "2031-01-01", shift_days: 1 } } })).status === 400);
+  const r1 = await call("POST", "/api/tasks/bulk", { body: { ids: [...bulkIds, 99999999], patch: { status: "in_progress", priority: "urgent", add_tags: "Bulk tag", remove_tags: "old" } } });
+  check("status, priority and tags change on all, an unknown id is reported", r1.status === 200 && r1.data.updated === 3 && r1.data.failed.length === 1 && r1.data.undo.length === 3, JSON.stringify(r1.raw).slice(0, 200));
+  const g1 = (await call("GET", `/api/tasks/${b1.id}`)).data;
+  check("…only what was set changed", g1.status === "in_progress" && g1.priority === "urgent" && g1.tags === "keep,bulk-tag" && g1.due_date === "2031-07-10" && g1.assignees.length === 1);
+  await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { shift_days: -3 } } });
+  const g2 = await Promise.all(bulkIds.map(async (id) => (await call("GET", `/api/tasks/${id}`)).data));
+  check("move by days shifts the dates a task has", g2[0].due_date === "2031-07-07" && g2[0].start_date === "2031-06-28" && g2[1].due_date === "2031-07-17" && g2[2].start_date === "2031-07-29" && g2[2].due_date === null);
+  const r3 = await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { start_date: "2031-07-10" } } });
+  check("a task that cannot take the change is reported, the rest go through", r3.data.updated === 2 && r3.data.failed.length === 1 && r3.data.failed[0].id === b1.id);
+  const r4 = await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { assignee_mode: "replace", assignee_ids: [] } } });
+  check("replace assignees with nobody", r4.data.updated === 3 && (await call("GET", `/api/tasks/${b1.id}`)).data.assignees.length === 0);
+  const undone = await call("POST", "/api/tasks/bulk", { body: { items: r4.data.undo } });
+  check("the undo list puts the people back", undone.data.updated >= 1 && (await call("GET", `/api/tasks/${b1.id}`)).data.assignees[0]?.id === employeeId);
+  const done = await call("POST", "/api/tasks/bulk", { body: { ids: bulkIds, patch: { status: "done" } } });
+  check("completing in bulk is counted", done.data.completed === 3);
+  for (const id of bulkIds) await call("DELETE", `/api/tasks/${id}`);
+  await call("DELETE", "/api/trash");
+  for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /at once|Bulk (one|two|three)/.test(x.title + (x.body ?? "")))) await call("DELETE", `/api/notifications/${n.id}`);
+}
+
 console.log("API tokens + webhooks");
 {
   const http = await import("node:http");

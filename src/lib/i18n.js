@@ -150,6 +150,8 @@ const zhCN = {
   "Each token may make {m} requests a minute and {d} a day; over that the API answers 429 with a Retry-After header.": "每个令牌每分钟最多 {m} 次请求、每天最多 {d} 次；超出后 API 返回 429 并附带 Retry-After 头。", "{n} requests today, {t} in all": "今天 {n} 次请求，累计 {t} 次",
   // daily digest
   "Email me": "邮件通知", "One summary a day: new notifications, what is overdue or due today, today's events.": "每天一封摘要：新通知、已逾期或今天到期的任务、今天的日程。", "No emails.": "不发送邮件。", "Right away": "立即发送", "Once a day": "每天一封", "Not before": "不早于", "({tz})": "（{tz}）", "Send it now": "立即发送一封", "Summary sent to {email}": "摘要已发送到 {email}", "Could not send the summary": "无法发送摘要", "Daily summary": "每日摘要",
+  // bulk edit
+  "Put back: {n} tasks": "已恢复 {n} 个任务", "{n} could not be changed: {why}": "{n} 个任务无法更改：{why}", "{n} repeating tasks made their next one.": "{n} 个重复任务已生成下一个。", "{n} tasks changed": "已更改 {n} 个任务", "Could not change the tasks": "无法更改任务", "No change": "不更改", "Change {n} tasks": "更改 {n} 个任务", "Only what you set here changes; everything else stays as it is on each task.": "只会更改你在这里设置的内容，每个任务的其他内容保持不变。", "Apply to {n} tasks": "应用到 {n} 个任务", "Moving a task to another project drops its requirement link.": "把任务移到另一个项目会取消它与需求的关联。", "Add these people": "添加这些人", "Replace with": "替换为", "Remove these people": "移除这些人", "Nobody (unassign)": "无人（取消分配）", "Pick people": "选择人员", "Moves the start and due dates of tasks that have them. Negative numbers move earlier.": "移动已有开始日期和截止日期的任务。负数表示提前。", "Set to": "设为", "Move by days": "按天数移动", "Add tags": "添加标签", "Remove tags": "移除标签",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

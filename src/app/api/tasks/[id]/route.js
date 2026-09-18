@@ -34,11 +34,14 @@ export function listOutputs(taskId) {
 
 export const GET = handler(async (_req, params, user) => ok(await getTask(requireId(params.id), user.profile_id)));
 
-export const PUT = handler(async (request, params, user) => {
-  const id = requireId(params.id);
+/**
+ * Change one task: validation, assignees, history, webhooks, what follows a completion (dependants, the next
+ * task of a series). `quiet` leaves the bell alone: a bulk edit tells people once, not once per task. Returns
+ * { before, after, added } where `added` are the people newly put on the task.
+ */
+export async function updateTask(user, id, body, { quiet = false } = {}) {
   const owner = user.profile_id;
   await getTask(id, owner);
-  const body = await readJson(request);
   const data = normaliseTask(pick(body, TASK_FIELDS));
   if (data.title === null) throw new HttpError("Title is required.", 400);
   await assertTaskRequirement(owner, data);
@@ -60,7 +63,7 @@ export const PUT = handler(async (request, params, user) => {
   await logTask(user, id, diffTask(before, after));
   emit(user, "task.updated", { ...after, changed: Object.keys(data) });
   if (after.status === "done" && before.status !== "done") emit(user, "task.completed", after);
-  if (data.status && data.status !== before.status) {
+  if (!quiet && data.status && data.status !== before.status) {
     notifyInvolved(user, {
       type: after.status === "done" ? "task_done" : "task_status",
       title: after.status === "done" ? `Task completed: ${after.title}` : `${after.title} moved to ${TASK_STATUS[after.status]?.label ?? after.status}`,
@@ -83,11 +86,13 @@ export const PUT = handler(async (request, params, user) => {
   // only the people who were just added hear "assigned you"; the owner hears who is on it now
   const had = new Set(before.assignees.map((p) => p.id));
   const added = after.assignees.filter((p) => !had.has(p.id));
-  if (added.length) {
+  if (added.length && !quiet) {
     notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${added.map((p) => p.name).join(", ")}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: added.map((p) => p.id), forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
   }
-  return ok(after);
-});
+  return { before, after, added };
+}
+
+export const PUT = handler(async (request, params, user) => ok((await updateTask(user, requireId(params.id), await readJson(request))).after));
 
 /** Moves the task, with everything on it, to the recycle bin (files stay on disk until the bin entry is purged). */
 export const DELETE = handler(async (_req, params, user) => {
