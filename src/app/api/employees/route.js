@@ -45,7 +45,8 @@ export const POST = handler(async (request, _params, user) => {
   const owner = user.profile_id;
   const body = await readJson(request);
   const data = pick(body, FIELDS);
-  requireFields(data, ["first_name", "last_name", "email"]);
+  requireFields(data, ["first_name", "last_name"]);
+  if (data.email) data.email = String(data.email).trim().toLowerCase();
   oneOf(data.status, Object.keys(EMPLOYEE_STATUS), "status");
   data.user_id = user.owner_id;
   data.profile_id = owner;

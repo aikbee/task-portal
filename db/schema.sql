@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS employees (
   profile_id INT UNSIGNED NOT NULL,
   first_name VARCHAR(80) NOT NULL,
   last_name VARCHAR(80) NOT NULL,
-  email VARCHAR(190) NOT NULL,
+  email VARCHAR(190) NULL, -- optional since the spreadsheet import; unique per profile when set
   phone VARCHAR(40) NULL,
   job_title VARCHAR(120) NULL,
   department VARCHAR(120) NULL,
@@ -457,6 +457,19 @@ CREATE TABLE IF NOT EXISTS mail_tokens (
 -- The recycle bin. A deleted record is stored here as a JSON snapshot (the row, everything that hangs off it and
 -- which other rows pointed at it) and then really deleted, so no query elsewhere has to know about deleted rows.
 -- Restoring puts everything back under the same ids. Attachment files stay on disk until the entry is purged.
+-- One row per spreadsheet import, so it can be undone as a whole (the records go to the recycle bin). No foreign keys:
+-- pruned after 7 days by the scheduler.
+CREATE TABLE IF NOT EXISTS import_batches (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  profile_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  kind VARCHAR(16) NOT NULL,
+  items JSON NOT NULL, -- [{ "kind": "task", "id": 12 }, ...] in creation order (helpers first)
+  undone_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_import_profile (profile_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS trash (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   profile_id INT UNSIGNED NOT NULL,

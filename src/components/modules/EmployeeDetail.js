@@ -91,7 +91,7 @@ export default function EmployeeDetail({ id }) {
             </div>
             <p className="text-sm text-fg-muted">{emp.job_title || "No title"}{emp.department ? ` · ${emp.department}` : ""}</p>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
-              <a href={`mailto:${emp.email}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Mail size={14} /> {emp.email}</a>
+              {emp.email ? <a href={`mailto:${emp.email}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Mail size={14} /> {emp.email}</a> : null}
               {emp.phone ? <a href={`tel:${emp.phone}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Phone size={14} /> {emp.phone}</a> : null}
               {emp.department ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Building2 size={14} /> {emp.department}</span> : null}
               {emp.hired_at ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Calendar size={14} /> Since {formatDate(emp.hired_at)}</span> : null}

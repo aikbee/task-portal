@@ -6,6 +6,7 @@ import { ensureDailyBackup } from "@/lib/backups";
 import { ensureEventReminders } from "@/lib/events";
 import { purgeExpiredTrash } from "@/lib/trash";
 import { pruneMailLog, pruneTokens } from "@/lib/mail";
+import { pruneImportBatches } from "@/lib/import";
 
 /**
  * Scheduler entry point: generates due/overdue reminders for every profile so pushes go
@@ -28,6 +29,7 @@ export const GET = handler(
     const trashPurged = await purgeExpiredTrash().catch(() => 0);
     await pruneMailLog().catch(() => {});
     await pruneTokens().catch(() => {});
+    await pruneImportBatches().catch(() => {});
     const backup = await ensureDailyBackup().catch((e) => ({ ran: true, ok: false, error: e.message }));
     return ok({ profiles: profiles.length, created, event_reminders: events, chat_purged: chatPurged, trash_purged: trashPurged, backup, at: new Date().toISOString() });
   },

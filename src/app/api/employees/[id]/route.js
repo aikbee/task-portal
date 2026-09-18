@@ -39,7 +39,8 @@ export const PUT = handler(async (request, params, user) => {
   const body = await readJson(request);
   const data = pick(body, FIELDS);
   oneOf(data.status, Object.keys(EMPLOYEE_STATUS), "status");
-  for (const f of ["first_name", "last_name", "email"]) if (data[f] === null) throw new HttpError(`${f} is required.`, 400);
+  for (const f of ["first_name", "last_name"]) if (data[f] === null) throw new HttpError(`${f} is required.`, 400);
+  if (data.email) data.email = String(data.email).trim().toLowerCase();
   if ("linked_user_id" in body) data.linked_user_id = await linkableId(owner, body.linked_user_id);
 
   await withTransaction(async (conn) => {

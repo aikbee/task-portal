@@ -99,7 +99,7 @@ function EmployeeFormInner({ onClose, initial, onSaved }) {
           <Input value={form.last_name} onChange={(e) => set("last_name", e.target.value)} required />
         </Field>
         <Field label={tr("Email")} required className="sm:col-span-3">
-          <Input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} required placeholder="name@company.com" />
+          <Input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="name@company.com" />
         </Field>
         <Field label={tr("Phone")} className="sm:col-span-3">
           <Input value={form.phone ?? ""} onChange={(e) => set("phone", e.target.value)} placeholder="+1 555 0100" />

@@ -15,6 +15,7 @@ import { EMPLOYEE_STATUS, MODULE_MAP } from "@/lib/modules";
 import { fullName, formatDate } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { CanEdit } from "@/lib/auth-context";
+import { ImportButton } from "./ImportDialog";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function EmployeesList() {
@@ -64,14 +65,14 @@ export default function EmployeesList() {
       ),
     },
     { key: "phone", label: tr("Phone"), defaultHidden: true, render: (r) => r.phone ? <a href={`tel:${r.phone}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 hover:text-accent"><Phone size={12} />{r.phone}</a> : <span className="text-fg-faint">—</span> },
-    { key: "email", label: tr("Email"), defaultHidden: true, render: (r) => <a href={`mailto:${r.email}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 hover:text-accent"><Mail size={12} />{r.email}</a> },
+    { key: "email", label: tr("Email"), defaultHidden: true, render: (r) => r.email ? <a href={`mailto:${r.email}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 hover:text-accent"><Mail size={12} />{r.email}</a> : <span className="text-fg-faint">—</span> },
     { key: "hired_at", label: tr("Hired"), render: (r) => formatDate(r.hired_at) || <span className="text-fg-faint">—</span> },
     { key: "created_at", label: tr("Created"), defaultHidden: true, render: (r) => formatDate(r.created_at) },
   ];
 
   return (
     <>
-      <PageHeader title={tr("Employees")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="employees" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></CanEdit></>} />
+      <PageHeader title={tr("Employees")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="employees" /><CanEdit><ImportButton kind="employees" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></CanEdit></>} />
       <DataTable
         id="employees"
         columns={columns}
@@ -102,7 +103,7 @@ export default function EmployeesList() {
         }
         emptyTitle={tr("No employees yet")}
         emptyDescription={tr("Add people so they can be assigned to projects and tasks.")}
-        emptyAction={<CanEdit><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></CanEdit>}
+        emptyAction={<CanEdit><ImportButton kind="employees" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></CanEdit>}
       />
       <EmployeeForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
       <ConfirmDialog

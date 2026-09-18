@@ -18,6 +18,7 @@ import { useFetch } from "@/lib/hooks";
 import { formatDate, relativeTime, fullName, cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { CanEdit } from "@/lib/auth-context";
+import { ImportButton } from "./ImportDialog";
 import { formatMinutes } from "@/lib/duration";
 import ReportButton from "@/components/report/ReportButton";
 
@@ -77,7 +78,7 @@ export default function TasksList() {
 
   return (
     <>
-      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit></>} />
+      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><CanEdit><ImportButton kind="tasks" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit></>} />
       <DataTable
         id="tasks"
         columns={columns}
@@ -106,7 +107,7 @@ export default function TasksList() {
         }
         emptyTitle={tr("No tasks yet")}
         emptyDescription={tr("Tasks hold attachments and long-form outputs, each with their own ordering.")}
-        emptyAction={<CanEdit><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit>}
+        emptyAction={<CanEdit><ImportButton kind="tasks" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit>}
       />
       <TaskForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
       <ConfirmDialog

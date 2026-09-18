@@ -16,7 +16,7 @@ export const MEMBER_ROLES = ["viewer", "editor", "manager"];
 export const ACCESS_RANK = { viewer: 1, editor: 2, manager: 3, owner: 4 };
 export const can = (user, level) => (ACCESS_RANK[user?.access ?? "owner"] ?? 0) >= ACCESS_RANK[level];
 
-const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|events|info|info-notes|attachments|outputs|trash)(\/|$)/;
+const WORKSPACE_ROUTE = /^\/api\/(projects|tasks|requirements|employees|drawboards|events|info|info-notes|attachments|outputs|trash|import)(\/|$)/;
 const WHOLE_RECORD = /^\/api\/(projects|tasks|requirements|employees|drawboards|events)\/\d+\/?$/;
 
 /** The access a request needs inside the active profile, or null for routes that are not workspace data. */
@@ -113,6 +113,7 @@ export async function autoLinkByEmail(profileId, { userId = null, employeeId = n
     return;
   }
   const e = await queryOne("SELECT email, linked_user_id FROM employees WHERE id = ? AND profile_id = ?", [employeeId, profileId]);
+  if (!e?.email) return;
   if (!e || e.linked_user_id) return;
   const match = (await linkableAccounts(profileId)).find((a) => a.email.toLowerCase() === String(e.email).toLowerCase());
   if (match) await execute("UPDATE employees SET linked_user_id = ? WHERE id = ?", [match.id, employeeId]);

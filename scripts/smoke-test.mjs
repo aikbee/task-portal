@@ -2190,6 +2190,58 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("spreadsheet import");
+{
+  const as = async (j, fn) => { const keep = jar; jar = { ...j }; try { return await fn(); } finally { jar = keep; } };
+  const rows = [["Import kickoff " + suffix, "Import space " + suffix, "Ivy Importer; Ian Importer", "Doing", "P0", "18/9/2026", "launch, docs"], ["", "Import space " + suffix, "", "", "", "", ""], ["Import venue " + suffix, "Import space " + suffix, "Ivy Importer", "done", "", "3/4/2026", ""]];
+  const columns = ["title", "project", "assignees", "status", "priority", "due_date", "tags"];
+  const dry = await call("POST", "/api/import", { body: { kind: "tasks", columns, rows, options: { dry: true } } });
+  check("POST /api/import dry run: preview with counts, nothing written", dry.status === 200 && dry.data.counts.ready === 2 && dry.data.counts.skipped === 1 && dry.data.counts.new_projects === 1 && dry.data.counts.new_employees === 2 && dry.data.needs_date_order === true);
+  const r1 = dry.data.rows[0];
+  check("synonyms, day-first dates and tags are read", r1.values.status === "in_progress" && r1.values.priority === "urgent" && r1.values.due_date === "2026-09-18" && r1.values.tags === "launch,docs" && r1.values.assignee_new.length === 2, JSON.stringify(r1.values));
+  check("the empty title is an error", dry.data.rows[1].skip && dry.data.rows[1].problems[0].level === "error");
+  check("month-first when asked", (await call("POST", "/api/import", { body: { kind: "tasks", columns, rows, options: { dry: true, date_order: "mdy" } } })).data.rows[2].values.due_date === "2026-03-04");
+  check("no project created by the dry run", !(await call("GET", `/api/projects?q=Import%20space%20${suffix}`)).data.length);
+  check("more than 2000 rows -> 400", (await call("POST", "/api/import", { body: { kind: "tasks", columns: ["title"], rows: Array.from({ length: 2001 }, () => ["x"]), options: { dry: true } } })).status === 400);
+  const done = await call("POST", "/api/import", { body: { kind: "tasks", columns, rows, options: {} } });
+  check("POST /api/import creates the tasks and the helpers it announced", done.status === 201 && done.data.created.tasks === 2 && done.data.created.projects === 1 && done.data.created.employees === 2 && done.data.batch_id > 0, JSON.stringify(done.raw));
+  const made = (await call("GET", `/api/tasks?q=Import%20kickoff%20${suffix}`)).data[0];
+  check("the task carries project, both assignees, status, date and tags", made && made.project_name === `Import space ${suffix}` && made.assignees.length === 2 && made.status === "in_progress" && made.due_date === "2026-09-18" && made.tags === "launch,docs", JSON.stringify(made));
+  const again = await call("POST", "/api/import", { body: { kind: "tasks", columns, rows, options: { dry: true } } });
+  check("importing the same sheet again skips the open task (a done one may come back)", again.data.rows[0].skip && again.data.counts.ready === 1);
+  const emp = await call("POST", "/api/import", { body: { kind: "employees", columns: ["name", "email", "hired_at", "status"], rows: [["Importer, Iris " + suffix, `iris.${suffix.toLowerCase()}@example.test`, "1.2.2024", "on leave"], ["Ivy Importer", "", "", ""]], options: {} } });
+  check("employees: 'Last, First', dates, status words, duplicates by name", emp.status === 201 && emp.data.created.employees === 1 && emp.data.skipped === 1, JSON.stringify(emp.raw));
+  const iris = (await call("GET", `/api/employees?q=Iris`)).data.find((e) => e.last_name === "Importer");
+  check("…with the values in place", iris && iris.first_name === `Iris ${suffix}` && iris.hired_at === "2024-02-01" && iris.status === "on_leave");
+  const noMail = await call("POST", "/api/employees", { body: { first_name: "No", last_name: "Mail " + suffix } });
+  check("an employee may have no email now", noMail.status === 201 && noMail.data.email === null);
+  await call("DELETE", `/api/employees/${noMail.data.id}`);
+  const req = await call("POST", "/api/import", { body: { kind: "requirements", columns: ["project", "title", "code", "priority", "employee"], rows: [[`Import space ${suffix}`, "SSO login " + suffix, "", "must", "Ivy Importer"], [`Import space ${suffix}`, "Audit log " + suffix, "AUD-1", "w", ""], ["", "Orphan", "", "", ""]], options: {} } });
+  check("requirements: project by name, auto and custom codes, stakeholder, project required", req.status === 201 && req.data.created.requirements === 2 && req.data.skipped === 1, JSON.stringify(req.raw));
+  const project = (await call("GET", `/api/projects?q=Import%20space%20${suffix}`)).data[0];
+  const reqs = (await call("GET", `/api/requirements?project_id=${project.id}`)).data;
+  check("…REQ-001 must + AUD-1 wont", reqs.some((r) => r.code === "REQ-001" && r.priority === "must" && r.employee_id) && reqs.some((r) => r.code === "AUD-1" && r.priority === "wont"));
+  const prj = await call("POST", "/api/import", { body: { kind: "projects", columns: ["name", "status", "budget"], rows: [[`Import space ${suffix}`, "active", "1"], [`Import second ${suffix}`, "paused", "RM 12,500.50"]], options: {} } });
+  check("projects: duplicate skipped, money and status words read", prj.status === 201 && prj.data.created.projects === 1 && prj.data.skipped === 1);
+  const second = (await call("GET", `/api/projects?q=Import%20second%20${suffix}`)).data[0];
+  check("…with a generated code", second && second.code.startsWith("IMPORT-SECO") && second.status === "on_hold" && Number(second.budget) === 12500.5, JSON.stringify(second));
+  // access + undo
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  check("somebody else cannot undo my import", (await as(userJar, () => call("POST", `/api/import/${done.data.batch_id}/undo`))).status === 404);
+  const undo = await call("POST", `/api/import/${done.data.batch_id}/undo`);
+  check("POST /api/import/:id/undo moves everything the batch made to the bin", undo.status === 200 && undo.data.moved === 5, JSON.stringify(undo.raw));
+  check("undo twice -> 409", (await call("POST", `/api/import/${done.data.batch_id}/undo`)).status === 409);
+  check("the imported task is gone", (await call("GET", `/api/tasks/${made.id}`)).status === 404);
+  for (const b of [emp, req, prj]) await call("POST", `/api/import/${b.data.batch_id}/undo`);
+  const bin = (await call("GET", "/api/trash")).data.items;
+  check("the bin holds the run's records", bin.filter((i) => i.title.includes(suffix) || /Importer/.test(i.title)).length >= 6, String(bin.length));
+  await call("DELETE", "/api/trash");
+}
+
 console.log("email (password reset, invitations, notification emails)");
 {
   const net = await import("node:net");
