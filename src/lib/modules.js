@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2, Mail } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2, Mail, Timer } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -125,6 +125,15 @@ export const MODULES = [
     icon: ChartGantt,
     color: "#14b8a6",
     description: "Tasks as bars from start to due date, with dependencies. Drag a bar to move it, an edge to stretch it.",
+  },
+  {
+    key: "time",
+    label: "Time",
+    singular: "Time report",
+    href: "/time",
+    icon: Timer,
+    color: "#f97316",
+    description: "Hours logged per person, project, task or day for any period, against estimates, with every entry behind them.",
   },
   {
     key: "trash",

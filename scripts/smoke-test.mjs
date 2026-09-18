@@ -2190,6 +2190,34 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("time report");
+{
+  const t1 = (await call("POST", "/api/tasks", { body: { title: `Report A ${suffix}`, estimate_hours: 3, project_id: projectId } })).data;
+  const t2 = (await call("POST", "/api/tasks", { body: { title: `Report B ${suffix}` } })).data;
+  await call("POST", `/api/tasks/${t1.id}/time`, { body: { minutes: 90, spent_on: "2031-03-02", note: "r1" } });
+  await call("POST", `/api/tasks/${t1.id}/time`, { body: { minutes: 30, spent_on: "2031-03-03" } });
+  await call("POST", `/api/tasks/${t2.id}/time`, { body: { minutes: 60, spent_on: "2031-03-03" } });
+  await call("POST", `/api/tasks/${t2.id}/time`, { body: { minutes: 15, spent_on: "2031-04-01" } }); // outside the period
+  const started = await call("POST", `/api/tasks/${t2.id}/time`, { body: { start: true, spent_on: "2031-03-03" } }); // running: not counted
+  const rep = await call("GET", "/api/time/report?from=2031-03-01&to=2031-03-31&group=task");
+  check("GET /api/time/report totals the period, running timers and other months left out", rep.status === 200 && rep.data.total_minutes === 180 && rep.data.entry_count === 3 && rep.data.days.length === 2, JSON.stringify(rep.raw).slice(0, 300));
+  const gA = rep.data.groups.find((g) => g.id === t1.id);
+  const gB = rep.data.groups.find((g) => g.id === t2.id);
+  check("groups by task carry minutes, share and the estimate", gA && gA.minutes === 120 && Math.round(gA.share * 100) === 67 && gA.estimate_minutes === 180 && gB.minutes === 60 && gB.estimate_minutes === null && gA.project_name);
+  const byPerson = await call("GET", "/api/time/report?from=2031-03-01&to=2031-03-31&group=person");
+  check("by person: one row, everything mine", byPerson.data.groups.length === 1 && byPerson.data.groups[0].minutes === 180 && byPerson.data.groups[0].tasks === 2 && byPerson.data.people.some((p) => p.name));
+  const byDay = await call("GET", "/api/time/report?from=2031-03-01&to=2031-03-31&group=day");
+  check("by day, newest first", byDay.data.groups[0].key === "2031-03-03" && byDay.data.groups[0].minutes === 90);
+  const byProject = await call("GET", `/api/time/report?from=2031-03-01&to=2031-03-31&group=project&project_id=${projectId}`);
+  check("project filter + project estimate", byProject.data.total_minutes === 120 && byProject.data.groups.length === 1 && byProject.data.groups[0].estimate_minutes >= 180);
+  check("the default period is this month", (await call("GET", "/api/time/report")).data.from.endsWith("-01"));
+  check("bad dates -> 400", (await call("GET", "/api/time/report?from=nope&to=2031-03-31")).status === 400 && (await call("GET", "/api/time/report?from=2031-03-31&to=2031-03-01")).status === 400);
+  await call("POST", "/api/time/stop");
+  for (const t of [t1, t2]) await call("DELETE", `/api/tasks/${t.id}`);
+  await call("DELETE", "/api/trash");
+  check("cleanup: nothing left in that month", (await call("GET", "/api/time/report?from=2031-03-01&to=2031-04-30")).data.entry_count === 0);
+}
+
 console.log("handing a profile over");
 {
   const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
