@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { Timer, Users, ListChecks, CalendarDays, Download, X } from "lucide-react";
+import { Timer, Users, ListChecks, CalendarDays, Download, X, FileText } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import StatCard from "@/components/ui/StatCard";
 import Card, { CardHeader } from "@/components/ui/Card";
@@ -84,7 +84,7 @@ export default function TimeReport() {
 
   return (
     <>
-      <PageHeader title={tr("Time")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button variant="secondary" icon={Download} onClick={exportGroups} disabled={!data?.groups?.length} className="time-export">{tr("Export totals")}</Button>} />
+      <PageHeader title={tr("Time")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><a href={`/report/time?${qs}`} target="_blank" rel="noreferrer" className="time-report-link"><Button variant="outline" icon={FileText}>{tr("Report")}</Button></a><Button variant="secondary" icon={Download} onClick={exportGroups} disabled={!data?.groups?.length} className="time-export">{tr("Export totals")}</Button></>} />
       <div className="time-toolbar mb-4 flex flex-wrap items-center gap-2">
         <Select value={custom ? "custom" : preset} onChange={(e) => { if (e.target.value === "custom") setCustom([from, to]); else { setCustom(null); setPreset(e.target.value); } }} className="time-preset h-9 w-40">
           {presets.map(([k, l]) => <option key={k} value={k}>{tr(l)}</option>)}

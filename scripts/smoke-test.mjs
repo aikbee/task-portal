@@ -879,6 +879,10 @@ console.log("report pages");
   check("module report renders", list.status === 200);
   const anon = await fetch(`${BASE}/report/tasks/${taskId}`, { redirect: "manual" });
   check("report requires a session", anon.status === 307 || anon.status === 302);
+  const sheet = await fetch(`${BASE}/report/time?from=2031-03-01&to=2031-03-31&group=task`, { headers: { cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ") }, redirect: "manual" });
+  check("the printable time report renders", sheet.status === 200 && (await sheet.text()).includes("report-root"));
+  const sheetAnon = await fetch(`${BASE}/report/time`, { redirect: "manual" });
+  check("…and requires a session", sheetAnon.status === 307 || sheetAnon.status === 302);
   const bad = await fetch(`${BASE}/report/nope/1`, { headers: { cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ") }, redirect: "manual" });
   check("unknown module -> 404", bad.status === 404);
 }
