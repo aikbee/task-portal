@@ -72,14 +72,17 @@ export function linkTo(settings, path, request = null) {
 
 const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 /** A plain, client-proof message: a title, a few lines, one button, a footer. Returns { html, text }. */
-export function renderEmail({ title, lines = [], action = null, footer = "" }) {
-  const text = [title, "", ...lines, ...(action ? ["", `${action.label}: ${action.url}`] : []), ...(footer ? ["", "--", footer] : [])].join("\n");
+export function renderEmail({ title, lines = [], sections = [], action = null, footer = "" }) {
+  const sectionText = sections.flatMap((s) => ["", s.heading, ...s.items.map((i) => `- ${i.text}${i.url ? ` (${i.url})` : ""}`)]);
+  const text = [title, "", ...lines, ...sectionText, ...(action ? ["", `${action.label}: ${action.url}`] : []), ...(footer ? ["", "--", footer] : [])].join("\n");
+  const sectionHtml = sections.map((s) => `<h2 style="margin:18px 0 6px;font-size:14px;line-height:1.4;color:#0f172a">${esc(s.heading)}</h2><ul style="margin:0;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#334155">${s.items.map((i) => `<li style="margin:0 0 4px">${i.url ? `<a href="${esc(i.url)}" style="color:#4f46e5;text-decoration:none">${esc(i.text)}</a>` : esc(i.text)}</li>`).join("")}</ul>`).join("");
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f4f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
 <table role="presentation" width="100%" style="max-width:520px;background:#ffffff;border-radius:14px;border:1px solid #e5e7eb" cellspacing="0" cellpadding="0"><tr><td style="padding:28px 28px 24px">
 <p style="margin:0 0 18px;font-size:13px;font-weight:600;color:#6366f1;letter-spacing:.02em">Task Portal</p>
 <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3">${esc(title)}</h1>
 ${lines.map((l) => `<p style="margin:0 0 10px;font-size:14px;line-height:1.6;color:#334155">${esc(l)}</p>`).join("")}
+${sectionHtml}
 ${action ? `<p style="margin:22px 0 6px"><a href="${esc(action.url)}" style="display:inline-block;background:#6366f1;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 20px;border-radius:10px">${esc(action.label)}</a></p><p style="margin:10px 0 0;font-size:12px;line-height:1.5;color:#64748b;word-break:break-all">${esc(action.url)}</p>` : ""}
 </td></tr>${footer ? `<tr><td style="padding:14px 28px;border-top:1px solid #e5e7eb;font-size:12px;line-height:1.5;color:#64748b">${esc(footer)}</td></tr>` : ""}</table>
 </td></tr></table></body></html>`;

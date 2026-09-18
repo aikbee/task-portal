@@ -58,16 +58,31 @@ export default function NotificationSettings() {
   };
   const prefs = typeof user?.notification_prefs === "string" ? JSON.parse(user.notification_prefs) : user?.notification_prefs;
   const muted = new Set(prefs?.muted ?? []);
+  const emailMode = prefs?.email_mode ?? (prefs?.email === false ? "off" : "instant");
+  const digestHour = Number.isInteger(prefs?.digest_hour) ? prefs.digest_hour : 8;
 
-  const toggleEmail = async (on) => {
+  const saveEmail = async (patch) => {
     setBusy(true);
     try {
-      const saved = await api.put("/api/auth/profile", { notification_prefs: { email: on } });
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const saved = await api.put("/api/auth/profile", { notification_prefs: { ...patch, tz } });
       setUser((u) => ({ ...u, notification_prefs: saved.notification_prefs }));
     } catch (e) {
       toast.error("Could not save notification settings", e.message);
     } finally {
       setBusy(false);
+    }
+  };
+  const [sendingDigest, setSendingDigest] = useState(false);
+  const sendDigestNow = async () => {
+    setSendingDigest(true);
+    try {
+      const res = await api.post("/api/auth/digest", {});
+      toast.success(tr("Summary sent to {email}", { email: user?.email }), res.summary);
+    } catch (e) {
+      toast.error(tr("Could not send the summary"), e.message);
+    } finally {
+      setSendingDigest(false);
     }
   };
   const toggleCategory = async (key, on) => {
@@ -103,7 +118,29 @@ export default function NotificationSettings() {
       {mail.data?.mail?.notifications ? (
         <>
           <p className="pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Email")}</p>
-          <Toggle checked={prefs?.email !== false} onChange={toggleEmail} label={tr("Email me the important ones")} description={tr("Assignments, mentions, due dates, invitations and security, to {email}", { email: user?.email })} className={`notify-email ${busy ? "opacity-70" : ""}`} />
+          <div className={`notify-email space-y-2 ${busy ? "opacity-70" : ""}`}>
+            <div className="flex items-center gap-3">
+              <span className="flex-1 text-sm">
+                <span className="block font-medium">{tr("Email me")}</span>
+                <span className="block text-xs text-fg-muted">{emailMode === "digest" ? tr("One summary a day: new notifications, what is overdue or due today, today's events.") : emailMode === "instant" ? tr("Assignments, mentions, due dates, invitations and security, to {email}", { email: user?.email }) : tr("No emails.")}</span>
+              </span>
+              <select className="control notify-email-mode h-8 w-auto py-0 text-xs" value={emailMode} onChange={(e) => saveEmail({ email_mode: e.target.value })}>
+                <option value="instant">{tr("Right away")}</option>
+                <option value="digest">{tr("Once a day")}</option>
+                <option value="off">{tr("Off")}</option>
+              </select>
+            </div>
+            {emailMode === "digest" ? (
+              <div className="flex flex-wrap items-center gap-2 pl-1 text-xs text-fg-muted">
+                <span>{tr("Not before")}</span>
+                <select className="control notify-digest-hour h-7 w-auto py-0 text-xs" value={digestHour} onChange={(e) => saveEmail({ digest_hour: Number(e.target.value) })}>
+                  {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+                </select>
+                <span>{tr("({tz})", { tz: prefs?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone })}</span>
+                <Button size="xs" variant="outline" icon={Send} onClick={sendDigestNow} loading={sendingDigest} className="notify-digest-now">{tr("Send it now")}</Button>
+              </div>
+            ) : null}
+          </div>
         </>
       ) : null}
       <p className="pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Announce (this browser)")}</p>

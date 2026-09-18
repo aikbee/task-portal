@@ -20,7 +20,7 @@ const SECURITY = [
   { value: "tls", label: "SSL / TLS (usually port 465)" },
   { value: "none", label: "None (only inside a trusted network)" },
 ];
-const KINDS = { test: "Test", reset: "Password reset", security: "Security", invite: "Invitation", join: "Invitation to join", notification: "Notification", other: "Other" };
+const KINDS = { test: "Test", reset: "Password reset", security: "Security", invite: "Invitation", join: "Invitation to join", notification: "Notification", digest: "Daily summary", other: "Other" };
 
 /** Admin: the outgoing mail account, what the portal may send, a test button and the last messages. */
 export default function MailAdmin() {

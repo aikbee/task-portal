@@ -2588,6 +2588,25 @@ console.log("email (password reset, invitations, notification emails)");
     const log = await call("GET", "/api/mail");
     check("the log lists what went out, without bodies", log.data.log.some((m) => m.kind === "join" && m.to_email === newbie && m.status === "sent") && log.data.log.some((m) => m.kind === "reset") && !("body" in log.data.log[0]));
 
+    // daily summary instead of one email per event
+    const hourNow = new Date().getUTCHours();
+    const dg = await as(userJar2, () => call("PUT", "/api/auth/profile", { body: { notification_prefs: { email_mode: "digest", digest_hour: hourNow, tz: "UTC" } } }));
+    check("PUT /api/auth/profile: once a day, with hour and zone", dg.status === 200 && dg.data.notification_prefs.email_mode === "digest" && dg.data.notification_prefs.digest_hour === hourNow && dg.data.notification_prefs.tz === "UTC");
+    await call("DELETE", `/api/profiles/${spaceId}/members/${userId}`);
+    from = inbox.length;
+    await call("POST", `/api/profiles/${spaceId}/members`, { body: { email: smokeEmail, role: "viewer" } });
+    check("in digest mode nothing is mailed right away", (await mailTo(smokeEmail, from, 1500)) === null);
+    const peekDigest = await as(userJar2, () => call("GET", "/api/auth/digest"));
+    check("GET /api/auth/digest previews what waits", peekDigest.status === 200 && peekDigest.data.notifications >= 1 && peekDigest.data.empty === false);
+    from = inbox.length;
+    const cronDigest = await call("GET", `/api/cron/reminders?key=${process.env.CRON_SECRET || "local-dev-secret"}`, { noAuth: true });
+    const digestMail = await mailTo(smokeEmail, from);
+    check("the scheduler mails one summary at the chosen hour", cronDigest.data.digests >= 1 && digestMail && /Sharing \(/.test(digestMail.body) && /\/n\/\d+/.test(digestMail.body), JSON.stringify(cronDigest.data));
+    check("…and not twice a day", (await call("GET", `/api/cron/reminders?key=${process.env.CRON_SECRET || "local-dev-secret"}`, { noAuth: true })).data.digests === 0);
+    from = inbox.length;
+    const nowMail = await as(userJar2, () => call("POST", "/api/auth/digest"));
+    check("POST /api/auth/digest sends it now", nowMail.status === 200 && nowMail.data.sent && Boolean(await mailTo(smokeEmail, from)));
+    await as(userJar2, () => call("PUT", "/api/auth/profile", { body: { notification_prefs: { email_mode: "instant" } } }));
     // tidy up (the password goes back to what the rest of the suite expects)
     await call("PUT", `/api/users/${userId}`, { body: { password: "smoke456" } });
     check("DELETE the invited account", (await call("DELETE", `/api/users/${jme.data.id}`)).status === 200);

@@ -238,12 +238,13 @@ All endpoints return `{ data }` or `{ error }`.
 | POST | `/api/auth/login` | `{ email, password, remember }` (public) |
 | POST | `/api/auth/logout` | ends the session |
 | GET | `/api/auth/me` | current user |
-| PUT | `/api/auth/profile` | own name / avatar colour / `notification_prefs: { muted?: [categories], email?: boolean }` |
+| PUT | `/api/auth/profile` | own name / avatar colour / `notification_prefs: { muted?: [categories], email_mode?: instant\|digest\|off, digest_hour?, tz? }` |
 | PUT/POST/DELETE | `/api/auth/avatar` | `{ avatar: "preset:<key>" \| "initials" }` / multipart `file` photo / back to the default badge |
 | GET | `/api/avatars/user/:id` · `/api/avatars/group/:id` | an uploaded picture (group pictures for members only) |
 | PUT | `/api/auth/password` | `{ current_password, new_password }` |
 | POST | `/api/auth/forgot` | public: `{ email }` mails a one-hour, single-use link to `/reset?token=…`. The answer is the same whether the address has an account or not; 3 links per account and 10 per IP an hour; 503 while reset by email is not set up |
 | GET / POST | `/api/auth/reset` | public: `?token=` → `{ valid, email_hint, min_length }` / `{ token, password }` sets the password, signs every device out and mails a confirmation; 410 for a used or expired link |
+| GET / POST | `/api/auth/digest` | my daily summary: preview counts / send it now (even when empty) |
 | GET / POST | `/api/auth/join` | public: what the invitation behind `?token=` is about / `{ token, name, password }` creates the account (role user), joins the profile with the invited role and signs in; 410 for a dead link, 409 when the address got an account meanwhile |
 | PUT | `/api/auth/workspace` | admin only: `{ user_id }` to work inside that user's workspace, `{ user_id: null }` to return |
 | GET/POST | `/api/profiles` | your profiles with counts and `member_count` (`active_id` = current), plus `shared[]` (profiles others share with you) and `invites[]` (open invitations) / create |
@@ -380,9 +381,17 @@ address from the page, else `APP_URL`, else the address the portal was last open
   authentication still applies at the next sign-in.
 - **Notification emails.** The entries that wait for a person also go out by email: task assigned, mention,
   unblocked, due / overdue, event reminder, profile invitation, role change, access removed, a sign-in from a
-  browser the account has not used before, sign-in method changes, a failed backup, chat mentions. Each person
-  can turn theirs off under Preferences → Notifications → **Email**; muted categories are never mailed. The
-  button in a message goes through `/n/:id`, which switches to the right workspace first.
+  browser the account has not used before, sign-in method changes, a failed backup, chat mentions. Under
+  Preferences → Notifications → **Email** each person picks **Right away** (one email per event), **Once a day**
+  or **Off**; muted categories are never mailed. The button in a message goes through `/n/:id`, which switches
+  to the right workspace first.
+- **Daily summary.** With **Once a day**, the scheduler (`/api/cron/reminders`) sends one email on its first run
+  at or after the chosen hour in the person's time zone (taken from the browser when the choice is saved): the
+  unread notifications since the last summary grouped by category, the tasks assigned to the person that are
+  overdue or due today, and today's events in their own profiles. Nothing to say means no email. **Send it now**
+  in the same panel mails the current summary at once. `GET /api/auth/digest` previews the counts,
+  `POST /api/auth/digest` sends it; `PUT /api/auth/profile` takes `notification_prefs: { email_mode:
+  "instant" | "digest" | "off", digest_hour: 0–23, tz }`.
 - **Invitations.** Sharing a profile with an address that has no account mails a 7-day link to `/join`, where the
   person picks a name and a password and lands in the shared workspace with the invited role (account role
   *user*). Pending invitations are listed in the share dialog and can be withdrawn; inviting the same address

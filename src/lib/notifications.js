@@ -9,7 +9,9 @@ const SELF_VISIBLE = new Set(["task_done", "requirement_done", "project_complete
 async function recipient(userId) {
   const row = await queryOne("SELECT email, status, notification_prefs FROM users WHERE id = ?", [userId]);
   const prefs = typeof row?.notification_prefs === "string" ? JSON.parse(row.notification_prefs) : row?.notification_prefs;
-  return { muted: new Set(prefs?.muted ?? []), email: row?.status === "active" && prefs?.email !== false ? row.email : null };
+  // email right away only in "instant" mode (the old boolean `email` still counts when no mode is stored)
+  const instant = prefs?.email_mode ? prefs.email_mode === "instant" : prefs?.email !== false;
+  return { muted: new Set(prefs?.muted ?? []), email: row?.status === "active" && instant ? row.email : null };
 }
 
 /**
