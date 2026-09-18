@@ -59,6 +59,7 @@ export default function DrawBoardsList() {
       <PageHeader title={tr("Draw Board")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="drawboards" /><CanEdit><Button icon={Plus} onClick={openNew}>{tr("New board")}</Button></CanEdit></>} />
       <DataTable
         id="drawboards"
+        views={{ module: "drawboards", filters: { project_id: projectId }, setFilters: (v) => setProjectId(v.project_id ?? "") }}
         columns={columns}
         rows={rows}
         loading={loading}

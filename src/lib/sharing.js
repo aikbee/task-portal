@@ -128,4 +128,5 @@ export const forgetMember = async (userId) => {
   await execute("UPDATE employees SET linked_user_id = NULL WHERE linked_user_id = ?", [userId]);
   // one-time mail links: their own, and the invitations they sent that nobody answered yet
   await execute("DELETE FROM mail_tokens WHERE user_id = ? OR (invited_by = ? AND used_at IS NULL)", [userId, userId]).catch(() => {});
+  await execute("DELETE FROM saved_views WHERE user_id = ?", [userId]).catch(() => {});
 };

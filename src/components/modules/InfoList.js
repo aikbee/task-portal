@@ -88,6 +88,7 @@ export default function InfoList() {
       <PageHeader title={tr("Info")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="info" /><Button variant="outline" icon={Search} onClick={() => router.push("/info/search")}>{tr("Search")}</Button><Button icon={Plus} onClick={openNew}>{tr("New info")}</Button></>} />
       <DataTable
         id="info"
+        views={{ module: "info", filters: { category, tag, project_id: projectId }, setFilters: (v) => { setCategory(v.category ?? ""); setTag(v.tag ?? ""); setProjectId(v.project_id ?? ""); } }}
         columns={columns}
         rows={rows}
         loading={loading}

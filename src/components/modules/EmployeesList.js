@@ -75,6 +75,7 @@ export default function EmployeesList() {
       <PageHeader title={tr("Employees")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="employees" /><CanEdit><ImportButton kind="employees" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New employee")}</Button></CanEdit></>} />
       <DataTable
         id="employees"
+        views={{ module: "employees", filters: { status, department }, setFilters: (v) => { setStatus(v.status ?? ""); setDepartment(v.department ?? ""); } }}
         columns={columns}
         rows={rows}
         loading={loading}

@@ -2190,6 +2190,49 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("saved views");
+{
+  // the member's jar is used as is (no copy), so the profile cookie from `activate` stays with them
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  const state = { filters: { status: "in_progress", priority: "", project_id: String(projectId) }, query: "smoke", sort: { key: "due_date", dir: "desc" }, date: { field: "due_date", from: "2026-01-01", to: "" } };
+  const made = await call("POST", "/api/views", { body: { module: "tasks", name: `Smoke view ${suffix}`, state } });
+  check("POST /api/views saves a personal view", made.status === 201 && made.data.id > 0 && made.data.views.some((v) => v.id === made.data.id && v.mine && !v.shared));
+  const mine = made.data.views.find((v) => v.id === made.data.id);
+  check("empty filters are dropped, the rest kept", !("priority" in mine.state.filters) && mine.state.filters.status === "in_progress" && mine.state.query === "smoke" && mine.state.sort.dir === "desc" && mine.state.date.from === "2026-01-01", JSON.stringify(mine.state));
+  check("a name is required", (await call("POST", "/api/views", { body: { module: "tasks", name: " ", state } })).status === 400);
+  check("unknown module -> 400", (await call("POST", "/api/views", { body: { module: "nope", name: "x", state } })).status === 400 && (await call("GET", "/api/views?module=nope")).status === 400);
+  const def = await call("PUT", `/api/views/${made.data.id}`, { body: { is_default: true } });
+  check("PUT is_default marks it as my default", def.status === 200 && def.data.view.is_default === true);
+  const other = await call("POST", "/api/views", { body: { module: "tasks", name: `Smoke other ${suffix}`, state: {}, is_default: true } });
+  check("only one default per person and page", other.data.views.filter((v) => v.is_default).length === 1 && other.data.views.find((v) => v.id === made.data.id).is_default === false);
+  const shared = await call("PUT", `/api/views/${made.data.id}`, { body: { shared: true, name: `Smoke shared ${suffix}` } });
+  check("PUT shares and renames", shared.data.view.shared === true && shared.data.view.name === `Smoke shared ${suffix}`);
+  // a member sees shared views, not private ones; cannot change them
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  const pid = (await call("GET", "/api/profiles")).data.items.find((p) => p.is_default).id;
+  await call("POST", `/api/profiles/${pid}/members`, { body: { email: smokeEmail, role: "viewer" } });
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  await as(userJar, () => call("PUT", `/api/profiles/${pid}/membership`, { body: { accept: true } }));
+  await as(userJar, () => call("POST", `/api/profiles/${pid}/activate`));
+  const seen = await as(userJar, () => call("GET", "/api/views?module=tasks"));
+  check("a member sees the shared view and not the private one", seen.data.some((v) => v.id === made.data.id && !v.mine) && !seen.data.some((v) => v.id === other.data.id));
+  check("a member cannot change or delete somebody else's view", (await as(userJar, () => call("PUT", `/api/views/${made.data.id}`, { body: { name: "hijack" } }))).status === 403 && (await as(userJar, () => call("DELETE", `/api/views/${made.data.id}`))).status === 403);
+  check("a viewer cannot share a view", (await as(userJar, () => call("POST", "/api/views", { body: { module: "tasks", name: "v", state: {}, shared: true } }))).status === 403);
+  const own = await as(userJar, () => call("POST", "/api/views", { body: { module: "tasks", name: `Member view ${suffix}`, state: { filters: { status: "done" } } } }));
+  check("…but keeps private ones", own.status === 201);
+  check("the admin does not see the member's private view", !(await call("GET", "/api/views?module=tasks")).data.some((v) => v.id === own.data.id));
+  check("a default must be my own view", (await as(userJar, () => call("PUT", `/api/views/${made.data.id}`, { body: { is_default: true } }))).status === 400);
+  await as(userJar, () => call("DELETE", `/api/views/${own.data.id}`));
+  await as(userJar, () => call("DELETE", `/api/profiles/${pid}/membership`));
+  const gone = await call("DELETE", `/api/views/${made.data.id}`);
+  check("DELETE /api/views/:id", gone.status === 200 && !gone.data.views.some((v) => v.id === made.data.id));
+  await call("DELETE", `/api/views/${other.data.id}`);
+  check("nothing left of this run's views", !(await call("GET", "/api/views?module=tasks")).data.some((v) => v.name.includes(suffix)));
+}
+
 console.log("spreadsheet import");
 {
   const as = async (j, fn) => { const keep = jar; jar = { ...j }; try { return await fn(); } finally { jar = keep; } };

@@ -81,6 +81,7 @@ export default function TasksList() {
       <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><CanEdit><ImportButton kind="tasks" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit></>} />
       <DataTable
         id="tasks"
+        views={{ module: "tasks", filters: f, setFilters: setF }}
         columns={columns}
         rows={rows}
         loading={loading}

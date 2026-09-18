@@ -83,6 +83,7 @@ export default function RequirementsList() {
       <PageHeader title={tr("Requirements")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="requirements" /><CanEdit><ImportButton kind="requirements" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New requirement")}</Button></CanEdit></>} />
       <DataTable
         id="requirements"
+        views={{ module: "requirements", filters: f, setFilters: setF }}
         columns={columns}
         rows={rows}
         loading={loading}

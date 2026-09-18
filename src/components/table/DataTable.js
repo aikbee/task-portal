@@ -23,6 +23,7 @@ import Button from "@/components/ui/Button";
 import { Popover } from "@/components/ui/Popover";
 import { Checkbox, Select, Input, Field } from "@/components/ui/Controls";
 import { formatDate } from "@/lib/utils";
+import SavedViews from "./SavedViews";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 import { isoDate } from "@/lib/dates";
@@ -75,6 +76,7 @@ export default function DataTable({
   emptyAction,
   getRowId = (r) => r.id,
   filters, // extra filter controls rendered next to search
+  views, // { module, filters, setFilters } turns on saved views (filters + search + dates + sort under a name)
   dateFields, // [{ key, label }] for the date range filter
   className,
   dense,
@@ -145,6 +147,16 @@ export default function DataTable({
   const setDate = (patch) => { setDateFilter((f) => ({ ...f, ...patch })); setPage(1); };
   const clearDate = () => setDate({ from: "", to: "" });
   const dateFieldLabel = dateFields?.find((f) => f.key === dateFilter.field)?.label ?? "Date";
+  // ---- saved views: what is on screen now, and how a saved one is put in place ----
+  const viewState = views ? { filters: views.filters ?? {}, query, sort, date: dateFilter } : null;
+  const applyView = (s) => {
+    setQuery(s.query ?? "");
+    setSortOverride(s.sort?.key ? { key: s.sort.key, dir: s.sort.dir } : undefined);
+    setDateFilter({ field: s.date?.field ?? dateFields?.[0]?.key ?? null, from: s.date?.from ?? "", to: s.date?.to ?? "" });
+    views?.setFilters?.({ ...Object.fromEntries(Object.keys(views.filters ?? {}).map((k) => [k, ""])), ...(s.filters ?? {}) });
+    setPage(1);
+  };
+  const resetView = () => applyView({ filters: {}, query: "", sort: null, date: null });
   const short = (d) => formatDate(d, { month: "short", day: "numeric" });
   const dateSummary = dateActive ? `${dateFieldLabel}: ${dateFilter.from ? short(dateFilter.from) : "…"} – ${dateFilter.to ? short(dateFilter.to) : "…"}` : tr("Dates");
 
@@ -283,6 +295,7 @@ export default function DataTable({
           ) : null}
         </div>
         <div className="dt-tools flex items-center gap-2 max-md:w-full max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-0.5 md:contents">
+        {views ? <SavedViews module={views.module} state={viewState} apply={applyView} reset={resetView} /> : null}
         {filters ? <div className="dt-filters contents">{filters}</div> : null}
         {dateFields?.length ? (
           <Popover

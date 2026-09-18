@@ -457,6 +457,24 @@ CREATE TABLE IF NOT EXISTS mail_tokens (
 -- The recycle bin. A deleted record is stored here as a JSON snapshot (the row, everything that hangs off it and
 -- which other rows pointed at it) and then really deleted, so no query elsewhere has to know about deleted rows.
 -- Restoring puts everything back under the same ids. Attachment files stay on disk until the entry is purged.
+-- Saved list views: a name for a set of filters, search, date range and sort on a list page. Personal, or shared
+-- with everybody in the profile. No foreign keys (see import_batches): cleaned in code when the profile or the
+-- account goes.
+CREATE TABLE IF NOT EXISTS saved_views (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  profile_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  module VARCHAR(32) NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  state JSON NOT NULL, -- { filters: {}, query: "", sort: { key, dir } | null, date: { field, from, to } | null }
+  shared TINYINT(1) NOT NULL DEFAULT 0,
+  is_default TINYINT(1) NOT NULL DEFAULT 0, -- the view this user opens the page with (one per user and module)
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_views_profile (profile_id, module),
+  KEY idx_views_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- One row per spreadsheet import, so it can be undone as a whole (the records go to the recycle bin). No foreign keys:
 -- pruned after 7 days by the scheduler.
 CREATE TABLE IF NOT EXISTS import_batches (

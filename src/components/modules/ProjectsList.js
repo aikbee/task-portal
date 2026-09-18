@@ -81,6 +81,7 @@ export default function ProjectsList() {
       />
       <DataTable
         id="projects"
+        views={{ module: "projects", filters: { status }, setFilters: (v) => setStatus(v.status ?? "") }}
         columns={columns}
         rows={rows}
         loading={loading}
