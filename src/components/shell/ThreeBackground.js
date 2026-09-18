@@ -2726,12 +2726,14 @@ function luckycat(THREE, scene, camera, pal, preview) {
   mesh(sphere, pink, 0, -0.03, 0.2, 0.13, 0.11, 0.05, paw); // big pad
   for (let i = 0; i < 3; i++) mesh(sphere, pink, (i - 1) * 0.13, 0.16 - Math.abs(i - 1) * 0.03, 0.2, 0.055, 0.055, 0.04, paw);
   // the other paw rests on a plaque
+  const shoulder = new THREE.Vector3(-0.8, 1.42, 0.38), restPaw = new THREE.Vector3(-0.5, 1.02, 1.1); // on top of the plaque
   const restArm = new THREE.Group();
-  restArm.position.set(-0.7, 1.5, 0.3);
-  restArm.rotation.set(0.95, 0, -0.2);
+  restArm.position.copy(shoulder);
+  restArm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), restPaw.clone().sub(shoulder).normalize()); // capsule axis along the arm
   cat.add(restArm);
-  mesh(capsule, fur, 0, -0.3, 0, 1, 1, 1, restArm);
-  mesh(sphere, fur, 0, -0.66, 0, 0.26, 0.22, 0.26, restArm); // the paw resting on the plaque
+  const restLen = restPaw.distanceTo(shoulder);
+  mesh(keep(new THREE.CapsuleGeometry(0.23, restLen - 0.2, 6, 14)), fur, 0, restLen / 2 - 0.05, 0, 1, 1, 1, restArm);
+  mesh(sphere, fur, restPaw.x, restPaw.y, restPaw.z, 0.27, 0.22, 0.27, cat); // the paw on the plaque
   const plaqueTex = keep(canvasTexture(THREE, 256, 256, (g, w, h) => {
     g.fillStyle = "#fffaf2"; g.fillRect(0, 0, w, h);
     g.lineWidth = 14; g.strokeStyle = "#c9a227"; g.strokeRect(14, 14, w - 28, h - 28);
@@ -2811,7 +2813,7 @@ function luckycat(THREE, scene, camera, pal, preview) {
     g.fillStyle = "#7a5a06"; g.font = "bold 48px 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', serif"; g.textAlign = "center"; g.textBaseline = "middle";
     [["福", c, 60], ["財", c, w - 60], ["招", 60, c], ["進", w - 60, c]].forEach(([t, x, y]) => g.fillText(t, x, y));
   }));
-  const coinMat = keep(new THREE.MeshPhongMaterial({ map: coinTex, specular: 0xfff0c2, shininess: 70 }));
+  const coinMat = keep(new THREE.MeshPhongMaterial({ map: coinTex, specular: 0x7a6238, shininess: 40 })); // soft highlight: a hard one blows a face out to a white disc
   const coinGeo = keep(new THREE.CylinderGeometry(0.24, 0.24, 0.05, 28));
   const N_PILE_INGOTS = 14, N_PILE_COINS = 34;
   const pileIngots = new THREE.InstancedMesh(ingotGeo, gold, N_PILE_INGOTS);
@@ -2838,6 +2840,44 @@ function luckycat(THREE, scene, camera, pal, preview) {
   }));
   const noteMat = keep(new THREE.MeshStandardMaterial({ map: noteTex, roughness: 0.8, side: THREE.DoubleSide }));
   const noteGeo = keep(new THREE.PlaneGeometry(0.66, 0.33));
+  // crypto: BTC, ETH, USDT and USDC faces drawn by hand (no font has every symbol)
+  const cryptoFace = (bg, draw) => keep(canvasTexture(THREE, 256, 256, (g, w) => {
+    const c = w / 2;
+    g.fillStyle = bg; g.beginPath(); g.arc(c, c, c, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "rgba(0,0,0,0.12)"; g.beginPath(); g.arc(c, c, c, 0, Math.PI * 2); g.arc(c, c, c - 14, 0, Math.PI * 2, true); g.fill(); // rim
+    g.fillStyle = g.strokeStyle = "#ffffff"; g.textAlign = "center"; g.textBaseline = "middle"; g.lineCap = "round";
+    draw(g, c);
+  }));
+  const CRYPTO = [
+    { color: "#f7931a", tex: cryptoFace("#f7931a", (g, c) => { // the tilted B with its two bars
+      g.save(); g.translate(c, c); g.rotate(-0.24); g.font = "bold 168px Arial, Helvetica, sans-serif"; g.fillText("B", 0, 6);
+      g.lineWidth = 14; for (const x of [-14, 14]) { g.beginPath(); g.moveTo(x, -84); g.lineTo(x, -66); g.moveTo(x, 66); g.lineTo(x, 84); g.stroke(); } g.restore();
+    }) },
+    { color: "#627eea", tex: cryptoFace("#627eea", (g, c) => { // the diamond
+      const tri = (pts, a) => { g.fillStyle = `rgba(255,255,255,${a})`; g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(c + x, c + y) : g.moveTo(c + x, c + y))); g.closePath(); g.fill(); };
+      tri([[0, -96], [-66, 12], [0, 40]], 0.65); tri([[0, -96], [66, 12], [0, 40]], 1);
+      tri([[0, 54], [-66, 26], [0, 96]], 0.65); tri([[0, 54], [66, 26], [0, 96]], 1);
+    }) },
+    { color: "#26a17b", tex: cryptoFace("#26a17b", (g, c) => { // the T over a flat ring
+      g.fillRect(c - 68, c - 88, 136, 30); g.fillRect(c - 15, c - 88, 30, 150);
+      g.lineWidth = 16; g.beginPath(); g.ellipse(c, c - 14, 84, 30, 0, 0, Math.PI * 2); g.stroke();
+      g.fillStyle = "#26a17b"; g.fillRect(c - 15, c - 40, 30, 52); g.fillStyle = "#ffffff"; g.fillRect(c - 15, c - 40, 30, 22);
+    }) },
+    { color: "#2775ca", tex: cryptoFace("#2775ca", (g, c) => { // the $ inside a ring with two gaps
+      g.lineWidth = 18; g.beginPath(); g.arc(c, c, 84, Math.PI * 0.62, Math.PI * 1.38); g.stroke();
+      g.beginPath(); g.arc(c, c, 84, Math.PI * 1.62, Math.PI * 2.38); g.stroke();
+      g.font = "bold 132px Arial, Helvetica, sans-serif"; g.fillText("$", c, c + 4);
+    }) },
+  ];
+  const cryptoGeo = keep(new THREE.CylinderGeometry(0.34, 0.34, 0.07, 32));
+  const cryptoMeshes = CRYPTO.map(({ color, tex }) => {
+    const side = keep(new THREE.MeshPhongMaterial({ color, specular: 0x666666, shininess: 40 }));
+    const cap = keep(new THREE.MeshPhongMaterial({ map: tex, specular: 0x555555, shininess: 40 }));
+    const m = new THREE.InstancedMesh(cryptoGeo, [side, cap, cap], 2);
+    m.frustumCulled = false;
+    scene.add(m);
+    return m;
+  });
   const N_COINS = preview ? 18 : 56, N_NOTES = preview ? 8 : 26, N_INGOTS = preview ? 4 : 10;
   const rainCoins = new THREE.InstancedMesh(coinGeo, coinMat, N_COINS);
   const rainNotes = new THREE.InstancedMesh(noteGeo, noteMat, N_NOTES);
@@ -2871,6 +2911,23 @@ function luckycat(THREE, scene, camera, pal, preview) {
     rainCoins.instanceMatrix.needsUpdate = rainNotes.instanceMatrix.needsUpdate = rainIngots.instanceMatrix.needsUpdate = true;
   }
   placeDrops(0);
+  // a crypto coin now and then: one falls slowly, turning so the logo can be read, then the next one comes
+  const cryptos = [];
+  cryptoMeshes.forEach((m, type) => { for (let i = 0; i < 2; i++) cryptos.push({ m, i, type, on: false, x: 0, y: 0, z: 0, phase: 0, speed: 1 }); });
+  let nextCrypto = preview ? 1 : 2;
+  function placeCryptos(t) {
+    for (const d of cryptos) {
+      if (!d.on) { S.setScalar(0); M4.compose(V.set(0, -5, 0), Q.identity(), S); d.m.setMatrixAt(d.i, M4); continue; }
+      const k = Math.min(1, (d.y - FLOOR) / 0.4);
+      V.set(d.x + Math.sin(t * 0.7 + d.phase) * 0.15, d.y, d.z);
+      E.set(Math.PI / 2 + 0.12 + Math.sin(t * 0.9 + d.phase) * 0.18, Math.sin(t * 1.1 + d.phase) * 0.75, Math.sin(t * 0.6 + d.phase) * 0.15, "YXZ"); // faces the camera, turning gently
+      S.setScalar(k);
+      M4.compose(V, Q.setFromEuler(E), S);
+      d.m.setMatrixAt(d.i, M4);
+    }
+    for (const m of cryptoMeshes) m.instanceMatrix.needsUpdate = true;
+  }
+  placeCryptos(0);
 
   /* --- sparkles --- */
   const sparkTex = keep(canvasTexture(THREE, 64, 64, (g, w) => {
@@ -2954,6 +3011,15 @@ function luckycat(THREE, scene, camera, pal, preview) {
         if (d.y < FLOOR - 0.05) spawn(d, false);
       }
       placeDrops(t);
+      nextCrypto -= dt;
+      if (nextCrypto <= 0) {
+        nextCrypto = preview ? rand(5, 9) : rand(3, 6);
+        const type = (Math.random() * CRYPTO.length) | 0;
+        const free = cryptos.find((d) => d.type === type && !d.on);
+        if (free) Object.assign(free, { on: true, x: rand(-spreadX * 0.8, spreadX * 0.8), y: TOP + rand(0, 1), z: rand(-2.2, 0.8), phase: rand(0, 6.28), speed: rand(0.7, 1) });
+      }
+      for (const d of cryptos) if (d.on && (d.y -= dt * d.speed) < FLOOR - 0.05) d.on = false;
+      placeCryptos(t);
       // portrait phones step back so the whole cat stays in frame
       const back = Math.max(0, 1 / camera.aspect - 1) * 3.4;
       camera.position.set(Math.sin(t * 0.25) * 0.25, CAM.y + Math.sin(t * 0.4) * 0.08, CAM.z + back);
