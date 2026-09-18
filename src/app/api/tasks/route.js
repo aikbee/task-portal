@@ -1,3 +1,4 @@
+import { emit } from "@/lib/webhooks";
 import { query, execute } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf, HttpError } from "@/lib/api-utils";
 import { normaliseTags } from "@/lib/tags";
@@ -90,6 +91,7 @@ export const POST = handler(async (request, _params, user) => {
   if (people?.length) await setAssignees(res.insertId, owner, people);
   const [row] = await attachAssignees(await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]));
   await logTask(user, row.id, { action: "created" });
+  emit(user, "task.created", row);
   notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_names].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { taskIds: [row.id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
   return ok(row, { status: 201 });
 });

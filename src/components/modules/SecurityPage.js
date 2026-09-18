@@ -13,6 +13,7 @@ import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import ApiTokens from "./ApiTokens";
 
 const DEVICE_ICON = { phone: Smartphone, tablet: Tablet, desktop: Monitor };
 const METHOD = {
@@ -102,6 +103,8 @@ export default function SecurityPage() {
             {tr("Passkeys, Google and two-factor authentication are managed in")} <Link href="#" onClick={(e) => { e.preventDefault(); document.querySelector('[aria-label="Account menu"]')?.click(); }} className="text-accent hover:underline">{tr("Profile & password")}</Link>.
           </p>
         </section>
+
+        <ApiTokens />
 
         <section className="ui-card card p-5">
           <h2 className="text-base font-semibold">{tr("Login history")}</h2>

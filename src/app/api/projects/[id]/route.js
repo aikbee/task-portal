@@ -1,3 +1,4 @@
+import { emit } from "@/lib/webhooks";
 import { query, queryOne, execute, withTransaction } from "@/lib/db";
 import { moveToTrash } from "@/lib/trash";
 import { attachAssignees } from "@/lib/task-assignees";
@@ -70,12 +71,14 @@ export const PUT = handler(async (request, params, user) => {
       entityId: id,
     }, { managers: true });
   }
+  emit(user, "project.updated", after);
   return ok(after);
 });
 
 /** To the recycle bin, with its team list and requirements; tasks, info, boards and events only lose the link and get it back on restore. */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  const { trash_id } = await moveToTrash(user, "project", id);
+  const { trash_id, title } = await moveToTrash(user, "project", id);
+  emit(user, "project.deleted", { id, title, trash_id });
   return ok({ id, trash_id });
 });

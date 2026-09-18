@@ -27,6 +27,7 @@ export function handler(fn, { auth = true, role } = {}) {
       let user = null;
       if (auth) {
         user = await requireUser(request);
+        if (user.token) assertTokenMay(user, request.method, new URL(request.url).pathname);
         if (role) requireRole(user, role);
         // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
         if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);
@@ -43,6 +44,14 @@ export function handler(fn, { auth = true, role } = {}) {
       return fail(err?.message || "Internal server error", 500);
     }
   };
+}
+
+// What an API token may not do, whatever the account behind it: account and administration routes, and
+// writes on a read token. Everything else is the same API a browser session uses.
+const TOKEN_DENIED = /^\/api\/(auth|tokens|users|mail|backups|settings|chat|push|profiles\/\d+\/(members|membership|transfer|webhooks|invites))(\/|$)/;
+function assertTokenMay(user, method, pathname) {
+  if (TOKEN_DENIED.test(pathname)) throw new HttpError("API tokens cannot use this route.", 403);
+  if (user.token.scope === "read" && !["GET", "HEAD", "OPTIONS"].includes(method)) throw new HttpError("This token can only read.", 403);
 }
 
 export function requireId(value) {

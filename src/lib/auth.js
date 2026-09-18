@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { signSessionId, verifySessionToken, SESSION_COOKIE, sessionSecret } from "./session-token";
+import { bearerOf, resolveToken } from "./api-tokens";
 import { sharedProfilesOf } from "./sharing";
 
 const DAY = 86_400_000;
@@ -89,6 +90,8 @@ export async function setWorkspaceCookie(userId) {
  *   shared           null, or { owner, role } while the active profile is somebody else's
  */
 export async function getSessionUser(request) {
+  const bearer = bearerOf(request);
+  if (bearer) return tokenUser(bearer);
   const id = await sessionIdFrom(request);
   if (!id) return null;
   const row = await queryOne(
@@ -134,6 +137,34 @@ export async function getSessionUser(request) {
   }
   profile ??= profiles.find((p) => p.is_default) ?? profiles[0];
   return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: Boolean(row.secrets_unlocked), owner_id, home_id, workspace, profile_id: profile.id, profile, profiles, shared_profiles, access, shared };
+}
+
+/**
+ * A request with "Authorization: Bearer tp_…": the same user shape as a session, inside the token's profile,
+ * with `token: { id, scope }` so the API guard can keep read tokens to reading. Secrets stay locked.
+ */
+async function tokenUser(bearer) {
+  const t = await resolveToken(bearer);
+  if (!t) return null;
+  const row = await queryOne(`SELECT ${PUBLIC_USER_FIELDS}, NULL AS session_id, NULL AS expires_at, 0 AS secrets_unlocked FROM users u WHERE u.id = ? AND u.status = 'active'`, [t.user_id]);
+  if (!row) return null;
+  const home_id = row.id;
+  const profiles = await profilesOf(home_id);
+  const shared_profiles = await sharedProfilesOf(row.id);
+  let owner_id = row.id;
+  let access = "owner";
+  let shared = null;
+  let profile = profiles.find((p) => p.id === t.profile_id);
+  if (!profile && t.profile_id) {
+    const lent = shared_profiles.find((p) => p.id === t.profile_id);
+    if (!lent) return null; // the token's profile is gone or no longer shared: the token is useless
+    profile = lent;
+    owner_id = lent.user_id;
+    access = lent.role;
+    shared = { owner: lent.owner, role: lent.role };
+  }
+  profile ??= profiles.find((p) => p.is_default) ?? profiles[0];
+  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: false, owner_id, home_id, workspace: null, profile_id: profile.id, profile, profiles, shared_profiles, access, shared, token: { id: t.id, scope: t.scope } };
 }
 
 export async function requireUser(request) {

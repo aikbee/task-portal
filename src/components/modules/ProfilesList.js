@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useState } from "react";
-import { Plus, Layers, Check, Pencil, Trash2, Star, ArrowRightLeft, FolderKanban, ClipboardList, Users, CheckSquare, Share2, LogOut, MailPlus, X } from "lucide-react";
+import { Plus, Layers, Check, Pencil, Trash2, Star, ArrowRightLeft, FolderKanban, ClipboardList, Users, CheckSquare, Share2, LogOut, MailPlus, X, Webhook } from "lucide-react";
+import WebhooksDialog from "./WebhooksDialog";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useAuth } from "@/lib/auth-context";
@@ -29,6 +30,7 @@ export default function ProfilesList() {
   const [toDelete, setToDelete] = useState(null);
   const [busy, setBusy] = useState(false);
   const [sharing, setSharing] = useState(null); // the profile whose members are open
+  const [hooks, setHooks] = useState(null); // the profile whose webhooks are open
   const [toLeave, setToLeave] = useState(null);
   const openNew = useCallback(() => { setEditing(null); setFormOpen(true); }, []);
   useNewParam("/profiles", openNew, { workspace: false });
@@ -158,6 +160,7 @@ export default function ProfilesList() {
                 )}
                 <Button size="sm" variant="secondary" icon={Share2} onClick={() => setSharing(p)} className="profile-share">{p.member_count ? tr("Shared · {n}", { n: p.member_count }) : tr("Share")}</Button>
                 <span className="flex-1" />
+                <Button size="iconSm" variant="ghost" icon={Webhook} onClick={() => setHooks(p)} aria-label={tr("Webhooks")} title={tr("Webhooks")} className="profile-webhooks" />
                 {!p.is_default ? <Button size="iconSm" variant="ghost" icon={Star} onClick={() => makeDefault(p)} aria-label="Make default" title="Make default" /> : null}
                 <Button size="iconSm" variant="ghost" icon={Pencil} onClick={() => { setEditing(p); setFormOpen(true); }} aria-label={tr("Edit")} title={tr("Edit")} />
                 <Button size="iconSm" variant="dangerGhost" icon={Trash2} onClick={() => setToDelete(p)} aria-label={tr("Delete")} title={tr("Delete")} disabled={items.length <= 1} />
@@ -190,6 +193,7 @@ export default function ProfilesList() {
                   <div className="mt-4 flex items-center gap-1.5">
                     {active ? <Button size="sm" variant="secondary" icon={Check} disabled>{tr("Active")}</Button> : <Button size="sm" icon={ArrowRightLeft} onClick={() => switchProfile(p.id, "/")} className="shared-open">{tr("Open")}</Button>}
                     <Button size="sm" variant="secondary" icon={Users} onClick={() => setSharing(p)}>{tr("Members")}</Button>
+                    {p.role === "manager" ? <Button size="iconSm" variant="ghost" icon={Webhook} onClick={() => setHooks(p)} aria-label={tr("Webhooks")} title={tr("Webhooks")} /> : null}
                     <span className="flex-1" />
                     <Button size="sm" variant="dangerGhost" icon={LogOut} onClick={() => setToLeave(p)} className="shared-leave">{tr("Leave")}</Button>
                   </div>
@@ -200,6 +204,7 @@ export default function ProfilesList() {
         </>
       ) : null}
       <ProfileMembers profile={sharing} open={!!sharing} onClose={() => setSharing(null)} onChanged={refetch} />
+      <WebhooksDialog profile={hooks} open={!!hooks} onClose={() => setHooks(null)} />
       <ConfirmDialog
         open={!!toLeave}
         onClose={() => setToLeave(null)}

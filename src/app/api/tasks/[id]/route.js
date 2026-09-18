@@ -1,3 +1,4 @@
+import { emit } from "@/lib/webhooks";
 import { query, queryOne, execute } from "@/lib/db";
 import { moveToTrash } from "@/lib/trash";
 import { handler, ok, readJson, pick, requireId, HttpError } from "@/lib/api-utils";
@@ -57,6 +58,8 @@ export const PUT = handler(async (request, params, user) => {
   if (people) await setAssignees(id, owner, people);
   const after = await getTask(id, owner);
   await logTask(user, id, diffTask(before, after));
+  emit(user, "task.updated", { ...after, changed: Object.keys(data) });
+  if (after.status === "done" && before.status !== "done") emit(user, "task.completed", after);
   if (data.status && data.status !== before.status) {
     notifyInvolved(user, {
       type: after.status === "done" ? "task_done" : "task_status",
@@ -89,6 +92,7 @@ export const PUT = handler(async (request, params, user) => {
 /** Moves the task, with everything on it, to the recycle bin (files stay on disk until the bin entry is purged). */
 export const DELETE = handler(async (_req, params, user) => {
   const id = requireId(params.id);
-  const { trash_id } = await moveToTrash(user, "task", id);
+  const { trash_id, title } = await moveToTrash(user, "task", id);
+  emit(user, "task.deleted", { id, title, trash_id });
   return ok({ id, trash_id });
 });

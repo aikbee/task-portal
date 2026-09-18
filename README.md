@@ -222,6 +222,12 @@ All endpoints return `{ data }` or `{ error }`.
 | GET / POST | `/api/views` | `?module=` → my saved views in this profile plus the shared ones (`mine`, `is_default` per person) / `{ module, name, state: { filters, query, sort, date }, shared?, is_default? }` |
 | PUT / DELETE | `/api/views/:id` | `{ name?, state?, shared?, is_default? }` (changing or deleting somebody else's view takes a manager; a default has to be your own) / delete |
 | GET | `/api/time/report` | `?from=&to=` (default this month), `&group=person\|project\|task\|day`, `&project_id=`, `&user_id=` → `total_minutes`, `groups[]` (minutes, entries, people, tasks, share, estimate_minutes), `days[]`, `entries[]` (newest first, at most 5000), `people[]` |
+| GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
+| DELETE | `/api/tokens/:id` | revoke |
+| GET / POST | `/api/profiles/:id/webhooks` | owner / managers: the profile's webhooks and the event list / `{ url, events?: [...]\|"*" }` → the hook with its secret, shown once |
+| PUT / DELETE | `/api/profiles/:id/webhooks/:hid` | `{ url?, events?, active? }` (turning a paused hook on clears its failures) / remove |
+| POST | `/api/profiles/:id/webhooks/:hid/test` | send a `ping` now and answer with the delivery result |
+| GET | `/api/profiles/:id/webhooks/:hid/deliveries` | the last 30 deliveries: status, attempts, response, error, next retry |
 | POST | `/api/profiles/:id/transfer` | owner only: `{ user_id, keep_role: manager \| editor \| viewer \| null }` hands the profile to that active member; every record inside re-owns, the Info vault moves to the old owner's own profile, the old owner stays with `keep_role` or leaves |
 | POST/PUT | `/api/requirements/:id/attachments` | multipart upload (`files`), or `{ order: [ids] }` |
 | GET/PATCH/DELETE | `/api/attachments/:kind/:id` | `kind` = `task` or `requirement` (the old `/api/attachments/:id` still serves task files) |
@@ -384,6 +390,25 @@ address from the page, else `APP_URL`, else the address the portal was last open
 - **Limits and records.** At most 40 messages per recipient an hour, 10 join invitations per inviter an hour and
   25 pending per profile. `mail_log` keeps recipient, subject, kind and result for 60 days, never the text.
   Messages are in English.
+
+## API tokens and webhooks
+
+**API tokens** (Security → API tokens) let scripts and other tools use the same JSON API as the app. A token is
+`tp_…`, shown once, stored as a hash, and works inside one profile (the default one unless chosen) as the person
+who made it: `curl -H "Authorization: Bearer tp_…" https://your-portal/api/tasks`. A *read* token only reads;
+a *read & write* token creates and changes records like the person could (sharing roles still apply). No token
+can use account, user, mail, backup, chat or profile-management routes, and the Info vault stays locked.
+Tokens can expire, are listed with their last use, and are revoked with one click.
+
+**Webhooks** (Profiles → the webhook button on a profile; owner and managers) tell another system what happens
+in a profile: `task.created`, `task.updated`, `task.completed`, `task.deleted`, `task.comment`,
+`project.created|updated|deleted`, `requirement.created|updated|deleted`. Each event is one JSON `POST`
+`{ event, at, profile, actor, data }` with headers `X-TaskPortal-Event`, `X-TaskPortal-Delivery` and
+`X-TaskPortal-Signature: sha256=<HMAC-SHA256 of the raw body with the hook's secret>` (the secret is shown once).
+A delivery that gets no 2xx within 8 seconds is retried after 1, 5 and 25 minutes by the scheduler
+(`/api/cron/reminders`); after 20 failures in a row the hook pauses itself and its owner is told. **Send test**
+posts a `ping`; the last 30 deliveries are listed per hook and kept for 14 days. Addresses inside the server's
+own network are refused in production (`WEBHOOK_ALLOW_LOCAL=1` lifts that).
 
 ## Push notifications
 

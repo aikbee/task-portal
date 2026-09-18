@@ -1,3 +1,4 @@
+import { emit } from "@/lib/webhooks";
 import { query, withTransaction } from "@/lib/db";
 import { handler, ok, readJson, pick, requireFields, oneOf } from "@/lib/api-utils";
 import { PROJECT_STATUS } from "@/lib/constants";
@@ -61,6 +62,7 @@ export const POST = handler(async (request, _params, user) => {
     return res.insertId;
   });
   const [row] = await listProjects(owner, { id });
+  emit(user, "project.created", row);
   notifyInvolved(user, { type: "project_created", title: `New project: ${row.name}`, body: row.code, href: `/projects/${row.id}`, entityType: "project", entityId: row.id }, { managers: true });
   return ok(row, { status: 201 });
 });

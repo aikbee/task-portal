@@ -1,3 +1,4 @@
+import { emit } from "@/lib/webhooks";
 import { query, queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, requireId, HttpError } from "@/lib/api-utils";
 import { listComments } from "@/lib/task-activity";
@@ -49,5 +50,6 @@ export const POST = handler(async (request, params, user) => {
     ...[...mentioned].map((userId) => notify({ ...base, userId, type: "task_mention", title: `${user.name} mentioned you on ${task.title}` }).catch(() => false)),
     ...[...followers].map((userId) => notify({ ...base, userId, type: "task_comment", title: `${user.name} commented on ${task.title}` }).catch(() => false)),
   ]);
+  emit(user, "task.comment", { task_id: task.id, task_title: task.title, comment_id: res.insertId, body, author: { id: user.id, name: user.name } });
   return ok({ created_id: res.insertId, items: shapeComments(await listComments(task.id), user) }, { status: 201 });
 });

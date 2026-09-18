@@ -44,6 +44,7 @@ export const DELETE = handler(async (_request, params, user) => {
   await purgeFiles("requirement", "p.profile_id = ?", [id]);
   await execute("DELETE FROM profiles WHERE id = ?", [id]);
   await execute("DELETE FROM saved_views WHERE profile_id = ?", [id]).catch(() => {}); // no foreign key (see db/schema.sql)
+  await execute("DELETE FROM webhooks WHERE profile_id = ?", [id]).catch(() => {}); // deliveries follow by cascade
   if (profile.is_default) {
     await execute("UPDATE profiles SET is_default = 1 WHERE user_id = ? ORDER BY id LIMIT 1", [user.home_id]);
   }

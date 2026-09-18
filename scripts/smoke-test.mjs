@@ -2190,6 +2190,74 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("API tokens + webhooks");
+{
+  const http = await import("node:http");
+  const crypto = await import("node:crypto");
+  const asToken = (tok) => (method, path, body) => fetch(BASE + path, { method, headers: { ...(body ? { "Content-Type": "application/json" } : {}), Authorization: `Bearer ${tok}` }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, data: (await r.json().catch(() => null))?.data }));
+  const t1 = await call("POST", "/api/tokens", { body: { name: `Smoke read ${suffix}`, scope: "read" } });
+  check("POST /api/tokens: read token, shown once", t1.status === 201 && /^tp_/.test(t1.data.token) && t1.data.row.scope === "read" && !("token" in t1.data.tokens[0]));
+  const t2 = await call("POST", "/api/tokens", { body: { name: `Smoke write ${suffix}`, scope: "write", days: 7 } });
+  check("…write token with an expiry", t2.status === 201 && t2.data.row.expires_at);
+  check("a name is required", (await call("POST", "/api/tokens", { body: { name: "" } })).status === 400);
+  const rd = asToken(t1.data.token), wr = asToken(t2.data.token);
+  check("read token reads", (await rd("GET", "/api/tasks")).status === 200 && (await rd("GET", `/api/projects/${projectId}`)).status === 200);
+  check("read token cannot write", (await rd("POST", "/api/tasks", { title: "x" })).status === 403 && (await rd("PUT", `/api/projects/${projectId}`, { name: "x" })).status === 403);
+  check("no token can touch account or admin routes", (await wr("GET", "/api/auth/me")).status === 403 && (await wr("GET", "/api/users")).status === 403 && (await wr("GET", "/api/tokens")).status === 403 && (await wr("GET", "/api/mail")).status === 403);
+  check("unknown token -> 401", (await asToken("tp_" + "a".repeat(40))("GET", "/api/tasks")).status === 401);
+  const made = await wr("POST", "/api/tasks", { title: `Token task ${suffix}`, project_id: projectId });
+  check("write token creates a task", made.status === 201 && made.data.project_id === projectId);
+  check("the list shows the last use", (await call("GET", "/api/tokens")).data.find((r) => r.id === t1.data.row.id).last_used_at != null);
+  check("DELETE /api/tokens/:id revokes", (await call("DELETE", `/api/tokens/${t1.data.row.id}`)).status === 200 && (await rd("GET", "/api/tasks")).status === 401);
+
+  // webhooks: a receiver inside the test
+  const got = [];
+  let answer = 200;
+  const server = http.createServer((req, res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { got.push({ headers: req.headers, body: b }); res.statusCode = answer; res.end(); }); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${server.address().port}/hook`;
+  const pid = (await call("GET", "/api/profiles")).data.items.find((p) => p.is_default).id;
+  check("a webhook needs an http(s) address", (await call("POST", `/api/profiles/${pid}/webhooks`, { body: { url: "ftp://x" } })).status === 400);
+  const hk = await call("POST", `/api/profiles/${pid}/webhooks`, { body: { url, events: ["task.created", "task.completed", "task.deleted"] } });
+  check("POST /api/profiles/:id/webhooks: secret shown once, events kept", hk.status === 201 && /^whs_/.test(hk.data.webhook.secret) && hk.data.webhooks[0].secret === undefined && hk.data.webhooks[0].events.length === 3, JSON.stringify(hk.raw));
+  const hid = hk.data.webhook.id, secret = hk.data.webhook.secret;
+  const waitFor = async (n, ms = 8000) => { const t0 = Date.now(); while (got.length < n && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 100)); return got.length >= n; };
+  const task = await call("POST", "/api/tasks", { body: { title: `Hooked ${suffix}` } });
+  check("task.created is delivered", await waitFor(1) && JSON.parse(got[0].body).event === "task.created" && JSON.parse(got[0].body).data.id === task.data.id);
+  check("…signed with the secret", got[0].headers["x-taskportal-signature"] === `sha256=${crypto.createHmac("sha256", secret).update(got[0].body).digest("hex")}` && got[0].headers["x-taskportal-event"] === "task.created");
+  await call("PUT", `/api/tasks/${task.data.id}`, { body: { priority: "low" } });
+  await new Promise((r) => setTimeout(r, 500));
+  check("events not subscribed to are not sent", got.length === 1);
+  await call("PUT", `/api/tasks/${task.data.id}`, { body: { status: "done" } });
+  check("task.completed is delivered", await waitFor(2) && JSON.parse(got[1].body).event === "task.completed");
+  const ping = await call("POST", `/api/profiles/${pid}/webhooks/${hid}/test`);
+  check("POST …/test pings the receiver", ping.status === 200 && ping.data.status === "sent" && ping.data.response_status === 200);
+  answer = 503;
+  const failed = await call("POST", `/api/profiles/${pid}/webhooks/${hid}/test`);
+  check("a refused test says so", failed.data.status === "failed" && failed.data.error === "HTTP 503");
+  await call("DELETE", `/api/tasks/${task.data.id}`);
+  await waitFor(5);
+  await new Promise((r) => setTimeout(r, 500));
+  const list = await call("GET", `/api/profiles/${pid}/webhooks/${hid}/deliveries`);
+  const dead = list.data.find((d) => d.event === "task.deleted");
+  check("a failed event waits for a retry", dead && dead.status === "pending" && dead.attempts === 1 && dead.next_attempt_at);
+  const hooks = await call("GET", `/api/profiles/${pid}/webhooks`);
+  check("the hook shows failures and the last status", hooks.data.webhooks[0].failures >= 2 && hooks.data.webhooks[0].last_status === 503 && Object.keys(hooks.data.events).length === 11);
+  check("PUT active=false pauses, active=true clears failures", (await call("PUT", `/api/profiles/${pid}/webhooks/${hid}`, { body: { active: false } })).data.webhook.active === false && (await call("PUT", `/api/profiles/${pid}/webhooks/${hid}`, { body: { active: true } })).data.webhook.failures === 0);
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  check("somebody outside the profile cannot see its webhooks", (await (async () => { const keep = jar; jar = userJar; try { return await call("GET", `/api/profiles/${pid}/webhooks`); } finally { jar = keep; } })()).status === 404);
+  check("DELETE …/webhooks/:hid", (await call("DELETE", `/api/profiles/${pid}/webhooks/${hid}`)).status === 200);
+  server.close();
+  await call("DELETE", `/api/tokens/${t2.data.row.id}`);
+  await call("DELETE", `/api/tasks/${made.data.id}`);
+  await call("DELETE", "/api/trash");
+  for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /API token|webhook/i.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+}
+
 console.log("time report");
 {
   const t1 = (await call("POST", "/api/tasks", { body: { title: `Report A ${suffix}`, estimate_hours: 3, project_id: projectId } })).data;

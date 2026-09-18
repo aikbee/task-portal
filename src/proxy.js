@@ -22,6 +22,8 @@ export async function proxy(request) {
     return NextResponse.next();
   }
   if (sessionId) return NextResponse.next();
+  // API tokens: the route handler checks the token itself
+  if (pathname.startsWith("/api/") && /^Bearer\s+tp_/i.test(request.headers.get("authorization") ?? "")) return NextResponse.next();
   if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
 
   const url = new URL("/login", request.url);
