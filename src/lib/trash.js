@@ -1,3 +1,4 @@
+import { syncOwnerRows } from "./ownership";
 import { query, queryOne, execute, withTransaction } from "./db";
 import { HttpError } from "./http-error";
 import { deleteStoredFile } from "./uploads";
@@ -173,6 +174,7 @@ export async function restoreFromTrash(user, trashId) {
     throw e;
   }
   await spec.after?.(item.profile_id);
+  await syncOwnerRows(item.profile_id).catch(() => {}); // the profile may have changed hands since the snapshot
   if (item.entity === "task") await logTask(user, row.id, { action: "restored" });
   return { entity: item.entity, id: row.id, title: item.title };
 }

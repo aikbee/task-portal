@@ -1,5 +1,6 @@
-import { query, queryOne, execute } from "./db";
+import { query, queryOne, execute, withTransaction } from "./db";
 import { HttpError } from "./http-error";
+import { syncOwnerRows } from "./ownership";
 
 /**
  * Sharing a profile with other accounts. The owner is `profiles.user_id`; everybody else has a row in
@@ -130,3 +131,42 @@ export const forgetMember = async (userId) => {
   await execute("DELETE FROM mail_tokens WHERE user_id = ? OR (invited_by = ? AND used_at IS NULL)", [userId, userId]).catch(() => {});
   await execute("DELETE FROM saved_views WHERE user_id = ?", [userId]).catch(() => {});
 };
+
+/* ---------- handing a profile to somebody else ---------- */
+
+/**
+ * The owner gives the profile to an active member. Everything inside it (projects, people, tasks, requirements,
+ * events, draw boards, the recycle bin, the member list) goes with it; the Info vault does not: it is private
+ * to a person, so its items move to the old owner's own profile. The old owner stays as `keepRole`
+ * (manager | editor | viewer) or leaves with null.
+ */
+export async function transferProfile(user, profileId, { toUserId, keepRole = "manager" } = {}) {
+  const profile = await queryOne("SELECT id, user_id, name, is_default FROM profiles WHERE id = ?", [profileId]);
+  if (!profile) throw new HttpError("Profile not found.", 404);
+  if (profile.user_id !== user.home_id) throw new HttpError("Only the owner can hand a profile over.", 403);
+  if (keepRole != null && !MEMBER_ROLES.includes(keepRole)) throw new HttpError("Role must be viewer, editor or manager.", 400);
+  const to = Number(toUserId) || 0;
+  if (to === profile.user_id) throw new HttpError("That person owns this profile already.", 400);
+  const member = await queryOne("SELECT pm.user_id, u.name FROM profile_members pm JOIN users u ON u.id = pm.user_id AND u.status = 'active' WHERE pm.profile_id = ? AND pm.user_id = ? AND pm.status = 'active'", [profileId, to]);
+  if (!member) throw new HttpError("The new owner has to be an active member of the profile.", 400);
+  const oldOwner = profile.user_id;
+  // the new owner may have a profile with the same name: this one gets a suffix
+  let name = profile.name;
+  for (let i = 2; await queryOne("SELECT id FROM profiles WHERE user_id = ? AND name = ?", [to, name]); i++) name = `${profile.name.slice(0, 70)} (${i})`;
+  await withTransaction(async (conn) => {
+    await conn.execute("UPDATE profiles SET user_id = ?, name = ?, is_default = 0 WHERE id = ?", [to, name, profileId]);
+    // the old owner keeps a home: another profile of theirs, or a fresh one, which also takes the Info vault
+    let [home] = (await conn.query("SELECT id FROM profiles WHERE user_id = ? AND id <> ? ORDER BY is_default DESC, id LIMIT 1", [oldOwner, profileId]))[0];
+    if (!home) {
+      const [res] = await conn.execute("INSERT INTO profiles (user_id, name, description, color, is_default) VALUES (?, 'Personal', 'Default profile', '#6366f1', 1)", [oldOwner]);
+      home = { id: res.insertId };
+    } else if (profile.is_default) await conn.execute("UPDATE profiles SET is_default = 1 WHERE id = ?", [home.id]);
+    await conn.execute("UPDATE info_items SET profile_id = ? WHERE profile_id = ?", [home.id, profileId]);
+    await conn.execute("DELETE FROM trash WHERE profile_id = ? AND entity IN ('info', 'info_attachment')", [profileId]);
+    await conn.execute("DELETE FROM profile_members WHERE profile_id = ? AND user_id = ?", [profileId, to]); // the owner never has a row
+    if (keepRole) await conn.execute("INSERT INTO profile_members (profile_id, user_id, role, status, invited_by, accepted_at) VALUES (?, ?, ?, 'active', ?, NOW())", [profileId, oldOwner, keepRole, to]);
+    else await conn.execute("UPDATE employees SET linked_user_id = NULL WHERE profile_id = ? AND linked_user_id = ?", [profileId, oldOwner]);
+  });
+  await syncOwnerRows(profileId);
+  return { id: profileId, name, owner: { id: to, name: member.name }, previous_owner_id: oldOwner, kept_role: keepRole, info_moved_to: null };
+}

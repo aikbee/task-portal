@@ -1,4 +1,4 @@
-import { query, queryOne } from "./db";
+import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 
 /** Keep only the employee ids that belong to the active profile (`owner` = profile id). */
@@ -43,4 +43,14 @@ export async function ownedTask(owner, taskId) {
   const t = await queryOne("SELECT id FROM tasks WHERE id = ? AND profile_id = ?", [taskId, owner]);
   if (!t) throw new HttpError("Task not found.", 404);
   return t;
+}
+
+/** Workspace tables whose rows carry the profile owner's id next to profile_id (what members create belongs to the owner). */
+export const OWNED_TABLES = ["projects", "employees", "requirements", "tasks", "calendar_events", "draw_boards"];
+/** Make every row of a profile say who owns the profile now (after a transfer, or a restore of an older snapshot). */
+export async function syncOwnerRows(profileId, conn = null) {
+  const p = await queryOne("SELECT user_id FROM profiles WHERE id = ?", [profileId]);
+  if (!p) return;
+  const run = conn ? (sql, args) => conn.execute(sql, args) : execute;
+  for (const t of OWNED_TABLES) await run(`UPDATE ${t} SET user_id = ? WHERE profile_id = ? AND user_id <> ?`, [p.user_id, profileId, p.user_id]);
 }

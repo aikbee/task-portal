@@ -2190,6 +2190,61 @@ console.log("chat (friends by code, one-to-one messages)");
   jar = { ...adminJar };
 }
 
+console.log("handing a profile over");
+{
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  const adminId = (await call("GET", "/api/auth/me")).data.id;
+  const space = await call("POST", "/api/profiles", { body: { name: `Handover ${suffix}`, color: "#f59e0b" } });
+  const pid = space.data.id;
+  await call("POST", `/api/profiles/${pid}/activate`);
+  const proj = await call("POST", "/api/projects", { body: { name: `Handover project ${suffix}`, code: `HO${suffix.slice(-4)}` } });
+  const task = await call("POST", "/api/tasks", { body: { title: `Handover task ${suffix}` } });
+  const secret = await call("POST", "/api/info", { body: { title: `Handover secret ${suffix}`, category: "credential", content: "keep me" } });
+  await call("DELETE", `/api/tasks/${(await call("POST", "/api/tasks", { body: { title: `Handover binned ${suffix}` } })).data.id}`);
+  check("not a member -> 400", (await call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: userId } })).status === 400);
+  await call("POST", `/api/profiles/${pid}/members`, { body: { user_id: userId, role: "editor" } });
+  await as(userJar, () => call("PUT", `/api/profiles/${pid}/membership`, { body: { accept: true } }));
+  check("a member cannot hand the profile over", (await as(userJar, () => call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: userId } }))).status === 403);
+  check("bad role -> 400", (await call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: userId, keep_role: "boss" } })).status === 400);
+  const handed = await call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: userId, keep_role: "manager" } });
+  check("POST /api/profiles/:id/transfer", handed.status === 200 && handed.data.owner.id === userId && handed.data.kept_role === "manager", JSON.stringify(handed.raw));
+  const me = await call("GET", "/api/auth/me");
+  check("the old owner is a manager inside it now", me.data.profile_id === pid && me.data.access === "manager" && !me.data.profiles.some((p) => p.id === pid) && me.data.shared_profiles.some((p) => p.id === pid));
+  const mine = await as(userJar, () => call("GET", "/api/profiles"));
+  check("the new owner lists it among their own profiles", mine.data.items.some((p) => p.id === pid && p.member_count === 1));
+  await as(userJar, () => call("POST", `/api/profiles/${pid}/activate`));
+  const theirTask = await as(userJar, () => call("GET", `/api/tasks/${task.data.id}`));
+  const theirProject = await as(userJar, () => call("GET", `/api/projects/${proj.data.id}`));
+  check("records inside re-own", theirTask.data.user_id === userId && theirProject.data.user_id === userId);
+  check("the Info vault did not go with it", (await as(userJar, () => call("GET", "/api/info"))).data.every((i) => i.id !== secret.data.id) && (await as(userJar, () => call("GET", `/api/info/${secret.data.id}`))).status === 404);
+  const bin = await as(userJar, () => call("GET", "/api/trash"));
+  check("the bin went along, without Info entries", bin.data.items.some((i) => i.title === `Handover binned ${suffix}`) && !bin.data.items.some((i) => i.entity === "info"));
+  const restored = await as(userJar, () => call("POST", `/api/trash/${bin.data.items.find((i) => i.title === `Handover binned ${suffix}`).id}/restore`));
+  check("a restored record belongs to the new owner", restored.status === 200 && (await as(userJar, () => call("GET", `/api/tasks/${restored.data.id}`))).data.user_id === userId);
+  await call("POST", "/api/profiles/1/activate").catch(() => {});
+  const home = (await call("GET", "/api/profiles")).data.items.find((p) => p.is_default);
+  await call("POST", `/api/profiles/${home.id}/activate`);
+  check("the secret sits in the old owner's own profile", (await call("GET", `/api/info/${secret.data.id}`)).status === 200);
+  check("the new owner got a bell entry", (await as(userJar, () => call("GET", "/api/notifications?limit=20"))).data.items.some((n) => n.type === "profile_role" && /made you the owner/.test(n.title)));
+  check("the old owner cannot hand it again", (await call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: adminId } })).status === 403);
+  // the new owner hands it back, leaving the admin out; cleanup
+  const back = await as(userJar, () => call("POST", `/api/profiles/${pid}/transfer`, { body: { user_id: adminId, keep_role: null } }));
+  check("…the new owner can hand it back and leave", back.status === 200 && back.data.owner.id === adminId && !(await as(userJar, () => call("GET", "/api/auth/me"))).data.shared_profiles.some((p) => p.id === pid));
+  await call("POST", `/api/profiles/${pid}/activate`);
+  await call("DELETE", `/api/info/${secret.data.id}`).catch(() => {});
+  await call("POST", `/api/profiles/${home.id}/activate`);
+  await call("DELETE", `/api/info/${secret.data.id}`).catch(() => {});
+  await call("DELETE", "/api/trash");
+  check("cleanup: the handover profile is deleted", (await call("DELETE", `/api/profiles/${pid}`)).status === 200);
+  for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /Handover|handed over|owner of/i.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+  for (const n of (await as(userJar, () => call("GET", "/api/notifications?limit=50"))).data.items.filter((x) => /Handover|owner of|owned by/i.test(x.title))) await as(userJar, () => call("DELETE", `/api/notifications/${n.id}`));
+}
+
 console.log("saved views");
 {
   // the member's jar is used as is (no copy), so the profile cookie from `activate` stays with them

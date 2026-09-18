@@ -34,12 +34,28 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("editor");
   const [busy, setBusy] = useState(false);
+  const [handing, setHanding] = useState(null); // member who is to become the owner
+  const [keepRole, setKeepRole] = useState("manager");
   const withdraw = async (inv) => {
     try {
       apply(await api.del(`/api/profiles/${profile.id}/invites/${inv.id}`));
       toast.success(tr("Invitation withdrawn"));
     } catch (e) {
       toast.error(tr("Could not withdraw"), e.message);
+    }
+  };
+  const handOver = async () => {
+    setBusy(true);
+    try {
+      const res = await api.post(`/api/profiles/${profile.id}/transfer`, { user_id: handing.id, keep_role: keepRole || null });
+      toast.success(tr("{name} now owns “{profile}”", { name: res.owner.name, profile: res.name }), keepRole ? tr("You stay as {role}.", { role: tr(MEMBER_ROLE[keepRole].label) }) : tr("You left the profile."));
+      setHanding(null);
+      onClose?.();
+      // the session's idea of "my profiles" changed: a full load is the honest way to refresh it
+      setTimeout(() => { window.location.href = new URL("/profiles", window.location.origin).href; }, 600);
+    } catch (e) {
+      toast.error(tr("Could not hand the profile over"), e.message);
+      setBusy(false);
     }
   };
   const roles = myRole === "owner" ? ASSIGNABLE : ["viewer", "editor"]; // managers are the owner's call
@@ -127,6 +143,7 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
                   ) : (
                     <Badge tone={meta.tone}>{m.role === "owner" ? <Crown size={10} className="mr-1 inline" /> : null}{tr(meta.label)}</Badge>
                   )}
+                  {myRole === "owner" && m.role !== "owner" && m.status === "active" ? <Button variant="ghost" size="iconSm" icon={Crown} onClick={() => setHanding(m)} aria-label={tr("Make owner")} data-tip={tr("Make owner")} className="member-make-owner" /> : null}
                   {editable ? <Button variant="dangerGhost" size="iconSm" icon={Trash2} onClick={() => remove(m)} aria-label={tr("Remove")} data-tip={m.status === "invited" ? tr("Withdraw invitation") : tr("Remove")} /> : null}
                 </li>
               );
@@ -145,6 +162,23 @@ export default function ProfileMembers({ profile, open, onClose, onChanged }) {
                   </li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+          {handing ? (
+            <div className="member-handover space-y-3 rounded-app border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+              <p className="font-medium">{tr("Hand “{profile}” to {name}?", { profile: profile.name, name: handing.name })}</p>
+              <p className="text-fg-muted">{tr("Everything inside goes with it: projects, people, tasks, requirements, events, draw boards, the recycle bin and the member list. Your Info vault is private and moves to your own profile instead. This cannot be undone by you: only the new owner can hand it back.")}</p>
+              <label className="flex flex-wrap items-center gap-2">
+                <span>{tr("Afterwards you are")}</span>
+                <select className="control member-keep-role h-8 w-auto py-0 text-xs" value={keepRole} onChange={(e) => setKeepRole(e.target.value)}>
+                  {["manager", "editor", "viewer"].map((r) => <option key={r} value={r}>{tr(MEMBER_ROLE[r].label)}</option>)}
+                  <option value="">{tr("not a member any more")}</option>
+                </select>
+              </label>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setHanding(null)} disabled={busy}>{tr("Cancel")}</Button>
+                <Button size="sm" icon={Crown} onClick={handOver} loading={busy} className="member-handover-go">{tr("Hand over")}</Button>
+              </div>
             </div>
           ) : null}
           {data.members.length === 1 && !data.pending?.length ? <p className="flex items-center gap-2 text-xs text-fg-muted"><Users size={13} /> {tr("Only you can see this profile so far.")}</p> : null}
