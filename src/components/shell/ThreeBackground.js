@@ -2669,23 +2669,31 @@ function luckycat(THREE, scene, camera, pal, preview) {
   const face = new THREE.Group(); // features sit just outside the head sphere
   face.position.set(0, 0.55, 0);
   headPivot.add(face);
-  const earGeo = keep(new THREE.ConeGeometry(0.27, 0.62, 18));
+  const earGeo = keep(new THREE.ConeGeometry(0.3, 0.6, 20));
+  const innerEarGeo = keep(new THREE.CircleGeometry(0.19, 3)); // a flat pink triangle
+  innerEarGeo.rotateZ(Math.PI / 2);
   for (const side of [-1, 1]) {
-    const ear = mesh(earGeo, fur, side * 0.6, 1.2, -0.05, 1, 1, 0.75, headPivot);
-    ear.rotation.z = -side * 0.45;
-    mesh(earGeo, pink, 0, -0.02, 0.09, 0.55, 0.6, 0.35, ear); // inner ear
+    const ear = mesh(earGeo, fur, side * 0.56, 1.3, -0.04, 1, 1, 0.5, headPivot);
+    ear.rotation.z = -side * 0.3;
+    const inner = mesh(innerEarGeo, pink, 0, -0.05, 0.17, 0.62, 0.95, 1, ear); // just in front of the cone's face
+    inner.rotation.x = -0.2;
   }
   const arc = keep(new THREE.TorusGeometry(0.15, 0.03, 8, 20, Math.PI));
   for (const side of [-1, 1]) {
     const eye = mesh(arc, dark, side * 0.34, 0.12, 0.84, 1, 1, 1, face); // ^ ^ happy closed eyes
     eye.rotation.set(0, 0, 0);
     mesh(sphere, blushMat, side * 0.6, -0.14, 0.72, 0.17, 0.11, 0.06, face); // blush
-    for (let w = 0; w < 3; w++) mesh(box, red, side * 0.78, -0.02 - w * 0.09, 0.62, 0.22, 0.026, 0.03, face).rotation.set(0, side * 0.5, side * (w - 1) * 0.35); // whisker marks
+    for (let w = 0; w < 3; w++) { // three whisker strokes fanning out from the cheek
+      const stroke = mesh(box, red, side * 0.86, -0.04 - w * 0.1, 0.6, 0.34, 0.024, 0.02, face);
+      stroke.rotation.set(0, side * 0.95, side * (1 - w) * 0.22);
+    }
   }
-  mesh(sphere, pink, 0, -0.06, 0.92, 0.075, 0.05, 0.05, face); // nose
-  const smile = mesh(arc, dark, 0, -0.16, 0.9, 0.55, 0.5, 0.6, face);
-  smile.rotation.set(0, 0, Math.PI); // arc bowing down = smile
-  mesh(sphere, red, 0, -0.27, 0.9, 0.07, 0.05, 0.04, face); // tongue
+  mesh(sphere, pink, 0, -0.03, 0.92, 0.08, 0.055, 0.05, face); // nose
+  const halfDisc = keep(new THREE.CircleGeometry(1, 24, Math.PI, Math.PI)); // lower half, flat edge on top
+  mesh(halfDisc, keep(new THREE.MeshBasicMaterial({ color: 0x5a2028 })), 0, -0.11, 0.93, 0.2, 0.2, 1, face); // open mouth
+  mesh(sphere, keep(new THREE.MeshBasicMaterial({ color: 0xff7a86 })), 0, -0.24, 0.935, 0.1, 0.055, 0.02, face); // tongue
+  const lip = mesh(keep(new THREE.TorusGeometry(0.2, 0.022, 8, 28, Math.PI)), dark, 0, -0.11, 0.94, 1, 1, 1, face);
+  lip.rotation.z = Math.PI; // bows down: a wide smile
   // collar with a bell and a bow in the accent colour
   const collar = mesh(keep(new THREE.TorusGeometry(0.8, 0.075, 10, 40)), accentMat, 0, 1.98, 0.08, 1, 1, 1, cat);
   collar.rotation.x = Math.PI / 2 - 0.42;
@@ -2733,9 +2741,9 @@ function luckycat(THREE, scene, camera, pal, preview) {
   const plaqueMat = keep(new THREE.MeshStandardMaterial({ map: plaqueTex, roughness: 0.6 }));
   const plaqueGeo = keep(new THREE.BoxGeometry(1, 1, 1));
   const plaque = new THREE.Mesh(plaqueGeo, [fur, fur, fur, fur, plaqueMat, fur]);
-  plaque.position.set(-0.55, 0.62, 0.95);
+  plaque.position.set(-0.5, 0.48, 1.16);
   plaque.scale.set(0.78, 0.88, 0.08);
-  plaque.rotation.set(-0.08, 0.12, 0);
+  plaque.rotation.set(-0.1, 0.12, 0);
   cat.add(plaque);
   // feet and tail
   for (const side of [-1, 1]) {
