@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ShieldCheck, User as UserIcon } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import { Input, Select, Field, Segmented } from "@/components/ui/Controls";
+import { Input, Select, Field, Segmented, Checkbox } from "@/components/ui/Controls";
 import ColorPicker from "@/components/ui/ColorPicker";
 import Avatar from "@/components/ui/Avatar";
 import { useToast } from "@/components/ui/Toast";
@@ -44,6 +44,10 @@ function UserFormInner({ onClose, initial, onSaved }) {
   const [error, setError] = useState(null);
   const toast = useToast();
   const { data: employees } = useFetch("/api/employees");
+  // a new account starts with the default access set (when there is one); the administrator may skip it
+  const { data: defaults } = useFetch("/api/users/access-defaults", { enabled: Boolean(open && !initial) });
+  const defaultsOff = (defaults?.effective.modules_off.length ?? 0) + (defaults?.effective.features_off.length ?? 0);
+  const [applyDefaults, setApplyDefaults] = useState(true);
   const isSelf = initial && me && initial.id === me.id;
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -55,6 +59,7 @@ function UserFormInner({ onClose, initial, onSaved }) {
     setSaving(true);
     try {
       const payload = { name: form.name, email: form.email, role: form.role, status: form.status, avatar_color: form.avatar_color, employee_id: form.employee_id || null };
+      if (!initial) payload.apply_defaults = applyDefaults;
       if (form.password) payload.password = form.password;
       const saved = initial ? await api.put(`/api/users/${initial.id}`, payload) : await api.post("/api/users", payload);
       if (isSelf) setUser((u) => ({ ...u, name: saved.name, avatar_color: saved.avatar_color, email: saved.email }));
@@ -113,6 +118,12 @@ function UserFormInner({ onClose, initial, onSaved }) {
             {Object.entries(USER_STATUS).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
           </Select>
         </Field>
+        {!initial && defaultsOff > 0 && form.role !== "admin" ? (
+          <div className="user-defaults sm:col-span-6 rounded-app border border-line bg-surface-2/60 p-3">
+            <Checkbox checked={applyDefaults} onChange={setApplyDefaults} label={tr("Start with the default access set ({n} things off)", { n: defaultsOff })} />
+            <p className="mt-1 pl-6 text-xs text-fg-muted">{tr("You can change what this person can use afterwards with the sliders button on their row.")}</p>
+          </div>
+        ) : null}
         <Field label={tr("Linked employee")} className="sm:col-span-6" hint="Optional: connect this login to an employee record">
           <Select value={form.employee_id ?? ""} onChange={(e) => set("employee_id", e.target.value)}>
             <option value="">Not linked</option>

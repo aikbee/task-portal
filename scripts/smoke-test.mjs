@@ -2227,6 +2227,18 @@ console.log("what each account can use (modules and features per user)");
   const stats = await as(userJar, () => call("GET", "/api/stats"));
   check("dashboard and search leave the closed modules out", stats.data.counts.tasks === 0 && stats.data.recentTasks.length === 0 && (await as(userJar, () => call("GET", `/api/search?q=Access`))).data.tasks.length === 0);
   check("administrators are never limited", (await call("GET", "/api/tasks")).status === 200);
+  // the set new accounts start with
+  check("the defaults are for administrators", (await st("GET", "/api/users/access-defaults")) === 403);
+  const defs = await call("PUT", "/api/users/access-defaults", { body: { modules_off: ["chat", "bogus"], features_off: ["webhooks"] } });
+  check("PUT /api/users/access-defaults keeps known keys", defs.status === 200 && defs.data.access.modules_off.length === 1 && defs.data.effective.features_off.includes("calls") && defs.data.user === null);
+  const fresh = await call("POST", "/api/users", { body: { name: "Default Dora", email: `dora.${suffix.toLowerCase()}@example.com`, password: "dora1234", role: "user" } });
+  const freshAccess = await call("GET", `/api/users/${fresh.data.id}/access`);
+  check("a new account starts with the defaults", fresh.status === 201 && freshAccess.data.access.modules_off.includes("chat") && freshAccess.data.access.features_off.includes("webhooks"));
+  const skipped = await call("POST", "/api/users", { body: { name: "Free Fred", email: `fred.${suffix.toLowerCase()}@example.com`, password: "fred1234", role: "user", apply_defaults: false } });
+  check("apply_defaults: false skips them", skipped.status === 201 && (await call("GET", `/api/users/${skipped.data.id}/access`)).data.access.modules_off.length === 0);
+  await call("PUT", "/api/users/access-defaults", { body: { modules_off: [], features_off: [] } });
+  check("clearing the defaults leaves existing accounts as they are", (await call("GET", "/api/users/access-defaults")).data.access.modules_off.length === 0 && (await call("GET", `/api/users/${fresh.data.id}/access`)).data.access.modules_off.includes("chat"));
+  for (const u of [fresh, skipped]) await call("DELETE", `/api/users/${u.data.id}`);
   const reset = await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: [] } });
   check("everything on again", reset.status === 200 && reset.data.effective.modules_off.length === 0 && (await st("GET", "/api/tasks")) === 200 && (await bearer("/api/tasks")) === 200);
   await as(userJar, () => call("DELETE", `/api/tokens/${tok.data.row.id}`));

@@ -67,6 +67,12 @@ in the browser. With Chat off the person gets no chat notifications and cannot b
 existing tokens stop working. **Copy from another user…** applies somebody else's set; only what is off is stored
 (`users.module_access`), so modules added later are on for everyone.
 
+**New account defaults** (the button next to *New user*) is the set every new account starts with, whether an
+administrator creates it or somebody joins by an invitation (`app_settings.default_access`, same switches). It
+only seeds an account when it is created: changing the defaults later leaves existing people alone, the *New
+user* form can skip it for one account, and new administrators get none. The per-person dialog can also copy
+from the defaults.
+
 ### Sharing a profile
 
 A profile can be shared with other accounts from **Profiles → Share**. Pick one of your chat friends or type the
@@ -241,6 +247,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET | `/api/time/report` | `?from=&to=` (default this month), `&group=person\|project\|task\|day`, `&project_id=`, `&user_id=` → `total_minutes`, `groups[]` (minutes, entries, people, tasks, share, estimate_minutes), `days[]`, `entries[]` (newest first, at most 5000), `people[]` |
 | POST | `/api/tasks/bulk` | `{ ids: [...], patch }` or `{ items: [{ id, patch }] }` (at most 200). patch: `status`, `priority`, `project_id` (null = none), `due_date` / `start_date` (null clears), `shift_days`, `assignee_mode: replace\|add\|remove` + `assignee_ids`, `add_tags`, `remove_tags` → `{ updated, failed: [{ id, title, error }], completed, spawned, tasks, undo }` (`undo` is an `items` list that restores the previous values) |
 | GET | `/api/chat/calls/incoming` | the call that is ringing me right now (direct, or a group call started within the ringing time that I neither joined nor dismissed): `{ call, from, conversation_title, ms_left }` or `{ call: null }` |
+| GET / PUT | `/api/users/access-defaults` | admin: the access set new accounts start with (same shape, `user: null`); empty lists remove the setting. `POST /api/users` takes `apply_defaults: false` to skip it |
 | GET / PUT | `/api/users/:id/access` | admin: what is turned off for an account `{ access: { modules_off, features_off }, effective, modules, features, needs }` / `{ modules_off: [...], features_off: [...] }` (unknown keys are dropped; empty = everything on) |
 | GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry, `requests_today`, `requests_total`, `limits`) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
 | DELETE | `/api/tokens/:id` | revoke |

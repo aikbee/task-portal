@@ -3,6 +3,7 @@ import { handler, ok, readJson, pick, requireFields, oneOf, HttpError } from "@/
 import { hashPassword, PASSWORD_MIN } from "@/lib/password";
 import { USER_ROLES, USER_STATUS } from "@/lib/constants";
 import { notifyAdmins } from "@/lib/notifications";
+import { applyDefaultAccess } from "@/lib/access-defaults";
 
 export const USER_SELECT = `
   SELECT u.id, u.name, u.email, u.role, u.status, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.employee_id, u.module_access, u.last_login_at, u.created_at, u.updated_at,
@@ -33,6 +34,8 @@ export const POST = handler(
     const cols = Object.keys(data);
     const res = await execute(`INSERT INTO users (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => data[c]));
     await execute("INSERT INTO profiles (user_id, name, description, color, is_default) VALUES (?, 'Personal', 'Default profile', ?, 1)", [res.insertId, data.avatar_color || "#6366f1"]);
+    // new accounts start with the default access set, unless the administrator says otherwise
+    if (body.apply_defaults !== false) await applyDefaultAccess(res.insertId, data.role ?? "user");
     const row = await queryOne(`${USER_SELECT} WHERE u.id = ?`, [res.insertId]);
     notifyAdmins(user, { type: "user_created", title: `Account created: ${row.name}`, body: `${row.email} · ${USER_ROLES[row.role]?.label ?? row.role}`, href: "/users", entityType: "user", entityId: row.id });
     return ok(row, { status: 201 });

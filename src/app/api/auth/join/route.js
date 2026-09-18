@@ -6,6 +6,7 @@ import { finishLogin } from "@/lib/login";
 import { setProfileCookie } from "@/lib/auth";
 import { autoLinkByEmail } from "@/lib/sharing";
 import { notify, notifyAdmins } from "@/lib/notifications";
+import { applyDefaultAccess } from "@/lib/access-defaults";
 
 const DEAD = "This invitation is no longer valid. Ask for a new one.";
 async function invitation(token) {
@@ -49,6 +50,7 @@ export const POST = handler(async (request) => {
   const res = await execute("INSERT INTO users (name, email, role, status, password_hash) VALUES (?, ?, 'user', 'active', ?)", [name, row.email, hashPassword(password)]);
   const userId = res.insertId;
   await execute("INSERT INTO profiles (user_id, name, description, color, is_default) VALUES (?, 'Personal', 'Default profile', '#6366f1', 1)", [userId]);
+  await applyDefaultAccess(userId, "user"); // people who join by invitation start with the default access set too
   await execute("INSERT INTO profile_members (profile_id, user_id, role, status, invited_by, accepted_at) VALUES (?, ?, ?, 'active', ?, NOW())", [profile.id, userId, row.role, row.invited_by]);
   await autoLinkByEmail(profile.id, { userId }).catch(() => {});
   // other workspaces that invited the same address: those become ordinary invitations to accept

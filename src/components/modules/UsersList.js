@@ -25,6 +25,7 @@ export default function UsersList() {
   const toast = useToast();
   const { user: me, isAdmin } = useAuth();
   const [accessOf, setAccessOf] = useState(null); // the account whose modules and features are being set
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [role, setRole] = useState("");
   const { rows, loading, error, refetch, removeLocal } = useCrudList(isAdmin ? "/api/users" : null);
   const [formOpen, setFormOpen] = useState(false);
@@ -93,7 +94,7 @@ export default function UsersList() {
 
   return (
     <>
-      <PageHeader title={tr("Users")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Plus} onClick={openNew}>{tr("New user")}</Button>} />
+      <PageHeader title={tr("Users")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><Button variant="secondary" icon={SlidersHorizontal} onClick={() => setDefaultsOpen(true)} className="access-defaults-open">{tr("New account defaults")}</Button><Button icon={Plus} onClick={openNew}>{tr("New user")}</Button></>} />
       <DataTable
         workspace={false}
         id="users"
@@ -154,6 +155,7 @@ export default function UsersList() {
       />
       <UserForm open={formOpen} onClose={() => setFormOpen(false)} initial={editing} onSaved={refetch} />
       <UserAccessDialog user={accessOf} users={rows} open={Boolean(accessOf)} onClose={() => setAccessOf(null)} onSaved={refetch} />
+      <UserAccessDialog defaults users={rows} open={defaultsOpen} onClose={() => setDefaultsOpen(false)} />
       <ConfirmDialog
         open={!!methodTarget}
         onClose={() => setMethodTarget(null)}
