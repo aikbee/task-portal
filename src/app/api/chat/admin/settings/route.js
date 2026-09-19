@@ -1,10 +1,12 @@
 import { handler, ok, readJson, HttpError } from "@/lib/api-utils";
 import { readChatSettings, saveChatSettings, publicChatSettings, purgeExpired, RETENTION_CHOICES } from "@/lib/chat";
 import { GIF_PROVIDERS } from "@/lib/gifs";
+import { forgetTurnCache } from "@/lib/turn";
 
 /**
  * Admin: { max_retention_days?: null | 1 | 7 | 30 | 90 | 365, gif_provider?: null | "giphy" | "tenor", gif_api_key?: string,
- *          turn_url?: "turn(s):…", turn_username?: string, turn_credential?: string }.
+ *          turn_url?: "turn(s):…", turn_username?: string, turn_credential?: string,
+ *          cf_turn_key_id?: string, cf_turn_token?: string }  (Cloudflare Realtime TURN; it wins over turn_url when both are set).
  * Fields left out keep their value; an empty string clears a secret. Secrets are stored server-side and never returned.
  */
 export const PUT = handler(
@@ -34,7 +36,18 @@ export const PUT = handler(
     let turnCred = current.turn_credential;
     if ("turn_credential" in body) turnCred = String(body.turn_credential ?? "").trim().slice(0, 200) || null;
     if (!turnUrl) turnUser = turnCred = null; // no server, no credentials to keep
-    await saveChatSettings({ max_retention_days: cap, gif_provider: provider, gif_api_key: key, turn_url: turnUrl, turn_username: turnUser, turn_credential: turnCred }, user.id);
+    let cfKey = current.cf_turn_key_id;
+    if ("cf_turn_key_id" in body) {
+      cfKey = String(body.cf_turn_key_id ?? "").trim().slice(0, 100) || null;
+      if (cfKey && !/^[A-Za-z0-9_-]{8,100}$/.test(cfKey)) throw new HttpError("That does not look like a Cloudflare TURN key ID.", 400);
+    }
+    let cfToken = current.cf_turn_token;
+    if ("cf_turn_token" in body) cfToken = String(body.cf_turn_token ?? "").trim().slice(0, 300) || null;
+    if (!cfKey) cfToken = null; // no key, no token to keep
+    let cfApi = current.cf_turn_api;
+    if ("cf_turn_api" in body && process.env.NODE_ENV !== "production") cfApi = String(body.cf_turn_api ?? "").trim().slice(0, 200) || null;
+    forgetTurnCache();
+    await saveChatSettings({ max_retention_days: cap, gif_provider: provider, gif_api_key: key, turn_url: turnUrl, turn_username: turnUser, turn_credential: turnCred, cf_turn_key_id: cfKey, cf_turn_token: cfToken, ...(cfApi ? { cf_turn_api: cfApi } : {}) }, user.id);
     const purged = cap && cap !== current.max_retention_days ? await purgeExpired() : 0;
     return ok({ ...publicChatSettings(await readChatSettings()), purged });
   },

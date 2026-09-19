@@ -167,7 +167,11 @@ export function useCalls({ me, tr, toast }) {
     [tr]
   );
   const getIce = useCallback(async () => {
-    if (!s.ice) s.ice = await api.get("/api/chat/calls/ice").then((r) => r.iceServers).catch(() => [{ urls: "stun:stun.l.google.com:19302" }]);
+    // asked again after a few minutes: a relay's credentials are made per account and expire, a page can stay open for days
+    if (!s.ice || Date.now() - (s.iceAt ?? 0) > 5 * 60 * 1000) {
+      s.ice = await api.get("/api/chat/calls/ice").then((r) => r.iceServers).catch(() => s.ice ?? [{ urls: "stun:stun.l.google.com:19302" }]);
+      s.iceAt = Date.now();
+    }
     return s.ice;
   }, [s]);
   const flushQueue = useCallback(

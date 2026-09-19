@@ -1974,6 +1974,51 @@ console.log("chat (friends by code, one-to-one messages)");
     check("callers then get the TURN server with its credential", iceTurn.data.iceServers.some((s) => s.urls === "turn:turn.example.com:3478" && s.username === "smoke" && s.credential === "secret-cred"));
     const turnOff = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { turn_url: "" } }));
     check("admin removes the TURN server", turnOff.status === 200 && turnOff.data.turn_url === null && turnOff.data.turn_credential_set === false);
+
+    // Cloudflare TURN: the portal asks for short-lived credentials per account. A local stand-in plays Cloudflare (accepted outside production only).
+    {
+      const asked = [];
+      const http = await import("node:http");
+      const fake = http.createServer((req, res) => {
+        let raw = ""; req.on("data", (c) => (raw += c));
+        req.on("end", () => {
+          asked.push({ url: req.url, auth: req.headers.authorization, body: raw });
+          if (req.headers.authorization !== "Bearer smoke-cf-token") { res.statusCode = 401; return res.end("{}"); }
+          res.statusCode = 201; res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] }, { urls: ["turn:turn.cloudflare.com:3478?transport=udp", "turn:turn.cloudflare.com:53?transport=udp", "turns:turn.cloudflare.com:443?transport=tcp"], username: `u-${asked.length}`, credential: "short-lived" }] }));
+        });
+      });
+      await new Promise((r) => fake.listen(0, "127.0.0.1", r));
+      const fakeBase = `http://127.0.0.1:${fake.address().port}`;
+      const badKey = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { cf_turn_key_id: "no spaces allowed" } }));
+      check("a Cloudflare TURN key ID that cannot be one -> 400", badKey.status === 400);
+      const testEarly = await as(adminJar, () => call("POST", "/api/chat/admin/settings/turn-test"));
+      check("testing without a saved key -> 400", testEarly.status === 400);
+      const cfOn = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { cf_turn_key_id: "smokekey0123456789abcdef", cf_turn_token: "smoke-cf-token", cf_turn_api: fakeBase } }));
+      check("admin saves a Cloudflare TURN key (the token is never echoed)", cfOn.status === 200 && cfOn.data.turn_mode === "cloudflare" && cfOn.data.cf_turn_key_id === "smokekey0123456789abcdef" && cfOn.data.cf_turn_token_set === true && !JSON.stringify(cfOn.data).includes("smoke-cf-token"), JSON.stringify(cfOn.data).slice(0, 200));
+      const userTest = await as(userJar, () => call("POST", "/api/chat/admin/settings/turn-test"));
+      check("only an administrator may test the key -> 403", userTest.status === 403);
+      const cfTest = await as(adminJar, () => call("POST", "/api/chat/admin/settings/turn-test"));
+      check("the test asks Cloudflare for one-minute credentials and reports the relay addresses, not the credentials", cfTest.status === 200 && cfTest.data.ok === true && cfTest.data.urls.some((u) => u.startsWith("turn:")) && !JSON.stringify(cfTest.data).includes("short-lived") && JSON.parse(asked.at(-1).body).ttl === 60 && asked.at(-1).url === "/v1/turn/keys/smokekey0123456789abcdef/credentials/generate-ice-servers", JSON.stringify(cfTest.raw).slice(0, 200));
+      const before = asked.length;
+      const cfIce = await as(userJar, () => call("GET", "/api/chat/calls/ice"));
+      const relay = cfIce.data.iceServers?.find((x) => x.username);
+      check("a call gets STUN plus Cloudflare's relay with credentials of its own", cfIce.status === 200 && cfIce.data.relay === "cloudflare" && relay?.credential === "short-lived" && relay.urls.includes("turns:turn.cloudflare.com:443?transport=tcp") && JSON.stringify(cfIce.data.iceServers).includes("stun.l.google.com"), JSON.stringify(cfIce.data).slice(0, 240));
+      check("…without the port 53 addresses browsers block", !JSON.stringify(cfIce.data.iceServers).includes(":53"));
+      check("…asked for with a lifetime of hours, not days", asked.length === before + 1 && JSON.parse(asked.at(-1).body).ttl >= 3600 && JSON.parse(asked.at(-1).body).ttl <= 86400);
+      const cfIceAgain = await as(userJar, () => call("GET", "/api/chat/calls/ice"));
+      check("asking again within minutes reuses them (no second request to Cloudflare)", cfIceAgain.data.iceServers?.find((x) => x.username)?.username === relay?.username && asked.length === before + 1);
+      const cfIceAdmin = await as(adminJar, () => call("GET", "/api/chat/calls/ice"));
+      check("another account gets credentials of its own", cfIceAdmin.data.iceServers?.find((x) => x.username)?.username !== relay?.username && asked.length === before + 2);
+      const wrongToken = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { cf_turn_token: "wrong" } }));
+      const cfTestBad = await as(adminJar, () => call("POST", "/api/chat/admin/settings/turn-test"));
+      check("a refused token: the test says so -> 502", wrongToken.status === 200 && cfTestBad.status === 502 && /refused/i.test(cfTestBad.raw?.error ?? ""), JSON.stringify(cfTestBad.raw));
+      const cfIceBad = await as(userJar, () => call("GET", "/api/chat/calls/ice"));
+      check("…and calls fall back to STUN instead of failing", cfIceBad.status === 200 && cfIceBad.data.iceServers.length === 1 && !cfIceBad.data.iceServers[0].username);
+      const cfOff = await as(adminJar, () => call("PUT", "/api/chat/admin/settings", { body: { cf_turn_key_id: "", cf_turn_api: "" } }));
+      check("removing the key ID removes the token with it", cfOff.status === 200 && cfOff.data.turn_mode === null && cfOff.data.cf_turn_token_set === false);
+      fake.close();
+    }
     // group calls: everyone is rung, people join and leave, the last one out ends it
     const gStart = await as(userJar, () => call("POST", "/api/chat/calls", { body: { conversation_id: gid, kind: "video" } }));
     check("a group call starts active with the starter in it", gStart.status === 201 && gStart.data.group === true && gStart.data.status === "active" && gStart.data.participants.length === 1 && gStart.data.participants[0].id === userId && gStart.data.title === "Smoke crew 3", JSON.stringify(gStart.raw).slice(0, 220));
@@ -2048,10 +2093,13 @@ console.log("chat (friends by code, one-to-one messages)");
       };
       return { status: res.status, type: res.headers.get("content-type") ?? "", next, close: () => ctrl.abort() };
     };
-    const peerOnline = async () => (await as(userJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId)?.online;
+    // presence is checked on the run's own account: the demo admin may really be online somewhere (a phone signed in to this server)
+    const peerOnline = async () => (await as(adminJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId)?.online;
+    const passiveUser = await openAt(userJar, "/api/chat/stream?passive=1");
+    await passiveUser.next("hello", 5000);
+    check("a passive stream (an app in the background) does not show its account as online", (await peerOnline()) === false);
     const passive = await openAt(adminJar, "/api/chat/stream?passive=1");
     await passive.next("hello", 5000);
-    check("a passive stream (an app in the background) does not show its account as online", (await peerOnline()) === false);
     const bellOnly = await openAt(adminJar, "/api/notifications/stream");
     check("GET /api/notifications/stream is an event stream that says hello", bellOnly.status === 200 && bellOnly.type.includes("text/event-stream") && (await bellOnly.next("hello", 5000))?.ok === true);
     // a reaction is a notification that leaves no message behind (the history counts further down stay what they were)
@@ -2062,10 +2110,10 @@ console.log("chat (friends by code, one-to-one messages)");
     const bellEv2 = await bellOnly.next("notification");
     check("…and on the bell-only stream, which carries nothing else", bellEv2?.notification?.id === bellEv?.notification?.id && (await bellOnly.next("message", 600)) === null, JSON.stringify(bellEv2));
     check("the passive stream still gets the chat events", (await passive.next("reaction", 3000))?.message_id === mineMsg.id);
-    const visible = await openAt(adminJar, "/api/chat/stream");
+    const visible = await openAt(userJar, "/api/chat/stream");
     await visible.next("hello", 5000);
     check("an ordinary stream next to it does show the account as online", (await peerOnline()) === true);
-    visible.close(); passive.close(); bellOnly.close();
+    visible.close(); passive.close(); passiveUser.close(); bellOnly.close();
     const anonBell = await fetch(`${BASE}/api/notifications/stream`);
     check("the bell-only stream needs a session -> 401", anonBell.status === 401);
     await as(userJar, () => call("POST", `/api/chat/messages/${mineMsg.id}/reactions`, { body: { emoji: "🙏" } })); // toggled off again

@@ -314,21 +314,23 @@ function RetentionSettings({ tr, state, onChanged }) {
   );
 }
 
-/** Calls: an optional TURN server for voice / video calls between people behind strict NATs. */
+/** Calls: an optional relay (TURN) for voice / video calls between people behind strict NATs: Cloudflare's, or a server of your own. */
 function CallSettings({ tr, state, onChanged }) {
   const toast = useToast();
   const s = state.data?.settings ?? {};
-  const [form, setForm] = useState(null); // { url, username, credential } or null = untouched
+  const [form, setForm] = useState(null); // { url, username, credential, cfKey, cfToken } or null = untouched
   const [saving, setSaving] = useState(false);
-  const shown = form ?? { url: s.turn_url || "", username: s.turn_username || "", credential: "" };
-  const dirty = Boolean(form) && (shown.url !== (s.turn_url || "") || shown.username !== (s.turn_username || "") || shown.credential !== "");
+  const [testing, setTesting] = useState(false);
+  const shown = form ?? { url: s.turn_url || "", username: s.turn_username || "", credential: "", cfKey: s.cf_turn_key_id || "", cfToken: "" };
+  const dirty = Boolean(form) && (shown.url !== (s.turn_url || "") || shown.username !== (s.turn_username || "") || shown.credential !== "" || shown.cfKey !== (s.cf_turn_key_id || "") || shown.cfToken !== "");
   const save = async () => {
     setSaving(true);
     try {
-      const body = { turn_url: shown.url, turn_username: shown.username };
+      const body = { turn_url: shown.url, turn_username: shown.username, cf_turn_key_id: shown.cfKey };
       if (shown.credential || !shown.url) body.turn_credential = shown.url ? shown.credential : "";
+      if (shown.cfToken || !shown.cfKey) body.cf_turn_token = shown.cfKey ? shown.cfToken : "";
       await api.put("/api/chat/admin/settings", body);
-      toast.success(shown.url ? tr("TURN server saved") : tr("TURN server removed"));
+      toast.success(tr("Call settings saved"));
       setForm(null);
       onChanged();
     } catch (e) {
@@ -337,21 +339,50 @@ function CallSettings({ tr, state, onChanged }) {
       setSaving(false);
     }
   };
+  const test = async () => {
+    setTesting(true);
+    try {
+      const r = await api.post("/api/chat/admin/settings/turn-test");
+      toast.success(tr("Cloudflare TURN works"), tr("{n} relay addresses came back.", { n: r.urls.length }));
+    } catch (e) {
+      toast.error(tr("The TURN key does not work"), e.message);
+    } finally {
+      setTesting(false);
+    }
+  };
   const set = (k) => (e) => setForm({ ...shown, [k]: e.target.value });
+  const status = s.turn_mode === "cloudflare" ? tr("Relay on: Cloudflare TURN, with credentials that expire after a few hours.") : s.turn_mode === "static" ? tr("TURN server on: {url}", { url: s.turn_url }) : tr("STUN only — most home and office networks work; some strict NATs will not connect.");
   return (
     <Card className="mt-4 max-w-2xl space-y-4">
       <div>
         <h3 className="text-sm font-semibold">{tr("Voice and video calls")}</h3>
-        <p className="mt-1 text-xs text-fg-muted">{tr("Calls connect browser to browser through public STUN servers, which works on most networks. Add a TURN server (for example coturn, or a hosted one) so calls also connect from behind strict company or mobile NATs; its address and credentials are handed to signed-in users when a call starts.")}</p>
+        <p className="mt-1 text-xs text-fg-muted">{tr("Calls connect device to device through public STUN servers, which works on most networks. A relay (TURN) lets calls also connect from behind strict company or mobile networks. The call itself stays encrypted end to end: a relay only passes it on.")}</p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label={tr("TURN URL")} className="sm:col-span-3"><Input value={shown.url} onChange={set("url")} placeholder="turn:turn.example.com:3478?transport=udp" /></Field>
-        <Field label={tr("Username")}><Input value={shown.username} onChange={set("username")} disabled={!shown.url} autoComplete="off" /></Field>
-        <Field label={tr("Credential")} hint={s.turn_credential_set && !shown.credential ? tr("A credential is saved. Paste a new one to replace it.") : undefined} className="sm:col-span-2"><Input type="password" value={shown.credential} onChange={set("credential")} disabled={!shown.url} autoComplete="off" placeholder={s.turn_credential_set ? "••••••••••••" : ""} /></Field>
+      <div className="space-y-3 rounded-app border border-line p-3">
+        <div>
+          <h4 className="text-xs font-semibold">{tr("Cloudflare TURN (recommended)")}</h4>
+          <p className="mt-1 text-xs text-fg-muted">{tr("Nothing to install: in the Cloudflare dashboard open Realtime → TURN Server, create a TURN key and paste its key ID and API token here. The portal then asks Cloudflare for short-lived credentials whenever somebody starts or takes a call.")}</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={tr("TURN key ID")}><Input value={shown.cfKey} onChange={set("cfKey")} autoComplete="off" className="cf-turn-key" /></Field>
+          <Field label={tr("API token")} hint={s.cf_turn_token_set && !shown.cfToken ? tr("A token is saved. Paste a new one to replace it.") : undefined}><Input type="password" value={shown.cfToken} onChange={set("cfToken")} disabled={!shown.cfKey} autoComplete="off" placeholder={s.cf_turn_token_set ? "••••••••••••" : ""} className="cf-turn-token" /></Field>
+        </div>
+        <Button variant="outline" size="sm" onClick={test} loading={testing} disabled={dirty || s.turn_mode !== "cloudflare"} className="cf-turn-test">{tr("Test the key")}</Button>
+      </div>
+      <div className="space-y-3 rounded-app border border-line p-3">
+        <div>
+          <h4 className="text-xs font-semibold">{tr("A TURN server of your own")}</h4>
+          <p className="mt-1 text-xs text-fg-muted">{tr("For example coturn. Its address and this fixed username and credential are handed to signed-in users when a call starts. Used only while no Cloudflare key is set.")}</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label={tr("TURN URL")} className="sm:col-span-3"><Input value={shown.url} onChange={set("url")} placeholder="turn:turn.example.com:3478?transport=udp" /></Field>
+          <Field label={tr("Username")}><Input value={shown.username} onChange={set("username")} disabled={!shown.url} autoComplete="off" /></Field>
+          <Field label={tr("Credential")} hint={s.turn_credential_set && !shown.credential ? tr("A credential is saved. Paste a new one to replace it.") : undefined} className="sm:col-span-2"><Input type="password" value={shown.credential} onChange={set("credential")} disabled={!shown.url} autoComplete="off" placeholder={s.turn_credential_set ? "••••••••••••" : ""} /></Field>
+        </div>
       </div>
       <div className="flex items-center gap-2">
         <Button icon={Save} onClick={save} loading={saving} disabled={!dirty}>{tr("Save changes")}</Button>
-        <span className="text-[11px] text-fg-muted">{s.turn_url ? tr("TURN server on: {url}", { url: s.turn_url }) : tr("STUN only — most home and office networks work; some strict NATs will not connect.")}</span>
+        <span className="text-[11px] text-fg-muted">{status}</span>
       </div>
     </Card>
   );

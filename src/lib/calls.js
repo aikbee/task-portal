@@ -17,12 +17,8 @@ const STALE_MS = 3 * 60 * 60 * 1000; // a call left ringing/active this long is 
 export const callLabel = (kind) => (kind === "video" ? "video call" : "voice call");
 export const isGroupCall = (call) => call.callee_id == null;
 
-/** Public STUN plus an optional TURN server from the admin settings. */
-export function iceServersFor(settings) {
-  const list = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
-  if (settings?.turn_url) list.push({ urls: settings.turn_url, username: settings.turn_username || undefined, credential: settings.turn_credential || undefined });
-  return list;
-}
+/** Public STUN plus the relay from the admin settings: see turn.js. */
+export { iceServersForUser } from "./turn";
 
 export async function callFor(id, userId) {
   const call = await queryOne("SELECT * FROM calls WHERE id = ?", [id]);

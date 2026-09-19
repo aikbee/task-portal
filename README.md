@@ -336,7 +336,7 @@ Endpoints:
 | GET | `/api/chat/conversations/:id/export` | `?format=txt|json|zip` download of what you can see in the chat |
 | POST | `/api/chat/messages/:id/report` | `{ reason }` reports someone else's message to the administrators |
 | GET | `/api/chat/admin/overview` | admin: instance settings, totals and every conversation's members, counts, size, retention and open reports (no message text) |
-| PUT | `/api/chat/admin/settings` | admin: `{ max_retention_days?, gif_provider?, gif_api_key?, turn_url?, turn_username?, turn_credential? }` — history cap (purges at once), the GIF search key and the TURN server (secrets stored server-side, reported only as `…_set`) |
+| PUT | `/api/chat/admin/settings` | admin: `{ max_retention_days?, gif_provider?, gif_api_key?, turn_url?, turn_username?, turn_credential?, cf_turn_key_id?, cf_turn_token? }` — history cap (purges at once), the GIF search key and the TURN server (secrets stored server-side, reported only as `…_set`) |
 | GET | `/api/chat/admin/reports` | admin: reports (`?status=open|resolved|all`) with the snapshot taken when they were filed |
 | PUT | `/api/chat/admin/reports/:id` | admin: `{ action: "dismiss" | "delete_message" }` |
 | DELETE | `/api/chat/admin/conversations/:id` | admin: delete any conversation with its files (members are told live) |
@@ -348,7 +348,8 @@ Endpoints:
 | POST | `/api/chat/conversations/:id/read` | `{ message_id }` (must belong to the chat) marks read up to that message; members' `last_read_message_id` drive per-message receipts |
 | POST | `/api/chat/calls` | `{ conversation_id, kind: audio\|video }` rings the other person of a direct chat, or opens a group call and rings every member (201; 409 when you are already in a call, or a call is already on in the group) |
 | POST | `/api/chat/calls/:id/join` · `/leave` | group calls: join (the answer lists who is in it; the newcomer offers to each) / leave (the last one out ends it); up to 8 people |
-| GET | `/api/chat/calls/ice` | ICE servers for the browser: public STUN plus the admin's TURN server |
+| GET | `/api/chat/calls/ice` | ICE servers for a call: public STUN plus the relay an administrator set up — Cloudflare Realtime TURN (short-lived credentials made for this account, asked for again every few minutes) or a TURN server of their own. `relay`: `cloudflare` \| `static` \| `null` |
+| POST | `/api/chat/admin/settings/turn-test` | Admin: does the saved Cloudflare TURN key work? Reports the relay addresses, never the credentials |
 | GET | `/api/chat/calls/:id` | the call's state |
 | POST | `/api/chat/calls/:id/accept` · `/decline` | the person being called picks up (active) or says no |
 | POST | `/api/chat/calls/:id/end` | hang up; while ringing the caller giving up marks it missed; `{ reason: "failed" }` logs a call that could not connect |

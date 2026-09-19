@@ -200,10 +200,14 @@ export async function readChatSettings() {
     turn_url: turnUrl && /^turns?:/i.test(turnUrl) ? turnUrl : null,
     turn_username: str(raw?.turn_username, 200),
     turn_credential: str(raw?.turn_credential, 200),
+    // Cloudflare Realtime TURN: a key ID and its API token; the token is a secret like the GIF key
+    cf_turn_key_id: str(raw?.cf_turn_key_id, 100),
+    cf_turn_token: str(raw?.cf_turn_token, 300),
+    cf_turn_api: process.env.NODE_ENV !== "production" ? str(raw?.cf_turn_api, 200) : null, // tests point this at a stand-in
   };
 }
 /** What administrators may see of the settings: secrets are reported as set / not set. */
-export const publicChatSettings = (s) => ({ max_retention_days: s.max_retention_days, gif_provider: s.gif_provider, gif_key_set: Boolean(s.gif_api_key), gif_search: s.gif_search, turn_url: s.turn_url, turn_username: s.turn_username, turn_credential_set: Boolean(s.turn_credential) });
+export const publicChatSettings = (s) => ({ max_retention_days: s.max_retention_days, gif_provider: s.gif_provider, gif_key_set: Boolean(s.gif_api_key), gif_search: s.gif_search, turn_url: s.turn_url, turn_username: s.turn_username, turn_credential_set: Boolean(s.turn_credential), cf_turn_key_id: s.cf_turn_key_id, cf_turn_token_set: Boolean(s.cf_turn_token), turn_mode: s.cf_turn_key_id && s.cf_turn_token ? "cloudflare" : s.turn_url ? "static" : null });
 export async function saveChatSettings(value, userId) {
   await execute("INSERT INTO app_settings (name, value, updated_by) VALUES ('chat', ?, ?) AS new ON DUPLICATE KEY UPDATE value = new.value, updated_by = new.updated_by", [JSON.stringify(value), userId]);
 }
