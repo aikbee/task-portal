@@ -5,6 +5,7 @@ const PUBLIC = new Set([
   "/login", "/api/auth/login", "/api/auth/methods", "/api/auth/passkeys/login/options", "/api/auth/passkeys/login/verify", "/api/auth/google", "/api/auth/google/callback", "/api/auth/totp/verify",
   "/forgot", "/reset", "/join", "/api/auth/forgot", "/api/auth/reset", "/api/auth/join",
   "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds",
+  "/bg", // the animated background on its own, shown behind the native apps' screens: no data, only the animation
 ]);
 
 /**
