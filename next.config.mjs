@@ -16,6 +16,9 @@ const nextConfig = {
   // swap it into place, so the running app never serves a half-written build.
   distDir: process.env.NEXT_DIST_DIR || ".next",
   env: { GIT_COMMIT: gitCommit() },
+  // Development only: the Android emulator reaches this Mac as 10.0.2.2. Without this the dev server refuses its
+  // dev-only endpoints to the app's WebView, and the /bg page (the backgrounds behind the app's screens) never starts there.
+  allowedDevOrigins: ["10.0.2.2"],
   experimental: {
     // src/proxy.js runs on every request, and Next buffers the body for it (10 MB by default,
     // silently truncating larger uploads). Attachments go up to 50 MB, chat files to 25 MB per message.
