@@ -7,7 +7,7 @@ const METHOD_LABEL = { password: "", passkey: " with a passkey", google: " with 
 
 /** "Chrome on macOS" style description of a user agent, plus the device class. */
 export function describeUserAgent(ua = "") {
-  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : /Firefox\//.test(ua) ? "Firefox" : !ua || /^(node|curl|python|wget|postman|insomnia)/i.test(ua) ? "an API client" : "a browser";
+  const browser = /^TaskPortal-Android\//.test(ua) ? "the Task Portal app" : /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : /Firefox\//.test(ua) ? "Firefox" : !ua || /^(node|curl|python|wget|postman|insomnia)/i.test(ua) ? "an API client" : "a browser";
   // iPhones and iPads say "like Mac OS X", so they are checked before macOS
   const os = /iPhone|iPad|iPod/.test(ua) ? "iOS" : /Mac OS X/.test(ua) ? "macOS" : /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /Linux/.test(ua) ? "Linux" : null;
   const device = /iPad|Tablet/i.test(ua) ? "tablet" : /Mobi|Android|iPhone/i.test(ua) ? "phone" : "desktop";
