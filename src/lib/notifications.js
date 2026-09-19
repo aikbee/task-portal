@@ -3,6 +3,7 @@ import { NOTIFICATION_TYPES } from "./constants";
 import { sendPush } from "./push";
 import { sendNotificationEmail, EMAIL_TYPES } from "./mail";
 import { moduleAllowed } from "./access-control";
+import { publish } from "./live";
 
 /** Types a user sees even for their own actions (milestones, reminders, security). */
 const SELF_VISIBLE = new Set(["task_done", "requirement_done", "project_completed", "task_due", "task_overdue", "security_login"]);
@@ -34,6 +35,9 @@ export async function notify({ userId, type, title, body = null, href = null, en
     "INSERT INTO notifications (user_id, type, title, body, href, entity_type, entity_id, profile_id, actor_id, dedupe_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [userId, type, title.slice(0, 200), body ? String(body).slice(0, 500) : null, href, entityType, entityId, profileId, actorId, dedupeKey]
   );
+  // open apps hear about it at once: the bell counts up, and an app that holds the stream in the background (the
+  // Android app) shows it as a phone notification. `data` is what a call push carries (ring / missed).
+  publish(userId, { type: "notification", notification: { id: res.insertId, type, category: NOTIFICATION_TYPES[type].category, title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : null, href: href || null, profile_id: profileId, tag: tag || dedupeKey || `n-${res.insertId}`, created_at: new Date().toISOString(), data: push?.data ?? null } });
   // devices that opted in get the same notification as a push (fire and forget)
   // `push`: { ttl, urgency, topic, data } — calls go out urgent and short-lived and carry what the banner needs
   sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type, ...(push?.data ?? {}) }, push ?? undefined).catch(() => {});

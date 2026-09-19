@@ -12,8 +12,9 @@ import { moduleAllowed } from "@/lib/access-control";
  * One live stream (Server-Sent Events from /api/chat/stream) for the whole app, so calls ring and unread badges
  * move on every page, not only in Chat. The chat page subscribes to the same stream instead of opening its own.
  */
-const EVENT_TYPES = ["message", "message_updated", "read", "delivered", "presence", "friends", "conversation", "typing", "reaction", "purged", "call"];
+const EVENT_TYPES = ["message", "message_updated", "read", "delivered", "presence", "friends", "conversation", "typing", "reaction", "purged", "call", "notification"];
 const LiveContext = createContext(null);
+const NO_LIVE = { on: () => () => {}, connected: false, calls: null }; // one object: effects that depend on `on` must not re-run on every render
 
 export function ChatLiveProvider({ locked = false, children }) {
   const tr = useT();
@@ -87,5 +88,5 @@ export function ChatLiveProvider({ locked = false, children }) {
 /** { on(type, fn) → unsubscribe, connected, calls } — falls back to a no-op stream when rendered outside the shell. */
 export function useChatLive() {
   const ctx = useContext(LiveContext);
-  return ctx ?? { on: () => () => {}, connected: false, calls: null };
+  return ctx ?? NO_LIVE;
 }

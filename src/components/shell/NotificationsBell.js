@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useChatLive } from "./ChatLive";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bell, CheckCheck, Inbox } from "lucide-react";
@@ -28,6 +29,7 @@ export default function NotificationsBell() {
   const notifyDesktop = usePrefs((s) => s.notifyDesktop);
   const lastTopId = useRef(null);
   const { user, switchProfile } = useAuth();
+  const { on } = useChatLive();
 
   useEffect(() => {
     let alive = true;
@@ -55,12 +57,15 @@ export default function NotificationsBell() {
     const t = setInterval(load, POLL_MS);
     const onFocus = () => load();
     window.addEventListener("focus", onFocus);
+    // the live stream says when a notification was created: no waiting for the next poll
+    const off = on("notification", load);
     return () => {
       alive = false;
       clearInterval(t);
       window.removeEventListener("focus", onFocus);
+      off();
     };
-  }, [setUnread, toast, notifySound, notifyDesktop]);
+  }, [setUnread, toast, notifySound, notifyDesktop, on]);
 
   const markAllRead = async () => {
     try {

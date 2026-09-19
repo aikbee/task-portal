@@ -359,7 +359,8 @@ Endpoints:
 | PUT/DELETE | `/api/chat/messages/:id` | `{ body }` edits your own message (sets `edited_at`) / soft-deletes yours or, as group owner or admin, anyone's (`deleted_at`, content and files removed) |
 | POST | `/api/chat/messages/:id/reactions` | `{ emoji }` toggles one of the quick reactions; messages carry `reactions[]` (`emoji`, `count`, `user_ids`, `names`) |
 | POST | `/api/chat/conversations/:id/typing` | `{ typing: true|false }` relayed live to the other members, never stored |
-| GET | `/api/chat/stream` | Server-Sent Events for the signed-in user (also `purged` when retention removes messages) |
+| GET | `/api/chat/stream` | Server-Sent Events for the signed-in user (also `purged` when retention removes messages, `call`, and `notification` for every new bell entry). `?passive=1`: an app holding the connection in the background — reachable and kept in its call, but not shown as online |
+| GET | `/api/notifications/stream` | Server-Sent Events with only `notification` (`{ notification: { id, type, category, title, body, href, profile_id, tag, data } }`): for accounts without Chat, e.g. the Android app's phone alerts; does not count as being online |
 
 ## Mobile and PWA
 

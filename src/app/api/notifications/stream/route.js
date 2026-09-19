@@ -1,17 +1,15 @@
 import { handler } from "@/lib/api-utils";
-import { subscribe } from "@/lib/chat";
-import "@/lib/calls"; // registers the "hang up when a browser goes away" hook
+import { listen } from "@/lib/live";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Server-Sent Events: chat, call and "notification" events for the signed-in user, with a keep-alive ping.
- * ?passive=1: an app holding the connection in the background — reachable (calls ring, it stays in its call), but
- * not shown as online.
+ * Server-Sent Events with only the bell: a "notification" event for every notification created for the signed-in
+ * user. For accounts without Chat (whose /api/chat/stream is refused); it does not count as being online.
  */
 export const GET = handler(async (request, _params, user) => {
   const enc = new TextEncoder();
-  let unsubscribe = null;
+  let stop = null;
   let ping = null;
   const stream = new ReadableStream({
     start(controller) {
@@ -21,24 +19,24 @@ export const GET = handler(async (request, _params, user) => {
         } catch {}
       };
       send("hello", { ok: true });
-      unsubscribe = subscribe(user.id, (ev) => send(ev.type, ev), { passive: request.nextUrl.searchParams.get("passive") === "1" });
+      stop = listen(user.id, (ev) => ev.type === "notification" && send(ev.type, ev));
       ping = setInterval(() => {
         try {
           controller.enqueue(enc.encode(": ping\n\n"));
         } catch {}
       }, 25000);
-      const stop = () => {
+      const end = () => {
         clearInterval(ping);
-        unsubscribe?.();
+        stop?.();
         try {
           controller.close();
         } catch {}
       };
-      request.signal?.addEventListener("abort", stop);
+      request.signal?.addEventListener("abort", end);
     },
     cancel() {
       clearInterval(ping);
-      unsubscribe?.();
+      stop?.();
     },
   });
   return new Response(stream, {

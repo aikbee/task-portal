@@ -5,13 +5,17 @@ import QRCode from "qrcode";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { notify } from "./notifications";
+import { listen, publish } from "./live";
 
-/* ---------- live events: one in-process bus per user (a single pm2 process serves the app) ---------- */
-const bus = globalThis.__chatBus ?? (globalThis.__chatBus = new Map());
-/* presence: a user is online while at least one live stream is open; offline 30 s after the last one drops */
-const presence = globalThis.__chatPresence ?? (globalThis.__chatPresence = new Map()); // userId -> { count, timer }
+/* ---------- live events: the bus lives in live.js; chat adds presence on top ---------- */
+/*
+ * presence: a user is online while at least one live stream of theirs is open and not "passive"; offline 30 s after the
+ * last one drops. A passive stream is an app holding the connection in the background (so calls ring and the bell
+ * notifies): it keeps the account reachable and in its call, but it is not somebody looking at the portal.
+ */
+const presence = globalThis.__chatPresence ?? (globalThis.__chatPresence = new Map()); // userId -> { count, visible, timer, vtimer }
 const OFFLINE_GRACE_MS = 30000;
-export const isOnline = (userId) => (presence.get(userId)?.count ?? 0) > 0;
+export const isOnline = (userId) => (presence.get(userId)?.visible ?? 0) > 0;
 async function contactsOf(userId) {
   const rows = await query("SELECT DISTINCT m2.user_id FROM conversation_members m1 JOIN conversation_members m2 ON m2.conversation_id = m1.conversation_id AND m2.user_id <> m1.user_id WHERE m1.user_id = ?", [userId]);
   return rows.map((r) => r.user_id);
@@ -20,32 +24,49 @@ async function announcePresence(userId, online) {
   const at = new Date().toISOString();
   for (const id of await contactsOf(userId).catch(() => [])) publish(id, { type: "presence", user_id: userId, online, last_seen_at: at });
 }
-function presenceConnect(userId) {
-  const st = presence.get(userId) ?? { count: 0, timer: null };
+function presenceConnect(userId, passive) {
+  const st = presence.get(userId) ?? { count: 0, visible: 0, timer: null, vtimer: null };
+  if (!Number.isFinite(st.visible)) st.visible = 0; // an entry made before a hot reload added the field
   if (st.timer) {
     clearTimeout(st.timer);
     st.timer = null;
   }
   st.count += 1;
   presence.set(userId, st);
-  if (st.count === 1) {
+  if (passive) return;
+  if (st.vtimer) {
+    clearTimeout(st.vtimer);
+    st.vtimer = null;
+  }
+  st.visible += 1;
+  if (st.visible === 1) {
     execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
     announcePresence(userId, true).catch(() => {});
   }
 }
 const offlineHooks = globalThis.__chatOfflineHooks ?? (globalThis.__chatOfflineHooks = new Set());
-/** Run something when a user's last live stream has been gone for the grace period (calls use it to hang up). */
+/** Run something when a user's last live stream (passive ones included) has been gone for the grace period (calls use it to hang up). */
 export const onUserOffline = (fn) => offlineHooks.add(fn);
-function presenceDisconnect(userId) {
+function presenceDisconnect(userId, passive) {
   const st = presence.get(userId);
   if (!st) return;
   st.count = Math.max(0, st.count - 1);
-  if (st.count > 0) return;
+  if (!passive) {
+    st.visible = Math.max(0, (st.visible ?? 0) - 1);
+    if (st.visible === 0 && !st.vtimer) {
+      st.vtimer = setTimeout(() => {
+        st.vtimer = null;
+        if (st.visible > 0) return;
+        execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
+        announcePresence(userId, false).catch(() => {});
+      }, OFFLINE_GRACE_MS);
+    }
+  }
+  if (st.count > 0 || st.timer) return;
   st.timer = setTimeout(() => {
+    st.timer = null;
     if (st.count > 0) return;
-    presence.delete(userId);
-    execute("UPDATE users SET last_seen_at = NOW() WHERE id = ?", [userId]).catch(() => {});
-    announcePresence(userId, false).catch(() => {});
+    if (!st.vtimer) presence.delete(userId);
     for (const fn of offlineHooks) {
       try {
         fn(userId);
@@ -53,29 +74,16 @@ function presenceDisconnect(userId) {
     }
   }, OFFLINE_GRACE_MS);
 }
-export function subscribe(userId, fn) {
-  let set = bus.get(userId);
-  if (!set) {
-    set = new Set();
-    bus.set(userId, set);
-  }
-  set.add(fn);
-  presenceConnect(userId);
+/** Listen to a user's events and count as a connection of theirs; `passive`: reachable, but not shown as online. */
+export function subscribe(userId, fn, { passive = false } = {}) {
+  const stop = listen(userId, fn);
+  presenceConnect(userId, passive);
   return () => {
-    set.delete(fn);
-    if (!set.size) bus.delete(userId);
-    presenceDisconnect(userId);
+    stop();
+    presenceDisconnect(userId, passive);
   };
 }
-export function publish(userId, event) {
-  const set = bus.get(userId);
-  if (!set) return;
-  for (const fn of set) {
-    try {
-      fn(event);
-    } catch {}
-  }
-}
+export { publish };
 
 export const PEER_FIELDS = "u.id, u.name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, u.email";
 /** Same person columns for conversation rows, where `id` is the conversation and the person is `user_id`. */

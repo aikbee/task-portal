@@ -2027,6 +2027,49 @@ console.log("chat (friends by code, one-to-one messages)");
     await adminStream.next("call"); await adminStream.next("message"); await userStream.next("call"); await userStream.next("message");
     adminStream.close();
     userStream.close();
+
+    // the bell on the live stream (what the Android app turns into phone notifications), passive connections, the bell-only stream
+    const openAt = async (j, path) => {
+      const ctrl = new AbortController();
+      const res = await fetch(`${BASE}${path}`, { headers: { cookie: cookieOf(j) }, signal: ctrl.signal });
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ""; let pending = null;
+      const read = () => (pending ??= reader.read().then((r) => { pending = null; return r; }));
+      const next = async (name, timeoutMs = 8000) => {
+        const until = Date.now() + timeoutMs;
+        for (;;) {
+          const m = buf.match(new RegExp(`event: ${name}\\ndata: (.*)\\n`));
+          if (m) { buf = buf.slice(0, m.index) + buf.slice(m.index + m[0].length); return JSON.parse(m[1]); }
+          const left = until - Date.now();
+          if (left <= 0) return null;
+          const r = await Promise.race([read(), new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), left))]);
+          if (r.timeout || r.done) return null;
+          buf += dec.decode(r.value, { stream: true });
+        }
+      };
+      return { status: res.status, type: res.headers.get("content-type") ?? "", next, close: () => ctrl.abort() };
+    };
+    const peerOnline = async () => (await as(userJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId)?.online;
+    const passive = await openAt(adminJar, "/api/chat/stream?passive=1");
+    await passive.next("hello", 5000);
+    check("a passive stream (an app in the background) does not show its account as online", (await peerOnline()) === false);
+    const bellOnly = await openAt(adminJar, "/api/notifications/stream");
+    check("GET /api/notifications/stream is an event stream that says hello", bellOnly.status === 200 && bellOnly.type.includes("text/event-stream") && (await bellOnly.next("hello", 5000))?.ok === true);
+    // a reaction is a notification that leaves no message behind (the history counts further down stay what they were)
+    const mineMsg = (await as(adminJar, () => call("GET", `/api/chat/conversations/${convoId}/messages?limit=100`))).data.filter((m) => m.sender_id === adminId && m.kind === "text" && !m.deleted_at).at(-1);
+    const spoken = await as(userJar, () => call("POST", `/api/chat/messages/${mineMsg.id}/reactions`, { body: { emoji: "🙏" } }));
+    const bellEv = await passive.next("notification");
+    check("a new notification arrives on the live stream as a 'notification' event", spoken.status === 200 && bellEv?.notification?.type === "chat_reaction" && bellEv.notification.category === "chat" && bellEv.notification.id > 0 && /reacted/.test(bellEv.notification.title) && bellEv.notification.href === `/chat?c=${convoId}`, JSON.stringify(bellEv));
+    const bellEv2 = await bellOnly.next("notification");
+    check("…and on the bell-only stream, which carries nothing else", bellEv2?.notification?.id === bellEv?.notification?.id && (await bellOnly.next("message", 600)) === null, JSON.stringify(bellEv2));
+    check("the passive stream still gets the chat events", (await passive.next("reaction", 3000))?.message_id === mineMsg.id);
+    const visible = await openAt(adminJar, "/api/chat/stream");
+    await visible.next("hello", 5000);
+    check("an ordinary stream next to it does show the account as online", (await peerOnline()) === true);
+    visible.close(); passive.close(); bellOnly.close();
+    const anonBell = await fetch(`${BASE}/api/notifications/stream`);
+    check("the bell-only stream needs a session -> 401", anonBell.status === 401);
+    await as(userJar, () => call("POST", `/api/chat/messages/${mineMsg.id}/reactions`, { body: { emoji: "🙏" } })); // toggled off again
+    if (bellEv?.notification?.id) await as(adminJar, () => call("DELETE", `/api/notifications/${bellEv.notification.id}`));
   }
     const bellMod = await as(adminJar, () => call("GET", "/api/notifications?limit=50"));
     for (const n of bellMod.data.items.filter((x) => x.type === "chat_group" && x.entity_id === gid)) await as(adminJar, () => call("DELETE", `/api/notifications/${n.id}`));
