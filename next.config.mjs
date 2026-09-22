@@ -22,7 +22,7 @@ const nextConfig = {
   experimental: {
     // src/proxy.js runs on every request, and Next buffers the body for it (10 MB by default,
     // silently truncating larger uploads). Attachments go up to 50 MB, chat files to 25 MB per message.
-    proxyClientMaxBodySize: "60mb",
+    proxyClientMaxBodySize: "100mb", // attachments up to 50 MB, chat files 25 MB per message, and a debug build of the Android app is 60 MB
   },
 };
 

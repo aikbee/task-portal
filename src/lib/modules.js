@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2, Mail, Timer } from "lucide-react";
+import { LayoutDashboard, FolderKanban, ClipboardList, Users, CheckSquare, ShieldCheck, Bell, Layers, CalendarDays, SquareKanban, BookOpen, Brush, Palette, MessageCircle, ShieldAlert, DatabaseBackup, UserCheck, ChartGantt, Trash2, Mail, Timer, Smartphone } from "lucide-react";
 
 /**
  * Module registry. The sidebar, breadcrumbs, sticky notes and "New" menu are
@@ -184,6 +184,17 @@ export const MODULES = [
     icon: ShieldAlert,
     color: "#ef4444",
     description: "Reported chat messages, every conversation's size and retention, and a cap on how long chat history is kept.",
+    adminOnly: true,
+  },
+  {
+    key: "apps",
+    label: "Mobile app",
+    singular: "Release",
+    href: "/apps",
+    api: "/api/app/releases",
+    icon: Smartphone,
+    color: "#8b5cf6",
+    description: "Publish a new build of the Android app: the phones notice it, download it and update themselves.",
     adminOnly: true,
   },
   {

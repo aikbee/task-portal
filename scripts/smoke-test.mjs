@@ -2794,6 +2794,74 @@ console.log("email (password reset, invitations, notification emails)");
   server.close();
 }
 
+// app releases: the Android app's self-update — an administrator publishes an APK, phones ask for the newest one
+{
+  const zlib = await import("node:zlib");
+  // a small but real APK: a ZIP holding Android's binary AndroidManifest.xml and a v2 signing block with one certificate
+  const axml = ({ pkg, versionCode, versionName, target = 35 }) => {
+    const strings = ["manifest", "uses-sdk", "package", "versionCode", "versionName", "targetSdkVersion", pkg, versionName];
+    const enc = strings.map((t) => { const b = Buffer.from(t, "utf8"); return Buffer.concat([Buffer.from([b.length, b.length]), b, Buffer.from([0])]); });
+    let strData = Buffer.concat(enc); if (strData.length % 4) strData = Buffer.concat([strData, Buffer.alloc(4 - (strData.length % 4))]);
+    const offsets = Buffer.alloc(4 * strings.length); let o = 0; enc.forEach((b, i) => { offsets.writeUInt32LE(o, i * 4); o += b.length; });
+    const pool = Buffer.alloc(28); pool.writeUInt16LE(1, 0); pool.writeUInt16LE(28, 2); pool.writeUInt32LE(28 + offsets.length + strData.length, 4); pool.writeUInt32LE(strings.length, 8); pool.writeUInt32LE(0, 12); pool.writeUInt32LE(0x100, 16); pool.writeUInt32LE(28 + offsets.length, 20); pool.writeUInt32LE(0, 24);
+    const element = (nameIdx, attrs) => {
+      const b = Buffer.alloc(36 + attrs.length * 20); b.writeUInt16LE(0x0102, 0); b.writeUInt16LE(16, 2); b.writeUInt32LE(b.length, 4); b.writeUInt32LE(1, 8); b.writeUInt32LE(0xffffffff, 12);
+      b.writeUInt32LE(0xffffffff, 16); b.writeUInt32LE(nameIdx, 20); b.writeUInt16LE(20, 24); b.writeUInt16LE(20, 26); b.writeUInt16LE(attrs.length, 28);
+      attrs.forEach(([name, raw, type, data], i) => { const a = 36 + i * 20; b.writeUInt32LE(0xffffffff, a); b.writeUInt32LE(name, a + 4); b.writeUInt32LE(raw, a + 8); b.writeUInt16LE(8, a + 12); b[a + 14] = 0; b[a + 15] = type; b.writeUInt32LE(data, a + 16); });
+      return b;
+    };
+    const body = Buffer.concat([pool, offsets, strData, element(0, [[2, 6, 0x03, 6], [3, 0xffffffff, 0x10, versionCode], [4, 7, 0x03, 7]]), element(1, [[5, 0xffffffff, 0x10, target]])]);
+    const head = Buffer.alloc(8); head.writeUInt16LE(3, 0); head.writeUInt16LE(8, 2); head.writeUInt32LE(8 + body.length, 4);
+    return Buffer.concat([head, body]);
+  };
+  const apk = (opts, cert = "smoke-certificate-A") => {
+    const name = Buffer.from("AndroidManifest.xml"), data = axml(opts), crc = zlib.crc32(data);
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 8); local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(name.length, 26);
+    const entry = Buffer.concat([local, name, data]);
+    const certBytes = Buffer.from(cert);
+    const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; }; const u64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
+    const value = Buffer.concat([u32(20 + certBytes.length), u32(16 + certBytes.length), u32(12 + certBytes.length), u32(0), u32(4 + certBytes.length), u32(certBytes.length), certBytes]);
+    const pair = Buffer.concat([u64(4 + value.length), u32(0x7109871a), value]);
+    const block = Buffer.concat([u64(pair.length + 8 + 16), pair, u64(pair.length + 8 + 16), Buffer.from("APK Sig Block 42")]);
+    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0, 10); central.writeUInt32LE(crc, 16); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE(0, 42);
+    const cd = Buffer.concat([central, name]);
+    const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(entry.length + block.length, 16);
+    return Buffer.concat([entry, block, cd, eocd]);
+  };
+  const upload = (buf, notes, name = "TaskPortal.apk") => { const fd = new FormData(); fd.append("file", new Blob([buf], { type: "application/vnd.android.package-archive" }), name); if (notes) fd.append("notes", notes); return call("POST", "/api/app/releases", { form: fd }); };
+  const PKG = "com.systemportal.task.smoke";
+  const before = await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true });
+  check("GET /api/app/android/latest is public and says null while nothing is published", before.status === 200 && before.data.release === null);
+  check("the release list needs an administrator's session", (await call("GET", "/api/app/releases", { noAuth: true })).status === 401);
+  const text = await upload(Buffer.from("just some text, not an app"), null, "notes.txt");
+  check("a file that is not an APK -> 400 with a plain reason", text.status === 400 && /not a ZIP|not an Android app/.test(text.raw?.error ?? ""), JSON.stringify(text.raw));
+  const foreign = await upload(apk({ pkg: "com.example.other", versionCode: 1, versionName: "1.0" }));
+  check("another app's APK -> 400", foreign.status === 400 && /different app/.test(foreign.raw?.error ?? ""), JSON.stringify(foreign.raw));
+  const v1 = await upload(apk({ pkg: PKG, versionCode: 1, versionName: "0.9.0" }), "First smoke build");
+  check("an administrator publishes a build: the file says which version it is", v1.status === 201 && v1.data.version_code === 1 && v1.data.version_name === "0.9.0" && v1.data.package_name === PKG && v1.data.notes === "First smoke build" && v1.data.sha256?.length === 64 && v1.data.cert_sha256?.length === 64 && v1.data.url === `/api/app/android/download/${v1.data.id}`, JSON.stringify(v1.raw).slice(0, 300));
+  const same = await upload(apk({ pkg: PKG, versionCode: 1, versionName: "0.9.0-again" }));
+  check("the same version code again -> 409", same.status === 409 && /not newer/.test(same.raw?.error ?? ""), JSON.stringify(same.raw));
+  const otherKey = await upload(apk({ pkg: PKG, versionCode: 2, versionName: "0.9.1" }), null, "TaskPortal.apk");
+  const otherKey2 = otherKey.status === 201 ? null : otherKey; // (same key: accepted below)
+  const wrongKey = await upload(apk({ pkg: PKG, versionCode: 3, versionName: "0.9.2" }, "smoke-certificate-B"));
+  check("a build signed with another key -> 409 (phones would refuse it)", wrongKey.status === 409 && /different key/.test(wrongKey.raw?.error ?? ""), JSON.stringify(wrongKey.raw));
+  check("a newer build with the same key is accepted", otherKey.status === 201 && otherKey.data.version_code === 2 && otherKey2 === null, JSON.stringify(otherKey.raw).slice(0, 200));
+  const latest = await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true });
+  check("latest now names the newest build with size, checksum and URL", latest.status === 200 && latest.data.release?.version_code === 2 && latest.data.release.version_name === "0.9.1" && latest.data.release.size_bytes > 0 && latest.data.release.url === `/api/app/android/download/${otherKey.data.id}`);
+  const dl = await fetch(`${BASE}${latest.data.release.url}`);
+  const bytes = Buffer.from(await dl.arrayBuffer());
+  const { createHash } = await import("node:crypto");
+  check("the APK downloads publicly, byte for byte, with its checksum in a header", dl.status === 200 && dl.headers.get("content-type") === "application/vnd.android.package-archive" && bytes.length === latest.data.release.size_bytes && createHash("sha256").update(bytes).digest("hex") === latest.data.release.sha256 && dl.headers.get("x-checksum-sha256") === latest.data.release.sha256 && /TaskPortal-0\.9\.1\.apk/.test(dl.headers.get("content-disposition") ?? ""));
+  check("the release app's package is untouched by the smoke builds", (await call("GET", "/api/app/android/latest", { noAuth: true })).data.release?.package_name !== PKG);
+  const list = await call("GET", "/api/app/releases");
+  check("the admin list shows both builds, newest first, with the uploader's name", list.status === 200 && list.data.filter((r) => r.package_name === PKG).map((r) => r.version_code).join(",") === "2,1" && list.data.find((r) => r.package_name === PKG)?.uploaded_by_name);
+  const del2 = await call("DELETE", `/api/app/releases/${otherKey.data.id}`);
+  check("removing the newest build offers the previous one again", del2.status === 200 && (await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true })).data.release?.version_code === 1);
+  check("…and its file is gone", (await fetch(`${BASE}/api/app/android/download/${otherKey.data.id}`)).status === 404);
+  await call("DELETE", `/api/app/releases/${v1.data.id}`);
+  check("the smoke builds are cleaned up", (await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true })).data.release === null);
+}
+
 console.log("cleanup");
 {
   const u = await call("DELETE", `/api/users/${userId}`);

@@ -864,3 +864,21 @@ CREATE TABLE IF NOT EXISTS message_mentions (
   CONSTRAINT fk_message_mentions_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
   CONSTRAINT fk_message_mentions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Builds of the native apps that the phones update themselves from (uploaded by an administrator on the Mobile app page)
+CREATE TABLE IF NOT EXISTS app_releases (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  platform VARCHAR(16) NOT NULL DEFAULT 'android',
+  package_name VARCHAR(160) NOT NULL,
+  version_code INT UNSIGNED NOT NULL,
+  version_name VARCHAR(40) NOT NULL,
+  min_sdk INT UNSIGNED NULL,
+  size_bytes INT UNSIGNED NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  cert_sha256 CHAR(64) NULL, -- the signing certificate: a build signed with another key would never install over the app
+  stored_name VARCHAR(255) NOT NULL,
+  notes TEXT NULL,
+  uploaded_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_app_releases_version (platform, package_name, version_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -18,7 +18,8 @@ export async function proxy(request) {
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   const sessionId = token ? await verifySessionToken(token, sessionSecret()) : null;
 
-  if (PUBLIC.has(pathname)) {
+  // the native app checks for and downloads its updates before or without a session
+  if (PUBLIC.has(pathname) || pathname.startsWith("/api/app/android/")) {
     if (pathname === "/login" && sessionId) return NextResponse.redirect(new URL("/", request.url));
     return NextResponse.next();
   }
