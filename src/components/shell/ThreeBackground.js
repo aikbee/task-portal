@@ -3030,7 +3030,576 @@ function luckycat(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat };
+/* ---------- Campsite: a forest clearing with a crackling campfire, a tent lit from inside, fireflies under the stars ---------- */
+const CAMP_NOISE = /* glsl */ `
+  float campHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float campNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(campHash(i), campHash(i + vec2(1.0, 0.0)), f.x), mix(campHash(i + vec2(0.0, 1.0)), campHash(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  float campFbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a * campNoise(p); p *= 2.03; a *= 0.5; } return s; }
+`;
+const CAMP_FLAME_VS = /* glsl */ `
+  uniform vec2 uSize;
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    // a billboard standing on its bottom edge: whatever the camera does, the flame faces it
+    vec4 mv = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    mv.xy += vec2(position.x * uSize.x, (position.y + 0.5) * uSize.y);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const CAMP_FLAME_FS = /* glsl */ `
+  ${CAMP_NOISE}
+  uniform float uTime; uniform float uSeed; uniform float uStrength;
+  varying vec2 vUv;
+  void main() {
+    vec2 uv = vUv;
+    float t = uTime + uSeed * 7.0;
+    float n = campFbm(vec2(uv.x * 3.0 + uSeed * 5.0, uv.y * 2.2 - t * 2.4)); // turbulence climbing the flame
+    float x = (uv.x - 0.5) * 2.0 + (n - 0.5) * 0.9 * uv.y; // the tip sways more than the base
+    float width = mix(0.9, 0.08, pow(uv.y, 0.75));
+    float h = uv.y + (n - 0.5) * 0.45;
+    float body = (1.0 - smoothstep(width * 0.45, width, abs(x))) * (1.0 - smoothstep(0.45, 0.95, h)) * smoothstep(0.0, 0.1, uv.y);
+    body *= 1.0 - smoothstep(0.55, 0.88, uv.y); // no thread of flame left standing at the very top of the quad
+    float core = (1.0 - smoothstep(0.0, 0.45, h)) * (1.0 - smoothstep(0.0, 0.55, abs(x) / max(width, 0.05)));
+    vec3 col = mix(vec3(0.85, 0.16, 0.02), vec3(1.0, 0.55, 0.1), smoothstep(0.1, 0.7, body));
+    col = mix(col, vec3(1.0, 0.92, 0.62), core * body);
+    gl_FragColor = vec4(col, clamp(body * uStrength, 0.0, 1.0));
+    #include <colorspace_fragment>
+  }
+`;
+const CAMP_EMBER_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform float uRise; uniform float uWind;
+  attribute vec3 aSeed; // rise speed, phase, size
+  varying float vLife;
+  void main() {
+    float life = fract(uTime * aSeed.x / uRise + aSeed.y); // each spark climbs, fades and starts again at the fire
+    vLife = life;
+    float h = life * uRise;
+    float swirl = aSeed.y * 6.2831 + uTime * (1.2 + aSeed.x);
+    vec3 p = position;
+    p.x += sin(swirl) * 0.22 * life + uWind * h * h * 0.06;
+    p.z += cos(swirl) * 0.22 * life;
+    p.y += h;
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = clamp(aSeed.z * (1.0 - life * 0.6) * uPx / -mv.z, 1.0, 20.0);
+  }
+`;
+const CAMP_EMBER_FS = /* glsl */ `
+  uniform float uOpacity;
+  varying float vLife;
+  void main() {
+    vec2 d = gl_PointCoord * 2.0 - 1.0;
+    float r = dot(d, d);
+    if (r > 1.0) discard;
+    vec3 col = mix(vec3(1.0, 0.88, 0.45), vec3(1.0, 0.32, 0.04), vLife);
+    gl_FragColor = vec4(col, (1.0 - r) * pow(1.0 - vLife, 1.3) * uOpacity);
+    #include <colorspace_fragment>
+  }
+`;
+const CAMP_FLY_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform float uSize;
+  attribute vec3 aSeed; // blink speed, phase, drift
+  varying float vA;
+  void main() {
+    vec3 p = position;
+    p.x += sin(uTime * 0.37 + aSeed.y * 3.1) * aSeed.z;
+    p.y += sin(uTime * 0.53 + aSeed.y * 1.7) * aSeed.z * 0.5;
+    p.z += cos(uTime * 0.41 + aSeed.y * 2.3) * aSeed.z;
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float blink = pow(max(0.0, sin(uTime * aSeed.x + aSeed.y * 6.2831)), 4.0); // mostly dark, now and then a soft flash
+    vA = blink;
+    gl_PointSize = clamp(uSize * uPx / -mv.z, 2.0, 18.0) * (0.6 + 0.4 * blink);
+  }
+`;
+const CAMP_FLY_FS = /* glsl */ `
+  uniform float uOpacity;
+  varying float vA;
+  void main() {
+    vec2 d = gl_PointCoord * 2.0 - 1.0;
+    float r = dot(d, d);
+    if (r > 1.0) discard;
+    vec3 col = mix(vec3(0.8, 1.0, 0.4), vec3(1.0, 1.0, 0.85), exp(-r * 8.0));
+    gl_FragColor = vec4(col, exp(-r * 3.5) * vA * uOpacity);
+    #include <colorspace_fragment>
+  }
+`;
+
+function campsite(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), E = new THREE.Euler(), S = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0), tmp = new THREE.Color();
+  const place = (x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sx, sy, sz));
+  /** A unit cylinder stretched from a to b: logs, tripod legs, the chain. */
+  const between = (a, b, r) => { const d = new THREE.Vector3().subVectors(b, a); const len = d.length(); return new THREE.Matrix4().compose(new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(UP, d.normalize()), new THREE.Vector3(r, len, r)); };
+  const add = (geo, mat, x = 0, y = 0, z = 0, parent = scene) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
+  const P3 = (x, y, z) => new THREE.Vector3(x, y, z);
+  // a fixed seed: the trees always stand in the same places, so none grows through the tent or in front of the fire
+  let seed = 20260927;
+  const rnd = (a = 0, b = 1) => { seed = (seed * 16807) % 2147483647; return a + ((seed - 1) / 2147483646) * (b - a); };
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.far = 420; // resize() rebuilds the projection right after the build
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const buf = new THREE.Vector2();
+  const pxFor = (uni) => (renderer) => { renderer.getDrawingBufferSize(buf); uni.uPx.value = buf.y / (2 * TAN); };
+
+  const glow = keep(glowTexture(THREE));
+  const cloudTex = keep(cloudTexture(THREE));
+  const unitCyl = keep(new THREE.CylinderGeometry(1, 1, 1, 8)); // radius 1, height 1: stretched into logs, legs and trunks
+  const blob = keep(new THREE.SphereGeometry(1, 8, 6));
+  const ball = keep(new THREE.SphereGeometry(1, 14, 10));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+
+  /* --- sky: a gradient dome, stars and the Milky Way at night, a low sun and clouds by day --- */
+  const skyStops = (dark) => (dark
+    ? [[0, "#02040f"], [0.3, "#081230"], [0.44, "#16275a"], [0.5, "#2a3268"], [0.52, "#0b1022"], [1, "#0b1022"]]
+    : [[0, "#4f93d6"], [0.3, "#86bde8"], [0.4, "#bcd8ec"], [0.46, "#f6dcb8"], [0.5, "#ffd29e"], [0.52, "#efd2b0"], [1, "#efd2b0"]]);
+  function skyTexture(dark) {
+    return canvasTexture(THREE, 8, 512, (g) => {
+      const grad = g.createLinearGradient(0, 0, 0, 512);
+      skyStops(dark).forEach(([at, col]) => grad.addColorStop(at, col));
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 8, 512);
+    });
+  }
+  let skyTex = null; // made by applyPalette, again whenever the theme flips
+  const skyMat = keep(new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false, depthWrite: false }));
+  add(keep(new THREE.SphereGeometry(320, 24, 24)), skyMat).renderOrder = -3;
+
+  const STARS = preview ? 260 : 900;
+  const starPos = new Float32Array(STARS * 3);
+  for (let i = 0; i < STARS; i++) {
+    const a = rand(0, 6.28), e = Math.asin(rand(0.06, 1)); // upper half of the sky only
+    starPos.set([Math.cos(a) * Math.cos(e) * 300, Math.sin(e) * 300, Math.sin(a) * Math.cos(e) * 300], i * 3);
+  }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe6eeff, size: preview ? 1.2 : 1.6, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -2;
+  scene.add(stars);
+  const milkyMat = keep(new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
+  for (const [x, y, sx, sy] of [[-150, 118, 150, 34], [-30, 146, 175, 42], [100, 170, 150, 30]]) {
+    const m = add(quad, milkyMat, x, y, -250);
+    m.rotation.z = 0.24;
+    m.scale.set(sx, sy, 1);
+    m.renderOrder = -2;
+  }
+  const SUN = P3(-55, 62, -225), MOON = P3(55, 72, -230); // both low enough to be in view, the sun half behind the tree tops
+  const orbMat = keep(new THREE.SpriteMaterial({ map: glow, transparent: true, depthWrite: false, fog: false }));
+  const orbHalo = new THREE.Sprite(orbMat), orbCore = new THREE.Sprite(orbMat);
+  orbHalo.renderOrder = orbCore.renderOrder = -1.2;
+  scene.add(orbHalo, orbCore);
+  const cloudMat = keep(new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false, fog: false }));
+  const clouds = [];
+  for (let i = 0; i < (preview ? 3 : 5); i++) {
+    const m = add(quad, cloudMat, rand(-200, 200), rand(48, 88), rand(-240, -215));
+    m.scale.set(rand(60, 120), rand(14, 22), 1);
+    m.renderOrder = -1.5;
+    clouds.push({ m, speed: rand(0.6, 1.4) });
+  }
+  // two ranges of distant mountains: flat silhouettes, a lighter one behind a darker one
+  const ridge = (off, rough) => keep(canvasTexture(THREE, 1024, 128, (g, w, h) => {
+    g.fillStyle = "#fff";
+    g.beginPath();
+    g.moveTo(0, h);
+    for (let x = 0; x <= w; x += 6) g.lineTo(x, h * Math.max(0.04, 0.42 + 0.22 * Math.sin(x * 0.006 + off) + 0.12 * Math.sin(x * 0.021 + off * 3) + 0.05 * rough * Math.sin(x * 0.07 + off * 7)));
+    g.lineTo(w, h);
+    g.closePath();
+    g.fill();
+  }));
+  const farMat = keep(new THREE.MeshBasicMaterial({ map: ridge(1.3, 1), transparent: true, depthWrite: false, fog: false }));
+  const nearMat = keep(new THREE.MeshBasicMaterial({ map: ridge(4.1, 1.6), transparent: true, depthWrite: false, fog: false }));
+  const farRidge = add(quad, farMat, 0, 24, -230), nearRidge = add(quad, nearMat, 30, 15, -185);
+  farRidge.scale.set(820, 64, 1);
+  nearRidge.scale.set(700, 48, 1);
+  farRidge.renderOrder = nearRidge.renderOrder = -1;
+
+  /* --- the ground: a gently rolling forest floor and a trodden patch of earth around the fire --- */
+  const groundY = (x, z) => smooth(10, 40, Math.hypot(x, z)) * (Math.sin(x * 0.05) * Math.cos(z * 0.04) * 1.6 + Math.sin(x * 0.13 + z * 0.09) * 0.6);
+  const gSeg = preview ? 40 : 70;
+  const groundGeo = keep(new THREE.PlaneGeometry(500, 500, gSeg, gSeg));
+  groundGeo.rotateX(-Math.PI / 2);
+  const gp = groundGeo.attributes.position, gCol = new Float32Array(gp.count * 3);
+  const grassNear = new THREE.Color("#4d7a3a"), grassFar = new THREE.Color("#2f5530");
+  for (let i = 0; i < gp.count; i++) {
+    const x = gp.getX(i), z = gp.getZ(i);
+    gp.setY(i, groundY(x, z));
+    tmp.copy(grassNear).lerp(grassFar, smooth(8, 40, Math.hypot(x, z)));
+    gCol.set([tmp.r, tmp.g, tmp.b], i * 3);
+  }
+  groundGeo.setAttribute("color", new THREE.BufferAttribute(gCol, 3));
+  groundGeo.computeVertexNormals();
+  add(groundGeo, keep(new THREE.MeshLambertMaterial({ vertexColors: true })));
+  const dirtTex = keep(canvasTexture(THREE, 256, 256, (g, w) => {
+    const c = w / 2, grad = g.createRadialGradient(c, c, 0, c, c, c);
+    grad.addColorStop(0, "rgba(122,98,70,1)");
+    grad.addColorStop(0.62, "rgba(112,90,64,0.95)");
+    grad.addColorStop(1, "rgba(112,90,64,0)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, w);
+    for (let i = 0; i < 300; i++) {
+      const a = rnd(0, 6.28), r = Math.sqrt(rnd()) * c * 0.8;
+      g.fillStyle = rnd() < 0.5 ? "rgba(70,56,40,0.4)" : "rgba(150,128,98,0.35)";
+      g.fillRect(c + Math.cos(a) * r, c + Math.sin(a) * r, 2, 2);
+    }
+  }));
+  const dirt = add(keep(new THREE.CircleGeometry(4.3, 40)), keep(new THREE.MeshLambertMaterial({ map: dirtTex, transparent: true, depthWrite: false })), -0.4, 0.015, 0.2);
+  dirt.rotation.x = -Math.PI / 2;
+
+  /* --- the campfire: a ring of stones, crossed logs, flames drawn by a shader, sparks, smoke and a flickering light --- */
+  const stoneParts = [];
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + rnd(-0.1, 0.1);
+    stoneParts.push([blob, place(Math.cos(a) * 0.82, 0.07, Math.sin(a) * 0.82, rnd(-0.3, 0.3), rnd(0, 6.28), rnd(-0.3, 0.3), rnd(0.16, 0.22), rnd(0.1, 0.14), rnd(0.14, 0.2))]);
+  }
+  add(keep(mergeParts(THREE, stoneParts)), keep(new THREE.MeshLambertMaterial({ color: 0x8a8d94, flatShading: true })));
+  const logParts = [];
+  for (let i = 0; i < 5; i++) { // a teepee of logs leaning together over the fire
+    const a = (i / 5) * Math.PI * 2 + 0.3;
+    logParts.push([unitCyl, between(P3(Math.cos(a) * 0.52, 0.05, Math.sin(a) * 0.52), P3(Math.cos(a) * -0.08, 0.78, Math.sin(a) * -0.08), 0.075)]);
+  }
+  logParts.push([unitCyl, between(P3(-0.62, 0.09, 0.2), P3(0.6, 0.09, -0.25), 0.09)], [unitCyl, between(P3(-0.3, 0.09, -0.6), P3(0.35, 0.09, 0.55), 0.085)]);
+  const barkMat = keep(new THREE.MeshLambertMaterial({ color: 0x5a3a22 }));
+  add(keep(mergeParts(THREE, logParts)), barkMat);
+  const bedMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xff7a1a, transparent: true, depthWrite: false }));
+  const bed = new THREE.Sprite(bedMat); // the glowing embers under the flames
+  bed.position.set(0, 0.25, 0);
+  scene.add(bed);
+  const floorGlowMat = keep(new THREE.MeshBasicMaterial({ map: glow, color: 0xff8a3a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const floorGlow = add(quad, floorGlowMat, 0, 0.03, 0);
+  floorGlow.rotation.x = -Math.PI / 2;
+  floorGlow.scale.set(11, 11, 1);
+  const fireTime = { value: 0 }, fireStrength = { value: 1 };
+  const flames = [[0, 0.12, 0, 1.3, 1.9, 0], [-0.22, 0.1, 0.08, 0.9, 1.3, 3.1], [0.24, 0.1, -0.05, 0.85, 1.4, 5.7]].map(([x, y, z, w, h, s]) => {
+    const mat = keep(new THREE.ShaderMaterial({ uniforms: { uTime: fireTime, uStrength: fireStrength, uSeed: { value: s }, uSize: { value: new THREE.Vector2(w, h) } }, vertexShader: CAMP_FLAME_VS, fragmentShader: CAMP_FLAME_FS, transparent: true, depthWrite: false }));
+    const m = add(quad, mat, x, y, z);
+    m.frustumCulled = false; // the billboard is bigger than the unit plane it starts from
+    m.renderOrder = 2;
+    return mat;
+  });
+  const EMBERS = preview ? 40 : 120;
+  const ePos = new Float32Array(EMBERS * 3), eSeed = new Float32Array(EMBERS * 3);
+  for (let i = 0; i < EMBERS; i++) {
+    const a = rand(0, 6.28), r = rand(0, 0.35);
+    ePos.set([Math.cos(a) * r, 0.4, Math.sin(a) * r], i * 3);
+    eSeed.set([rand(0.8, 1.8), Math.random(), rand(0.03, 0.07) * (preview ? 1.6 : 1)], i * 3);
+  }
+  const emberGeo = keep(new THREE.BufferGeometry());
+  emberGeo.setAttribute("position", new THREE.BufferAttribute(ePos, 3));
+  emberGeo.setAttribute("aSeed", new THREE.BufferAttribute(eSeed, 3));
+  const emberUni = { uTime: { value: 0 }, uPx: { value: 700 }, uRise: { value: 4.5 }, uWind: { value: 0.4 }, uOpacity: { value: 1 } };
+  const emberMat = keep(new THREE.ShaderMaterial({ uniforms: emberUni, vertexShader: CAMP_EMBER_VS, fragmentShader: CAMP_EMBER_FS, transparent: true, depthWrite: false }));
+  const embers = new THREE.Points(emberGeo, emberMat);
+  embers.frustumCulled = false;
+  embers.renderOrder = 3;
+  embers.onBeforeRender = pxFor(emberUni);
+  scene.add(embers);
+  const smoke = [];
+  for (let i = 0, n = preview ? 4 : 7; i < n; i++) {
+    const mat = keep(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, depthWrite: false, fog: false }));
+    const s = new THREE.Sprite(mat);
+    s.renderOrder = 1;
+    scene.add(s);
+    smoke.push({ s, mat, phase: i / n, drift: rnd(-0.4, 0.4) });
+  }
+  // a pot hanging from a tripod over the flames
+  const apex = P3(0, 2.5, 0);
+  // legs at 60°, 180° and 300°: none straight behind the fire (seen from the front that one looked like a glowing stick
+  // rising through the flames) and none straight in front of it; one leg on the viewer's side is unavoidable with three
+  const tripodParts = [0, 1, 2].map((i) => { const a = (i / 3) * Math.PI * 2 + Math.PI / 3; return [unitCyl, between(P3(Math.cos(a) * 1.1, 0, Math.sin(a) * 1.1), apex, 0.035)]; });
+  tripodParts.push([unitCyl, between(apex, P3(0, 2.0, 0), 0.012)]);
+  add(keep(mergeParts(THREE, tripodParts)), keep(new THREE.MeshLambertMaterial({ color: 0x4a3526 })));
+  add(keep(mergeParts(THREE, [[keep(new THREE.CylinderGeometry(0.26, 0.2, 0.3, 16)), place(0, 0, 0)], [keep(new THREE.TorusGeometry(0.24, 0.012, 6, 20, Math.PI)), place(0, 0.14, 0)]])),
+    keep(new THREE.MeshStandardMaterial({ color: 0x2a2c33, metalness: 0.5, roughness: 0.45 })), 0, 1.62, 0);
+
+  /* --- the tent: an A-frame in the accent colour, door flap open, lit from inside at night --- */
+  function tentGeometry(w, h, L, dw, dh) {
+    const f = L / 2, b = -L / 2;
+    const v = { lf: [-w, 0, f], lb: [-w, 0, b], Rf: [w, 0, f], Rb: [w, 0, b], rf: [0, h, f], rb: [0, h, b], dl: [-dw, 0, f], dr: [dw, 0, f], dt: [0, dh, f], flap: [dw * 2.1, dh * 0.15, f + 0.55] };
+    const tris = [["lf", "lb", "rb"], ["lf", "rb", "rf"], ["Rf", "rf", "rb"], ["Rf", "rb", "Rb"], ["lb", "Rb", "rb"], // roof and back
+      ["lf", "dl", "dt"], ["lf", "dt", "rf"], ["dt", "dr", "Rf"], ["dt", "Rf", "rf"], // the front, with the door left open
+      ["dt", "dr", "flap"]]; // the door flap folded out
+    const pos = new Float32Array(tris.length * 9);
+    tris.forEach((t, i) => t.forEach((k, j) => pos.set(v[k], i * 9 + j * 3)));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    return g;
+  }
+  const tent = new THREE.Group();
+  tent.position.set(-3.1, 0, -1.3);
+  tent.rotation.y = 0.45; // the door opens towards the fire and the viewer
+  scene.add(tent);
+  const tentMat = keep(new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }));
+  add(keep(tentGeometry(1.25, 1.55, 2.5, 0.52, 1.1)), tentMat, 0, 0, 0, tent);
+  const sheet = add(quad, keep(new THREE.MeshLambertMaterial({ color: 0x3a3f4a })), 0, 0.01, 0, tent);
+  sheet.rotation.x = -Math.PI / 2;
+  sheet.scale.set(2.4, 2.5, 1);
+  const ropeGeo = keep(new THREE.BufferGeometry().setFromPoints([P3(0, 1.55, 1.25), P3(0, 0, 2.35), P3(0, 1.55, -1.25), P3(0, 0, -2.35)]));
+  tent.add(new THREE.LineSegments(ropeGeo, keep(new THREE.LineBasicMaterial({ color: 0xd6d3d1, transparent: true, opacity: 0.7 }))));
+  const tentLight = new THREE.PointLight(0xffb45c, 0, 6, 2);
+  tentLight.position.set(0, 0.7, 0.1);
+  tent.add(tentLight);
+  const tentGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffc070, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const tentGlow = new THREE.Sprite(tentGlowMat);
+  tentGlow.position.set(0, 0.55, 0.9);
+  tentGlow.scale.setScalar(1.6);
+  tent.add(tentGlow);
+  const packMat = keep(new THREE.MeshLambertMaterial());
+  const bag = add(keep(mergeParts(THREE, [[ball, place(0, 0, 0, 0, 0, 0, 0.26, 0.34, 0.18)], [ball, place(0, -0.08, 0.15, 0, 0, 0, 0.18, 0.15, 0.08)]])), packMat, 1.5, 0.33, 1.15, tent);
+  bag.rotation.set(-0.12, 0.3, -0.12);
+  const roll = add(unitCyl, keep(new THREE.MeshLambertMaterial({ color: 0xd9c9a3 })), 1.5, 0.72, 1.12, tent); // a sleeping mat strapped on top
+  roll.scale.set(0.1, 0.5, 0.1);
+  roll.rotation.set(0, 0.3, Math.PI / 2);
+
+  /* --- log benches, and a stump with a lantern on it --- */
+  const benchMat = keep(new THREE.MeshLambertMaterial({ color: 0x7a5234 }));
+  add(keep(mergeParts(THREE, [[unitCyl, between(P3(1.55, 0.21, 1.45), P3(2.6, 0.21, -0.2), 0.21)], [unitCyl, between(P3(-2.3, 0.21, 2.05), P3(-0.5, 0.21, 2.6), 0.21)]])), benchMat);
+  const cutMat = keep(new THREE.MeshLambertMaterial({ color: 0xc8a574 }));
+  const LX = 2.85, LY = 0.55, LZ = -1.25;
+  add(keep(new THREE.CylinderGeometry(0.34, 0.4, 0.55, 12)), [benchMat, cutMat, cutMat], LX, 0.275, LZ);
+  add(keep(mergeParts(THREE, [[unitCyl, place(0, 0.02, 0, 0, 0, 0, 0.11, 0.04, 0.11)], [unitCyl, place(0, 0.34, 0, 0, 0, 0, 0.1, 0.04, 0.1)], [keep(new THREE.ConeGeometry(0.1, 0.08, 8)), place(0, 0.4, 0)], [keep(new THREE.TorusGeometry(0.06, 0.008, 6, 14, Math.PI)), place(0, 0.44, 0)]])),
+    keep(new THREE.MeshLambertMaterial({ color: 0x1f2937 })), LX, LY, LZ);
+  const glassMat = keep(new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.92 }));
+  add(unitCyl, glassMat, LX, LY + 0.18, LZ).scale.set(0.085, 0.28, 0.085);
+  const lanternGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffb45c, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const lanternGlow = new THREE.Sprite(lanternGlowMat);
+  lanternGlow.position.set(LX, LY + 0.2, LZ);
+  scene.add(lanternGlow);
+
+  /* --- the forest: instanced pines, a few autumn trees, mist between the trunks --- */
+  const coneGeo = keep(new THREE.ConeGeometry(1, 1, 7));
+  const pineGeo = keep(mergeParts(THREE, [[coneGeo, place(0, 1.9, 0, 0, 0, 0, 1.45, 2.0, 1.45)], [coneGeo, place(0, 3.0, 0, 0, 0.4, 0, 1.12, 1.8, 1.12)], [coneGeo, place(0, 4.0, 0, 0, 0.8, 0, 0.78, 1.6, 0.78)]]));
+  const crownGeo = keep(mergeParts(THREE, [[blob, place(0, 2.6, 0, 0, 0, 0, 1.3, 1.1, 1.3)], [blob, place(0.6, 3.1, 0.2, 0, 0, 0, 0.9, 0.8, 0.9)], [blob, place(-0.55, 3.2, -0.2, 0, 0, 0, 0.85, 0.8, 0.85)], [blob, place(0, 3.7, 0, 0, 0, 0, 0.8, 0.7, 0.8)]]));
+  const clearOf = (x, z) => Math.hypot(x, z) > 6.2 && Math.hypot(x + 3.1, z + 1.3) > 3.2 && Math.hypot(x - LX, z - LZ) > 1.6 && !(z > -1 && Math.abs(x) < 8.5);
+  const pines = [], rounds = [];
+  const plant = (list, x, z, s) => { if (clearOf(x, z)) list.push({ x, z, s, y: groundY(x, z), ry: rnd(0, 6.28) }); };
+  for (let i = 0; i < (preview ? 34 : 70); i++) { const a = rnd(Math.PI * 0.93, Math.PI * 2.07), r = rnd(6.3, 12.5); plant(pines, Math.cos(a) * r * 1.25, Math.sin(a) * r - 1, rnd(0.85, 1.25)); }
+  for (let i = 0; i < (preview ? 70 : 230); i++) { const x = rnd(-70, 70), z = rnd(-60, -9); plant(pines, x, z, rnd(0.9, 1.5) * (1 + Math.max(0, -z - 15) * 0.01)); }
+  for (const [x, z] of [[-6.8, -4.6], [5.6, -5.4], [-9.5, 0.2], [9.2, -2.2], [1.8, -8.8]]) plant(rounds, x, z, rnd(0.95, 1.2));
+  const leafMat = keep(new THREE.MeshLambertMaterial({ flatShading: true }));
+  const trunkMat = keep(new THREE.MeshLambertMaterial({ color: 0x4a3322 }));
+  const pineMesh = new THREE.InstancedMesh(pineGeo, leafMat, pines.length);
+  const crownMesh = new THREE.InstancedMesh(crownGeo, leafMat, rounds.length);
+  const trunkMesh = new THREE.InstancedMesh(unitCyl, trunkMat, pines.length + rounds.length);
+  const greens = ["#1f4d2b", "#24583a", "#2c5f33", "#1b4332", "#2f6b3a"].map((c) => new THREE.Color(c));
+  const autumn = ["#c26a12", "#cf5a1c", "#b0831a", "#a3531a", "#b2461c"].map((c) => new THREE.Color(c));
+  pines.forEach((t, i) => {
+    pineMesh.setMatrixAt(i, place(t.x, t.y, t.z, 0, t.ry, 0, t.s));
+    pineMesh.setColorAt(i, greens[i % greens.length]);
+    trunkMesh.setMatrixAt(i, place(t.x, t.y + 0.6 * t.s, t.z, 0, 0, 0, 0.16 * t.s, 1.2 * t.s, 0.16 * t.s));
+  });
+  rounds.forEach((t, i) => {
+    crownMesh.setMatrixAt(i, place(t.x, t.y, t.z, 0, t.ry, 0, t.s));
+    crownMesh.setColorAt(i, autumn[i % autumn.length]);
+    trunkMesh.setMatrixAt(pines.length + i, place(t.x, t.y + 1.1 * t.s, t.z, 0, 0, 0, 0.2 * t.s, 2.2 * t.s, 0.2 * t.s));
+  });
+  for (const m of [pineMesh, crownMesh, trunkMesh]) { m.frustumCulled = false; scene.add(m); }
+  const mistMat = keep(new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false }));
+  const mists = [];
+  for (let i = 0; i < (preview ? 3 : 7); i++) {
+    const m = add(quad, mistMat, rand(-40, 40), rand(0.6, 2.2), rand(-26, -9));
+    m.scale.set(rand(26, 46), rand(4, 6.5), 1);
+    mists.push({ m, speed: rand(0.2, 0.5) });
+  }
+
+  /* --- small lives: fireflies and an owl at night, falling leaves always, birds by day --- */
+  const FLIES = preview ? 22 : 70;
+  const fPos = new Float32Array(FLIES * 3), fSeed = new Float32Array(FLIES * 3);
+  for (let i = 0; i < FLIES; i++) {
+    const a = rand(Math.PI * 0.9, Math.PI * 2.1), r = rand(3.2, 11);
+    fPos.set([Math.cos(a) * r * 1.2, rand(0.3, 3.2), Math.sin(a) * r + rand(-1, 3)], i * 3);
+    fSeed.set([rand(0.6, 1.6), rand(0, 6.28), rand(0.3, 0.9)], i * 3);
+  }
+  const flyGeo = keep(new THREE.BufferGeometry());
+  flyGeo.setAttribute("position", new THREE.BufferAttribute(fPos, 3));
+  flyGeo.setAttribute("aSeed", new THREE.BufferAttribute(fSeed, 3));
+  const flyUni = { uTime: { value: 0 }, uPx: { value: 700 }, uSize: { value: preview ? 0.26 : 0.16 }, uOpacity: { value: 1 } };
+  const flies = new THREE.Points(flyGeo, keep(new THREE.ShaderMaterial({ uniforms: flyUni, vertexShader: CAMP_FLY_VS, fragmentShader: CAMP_FLY_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  flies.frustumCulled = false;
+  flies.renderOrder = 3;
+  flies.onBeforeRender = pxFor(flyUni);
+  scene.add(flies);
+  // drawn over the foliage: a perch is often behind a nearer tree, and the eyes then simply sit in that one
+  const eyeMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xfde047, transparent: true, depthWrite: false, depthTest: false, fog: false, blending: THREE.AdditiveBlending }));
+  const eyes = [new THREE.Sprite(eyeMat), new THREE.Sprite(eyeMat)];
+  eyes.forEach((e) => { e.visible = false; e.scale.setScalar(0.24); e.renderOrder = 4; scene.add(e); });
+  const perches = pines.filter((t) => t.z < -5 && t.z > -12 && Math.abs(t.x) < 9);
+  const owl = { on: false, left: rand(3, 6), blink: 0 };
+  const streakMat = keep(new THREE.MeshBasicMaterial({ map: glow, transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
+  const streak = add(keep(new THREE.PlaneGeometry(16, 0.5)), streakMat);
+  streak.visible = false;
+  const shot = { at: -1, next: rand(5, 10), x: 0, y: 0, dx: 0, dy: 0 };
+  const LEAVES = preview ? 8 : 22;
+  const leafTex = keep(canvasTexture(THREE, 64, 64, (g) => { // a leaf with a stem; the instance colour tints it
+    g.fillStyle = "#fff";
+    g.beginPath(); g.moveTo(6, 32); g.quadraticCurveTo(30, 6, 58, 32); g.quadraticCurveTo(30, 58, 6, 32); g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.35)"; g.lineWidth = 2; g.beginPath(); g.moveTo(2, 32); g.lineTo(54, 32); g.stroke();
+  }));
+  const leaves = new THREE.InstancedMesh(keep(new THREE.PlaneGeometry(0.2, 0.2)), keep(new THREE.MeshLambertMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide })), LEAVES);
+  leaves.frustumCulled = false;
+  scene.add(leaves);
+  const drops = [];
+  const spawnLeaf = (d, fresh) => Object.assign(d, { x: rand(-7, 7), z: rand(-5, 3), y: fresh ? rand(0.1, 7) : rand(7, 8.5), phase: rand(0, 6.28), speed: rand(0.35, 0.7), spin: rand(1, 2.4) });
+  for (let i = 0; i < LEAVES; i++) { leaves.setColorAt(i, autumn[i % autumn.length]); drops.push(spawnLeaf({ i }, true)); }
+  const wingGeo = keep(new THREE.BufferGeometry());
+  wingGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0.18, 0, 0.42, -0.1, 0]), 3));
+  const birdMat = keep(new THREE.MeshBasicMaterial({ color: 0x3b3340, side: THREE.DoubleSide, fog: false }));
+  const birds = [0, 1, 2].map((i) => {
+    const g = new THREE.Group(), l = new THREE.Mesh(wingGeo, birdMat), r = new THREE.Mesh(wingGeo, birdMat);
+    r.scale.x = -1;
+    g.add(l, r);
+    g.scale.setScalar(1.3);
+    scene.add(g);
+    return { g, l, r, x: -60 + i * 16 + rand(-5, 5), y: 24 + i * 2.5, z: -70 - i * 5, speed: rand(3, 4.5), phase: rand(0, 6.28) };
+  });
+
+  /* --- light --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const key = new THREE.DirectionalLight(0xffffff, 1);
+  const fireLight = new THREE.PointLight(0xff8a3a, 0, 0, 2);
+  fireLight.position.set(0, 0.95, 0);
+  scene.add(hemi, key, fireLight);
+  scene.fog = new THREE.FogExp2(0x0b1022, 0.03);
+  let fireBase = 30, tentBase = 0, smokeAlpha = 0.2;
+
+  const warm = new THREE.Color(0xffb45c);
+  function applyPalette(p) {
+    if (!skyTex || p.dark !== pal.dark) { skyTex?.dispose(); skyTex = skyTexture(p.dark); skyMat.map = skyTex; skyMat.needsUpdate = true; }
+    pal = p;
+    const d = p.dark;
+    scene.fog.color.set(d ? "#0b1022" : "#efd2b0");
+    scene.fog.density = d ? 0.03 : 0.018;
+    hemi.color.set(d ? "#34467e" : "#fff0d8"); hemi.groundColor.set(d ? "#0a0e18" : "#6b5a3a"); hemi.intensity = d ? 0.7 : 1.25;
+    key.color.set(d ? "#9fb4ff" : "#ffd6a0"); key.intensity = d ? 0.55 : 2.2; // moonlight, or a low warm sun (from the front, so nothing turns to silhouette)
+    key.position.set(d ? 30 : -40, d ? 40 : 30, d ? 25 : 40);
+    starMat.opacity = d ? 0.9 : 0;
+    milkyMat.color.set("#8f86d8"); milkyMat.opacity = d ? 0.28 : 0;
+    orbMat.color.set(d ? "#e2e8ff" : "#ffe2a8"); orbMat.opacity = d ? 0.85 : 0.95;
+    orbHalo.position.copy(d ? MOON : SUN); orbCore.position.copy(d ? MOON : SUN);
+    orbHalo.scale.setScalar(d ? 48 : 150); orbCore.scale.setScalar(d ? 13 : 40);
+    cloudMat.color.set(d ? "#394271" : "#fff4e4"); cloudMat.opacity = d ? 0.25 : 0.85;
+    farMat.color.set(d ? "#1a2650" : "#c9b4c6"); nearMat.color.set(d ? "#0f1836" : "#a58fa6");
+    fireStrength.value = d ? 1 : 0.95;
+    flames.forEach((m) => blend(THREE, m, d));
+    fireBase = d ? 34 : 7;
+    fireLight.intensity = fireBase * 0.9;
+    bedMat.opacity = d ? 0.85 : 0.4; bed.scale.set(2.2, 1.2, 1);
+    blend(THREE, bedMat, d);
+    floorGlowMat.opacity = d ? 0.5 : 0;
+    emberUni.uOpacity.value = d ? 1 : 0.8;
+    blend(THREE, emberMat, d);
+    smokeAlpha = d ? 0.16 : 0.32;
+    smoke.forEach((s) => s.mat.color.set(d ? "#6b7280" : "#c9ccd2"));
+    tentMat.color.set(p.accent);
+    tentMat.emissive.copy(tmp.set(p.accent).lerp(warm, 0.55)); tentMat.emissiveIntensity = d ? 0.32 : 0; // lit from inside at night
+    tentBase = d ? 3.5 : 0;
+    tentLight.intensity = tentBase;
+    tentGlowMat.opacity = d ? 0.5 : 0;
+    packMat.color.set(p.strong);
+    glassMat.color.set(d ? "#ffd08a" : "#f5e6c8");
+    lanternGlowMat.opacity = d ? 0.75 : 0.12; lanternGlow.scale.setScalar(1.3);
+    flyUni.uOpacity.value = d ? 1 : 0;
+    mistMat.color.set(d ? "#3a4a7a" : "#fff1e0"); mistMat.opacity = d ? 0.22 : 0.32;
+    birds.forEach((b) => { b.g.visible = !d; });
+    if (!d) { eyes.forEach((e) => { e.visible = false; }); owl.on = false; streak.visible = false; shot.at = -1; }
+  }
+  applyPalette(pal);
+
+  function placeLeaves(t) {
+    for (const d of drops) {
+      V.set(d.x + Math.sin(t * 0.9 + d.phase) * 0.6, d.y, d.z + Math.cos(t * 0.7 + d.phase) * 0.3);
+      E.set(Math.sin(t * d.spin + d.phase) * 1.2, t * 0.6 + d.phase, Math.cos(t * d.spin * 0.8 + d.phase) * 0.9);
+      S.setScalar(Math.min(1, d.y / 0.2));
+      M4.compose(V, Q.setFromEuler(E), S);
+      leaves.setMatrixAt(d.i, M4);
+    }
+    leaves.instanceMatrix.needsUpdate = true;
+  }
+  function placeSmoke(t) {
+    for (const s of smoke) {
+      const life = (t * 0.07 + s.phase) % 1;
+      s.s.position.set(s.drift * life + life * life * 2.2, 1.7 + life * 6, -life * 0.6);
+      s.s.scale.setScalar(0.8 + life * 3.4);
+      s.mat.opacity = Math.sin(Math.PI * life) * smokeAlpha;
+    }
+  }
+  function placeBirds(t) {
+    for (const b of birds) {
+      const flap = Math.sin(t * 6 + b.phase) * 0.55;
+      b.l.rotation.z = flap; b.r.rotation.z = -flap;
+      b.g.position.set(b.x, b.y + Math.sin(t * 0.8 + b.phase) * 0.6, b.z);
+    }
+  }
+  const CAM = { x: 0.3, y: 1.9, z: 6.4 }, LOOK = P3(-0.6, 1.0, -1.2);
+  const look = new THREE.Vector3();
+  function placeCamera(t) {
+    // portrait phones step back so the fire and the tent stay in frame, and look up a little:
+    // the camp sits in the lower part of the screen with the trees and the sky above it, not over an empty foreground
+    const tall = Math.max(0, 1 / camera.aspect - 1);
+    camera.position.set(CAM.x + Math.sin(t * 0.07) * 0.5, CAM.y + tall * 0.35 + Math.sin(t * 0.11) * 0.12, CAM.z + tall * 4);
+    camera.lookAt(look.set(LOOK.x - tall * 0.35, LOOK.y + tall * 1.7, LOOK.z));
+  }
+  placeLeaves(0); placeSmoke(0); placeBirds(0); placeCamera(0);
+
+  return {
+    update(dt, t) {
+      fireTime.value = emberUni.uTime.value = flyUni.uTime.value = t;
+      const flick = 0.82 + 0.1 * Math.sin(t * 13.1) + 0.06 * Math.sin(t * 23.7 + 1.3) + 0.05 * Math.sin(t * 7.3 + 0.4);
+      fireLight.intensity = fireBase * flick;
+      fireLight.position.x = Math.sin(t * 9.1) * 0.06;
+      bed.scale.set(2.2 * (0.95 + 0.05 * flick), 1.2 * flick, 1);
+      tentLight.intensity = tentBase * (0.92 + 0.08 * Math.sin(t * 5.3));
+      lanternGlow.scale.setScalar(1.3 * (0.95 + 0.05 * Math.sin(t * 6.1)));
+      emberUni.uWind.value = 0.4 + Math.sin(t * 0.21) * 0.3;
+      placeSmoke(t);
+      for (const d of drops) { d.y -= dt * d.speed; if (d.y < 0.02) spawnLeaf(d, false); }
+      placeLeaves(t);
+      for (const c of clouds) { c.m.position.x += dt * c.speed; if (c.m.position.x > 230) c.m.position.x = -230; }
+      for (const m of mists) { m.m.position.x += dt * m.speed; if (m.m.position.x > 50) m.m.position.x = -50; }
+      if (pal.dark) {
+        // now and then two eyes open in the trees, blink a few times and are gone again
+        owl.left -= dt;
+        if (!owl.on && owl.left <= 0 && perches.length) {
+          const p = perches[(Math.random() * perches.length) | 0], y = p.y + 2.7 * p.s, z = p.z + 1.25 * p.s;
+          eyes[0].position.set(p.x - 0.13, y, z); eyes[1].position.set(p.x + 0.13, y, z);
+          Object.assign(owl, { on: true, left: rand(6, 9), blink: rand(1, 2) });
+        } else if (owl.on && owl.left <= 0) Object.assign(owl, { on: false, left: rand(12, 22) });
+        owl.blink -= dt;
+        if (owl.blink < -0.16) owl.blink = rand(1.5, 3);
+        const open = owl.blink > 0 ? 1 : 0.12;
+        eyes.forEach((e) => { e.visible = owl.on; e.scale.set(0.24, 0.24 * open, 1); });
+        if (shot.at < 0 && (shot.next -= dt) <= 0) {
+          const dir = Math.random() < 0.5 ? -1 : 1, ang = rand(0.25, 0.6);
+          Object.assign(shot, { at: 0, x: rand(-120, 120), y: rand(110, 160), dx: Math.cos(ang) * dir * 150, dy: -Math.sin(ang) * 150 });
+          streak.rotation.z = Math.atan2(shot.dy, shot.dx);
+          streak.visible = true;
+        }
+        if (shot.at >= 0) {
+          shot.at += dt / 0.8;
+          streak.position.set(shot.x + shot.dx * shot.at * 0.8, shot.y + shot.dy * shot.at * 0.8, -260);
+          streakMat.opacity = Math.sin(Math.PI * Math.min(1, shot.at)) * 0.9;
+          if (shot.at >= 1) { shot.at = -1; shot.next = rand(8, 16); streak.visible = false; }
+        }
+      } else {
+        for (const b of birds) { b.x += dt * b.speed; if (b.x > 95) b.x = -95; }
+        placeBirds(t);
+      }
+      placeCamera(t);
+    },
+    setPalette: applyPalette,
+    dispose() { disposables.forEach((d) => d.dispose()); skyTex?.dispose(); scene.fog = null; },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
