@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Server-Sent Events with only the bell: a "notification" event for every notification created for the signed-in
- * user. For accounts without Chat (whose /api/chat/stream is refused); it does not count as being online.
+ * user, and "app_release" when a new build of the native app is published. For accounts without Chat (whose /api/chat/stream is refused); it does not count as being online.
  */
 export const GET = handler(async (request, _params, user) => {
   const enc = new TextEncoder();
@@ -19,7 +19,7 @@ export const GET = handler(async (request, _params, user) => {
         } catch {}
       };
       send("hello", { ok: true });
-      stop = listen(user.id, (ev) => ev.type === "notification" && send(ev.type, ev));
+      stop = listen(user.id, (ev) => (ev.type === "notification" || ev.type === "app_release") && send(ev.type, ev));
       ping = setInterval(() => {
         try {
           controller.enqueue(enc.encode(": ping\n\n"));

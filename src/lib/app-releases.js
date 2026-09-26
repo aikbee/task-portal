@@ -52,7 +52,7 @@ export async function createRelease(buf, { notes = null, userId = null } = {}) {
   const { storedName } = await saveBuffer(buf, `TaskPortal-${info.versionName}.apk`);
   const res = await execute(
     "INSERT INTO app_releases (platform, package_name, version_code, version_name, min_sdk, size_bytes, sha256, cert_sha256, stored_name, notes, uploaded_by) VALUES ('android', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [info.package, info.versionCode, info.versionName, info.minSdk ?? null, buf.length, info.sha256, info.certSha256, storedName, notes ? String(notes).trim().slice(0, 4000) || null : null, userId]
+    [info.package, info.versionCode, info.versionName, info.minSdk ?? null, buf.length, info.sha256, info.certSha256, storedName, notes ? String(notes).replace(/\r\n?/g, "\n").trim().slice(0, 4000) || null : null, userId]
   );
   return releaseById(res.insertId);
 }

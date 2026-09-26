@@ -2837,8 +2837,16 @@ console.log("email (password reset, invitations, notification emails)");
   check("a file that is not an APK -> 400 with a plain reason", text.status === 400 && /not a ZIP|not an Android app/.test(text.raw?.error ?? ""), JSON.stringify(text.raw));
   const foreign = await upload(apk({ pkg: "com.example.other", versionCode: 1, versionName: "1.0" }));
   check("another app's APK -> 400", foreign.status === 400 && /different app/.test(foreign.raw?.error ?? ""), JSON.stringify(foreign.raw));
-  const v1 = await upload(apk({ pkg: PKG, versionCode: 1, versionName: "0.9.0" }), "First smoke build");
-  check("an administrator publishes a build: the file says which version it is", v1.status === 201 && v1.data.version_code === 1 && v1.data.version_name === "0.9.0" && v1.data.package_name === PKG && v1.data.notes === "First smoke build" && v1.data.sha256?.length === 64 && v1.data.cert_sha256?.length === 64 && v1.data.url === `/api/app/android/download/${v1.data.id}`, JSON.stringify(v1.raw).slice(0, 300));
+  // connected apps hear about a new build at once: an "app_release" event on the live streams
+  const announce = new AbortController();
+  const annRes = await fetch(`${BASE}/api/notifications/stream`, { headers: { cookie: cookieHeader() }, signal: announce.signal });
+  const annReader = annRes.body.getReader(); const annDec = new TextDecoder(); let annBuf = "";
+  const waitRelease = async (ms = 8000) => { const until = Date.now() + ms; for (;;) { const m = annBuf.match(/event: app_release\ndata: (.*)\n/); if (m) return JSON.parse(m[1]); const left = until - Date.now(); if (left <= 0) return null; const r = await Promise.race([annReader.read(), new Promise((res) => setTimeout(() => res({ timeout: true }), left))]); if (r.timeout || r.done) return null; annBuf += annDec.decode(r.value, { stream: true }); } };
+  const v1 = await upload(apk({ pkg: PKG, versionCode: 1, versionName: "0.9.0" }), "First smoke build\nSecond line");
+  const ann = await waitRelease();
+  check("publishing announces the build on the live streams (app_release with package and version code)", ann?.package_name === PKG && ann.version_code === 1 && ann.version_name === "0.9.0", JSON.stringify(ann));
+  announce.abort();
+  check("an administrator publishes a build: the file says which version it is (notes keep plain line breaks, not the form's CRLF)", v1.status === 201 && v1.data.version_code === 1 && v1.data.version_name === "0.9.0" && v1.data.package_name === PKG && v1.data.notes === "First smoke build\nSecond line" && v1.data.sha256?.length === 64 && v1.data.cert_sha256?.length === 64 && v1.data.url === `/api/app/android/download/${v1.data.id}`, JSON.stringify(v1.raw).slice(0, 300));
   const same = await upload(apk({ pkg: PKG, versionCode: 1, versionName: "0.9.0-again" }));
   check("the same version code again -> 409", same.status === 409 && /not newer/.test(same.raw?.error ?? ""), JSON.stringify(same.raw));
   const otherKey = await upload(apk({ pkg: PKG, versionCode: 2, versionName: "0.9.1" }), null, "TaskPortal.apk");

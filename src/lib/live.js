@@ -28,3 +28,14 @@ export function publish(userId, event) {
     } catch {}
   }
 }
+
+/** Everybody who has a live stream open right now (a new app build is announced this way). */
+export function publishAll(event) {
+  for (const set of bus.values()) {
+    for (const fn of set) {
+      try {
+        fn(event);
+      } catch {}
+    }
+  }
+}
