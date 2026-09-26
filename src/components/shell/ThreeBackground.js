@@ -4209,7 +4209,431 @@ function koipond(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond };
+/* ---------- Ink-wash landscape: 水墨山水 — ridges painted in ink on rice paper, mist, a boat on the river, cranes, a pine, a poem and a seal ---------- */
+const INK_NOISE = /* glsl */ `
+  float inkH(float n) { return fract(sin(n) * 43758.5453); }
+  float inkN(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n = dot(i, vec2(1.0, 57.0));
+    return mix(mix(inkH(n), inkH(n + 1.0), f.x), mix(inkH(n + 57.0), inkH(n + 58.0), f.x), f.y);
+  }
+  float inkFbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 3; i++) { s += a * inkN(p); p = p * 2.03 + 17.1; a *= 0.5; } return s / 0.875; }
+`;
+// every layer is a strip whose top edge is its ridge line; X and Y are in screen half-heights, so each layer keeps its size on screen
+const INK_LAYER_VS = /* glsl */ `
+  uniform float uScale; // world units per screen half-height at this layer's depth
+  attribute float aTop;
+  varying float vX; varying float vY; varying float vTop;
+  void main() {
+    vX = position.x / uScale; vY = position.y / uScale; vTop = aTop;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const INK_MOUNTAIN_FS = /* glsl */ `
+  ${INK_NOISE}
+  uniform vec3 uInk; uniform vec3 uMist; uniform vec3 uRim; uniform sampler2D uPaper;
+  uniform float uWash; uniform float uEdge; uniform float uFade; uniform float uStroke; uniform float uDots; uniform float uSeed; uniform float uNight; uniform float uLow;
+  varying float vX; varying float vY; varying float vTop;
+  void main() {
+    float d = vTop - vY; // how far below the ridge line
+    float fibre = inkN(vec2(vX * 38.0 + uSeed, d * 300.0)); // the dry brush: fibres along the stroke, and gaps where it ran out of ink
+    float rim = exp(-d * uEdge) * mix(0.45, 1.0, fibre) * smoothstep(uLow - 0.35, uLow, vTop); // a ridge that runs low dissolves into the mist
+    float wash = uWash * (1.0 - smoothstep(0.0, uFade, d)) * (0.65 + 0.5 * inkFbm(vec2(vX, vY) * 7.0 + uSeed)); // cloudy, fading into the mist
+    float streak = smoothstep(0.6, 0.88, inkN(vec2((vX + vY * 0.45) * 55.0 + uSeed, vY * 14.0))) * smoothstep(0.3, 0.7, inkN(vec2(vX * 5.0 + uSeed, vY * 2.5))) * uStroke * (1.0 - smoothstep(0.0, uFade * 0.5, d)); // texture strokes down the slopes, slanted, in clusters
+    vec2 cell = floor(vec2(vX, vY) * 90.0), f = fract(vec2(vX, vY) * 90.0) - 0.5;
+    float dots = uDots * step(0.82, inkH(dot(cell, vec2(12.9898, 78.233)) + uSeed)) * (1.0 - smoothstep(0.18, 0.32, length(f))) * (1.0 - smoothstep(0.02, 0.09, d)); // moss dots on the ridges
+    float k = clamp(rim * 0.85 + wash + streak * 0.45 + dots, 0.0, 1.0);
+    vec3 col = mix(uMist, uInk, k);
+    col += uRim * uNight * 0.45 * exp(-d * uEdge * 2.2) * fibre; // moonlight catching the ridges
+    col *= mix(0.94, 1.04, texture2D(uPaper, gl_FragCoord.xy / 512.0).r);
+    gl_FragColor = vec4(col, smoothstep(0.0, 0.01, d + (fibre - 0.5) * 0.014));
+    #include <colorspace_fragment>
+  }
+`;
+const INK_SKY_FS = /* glsl */ `
+  ${INK_NOISE}
+  uniform vec3 uSky; uniform vec3 uSkyTop; uniform sampler2D uPaper; uniform float uTime;
+  varying float vX; varying float vY; varying float vTop;
+  void main() {
+    vec3 col = mix(uSky, uSkyTop, smoothstep(-0.2, 1.0, vY));
+    col = mix(col, uSkyTop, smoothstep(0.55, 0.9, inkFbm(vec2(vX * 1.4 + uTime * 0.004, vY * 3.0))) * 0.25); // faint washes in the sky
+    col *= mix(0.94, 1.04, texture2D(uPaper, gl_FragCoord.xy / 512.0).r);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+const INK_WATER_FS = /* glsl */ `
+  ${INK_NOISE}
+  uniform vec3 uMist; uniform vec3 uLine; uniform vec3 uGlow; uniform sampler2D uPaper; uniform float uTime; uniform float uGlowX;
+  varying float vX; varying float vY; varying float vTop;
+  void main() {
+    float below = vTop - vY; // 0 at the far shore, growing towards the viewer
+    float band = mix(260.0, 60.0, smoothstep(0.0, 0.8, below)); // ripple lines, finer in the distance
+    float line = smoothstep(0.62, 0.95, inkN(vec2(vX * mix(14.0, 4.0, smoothstep(0.0, 0.8, below)) + uTime * 0.03, vY * band)));
+    float shore = 0.12 * exp(-below * 14.0) * inkN(vec2(vX * 30.0, 3.0)); // the far bank's shadow in the water
+    float glint = exp(-pow((vX - uGlowX) / 0.07, 2.0)) * line * smoothstep(0.02, 0.2, below); // the sun or moon, broken up by ripples
+    vec3 col = mix(uMist, uLine, clamp(line * 0.35 + shore, 0.0, 1.0));
+    col = mix(col, uGlow, glint * 0.8);
+    col *= mix(0.94, 1.04, texture2D(uPaper, gl_FragCoord.xy / 512.0).r);
+    float edge = smoothstep(0.0, 0.05, below + (inkN(vec2(vX * 9.0, 7.0)) - 0.5) * 0.03); // the far shore fades in, unevenly, instead of a ruled line
+    gl_FragColor = vec4(col, edge);
+    #include <colorspace_fragment>
+  }
+`;
+
+const INK_FONT = '"Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "Noto Serif CJK SC", "Songti SC", serif'; // brush-style Chinese faces first
+/** Rice-paper grain (grey: the shaders read how much lighter or darker the paper is here). */
+function inkPaper(THREE) {
+  const r = koiRng(9001);
+  const tex = canvasTexture(THREE, 512, 512, (g, w) => {
+    g.fillStyle = "#808080"; g.fillRect(0, 0, w, w);
+    for (let i = 0; i < 5000; i++) { const v = r() < 0.5 ? 60 : 200; g.fillStyle = `rgba(${v},${v},${v},${r(0.05, 0.18)})`; g.fillRect(r(0, w), r(0, w), r(1, 2.5), r(1, 2.5)); }
+    g.lineWidth = 1;
+    for (let i = 0; i < 900; i++) { // the fibres
+      const x = r(0, w), y = r(0, w), a = r(0, 6.28), l = r(6, 26), v = r() < 0.6 ? 215 : 70;
+      g.strokeStyle = `rgba(${v},${v},${v},${r(0.08, 0.22)})`;
+      g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + Math.cos(a + 0.6) * l * 0.5, y + Math.sin(a + 0.6) * l * 0.5, x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+    }
+  });
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+function inkSun(THREE) {
+  const r = koiRng(31);
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const gr = g.createRadialGradient(118, 116, 10, 128, 128, 100);
+    gr.addColorStop(0, "#e2553a"); gr.addColorStop(0.85, "#c9381f"); gr.addColorStop(1, "#b52f1a");
+    g.fillStyle = gr; g.beginPath();
+    for (let i = 0; i <= 64; i++) { const a = (i / 64) * 6.283, rad = 98 + r(-1.5, 1.5); g.lineTo(128 + Math.cos(a) * rad, 128 + Math.sin(a) * rad); }
+    g.fill();
+    for (let i = 0; i < 400; i++) { g.fillStyle = `rgba(255,235,210,${r(0.03, 0.1)})`; g.fillRect(r(40, 216), r(40, 216), r(1, 3), r(1, 3)); } // paper showing through the pigment
+  });
+}
+function inkMoon(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const halo = g.createRadialGradient(128, 128, 40, 128, 128, 128);
+    halo.addColorStop(0, "rgba(240,236,220,0.45)"); halo.addColorStop(1, "rgba(240,236,220,0)");
+    g.fillStyle = halo; g.fillRect(0, 0, 256, 256);
+    const disc = g.createRadialGradient(118, 118, 6, 128, 128, 58);
+    disc.addColorStop(0, "#fbf7ea"); disc.addColorStop(1, "#e6dfc8");
+    g.fillStyle = disc; g.beginPath(); g.arc(128, 128, 56, 0, 6.29); g.fill();
+  });
+}
+/** A worn square seal, 山水清音 carved out of it (the paper shows through the characters). */
+function inkSealDraw(g, color) {
+  const r = koiRng(77);
+  g.clearRect(0, 0, 128, 128);
+  g.fillStyle = color; g.fillRect(10, 10, 108, 108);
+  g.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < 60; i++) g.fillRect(r() < 0.5 ? r(8, 14) : r(114, 120), r(8, 120), r(1, 3), r(2, 5));
+  for (let i = 0; i < 60; i++) g.fillRect(r(8, 120), r() < 0.5 ? r(8, 14) : r(114, 120), r(2, 5), r(1, 3));
+  for (let i = 0; i < 40; i++) g.fillRect(r(14, 114), r(14, 114), r(1, 2.5), r(1, 2.5));
+  g.font = `bold 44px ${INK_FONT}`; g.textAlign = "center"; g.textBaseline = "middle";
+  [["山", 88, 40], ["水", 88, 88], ["清", 40, 40], ["音", 40, 88]].forEach(([c, x, y]) => g.fillText(c, x, y + 2)); // read right column first
+  g.globalCompositeOperation = "source-over";
+}
+/** Two lines of a poem in vertical columns, read from the right. */
+function inkVerseDraw(g, lines, color) {
+  const r = koiRng(5);
+  g.clearRect(0, 0, 256, 640);
+  g.fillStyle = color; g.textAlign = "center"; g.textBaseline = "middle"; g.font = `64px ${INK_FONT}`;
+  lines.forEach((line, col) => [...line].forEach((c, i) => { g.globalAlpha = r(0.8, 0.95); g.fillText(c, col ? 70 : 186, 60 + i * 118); }));
+  g.globalAlpha = 1;
+}
+function inkBoat(THREE) {
+  return canvasTexture(THREE, 256, 128, (g) => {
+    const ink = "#1b1b1d";
+    g.fillStyle = "rgba(27,27,29,0.18)"; g.beginPath(); g.ellipse(128, 92, 96, 7, 0, 0, 6.29); g.fill(); // its blurred reflection
+    g.fillStyle = ink;
+    g.beginPath(); g.moveTo(22, 70); g.quadraticCurveTo(128, 96, 238, 62); g.quadraticCurveTo(200, 84, 128, 86); g.quadraticCurveTo(58, 86, 22, 70); g.fill(); // hull
+    g.globalAlpha = 0.85; g.beginPath(); g.moveTo(74, 76); g.quadraticCurveTo(104, 40, 144, 76); g.closePath(); g.fill(); g.globalAlpha = 1; // the canopy
+    g.beginPath(); g.moveTo(177, 74); g.lineTo(184, 52); g.lineTo(191, 74); g.closePath(); g.fill(); // the fisherman
+    g.beginPath(); g.moveTo(169, 53); g.lineTo(184, 42); g.lineTo(199, 53); g.closePath(); g.fill(); // his straw hat
+    g.strokeStyle = ink; g.lineWidth = 2; g.beginPath(); g.moveTo(186, 58); g.quadraticCurveTo(214, 32, 246, 20); g.stroke(); // the rod
+    g.lineWidth = 1; g.globalAlpha = 0.6; g.beginPath(); g.moveTo(246, 20); g.lineTo(243, 88); g.stroke(); g.globalAlpha = 1;
+    g.fillStyle = "rgba(27,27,29,0.35)"; for (let i = 0; i < 4; i++) g.fillRect(4 + i * 3, 74 + i * 4, 20 - i * 4, 1.5); // the wake
+  });
+}
+/** A red-crowned crane flying to the left, and one wing drawn upwards from the shoulder (bottom edge). */
+function inkCrane(THREE) {
+  const body = canvasTexture(THREE, 256, 128, (g) => {
+    g.lineCap = "round";
+    g.strokeStyle = "#1c1c1e"; g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(178, 66); g.lineTo(250, 74); g.moveTo(178, 70); g.lineTo(248, 80); g.stroke(); // legs trailing behind
+    g.fillStyle = "#1c1c1e"; g.beginPath(); g.ellipse(190, 62, 18, 8, 0.1, 0, 6.29); g.fill(); // black tail feathers
+    g.fillStyle = "#f7f4ec"; g.strokeStyle = "rgba(28,28,30,0.7)"; g.lineWidth = 1.5;
+    g.beginPath(); g.ellipse(146, 62, 36, 13, 0, 0, 6.29); g.fill(); g.stroke();
+    g.strokeStyle = "#1c1c1e"; g.lineWidth = 6; g.beginPath(); g.moveTo(114, 58); g.quadraticCurveTo(84, 50, 50, 54); g.stroke(); // black neck
+    g.fillStyle = "#f7f4ec"; g.beginPath(); g.ellipse(44, 54, 8, 6, 0, 0, 6.29); g.fill();
+    g.fillStyle = "#c8321f"; g.beginPath(); g.arc(44, 50, 3.2, 0, 6.29); g.fill(); // the red crown
+    g.strokeStyle = "#6b6258"; g.lineWidth = 2.5; g.beginPath(); g.moveTo(37, 55); g.lineTo(12, 57); g.stroke(); // beak
+  });
+  const wing = canvasTexture(THREE, 256, 128, (g) => {
+    g.fillStyle = "#f7f4ec"; g.strokeStyle = "rgba(28,28,30,0.6)"; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(100, 126); g.quadraticCurveTo(80, 60, 30, 14); g.quadraticCurveTo(110, 40, 170, 126); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = "#1c1c1e"; // black flight feathers at the tip and along the trailing edge
+    g.beginPath(); g.moveTo(30, 14); g.quadraticCurveTo(70, 34, 112, 70); g.lineTo(96, 74); g.quadraticCurveTo(66, 46, 30, 14); g.fill();
+    for (let i = 0; i < 6; i++) { g.beginPath(); g.moveTo(40 + i * 12, 22 + i * 9); g.lineTo(30 + i * 12, 10 + i * 9); g.lineTo(46 + i * 12, 20 + i * 9); g.fill(); }
+  });
+  return { body, wing };
+}
+/**
+ * A long band of mist that fades to nothing at every edge (the shared cloud texture has blobs cut off at its borders:
+ * straight seams). Handed over as white pixels with only the alpha varying: a canvas stores see-through pixels as black,
+ * and filtering blends that black into the fading edge, which along a long flat outline shows as a thin grey line.
+ */
+function inkMist(THREE) {
+  const r = koiRng(271);
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 128;
+  ((g, w, h) => {
+    for (let i = 0; i < 26; i++) {
+      const x = r(60, w - 60), y = r(44, h - 44), rad = r(26, 44);
+      const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+      gr.addColorStop(0, "rgba(255,255,255,0.85)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+  })(c.getContext("2d"), 512, 128);
+  // the outline billows: a wandering centre line and a thickness that swells and thins (an ellipse's flat top reads as a ruled line)
+  const n1 = (x, k) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f), h1 = (n) => { const q = Math.sin(n * 91.7 + k * 17.3) * 43758.5453; return q - Math.floor(q); }; return h1(i) * (1 - u) + h1(i + 1) * u; };
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const img = c.getContext("2d").getImageData(0, 0, 512, 128).data;
+  for (let x = 0; x < 512; x++) {
+    const u = x / 511, env = Math.pow(Math.sin(Math.PI * u), 0.7);
+    const mid = 0.5 + 0.16 * (n1(u * 4, 1) - 0.5), thick = 0.46 * env * (0.45 + 0.55 * n1(u * 7, 2));
+    for (let y = 0; y < 128; y++) {
+      const v = y / 127, o = (y * 512 + x) * 4;
+      const mask = (1 - sm(0.3, 1, Math.abs(v - mid) / Math.max(thick, 1e-3))) * Math.sqrt(Math.sin(Math.PI * v));
+      img[o] = img[o + 1] = img[o + 2] = 255;
+      img[o + 3] = Math.round(img[o + 3] * mask);
+    }
+  }
+  const tex = new THREE.DataTexture(img, 512, 128, THREE.RGBAFormat);
+  tex.flipY = true;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+/** A pine leaning out from a cliff: the trunk starts at the bottom left. */
+function inkPine(THREE) {
+  const r = koiRng(1234);
+  return canvasTexture(THREE, 512, 512, (g) => {
+    const ink = (a) => `rgba(24,24,26,${a})`;
+    g.lineCap = "round"; g.lineJoin = "round";
+    for (let k = 0; k < 3; k++) { // the trunk: overlapping rough strokes
+      g.strokeStyle = ink(0.55 + k * 0.15); g.lineWidth = 26 - k * 7;
+      g.beginPath(); g.moveTo(40 + k * 3, 505); g.bezierCurveTo(70, 400, 30 + k * 4, 320, 120, 250); g.bezierCurveTo(190, 196, 260, 210, 330, 170); g.stroke();
+    }
+    const branch = (x0, y0, x1, y1, w) => { g.strokeStyle = ink(0.75); g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0); g.quadraticCurveTo((x0 + x1) / 2, Math.min(y0, y1) - 20, x1, y1); g.stroke(); };
+    branch(120, 250, 250, 150, 7); branch(200, 205, 410, 190, 6); branch(90, 330, 20, 250, 6); branch(300, 180, 470, 120, 5);
+    const pad = (cx, cy, rx, ry) => { // needles in fans of short strokes, over a light wash
+      g.fillStyle = ink(0.18); g.beginPath(); g.ellipse(cx, cy + ry * 0.3, rx, ry * 0.7, 0, 0, 6.29); g.fill();
+      g.strokeStyle = ink(0.75); g.lineWidth = 1.6;
+      for (let i = 0; i < rx * 1.8; i++) {
+        const x = cx + r(-rx, rx), y = cy + r(-ry, ry) * (1 - (Math.abs(x - cx) / rx) * 0.6);
+        for (let j = 0; j < 5; j++) { const a = -Math.PI / 2 + (j - 2) * 0.35 + r(-0.1, 0.1); g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * 9, y + Math.sin(a) * 9); g.stroke(); }
+      }
+    };
+    pad(250, 142, 60, 16); pad(410, 182, 70, 16); pad(470, 112, 40, 12); pad(30, 240, 36, 12); pad(330, 160, 40, 12);
+  });
+}
+
+function inkwash(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(8848);
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const time = { value: 0 };
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.far = 400;
+  // the ridge lines: 1D value noise with a fixed seed, so it is the same painting every time
+  const hash1 = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const noise1 = (x) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return hash1(i) * (1 - u) + hash1(i + 1) * u; };
+  const fbm1 = (x) => { let s = 0, a = 0.5; for (let o = 0; o < 5; o++) { s += a * noise1(x); x = x * 2.07 + 11.3; a *= 0.5; } return s / 0.96875; };
+  const peak = (X, c, w, h) => h * Math.exp(-(((X - c) / w) ** 2));
+  const COLS = preview ? 220 : 480, W = 4.4; // the layers reach well past the widest screens
+  /** A strip at depth D whose top edge follows top(X); X and Y in screen half-heights, so every layer keeps its size on screen. */
+  function strip(D, top, x0, x1, bottom = -1.3, cols = COLS) {
+    const s = D * TAN, pos = new Float32Array((cols + 1) * 6), tops = new Float32Array((cols + 1) * 2), idx = [];
+    for (let c = 0; c <= cols; c++) {
+      const X = x0 + ((x1 - x0) * c) / cols, T = top(X);
+      pos.set([X * s, T * s, 0, X * s, bottom * s, 0], c * 6);
+      tops[c * 2] = tops[c * 2 + 1] = T;
+      if (c < cols) { const a = c * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    }
+    const g = keep(new THREE.BufferGeometry());
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("aTop", new THREE.BufferAttribute(tops, 1));
+    g.setIndex(idx);
+    return g;
+  }
+  const paper = keep(inkPaper(THREE));
+  const layerMat = (fs, uniforms) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: INK_LAYER_VS, fragmentShader: fs, transparent: true, depthWrite: false, depthTest: false }));
+  // painted back to front: every layer is drawn in its order, nothing is depth-tested
+  const place = (mesh, D, order) => { mesh.position.z = -D; mesh.renderOrder = order; mesh.frustumCulled = false; scene.add(mesh); return mesh; };
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+
+  const skyUni = { uSky: { value: new THREE.Color() }, uSkyTop: { value: new THREE.Color() }, uPaper: { value: paper }, uTime: time, uScale: { value: 150 * TAN } };
+  place(new THREE.Mesh(strip(150, () => 1.4, -W - 0.5, W + 0.5, -1.4, 8), layerMat(INK_SKY_FS, skyUni)), 150, 0);
+  const sunTex = keep(inkSun(THREE)), moonTex = keep(inkMoon(THREE));
+  const orbMat = keep(new THREE.MeshBasicMaterial({ map: sunTex, transparent: true, depthWrite: false, depthTest: false }));
+  const orb = place(new THREE.Mesh(quad, orbMat), 140, 1);
+  const SUN = { X: -0.28, Y: 0.55 };
+
+  const mist = { value: new THREE.Color() }, rimCol = { value: new THREE.Color("#8e9cba") }, night = { value: 0 };
+  const LAYERS = [ // far to near: paler, softer and higher at the back, darker and sharper in front
+    { D: 90, order: 2, wash: 0.55, edge: 22, fade: 0.32, stroke: 0.08, dots: 0, top: (X) => 0.28 + 0.22 * fbm1(X * 1.1 + 3) + peak(X, -0.9, 0.35, 0.18) + peak(X, 1.1, 0.4, 0.2) + peak(X, 2.4, 0.5, 0.15) + peak(X, -2.3, 0.5, 0.17) },
+    { D: 62, order: 4, wash: 0.7, edge: 28, fade: 0.36, stroke: 0.25, dots: 0.25, top: (X) => 0.1 + 0.2 * fbm1(X * 1.6 + 9) + peak(X, 0.35, 0.2, 0.42) + peak(X, -1.5, 0.3, 0.25) + peak(X, 1.9, 0.35, 0.28) + peak(X, -3, 0.4, 0.2) + peak(X, 3.2, 0.4, 0.22) },
+    { D: 42, order: 6, wash: 0.85, edge: 34, fade: 0.3, stroke: 0.6, dots: 0.6, top: (X) => -0.06 + 0.18 * fbm1(X * 2.2 + 21) + peak(X, -0.62, 0.24, 0.3) + peak(X, 0.98, 0.3, 0.26) + peak(X, -1.9, 0.35, 0.28) + peak(X, 2.5, 0.4, 0.25) },
+    { D: 22, order: 10, wash: 1, edge: 40, fade: 0.26, stroke: 0.8, dots: 0.9, top: (X) => -0.66 + 0.1 * fbm1(X * 3 + 5) + peak(X, -1.35, 0.5, 0.62) + peak(X, 1.5, 0.55, 0.56) + peak(X, -2.8, 0.6, 0.72) + peak(X, 3.0, 0.7, 0.66) },
+  ];
+  const inkCols = LAYERS.map(() => ({ value: new THREE.Color() }));
+  const mountainUni = (L, i, seed) => ({ uInk: inkCols[i], uMist: mist, uRim: rimCol, uNight: night, uPaper: { value: paper }, uWash: { value: L.wash }, uEdge: { value: L.edge }, uFade: { value: L.fade }, uStroke: { value: L.stroke }, uDots: { value: L.dots }, uSeed: { value: seed }, uLow: { value: L.low ?? -3 }, uScale: { value: L.D * TAN } });
+  LAYERS.forEach((L, i) => place(new THREE.Mesh(strip(L.D, L.top, -W, W), layerMat(INK_MOUNTAIN_FS, mountainUni(L, i, i * 17.3))), L.D, L.order));
+
+  const WATER_Y = -0.2; // the river between the middle mountains and the near banks
+  const waterUni = { uMist: mist, uLine: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uPaper: { value: paper }, uTime: time, uGlowX: { value: SUN.X }, uScale: { value: 30 * TAN } };
+  place(new THREE.Mesh(strip(30, () => WATER_Y, -W, W, -1.3, 8), layerMat(INK_WATER_FS, waterUni)), 30, 8);
+
+  // mist: unpainted paper drifting across the feet of the mountains
+  const mistMat = keep(new THREE.MeshBasicMaterial({ map: keep(inkMist(THREE)), transparent: true, depthWrite: false, depthTest: false }));
+  const MISTS = [[80, 0.16, 3], [80, 0.3, 3], [55, 0.02, 5], [55, 0.12, 5], [36, -0.14, 7], [18, -0.5, 11], [18, -0.62, 11]];
+  const mists = (preview ? MISTS.filter((_, i) => i % 2 === 0) : MISTS).map(([D, Y, order], i) => {
+    const m = place(new THREE.Mesh(quad, mistMat), D, order);
+    m.scale.set(r(2.2, 3.4) * D * TAN, r(0.2, 0.32) * D * TAN, 1);
+    return { m, D, Y, X: r(-3, 3), speed: r(0.004, 0.01) * (i % 2 ? 1 : -1) };
+  });
+
+  // a cliff coming in from the left edge, with a pine leaning out over the water (kept to the edge on every screen shape)
+  const cliffTop = (X) => 0.08 - 1.36 * (X < 0.05 ? 0 : X > 1.05 ? 1 : (1 - Math.cos(Math.PI * (X - 0.05))) / 2) + 0.06 * fbm1(X * 6 + 40) + peak(X, 0.12, 0.1, 0.06);
+  const cliff = place(new THREE.Mesh(strip(15, cliffTop, -0.5, 1.1, -1.3, preview ? 80 : 160), layerMat(INK_MOUNTAIN_FS, mountainUni({ D: 15, wash: 1, edge: 40, fade: 0.3, stroke: 0.9, dots: 1, low: -0.45 }, 3, 91.7))), 15, 12);
+  const pineGeo = keep(new THREE.PlaneGeometry(1, 1));
+  pineGeo.translate(0.42, 0.5, 0); // the trunk's foot (8 % in from the left of the picture) sits on the origin
+  const pine = place(new THREE.Mesh(pineGeo, keep(new THREE.MeshBasicMaterial({ map: keep(inkPine(THREE)), transparent: true, depthWrite: false, depthTest: false }))), 15, 13);
+
+  const boatMat = keep(new THREE.MeshBasicMaterial({ map: keep(inkBoat(THREE)), transparent: true, depthWrite: false, depthTest: false }));
+  const boat = place(new THREE.Mesh(quad, boatMat), 30, 9);
+  const lampMat = keep(new THREE.MeshBasicMaterial({ map: keep(glowTexture(THREE)), color: 0xffb35c, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+  const lamp = place(new THREE.Mesh(quad, lampMat), 30, 9.5);
+  const drift = { boat: -0.35 }; // in the water layer's own units
+
+  const craneTex = inkCrane(THREE);
+  keep(craneTex.body); keep(craneTex.wing);
+  const craneMat = (map, opacity = 1) => keep(new THREE.MeshBasicMaterial({ map, transparent: true, opacity, depthWrite: false, depthTest: false }));
+  const bodyMat = craneMat(craneTex.body), nearWingMat = craneMat(craneTex.wing), farWingMat = craneMat(craneTex.wing, 0.55);
+  const wingGeo = keep(new THREE.PlaneGeometry(1, 0.5));
+  wingGeo.translate(0, 0.25, 0); // the shoulder is the bottom edge: flapping flips the wing about it
+  const CRANE_D = 50, cranes = [];
+  for (let i = 0; i < 3; i++) {
+    const g = new THREE.Group();
+    const far = new THREE.Mesh(wingGeo, farWingMat), body = new THREE.Mesh(quad, bodyMat), near = new THREE.Mesh(wingGeo, nearWingMat);
+    body.scale.set(1, 0.5, 1);
+    far.position.set(0.03, 0.03, 0); near.position.set(0.02, 0.02, 0);
+    far.renderOrder = 5; body.renderOrder = 5.1; near.renderOrder = 5.2;
+    for (const m of [far, body, near]) m.frustumCulled = false;
+    g.add(far, body, near);
+    g.position.z = -CRANE_D;
+    scene.add(g);
+    cranes.push({ g, far, near, phase: r(0, 6.28) });
+  }
+  const flight = { X: (camera.aspect || 1) * 0.35, Y: 0.66, wait: 0 }; // the first pass is already under way
+
+  // a poem and a seal in the top right corner, as a painter would sign
+  const verseCanvas = document.createElement("canvas");
+  verseCanvas.width = 256; verseCanvas.height = 640;
+  const verseTex = keep(new THREE.CanvasTexture(verseCanvas));
+  verseTex.colorSpace = THREE.SRGBColorSpace;
+  const verse = place(new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: verseTex, transparent: true, depthWrite: false, depthTest: false }))), 10, 14);
+  const sealCanvas = document.createElement("canvas");
+  sealCanvas.width = sealCanvas.height = 128;
+  const sealTex = keep(new THREE.CanvasTexture(sealCanvas));
+  sealTex.colorSpace = THREE.SRGBColorSpace;
+  const seal = place(new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: sealTex, transparent: true, depthWrite: false, depthTest: false }))), 10, 14);
+  let sealColor = "", verseNight = null;
+
+  const INK_DAY = ["#8e9aa6", "#5d6a76", "#353b42", "#1c1e22"], INK_NIGHT = ["#2b3446", "#1f2738", "#151b28", "#0a0d14"];
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    skyUni.uSky.value.set(d ? "#1c2231" : "#efe7d5"); skyUni.uSkyTop.value.set(d ? "#10141d" : "#e4d9c2");
+    mist.value.set(d ? "#2f384b" : "#efe7d5");
+    night.value = d ? 1 : 0;
+    inkCols.forEach((c, i) => c.value.set((d ? INK_NIGHT : INK_DAY)[i]));
+    waterUni.uLine.value.set(d ? "#56627c" : "#6f757b");
+    waterUni.uGlow.value.set(d ? "#e9e4d2" : "#d4553a");
+    mistMat.color.set(d ? "#2f384b" : "#efe7d5"); mistMat.opacity = d ? 0.7 : 0.82;
+    orbMat.map = d ? moonTex : sunTex; orbMat.needsUpdate = true;
+    lampMat.opacity = d ? 0.85 : 0;
+    cranes.forEach((c) => { c.g.visible = !d; }); // white cranes by day; the night sky belongs to the moon
+    if (sealColor !== p.accent) { sealColor = p.accent; inkSealDraw(sealCanvas.getContext("2d"), p.accent); sealTex.needsUpdate = true; }
+    if (verseNight !== d) { // 王维《山居秋暝》: its rainy autumn evening by day, its moonlit pines by night
+      verseNight = d;
+      inkVerseDraw(verseCanvas.getContext("2d"), d ? ["明月松间照", "清泉石上流"] : ["空山新雨后", "天气晚来秋"], d ? "#c9cdd6" : "#2a2a2c");
+      verseTex.needsUpdate = true;
+    }
+  }
+  applyPalette(pal);
+
+  function frame(dt, t) {
+    const A = camera.aspect, cx = Math.sin(t * 0.017) * 0.9, cy = Math.sin(t * 0.013) * 0.06;
+    camera.position.set(cx, cy, 0);
+    camera.lookAt(cx, cy, -100); // a slow sideways drift: the layers slide past each other
+    const so = 140 * TAN, sunX = SUN.X * so;
+    orb.position.set(sunX, SUN.Y * so, -140);
+    orb.scale.setScalar((pal.dark ? 0.42 : 0.24) * so);
+    waterUni.uGlowX.value = cx / (30 * TAN) + (sunX - cx) / so; // its reflection lies straight below it on screen
+    for (const m of mists) {
+      m.X += m.speed * dt;
+      if (m.X > 3.6) m.X = -3.6; else if (m.X < -3.6) m.X = 3.6;
+      m.m.position.set(m.X * m.D * TAN, m.Y * m.D * TAN, -m.D);
+    }
+    const k = Math.min(1, Math.max(0.55, A / 1.6)), s15 = 15 * TAN; // narrow screens get a narrower cliff
+    cliff.position.x = cx + (-A + 0.02) * s15;
+    cliff.scale.x = k;
+    pine.position.set(cliff.position.x + 0.14 * s15 * k, (cliffTop(0.14) - 0.02) * s15, -15);
+    pine.scale.set(0.62 * s15 * k, 0.62 * s15 * k, 1);
+    pine.rotation.z = Math.sin(t * 0.4) * 0.008;
+    const s30 = 30 * TAN, view30 = cx / s30;
+    drift.boat += dt * 0.012;
+    if (drift.boat - view30 > A + 0.3) drift.boat = view30 - A - 0.3;
+    const bob = Math.sin(t * 0.9) * 0.004;
+    boat.position.set(drift.boat * s30, (-0.36 + bob) * s30, -30);
+    boat.scale.set(0.2 * s30, 0.1 * s30, 1);
+    boat.rotation.z = Math.sin(t * 0.7) * 0.012;
+    lamp.position.set((drift.boat + 0.014) * s30, (-0.357 + bob) * s30, -29.9);
+    lamp.scale.setScalar(0.07 * s30 * (0.95 + 0.05 * Math.sin(t * 6.3)));
+    const s50 = CRANE_D * TAN;
+    if (flight.wait > 0) flight.wait -= dt;
+    else {
+      flight.X -= dt * 0.035;
+      if (flight.X < -A - 0.8) { flight.X = A + 0.4; flight.Y = r(0.58, 0.76); flight.wait = r(18, 34); }
+    }
+    cranes.forEach((c, i) => {
+      c.g.position.set(cx + (flight.X + i * 0.1) * s50, (flight.Y - i * 0.035 + Math.sin(t * 0.8 + i) * 0.006) * s50, -CRANE_D);
+      c.g.scale.setScalar(0.15 * s50);
+      const flap = Math.cos(t * 7.5 + c.phase);
+      c.near.scale.y = flap; c.far.scale.y = Math.cos(t * 7.5 + c.phase - 0.35) * 0.9;
+    });
+    const s10 = 10 * TAN;
+    verse.position.set(cx + (A - 0.1 - 0.08) * s10, 0.58 * s10, -10);
+    verse.scale.set(0.16 * s10, 0.4 * s10, 1);
+    seal.position.set(cx + (A - 0.1 - 0.06) * s10, (0.58 - 0.2 - 0.07) * s10, -10);
+    seal.scale.set(0.1 * s10, 0.1 * s10, 1);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { time.value = t; frame(dt, t); },
+    setPalette: applyPalette,
+    dispose() { disposables.forEach((d) => d.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

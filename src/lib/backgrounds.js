@@ -38,6 +38,7 @@ export const BG_STYLES = [
   { value: "luckycat", label: "Lucky cat", desc: "3D beckoning cat among gold, with coins and notes raining down", three: true },
   { value: "campsite", label: "Campsite", desc: "3D forest campsite: crackling fire, a tent lit from inside, fireflies under the stars", three: true },
   { value: "koipond", label: "Koi pond", desc: "3D koi gliding under real ripples, lotus and petals on the water", three: true },
+  { value: "inkwash", label: "Ink landscape", desc: "3D Chinese ink painting: misty mountains, a boat on the river, cranes and a poem", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
