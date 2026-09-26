@@ -37,6 +37,7 @@ export const BG_STYLES = [
   { value: "frostpeaks", label: "Frozen peaks", desc: "3D ice mountains: falling snow, valley mist, aurora and a lone climber", three: true },
   { value: "luckycat", label: "Lucky cat", desc: "3D beckoning cat among gold, with coins and notes raining down", three: true },
   { value: "campsite", label: "Campsite", desc: "3D forest campsite: crackling fire, a tent lit from inside, fireflies under the stars", three: true },
+  { value: "koipond", label: "Koi pond", desc: "3D koi gliding under real ripples, lotus and petals on the water", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

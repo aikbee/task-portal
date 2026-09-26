@@ -3599,7 +3599,617 @@ function campsite(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite };
+/* ---------- Koi pond: seen from above — koi gliding under real ripples, light dancing on the pebbles, lotus on the water ---------- */
+const KOI_NOISE = /* glsl */ `
+  vec2 koiHash2(vec2 p) { p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3))); return fract(sin(p) * 43758.5453); }
+  // distance between the nearest and the second nearest drifting cell point: near zero on cell borders, where caustics gather
+  float koiCells(vec2 p, float t) {
+    vec2 i = floor(p), f = fract(p);
+    float d1 = 8.0, d2 = 8.0;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+      vec2 g = vec2(float(x), float(y));
+      vec2 o = 0.5 + 0.42 * sin(t + 6.2831 * koiHash2(i + g));
+      float d = length(g + o - f);
+      if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+    }
+    return d2 - d1;
+  }
+  float koiCaustics(vec2 p, float t) {
+    p += 0.35 * vec2(sin(p.y * 0.9 + t * 0.4), cos(p.x * 0.8 - t * 0.35)); // a slow warp, so the web never looks like a grid
+    float a = pow(max(0.0, 1.0 - koiCells(p * 0.8, t * 0.55) / 0.22), 3.0); // soft filaments, brightest where they meet
+    float b = pow(max(0.0, 1.0 - koiCells(p * 1.25 + 4.1, -t * 0.45) / 0.16), 3.0);
+    float patches = smoothstep(-0.2, 0.9, sin(p.x * 0.33 + t * 0.07) * cos(p.y * 0.29 - t * 0.05) + 0.25); // brighter where more sun gets through
+    return (a * 0.7 + b * 0.45) * patches;
+  }
+`;
+const KOI_WORLD_VS = /* glsl */ `
+  varying vec3 vWorld;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const KOI_BOTTOM_FS = /* glsl */ `
+  ${KOI_NOISE}
+  uniform sampler2D uMap; uniform float uTime; uniform vec3 uLight; uniform vec3 uAmbient; uniform vec3 uDeep; uniform float uCaustic;
+  varying vec3 vWorld;
+  void main() {
+    vec2 p = vWorld.xz;
+    vec3 stones = texture2D(uMap, p * 0.16).rgb;
+    float deep = 0.5 + 0.5 * sin(p.x * 0.23 + 1.3) * cos(p.y * 0.19 - 0.7); // gentle hollows and shallows
+    vec3 col = stones * uAmbient * mix(1.0, 0.72, deep);
+    col += uLight * koiCaustics(p * 1.6, uTime) * uCaustic * mix(1.0, 0.55, deep);
+    col = mix(col, uDeep, 0.38 + 0.25 * deep); // seen through the water column
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+const KOI_FISH_VS = /* glsl */ `
+  attribute vec4 aKoi; // atlas cell, swim phase, tail swing, body curve
+  varying vec2 vUv; varying vec3 vWorld;
+  void main() {
+    vec3 p = position; // a flat body along x: tail at -0.5, head at +0.5; width along z
+    float back = 0.5 - p.x; // 0 at the head, 1 at the tip of the tail
+    p.z += sin(aKoi.y - back * 5.2) * aKoi.z * back * back * 0.5; // a wave running from head to tail, growing towards the tail
+    p.z += aKoi.w * back * back; // turning bends the whole body
+    vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+    vWorld = w.xyz;
+    vUv = vec2((uv.x + mod(aKoi.x, 2.0)) * 0.5, (uv.y + floor(aKoi.x / 2.0)) * 0.25);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const KOI_FISH_FS = /* glsl */ `
+  ${KOI_NOISE}
+  uniform sampler2D uMap; uniform float uTime; uniform vec3 uLight; uniform vec3 uAmbient; uniform vec3 uDeep; uniform float uCaustic; uniform float uShade;
+  varying vec2 vUv; varying vec3 vWorld;
+  void main() {
+    #ifdef SHADOW
+      float a = texture2D(uMap, vUv, 2.5).a; // a blurred silhouette on the pebbles
+      gl_FragColor = vec4(0.0, 0.0, 0.0, a * uShade);
+    #else
+      vec4 t = texture2D(uMap, vUv);
+      if (t.a < 0.01) discard;
+      vec3 col = t.rgb * uAmbient + t.rgb * uLight * koiCaustics(vWorld.xz * 1.6, uTime) * uCaustic * 0.4;
+      col = mix(col, uDeep, clamp(-vWorld.y * 0.32, 0.0, 0.45)); // deeper fish sink into the green
+      gl_FragColor = vec4(col, t.a);
+    #endif
+    #include <colorspace_fragment>
+  }
+`;
+const KOI_WATER_FS = /* glsl */ `
+  uniform sampler2D uUnder; uniform sampler2D uRipple; uniform vec2 uResolution; uniform vec3 uGrid; // grid centre x, z and side
+  uniform float uTime; uniform vec3 uTint; uniform vec3 uSky; uniform vec3 uLightDir; uniform vec3 uLightColor; uniform float uSpec; uniform float uSheen;
+  varying vec3 vWorld;
+  void main() {
+    vec2 p = vWorld.xz;
+    vec2 rings = (texture2D(uRipple, (p - uGrid.xy) / uGrid.z + 0.5).rg - 0.5) * 2.0;
+    vec2 slope = rings;
+    // the breeze: fine ripples that never stop
+    slope += 0.045 * vec2(sin(p.x * 2.3 + uTime * 1.1 + sin(p.y * 1.7 + uTime * 0.6)), cos(p.y * 2.1 - uTime * 0.9 + sin(p.x * 1.4 - uTime * 0.4)));
+    slope += 0.02 * vec2(sin(p.y * 5.3 - uTime * 1.7), cos(p.x * 4.9 + uTime * 1.5));
+    vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
+    vec3 V = normalize(cameraPosition - vWorld);
+    vec3 under = texture2D(uUnder, gl_FragCoord.xy / uResolution + slope * 0.06 + rings * 0.12).rgb; // rings bend the view more than the breeze // what lies below bends with the ripples
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 col = mix(under, uTint, 0.16);
+    col = mix(col, uSky, clamp(0.025 + fres * 2.0, 0.0, 0.6));
+    float nh = max(dot(N, normalize(uLightDir + V)), 0.0);
+    float live = smoothstep(0.02, 0.12, length(rings)); // glints only on the rings a koi or a petal sets off: the breeze alone smears the sun into a blob
+    float facing = dot(normalize(vec3(-rings.x, 1.0, -rings.y)), uLightDir) - uLightDir.y; // ring crests tilted towards the light catch it, the far sides fall into shade
+    col += (uLightColor * 0.8 + uSky * 0.4) * max(facing, 0.0) * 2.4;
+    col *= 1.0 - max(-facing, 0.0) * 2.0;
+    col += uLightColor * (pow(nh, 1400.0) * uSpec * live + pow(nh, 60.0) * uSheen); // glints on the ripples, and a soft sheen
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+
+/** A small seeded random, so the pond's textures come out the same every time. */
+function koiRng(seed) { let s = seed; return (a = 0, b = 1) => { s = (s * 16807) % 2147483647; return a + ((s - 1) / 2147483646) * (b - a); }; }
+/** Pebbles and silt on the pond floor, tileable. */
+function koiPebbles(THREE) {
+  const r = koiRng(4242);
+  const tex = canvasTexture(THREE, 512, 512, (g, w) => {
+    g.fillStyle = "#3f4a35"; g.fillRect(0, 0, w, w);
+    for (let i = 0; i < 2600; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "30,40,25" : "150,150,120"},${r(0.08, 0.2)})`; g.fillRect(r(0, w), r(0, w), 2, 2); }
+    const cols = ["#6d6a58", "#7a7260", "#5e5d4f", "#857b64", "#66644f", "#736d5a", "#55574a", "#8a8068", "#6a6552"];
+    for (let i = 0; i < 170; i++) {
+      const x = r(0, w), y = r(0, w), rx = r(9, 30), ry = rx * r(0.6, 1), a = r(0, 3.14), c = cols[(r() * cols.length) | 0];
+      for (const dx of [-w, 0, w]) for (const dy of [-w, 0, w]) {
+        const px = x + dx, py = y + dy;
+        if (px < -30 || px > w + 30 || py < -30 || py > w + 30) continue; // drawn again across the edges: the texture tiles
+        g.save(); g.translate(px, py); g.rotate(a);
+        g.fillStyle = "rgba(0,0,0,0.16)"; g.beginPath(); g.ellipse(1.5, 2, rx, ry, 0, 0, 6.29); g.fill();
+        const gr = g.createLinearGradient(-rx, -ry, rx, ry); // lit a little from the upper left, no hard rim
+        gr.addColorStop(0, "rgba(255,255,240,0.1)"); gr.addColorStop(1, "rgba(0,0,0,0.12)");
+        g.fillStyle = c; g.beginPath(); g.ellipse(0, 0, rx, ry, 0, 0, 6.29); g.fill();
+        g.fillStyle = gr; g.fill();
+        g.restore();
+      }
+    }
+    g.fillStyle = "rgba(63,74,53,0.3)"; g.fillRect(0, 0, w, w); // silt settles over everything and softens it
+    for (let i = 0; i < 26; i++) { g.fillStyle = `rgba(60,100,45,${r(0.12, 0.25)})`; g.beginPath(); g.ellipse(r(0, w), r(0, w), r(20, 60), r(12, 35), r(0, 3), 0, 6.29); g.fill(); } // algae
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+const KOI_KINDS = [ // base colour, fins, blotches [colour, count, size], extras
+  { base: "#f7f3ea", fin: "rgba(250,246,238,0.6)", spots: [["#e0431c", 4, 1]] }, // kohaku
+  { base: "#f7f3ea", fin: "rgba(250,246,238,0.6)", spots: [["#df4a20", 3, 1], ["#1d1d22", 5, 0.45]] }, // sanke
+  { base: "#e9e7e1", fin: "rgba(245,245,240,0.6)", spots: [], sheen: true }, // platinum (a black showa vanished in the dark water)
+  { base: "#f2b33d", fin: "rgba(250,214,120,0.55)", spots: [], sheen: true }, // ogon, gold
+  { base: "#ef7a22", fin: "rgba(250,170,100,0.55)", spots: [["#f7efe2", 2, 0.7]], sheen: true }, // orange
+  { base: "#f7f3ea", fin: "rgba(250,246,238,0.6)", spots: [], crown: true }, // tancho: one red crown
+  { base: "#7d97ad", fin: "rgba(200,210,220,0.5)", spots: [["#e2672a", 3, 0.8]], net: true }, // asagi, blue-grey
+  { base: "#f7f3ea", fin: "rgba(250,246,238,0.6)", spots: [["#e44b21", 6, 0.8]] }, // kohaku, busier
+];
+/** Eight koi seen from above, head to the right, in a 2 × 4 atlas of 512 × 256 cells. */
+function koiAtlas(THREE) {
+  const r = koiRng(777);
+  return canvasTexture(THREE, 1024, 1024, (g) => {
+    KOI_KINDS.forEach((k, n) => {
+      const ox = (n % 2) * 512, y0 = Math.floor(n / 2) * 256 + 128;
+      const hw = (u) => (u < 0.7 ? 8 + 38 * Math.pow(u / 0.7, 0.7) : 46 * Math.sqrt(Math.max(0, 1 - ((u - 0.7) / 0.3) ** 2)));
+      const body = () => {
+        g.beginPath();
+        for (let i = 0; i <= 40; i++) { const u = i / 40; g.lineTo(ox + 108 + u * 344, y0 - hw(u)); }
+        for (let i = 40; i >= 0; i--) { const u = i / 40; g.lineTo(ox + 108 + u * 344, y0 + hw(u)); }
+        g.closePath();
+      };
+      const fin = (pts) => { g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 4) g.quadraticCurveTo(pts[i], pts[i + 1], pts[i + 2], pts[i + 3]); g.closePath(); g.fill(); };
+      g.fillStyle = k.fin;
+      for (const s of [-1, 1]) {
+        fin([ox + 360, y0 + s * 38, ox + 332, y0 + s * 96, ox + 284, y0 + s * 104, ox + 318, y0 + s * 70, ox + 330, y0 + s * 40]); // pectoral
+        fin([ox + 268, y0 + s * 34, ox + 250, y0 + s * 64, ox + 222, y0 + s * 68, ox + 240, y0 + s * 46, ox + 246, y0 + s * 32]); // pelvic
+      }
+      g.beginPath(); g.moveTo(ox + 118, y0 - 7); // the tail, a fan with a notch
+      g.bezierCurveTo(ox + 86, y0 - 18, ox + 52, y0 - 58, ox + 20, y0 - 68); g.quadraticCurveTo(ox + 48, y0 - 20, ox + 40, y0);
+      g.quadraticCurveTo(ox + 48, y0 + 20, ox + 20, y0 + 68); g.bezierCurveTo(ox + 52, y0 + 58, ox + 86, y0 + 18, ox + 118, y0 + 7);
+      g.closePath(); g.fill();
+      g.strokeStyle = "rgba(255,255,255,0.22)"; g.lineWidth = 1.5;
+      for (let i = -5; i <= 5; i++) { g.beginPath(); g.moveTo(ox + 116, y0 + i); g.lineTo(ox + 30 + Math.abs(i) * 3, y0 + i * 12); g.stroke(); }
+      g.save(); body(); g.fillStyle = k.base; g.fill(); g.clip();
+      for (const [col, count, size] of k.spots) for (let i = 0; i < count; i++) {
+        const cx = ox + 108 + r(0.12, 0.95) * 344, cy = y0 + r(-26, 26), rx = r(22, 44) * size, ry = r(14, 26) * size;
+        g.fillStyle = col;
+        for (let j = 0; j < 3; j++) { g.beginPath(); g.ellipse(cx + r(-rx, rx) * 0.4, cy + r(-ry, ry) * 0.4, rx * r(0.6, 1), ry * r(0.6, 1), r(-0.4, 0.4), 0, 6.29); g.fill(); }
+      }
+      if (k.crown) { g.fillStyle = "#d9361c"; g.beginPath(); g.ellipse(ox + 398, y0, 20, 17, 0, 0, 6.29); g.fill(); }
+      if (k.net) { g.strokeStyle = "rgba(30,50,70,0.35)"; g.lineWidth = 1.2; for (let x = ox + 130; x < ox + 440; x += 13) for (let y = y0 - 44; y < y0 + 44; y += 11) { g.beginPath(); g.arc(x + ((y / 11) % 2) * 6, y, 6, 0.2, 2.9); g.stroke(); } }
+      const shade = g.createLinearGradient(0, y0 - 46, 0, y0 + 46); // the body is round: dark flanks, a bright back
+      shade.addColorStop(0, "rgba(0,0,0,0.3)"); shade.addColorStop(0.44, "rgba(255,255,255,0.08)"); shade.addColorStop(0.5, "rgba(255,255,255,0.16)"); shade.addColorStop(0.56, "rgba(255,255,255,0.08)"); shade.addColorStop(1, "rgba(0,0,0,0.3)");
+      g.fillStyle = shade; g.fillRect(ox, y0 - 60, 512, 120);
+      if (k.sheen) { const s = g.createRadialGradient(ox + 330, y0 - 10, 2, ox + 330, y0, 120); s.addColorStop(0, "rgba(255,250,220,0.5)"); s.addColorStop(1, "rgba(255,250,220,0)"); g.fillStyle = s; g.fillRect(ox, y0 - 60, 512, 120); }
+      g.fillStyle = "rgba(0,0,0,0.12)"; g.beginPath(); g.ellipse(ox + 262, y0, 72, 4, 0, 0, 6.29); g.fill(); // the dorsal ridge
+      g.restore();
+      g.fillStyle = "#15151a";
+      for (const s of [-1, 1]) { g.beginPath(); g.ellipse(ox + 424, y0 + s * 15, 4.5, 3.2, 0, 0, 6.29); g.fill(); }
+    });
+  });
+}
+/** A lily pad with its notch, and its soft shadow. */
+function koiPads(THREE) {
+  const shape = (g) => { g.beginPath(); g.moveTo(128, 128); g.arc(128, 128, 116, -0.2, -0.55 + Math.PI * 2); g.closePath(); };
+  const pad = canvasTexture(THREE, 256, 256, (g) => {
+    const gr = g.createRadialGradient(128, 128, 6, 128, 128, 118);
+    gr.addColorStop(0, "#86b84e"); gr.addColorStop(0.7, "#54903a"); gr.addColorStop(1, "#3c6f2a");
+    shape(g); g.fillStyle = gr; g.fill();
+    g.save(); shape(g); g.clip();
+    g.strokeStyle = "rgba(40,80,25,0.35)"; g.lineWidth = 2;
+    for (let i = 0; i < 22; i++) { const a = -0.2 + (i / 22) * (Math.PI * 2 - 0.35); g.beginPath(); g.moveTo(128, 128); g.lineTo(128 + Math.cos(a) * 116, 128 + Math.sin(a) * 116); g.stroke(); }
+    g.restore();
+    shape(g); g.strokeStyle = "rgba(30,60,20,0.5)"; g.lineWidth = 3; g.stroke();
+  });
+  const shadow = canvasTexture(THREE, 256, 256, (g) => { g.filter = "blur(7px)"; shape(g); g.fillStyle = "#000"; g.fill(); });
+  return { pad, shadow };
+}
+/** Lotus petals, tips in the accent colour (redrawn when it changes), and the golden centre. */
+function koiLotusDraw(g, accent) {
+  g.clearRect(0, 0, 256, 256);
+  const ring = (n, dist, len, wid, off) => {
+    for (let i = 0; i < n; i++) {
+      const a = off + (i / n) * Math.PI * 2;
+      g.save(); g.translate(128 + Math.cos(a) * dist, 128 + Math.sin(a) * dist); g.rotate(a);
+      const gr = g.createLinearGradient(-len, 0, len, 0);
+      gr.addColorStop(0, "#ffffff"); gr.addColorStop(0.55, "#fdf7fa"); gr.addColorStop(1, accent);
+      g.fillStyle = gr; g.beginPath(); g.ellipse(0, 0, len, wid, 0, 0, 6.29); g.fill();
+      g.strokeStyle = "rgba(0,0,0,0.1)"; g.lineWidth = 1.5; g.stroke();
+      g.restore();
+    }
+  };
+  ring(10, 64, 58, 24, 0);
+  ring(8, 42, 42, 20, 0.39);
+}
+function koiLotusCenter(THREE) {
+  return canvasTexture(THREE, 128, 128, (g) => {
+    g.strokeStyle = "#f4b93a"; g.lineWidth = 3;
+    for (let i = 0; i < 28; i++) { const a = (i / 28) * 6.283; g.beginPath(); g.moveTo(64 + Math.cos(a) * 22, 64 + Math.sin(a) * 22); g.lineTo(64 + Math.cos(a) * 40, 64 + Math.sin(a) * 40); g.stroke(); }
+    const gr = g.createRadialGradient(60, 60, 2, 64, 64, 24); gr.addColorStop(0, "#f8e27a"); gr.addColorStop(1, "#c9a227");
+    g.fillStyle = gr; g.beginPath(); g.arc(64, 64, 22, 0, 6.29); g.fill();
+    g.fillStyle = "#8a6d12"; for (let i = 0; i < 7; i++) { const a = (i / 7) * 6.283; g.beginPath(); g.arc(64 + Math.cos(a) * 11, 64 + Math.sin(a) * 11, 2.5, 0, 6.29); g.fill(); }
+  });
+}
+function koiPetal(THREE) {
+  return canvasTexture(THREE, 64, 64, (g) => {
+    const gr = g.createRadialGradient(32, 40, 2, 32, 34, 30); gr.addColorStop(0, "#fff6f8"); gr.addColorStop(1, "#f6a9c0");
+    g.fillStyle = gr; g.beginPath(); g.moveTo(32, 60); g.bezierCurveTo(8, 44, 6, 16, 22, 6); g.lineTo(32, 14); g.lineTo(42, 6); g.bezierCurveTo(58, 16, 56, 44, 32, 60); g.fill();
+  });
+}
+/** A floating paper lantern seen from above: a lit square in a wooden frame. */
+function koiLantern(THREE) {
+  return canvasTexture(THREE, 128, 128, (g) => {
+    const gr = g.createRadialGradient(64, 64, 4, 64, 64, 62); gr.addColorStop(0, "#fff6d0"); gr.addColorStop(0.45, "#ffc766"); gr.addColorStop(1, "#d96f2a");
+    g.fillStyle = gr; g.fillRect(18, 18, 92, 92);
+    g.strokeStyle = "#4a2f1c"; g.lineWidth = 8; g.strokeRect(18, 18, 92, 92);
+    g.lineWidth = 3; g.beginPath(); g.moveTo(64, 18); g.lineTo(64, 110); g.moveTo(18, 64); g.lineTo(110, 64); g.stroke();
+  });
+}
+
+function koipond(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(20260927);
+  const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), S = new THREE.Vector3(), E = new THREE.Euler(), UPY = new THREE.Vector3(0, 1, 0);
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const BOTTOM = -1.2; // the pond floor lies 1.2 below the surface
+  const time = { value: 0 };
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.up.set(0, 0, -1); // looking straight down: the top of the screen is -z
+  // what the camera sees at the water line; the pond has no edges, so fish, pads and lanterns are laid out over that area
+  const view = { hw: 8, hh: 5, h: 9.4 };
+  const measure = () => {
+    const tall = Math.max(0, 1 / camera.aspect - 1);
+    view.h = 9.4 * (1 + tall * 0.3); // portrait phones look from a little higher, so the koi are not too big for the narrow screen
+    view.hh = view.h * TAN;
+    view.hw = view.hh * camera.aspect;
+  };
+  measure();
+  const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const edgeOf = (v, lim) => Math.max(0, Math.min(1, (v - lim * 0.72) / (lim * 0.28)));
+  const shadowDir = { x: 0.32, z: 0.42 }; // light from the upper left: shadows fall down and to the right
+
+  /* --- below the surface: pebbles with light dancing on them, the koi and their shadows; rendered into a texture every frame --- */
+  const under = new THREE.Scene();
+  const underUni = { uTime: time, uLight: { value: new THREE.Color() }, uAmbient: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uCaustic: { value: 0.35 } };
+  const plane = keep(new THREE.PlaneGeometry(1, 1));
+  plane.rotateX(-Math.PI / 2);
+  const bottom = new THREE.Mesh(plane, keep(new THREE.ShaderMaterial({ uniforms: { ...underUni, uMap: { value: keep(koiPebbles(THREE)) } }, vertexShader: KOI_WORLD_VS, fragmentShader: KOI_BOTTOM_FS })));
+  bottom.scale.set(90, 1, 90);
+  bottom.position.y = BOTTOM;
+  under.add(bottom);
+
+  const FISH = preview ? 7 : 14;
+  const fishGeo = keep(new THREE.PlaneGeometry(1, 0.5, 24, 1));
+  fishGeo.rotateX(-Math.PI / 2);
+  const koiAttr = new THREE.InstancedBufferAttribute(new Float32Array(FISH * 4), 4);
+  koiAttr.setUsage(THREE.DynamicDrawUsage);
+  fishGeo.setAttribute("aKoi", koiAttr);
+  const fishUni = { ...underUni, uMap: { value: keep(koiAtlas(THREE)) }, uShade: { value: 0.3 } };
+  const fishMesh = new THREE.InstancedMesh(fishGeo, keep(new THREE.ShaderMaterial({ uniforms: fishUni, vertexShader: KOI_FISH_VS, fragmentShader: KOI_FISH_FS, transparent: true, depthWrite: false })), FISH);
+  const shadowMesh = new THREE.InstancedMesh(fishGeo, keep(new THREE.ShaderMaterial({ uniforms: fishUni, vertexShader: KOI_FISH_VS, fragmentShader: KOI_FISH_FS, transparent: true, depthWrite: false, defines: { SHADOW: "" } })), FISH);
+  shadowMesh.renderOrder = 2;
+  fishMesh.renderOrder = 3;
+  for (const m of [shadowMesh, fishMesh]) { m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); under.add(m); }
+  const fish = [];
+  for (let i = 0; i < FISH; i++) {
+    fish.push({
+      x: r(-0.8, 0.8) * view.hw, z: r(-0.8, 0.8) * view.hh, y: r(-0.9, -0.3), yGoal: -0.6, yNext: r(2, 9),
+      heading: r(0, 6.283), speed: 0.5, base: r(0.42, 0.68), turn: 0, curve: 0, phase: r(0, 6.283),
+      kind: i % KOI_KINDS.length, size: r(1.3, 1.8) * (preview ? 1.1 : 1), seed: r(0, 100), dripAt: 0,
+    });
+  }
+  const pointer = { x: 0, z: 0, lx: 0, lz: 0, on: 0, at: -1e9 };
+  /** Wandering, keeping to the visible water, a little company, and curiosity about the mouse pointer. */
+  function stepFish(dt, t) {
+    const hw = view.hw * 0.9, hh = view.hh * 0.88;
+    for (const f of fish) {
+      let want = 0.55 * Math.sin(t * 0.21 + f.seed) + 0.35 * Math.sin(t * 0.47 + f.seed * 1.7); // desired turn, radians a second
+      const edge = Math.max(edgeOf(Math.abs(f.x), hw), edgeOf(Math.abs(f.z), hh));
+      if (edge > 0) want += wrapAngle(Math.atan2(-f.z, -f.x) - f.heading) * 2.2 * edge;
+      let ax = 0, az = 0, n = 0;
+      for (const o of fish) {
+        if (o === f) continue;
+        const dx = o.x - f.x, dz = o.z - f.z, d2 = dx * dx + dz * dz;
+        if (d2 < 2.4) want += wrapAngle(Math.atan2(-dz, -dx) - f.heading) * (2.4 - d2) * 0.7; // too close: veer away
+        else if (d2 < 9) { ax += Math.cos(o.heading); az += Math.sin(o.heading); n++; }
+      }
+      if (n) want += wrapAngle(Math.atan2(az, ax) - f.heading) * 0.25; // drift along with the neighbours
+      let slow = 1;
+      if (pointer.on > 0.01) {
+        const dx = pointer.x - f.x, dz = pointer.z - f.z, d = Math.hypot(dx, dz);
+        if (d < 4.5) {
+          const toward = wrapAngle(Math.atan2(dz, dx) - f.heading);
+          want += (d > 1.1 ? toward * 1.1 : -Math.sign(toward || 1) * 0.9) * pointer.on * (1 - d / 4.5); // come closer, then circle
+          slow = 0.6 + 0.4 * Math.min(1, d / 1.6);
+        }
+      }
+      want = Math.max(-1.3, Math.min(1.3, want));
+      f.turn += (want - f.turn) * Math.min(1, dt * 2.5);
+      f.heading += f.turn * dt;
+      f.curve += (Math.max(-0.26, Math.min(0.26, f.turn * 0.22)) - f.curve) * Math.min(1, dt * 3);
+      const goal = f.base * slow * (1 + 0.8 * Math.max(0, Math.sin(t * 0.3 + f.seed * 3)) ** 8); // now and then a short burst
+      f.speed += (goal - f.speed) * Math.min(1, dt * 1.5);
+      f.x += Math.cos(f.heading) * f.speed * dt;
+      f.z += Math.sin(f.heading) * f.speed * dt;
+      f.phase += dt * (2.2 + f.speed * 7 + Math.abs(f.turn) * 2);
+      // depth: wander between the floor and the surface; now and then come up and touch the water
+      if ((f.yNext -= dt) <= 0) {
+        const up = r() < 0.45;
+        f.yGoal = up ? -0.08 : r(-0.95, -0.3);
+        f.yNext = up ? 3 : r(5, 11);
+      }
+      f.y += (f.yGoal - f.y) * Math.min(1, dt * 0.9);
+    }
+  }
+  const order = fish.map((_, i) => i);
+  /** Deepest first: the koi are blended, so a fish nearer the surface must be drawn over one below it. */
+  function placeFish() {
+    order.sort((a, b) => fish[a].y - fish[b].y);
+    order.forEach((idx, slot) => {
+      const f = fish[idx];
+      Q.setFromAxisAngle(UPY, -f.heading); // the body's +x (its head) points along the heading
+      M4.compose(V.set(f.x, f.y, f.z), Q, S.set(f.size, 1, f.size));
+      fishMesh.setMatrixAt(slot, M4);
+      const lift = f.y - BOTTOM, grow = 1 + lift * 0.12;
+      M4.compose(V.set(f.x + shadowDir.x * lift, BOTTOM + 0.01, f.z + shadowDir.z * lift), Q, S.set(f.size * grow, 1, f.size * grow));
+      shadowMesh.setMatrixAt(slot, M4);
+      koiAttr.setXYZW(slot, f.kind, f.phase, 0.14 + f.speed * 0.22 + Math.abs(f.turn) * 0.08, f.curve);
+    });
+    fishMesh.instanceMatrix.needsUpdate = shadowMesh.instanceMatrix.needsUpdate = koiAttr.needsUpdate = true;
+  }
+
+  /* --- the water: a small wave simulation gives real ripples; the surface bends the view of everything below it --- */
+  const N = preview ? 64 : 128;
+  const hgt = new Float32Array(N * N), vel = new Float32Array(N * N), damp = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const e = Math.min(i, j, N - 1 - i, N - 1 - j); damp[j * N + i] = e < 8 ? 0.995 - (8 - e) * 0.03 : 0.995; } // the rim swallows waves
+  const rippleData = new Uint8Array(N * N * 4).fill(128);
+  const rippleTex = keep(new THREE.DataTexture(rippleData, N, N, THREE.RGBAFormat, THREE.UnsignedByteType));
+  rippleTex.magFilter = rippleTex.minFilter = THREE.LinearFilter;
+  rippleTex.needsUpdate = true;
+  const grid = { side: Math.max(view.hw, view.hh) * 2.3 };
+  const cellOf = (x, z) => { const i = Math.round((x / grid.side + 0.5) * N), j = Math.round((z / grid.side + 0.5) * N); return i > 0 && j > 0 && i < N - 1 && j < N - 1 ? j * N + i : -1; };
+  /** A ring starts here: a fish touching the surface, a petal landing, the mouse pointer. */
+  function drop(x, z, radius, amount) {
+    const cx = (x / grid.side + 0.5) * N, cz = (z / grid.side + 0.5) * N, rc = Math.max(1.5, radius / (grid.side / N));
+    for (let j = Math.max(1, Math.floor(cz - rc)); j <= Math.min(N - 2, Math.ceil(cz + rc)); j++) {
+      for (let i = Math.max(1, Math.floor(cx - rc)); i <= Math.min(N - 2, Math.ceil(cx + rc)); i++) {
+        const d = Math.hypot(i - cx, j - cz) / rc;
+        if (d < 1) hgt[j * N + i] += amount * (0.5 + 0.5 * Math.cos(Math.PI * d));
+      }
+    }
+  }
+  function stepWater() {
+    const k = Math.min(0.45, (1.9 / 60 / (grid.side / N)) ** 2); // waves travel about 1.9 units a second
+    for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
+      const o = j * N + i;
+      vel[o] = (vel[o] + k * (hgt[o - 1] + hgt[o + 1] + hgt[o - N] + hgt[o + N] - 4 * hgt[o])) * damp[o];
+    }
+    for (let o = 0; o < N * N; o++) hgt[o] += vel[o];
+  }
+  /** Slopes into the texture's red and green: the shader turns them into a bent surface. */
+  function packWater() {
+    const inv = 127 / (2 * (grid.side / N));
+    for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
+      const o = j * N + i;
+      rippleData[o * 4] = Math.max(0, Math.min(255, 128 + (hgt[o + 1] - hgt[o - 1]) * inv));
+      rippleData[o * 4 + 1] = Math.max(0, Math.min(255, 128 + (hgt[o + N] - hgt[o - N]) * inv));
+    }
+    rippleTex.needsUpdate = true;
+  }
+  const rt = keep(new THREE.WebGLRenderTarget(4, 4));
+  rt.texture.colorSpace = THREE.SRGBColorSpace; // stored as sRGB, read back as linear: no banding in the dark water
+  const buf = new THREE.Vector2();
+  const waterUni = {
+    uTime: time, uUnder: { value: rt.texture }, uRipple: { value: rippleTex }, uResolution: { value: new THREE.Vector2(1, 1) }, uGrid: { value: new THREE.Vector3(0, 0, grid.side) },
+    uTint: { value: new THREE.Color() }, uSky: { value: new THREE.Color() }, uLightDir: { value: new THREE.Vector3(0, 1, 0) }, uLightColor: { value: new THREE.Color() }, uSpec: { value: 1 }, uSheen: { value: 0.1 },
+  };
+  const water = new THREE.Mesh(plane, keep(new THREE.ShaderMaterial({ uniforms: waterUni, vertexShader: KOI_WORLD_VS, fragmentShader: KOI_WATER_FS })));
+  water.scale.set(90, 1, 90);
+  scene.add(water);
+  const RT_SCALE = preview ? 0.5 : 0.8; // under water nothing needs to be razor sharp
+  water.onBeforeRender = (renderer) => { // like three's Reflector: draw what is under the water first, from the same camera
+    renderer.getDrawingBufferSize(buf);
+    waterUni.uResolution.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RT_SCALE)), h = Math.max(2, Math.round(buf.y * RT_SCALE));
+    if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(rt);
+    renderer.render(under, camera);
+    renderer.setRenderTarget(before);
+  };
+
+  /* --- on the water: lily pads (their shadows on the pebbles), lotus in the accent colour, sakura petals; lanterns and fireflies at night --- */
+  const padTex = koiPads(THREE);
+  keep(padTex.pad); keep(padTex.shadow);
+  // placed in view units (-1…1), so every screen shape gets its share, most of them near the edges
+  const PAD_SPOTS = [[-0.78, -0.62, 1.3], [-0.6, -0.76, 0.9], [-0.92, -0.38, 0.75], [0.74, 0.58, 1.2], [0.88, 0.34, 0.8], [0.56, 0.8, 0.95], [0.82, -0.72, 1.0], [-0.84, 0.7, 0.85], [0.12, -0.88, 0.7], [-0.22, 0.86, 0.75], [0.95, -0.2, 0.65], [-0.5, 0.18, 0.6]];
+  const spots = (preview ? PAD_SPOTS.slice(0, 7) : PAD_SPOTS).map(([u, v, s], i) => ({ u, v, s: s * 1.25, rot: r(0, 6.283), spin: r(-0.04, 0.04), bob: r(0, 6.283), lotus: i % 3 === 0, x: 0, z: 0 }));
+  const padMat = keep(new THREE.MeshLambertMaterial({ map: padTex.pad, alphaTest: 0.5 }));
+  const padShadowMat = keep(new THREE.MeshBasicMaterial({ color: 0x000000, map: padTex.shadow, transparent: true, opacity: 0.35, depthWrite: false }));
+  const pads = new THREE.InstancedMesh(plane, padMat, spots.length), padShadows = new THREE.InstancedMesh(plane, padShadowMat, spots.length);
+  padShadows.renderOrder = 1;
+  pads.frustumCulled = padShadows.frustumCulled = false;
+  scene.add(pads);
+  under.add(padShadows);
+  const lotusCanvas = document.createElement("canvas");
+  lotusCanvas.width = lotusCanvas.height = 256;
+  const lotusTex = keep(new THREE.CanvasTexture(lotusCanvas));
+  lotusTex.colorSpace = THREE.SRGBColorSpace;
+  const flowers = spots.filter((s) => s.lotus);
+  const lotusMat = keep(new THREE.MeshLambertMaterial({ map: lotusTex, transparent: true, depthWrite: false }));
+  const lotus = new THREE.InstancedMesh(plane, lotusMat, flowers.length);
+  const centers = new THREE.InstancedMesh(plane, keep(new THREE.MeshLambertMaterial({ map: keep(koiLotusCenter(THREE)), transparent: true, depthWrite: false })), flowers.length);
+  lotus.renderOrder = 3; centers.renderOrder = 4;
+  for (const m of [lotus, centers]) { m.frustumCulled = false; scene.add(m); }
+  let lotusAccent = "";
+
+  const PETALS = preview ? 10 : 26;
+  const petals = new THREE.InstancedMesh(plane, keep(new THREE.MeshLambertMaterial({ map: keep(koiPetal(THREE)), transparent: true, depthWrite: false, side: THREE.DoubleSide })), PETALS);
+  petals.frustumCulled = false; petals.renderOrder = 5;
+  scene.add(petals);
+  const spawnPetal = (p, floating) => Object.assign(p, { x: r(-1, 1) * view.hw, z: r(-1, 1) * view.hh, y: floating ? 0.035 : r(2.5, 4.5), rot: r(0, 6.283), spin: r(-0.6, 0.6), life: floating ? r(4, 22) : r(18, 28), vx: r(-0.08, 0.08), vz: r(-0.06, 0.06), s: r(0.16, 0.24) });
+  const petalState = [];
+  for (let i = 0; i < PETALS; i++) petalState.push(spawnPetal({}, i % 2 === 0)); // half of them still on their way down
+
+  const glow = keep(glowTexture(THREE));
+  const lanternMat = keep(new THREE.MeshBasicMaterial({ map: keep(koiLantern(THREE)), transparent: true, depthWrite: false }));
+  const poolMat = keep(new THREE.MeshBasicMaterial({ map: glow, color: 0xffa94d, transparent: true, opacity: 0.42, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const lanterns = [];
+  for (let i = 0; i < (preview ? 2 : 5); i++) {
+    const body = new THREE.Mesh(plane, lanternMat), pool = new THREE.Mesh(plane, poolMat);
+    body.renderOrder = 6; pool.renderOrder = 2;
+    scene.add(body, pool);
+    const n = preview ? 2 : 5;
+    lanterns.push({ body, pool, u: -0.8 + (i / Math.max(1, n - 1)) * 1.6 + r(-0.1, 0.1), v: (i % 2 ? 0.45 : -0.4) + r(-0.25, 0.25), du: r(0.006, 0.014) * (r() < 0.5 ? -1 : 1), dv: r(-0.004, 0.004), rot: r(0, 1.5), phase: r(0, 6.283) });
+  }
+  const FLIES = preview ? 12 : 36;
+  const fPos = new Float32Array(FLIES * 3), fSeed = new Float32Array(FLIES * 3);
+  for (let i = 0; i < FLIES; i++) { fPos.set([r(-9, 9), r(0.4, 1.8), r(-6, 6)], i * 3); fSeed.set([r(0.6, 1.6), r(0, 6.28), r(0.3, 0.8)], i * 3); }
+  const flyGeo = keep(new THREE.BufferGeometry());
+  flyGeo.setAttribute("position", new THREE.BufferAttribute(fPos, 3));
+  flyGeo.setAttribute("aSeed", new THREE.BufferAttribute(fSeed, 3));
+  const flyUni = { uTime: time, uPx: { value: 700 }, uSize: { value: preview ? 0.2 : 0.13 }, uOpacity: { value: 1 } };
+  const flies = new THREE.Points(flyGeo, keep(new THREE.ShaderMaterial({ uniforms: flyUni, vertexShader: CAMP_FLY_VS, fragmentShader: CAMP_FLY_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  flies.frustumCulled = false; flies.renderOrder = 7;
+  flies.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); flyUni.uPx.value = buf.y / (2 * TAN); };
+  scene.add(flies);
+
+  const moon = new THREE.Mesh(plane, keep(new THREE.MeshBasicMaterial({ map: glow, color: 0xdfe8ff, transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending })));
+  moon.renderOrder = 1;
+  scene.add(moon);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x445544, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.position.set(-3, 10, -4);
+  scene.add(hemi, sun);
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    underUni.uAmbient.value.set(d ? "#44587e" : "#e8efe0");
+    underUni.uLight.value.set(d ? "#9fb8e8" : "#fff4d6");
+    underUni.uDeep.value.set(d ? "#061426" : "#14443a");
+    underUni.uCaustic.value = d ? 0.03 : 0.5;
+    fishUni.uShade.value = d ? 0.12 : 0.3;
+    waterUni.uTint.value.set(d ? "#081a2a" : "#1f5b50");
+    waterUni.uSky.value.set(d ? "#0d1b33" : "#cfe6ea");
+    waterUni.uLightColor.value.set(d ? "#dfe8ff" : "#fff6e0");
+    waterUni.uSpec.value = d ? 1.1 : 1.3;
+    waterUni.uSheen.value = d ? 0.02 : 0.03;
+    waterUni.uLightDir.value.set(d ? 0.35 : -0.35, 1, d ? -0.38 : -0.45).normalize(); // the moon glints on the right, the sun on the left
+    moon.visible = d;
+    hemi.color.set(d ? "#4a5f8a" : "#ffffff"); hemi.groundColor.set(d ? "#101820" : "#5c7a55"); hemi.intensity = d ? 0.6 : 1.25;
+    sun.color.set(d ? "#aac0ff" : "#fff2d8"); sun.intensity = d ? 0.35 : 1.6;
+    lotusMat.emissive.set(d ? p.accent : "#000000"); lotusMat.emissiveIntensity = d ? 0.35 : 0; // at night the lotus glows softly
+    padShadowMat.opacity = d ? 0.12 : 0.35;
+    flyUni.uOpacity.value = d ? 1 : 0;
+    lanterns.forEach((l) => { l.body.visible = l.pool.visible = d; });
+    if (lotusAccent !== p.accent) { lotusAccent = p.accent; koiLotusDraw(lotusCanvas.getContext("2d"), p.accent); lotusTex.needsUpdate = true; }
+  }
+  applyPalette(pal);
+
+  function placePads(t) {
+    spots.forEach((s, i) => {
+      s.x = s.u * view.hw; s.z = s.v * view.hh;
+      const c = cellOf(s.x, s.z), sc = s.s * (1 + (c >= 0 ? hgt[c] : 0) * 1.5); // pads ride the passing ripples
+      Q.setFromAxisAngle(UPY, s.rot + t * s.spin + Math.sin(t * 0.5 + s.bob) * 0.04);
+      M4.compose(V.set(s.x, 0.02, s.z), Q, S.set(sc, 1, sc)); pads.setMatrixAt(i, M4);
+      M4.compose(V.set(s.x + shadowDir.x * 1.2, BOTTOM + 0.005, s.z + shadowDir.z * 1.2), Q, S.set(sc * 1.08, 1, sc * 1.08)); padShadows.setMatrixAt(i, M4);
+    });
+    flowers.forEach((s, i) => {
+      Q.setFromAxisAngle(UPY, s.rot * 0.5 + t * 0.03);
+      M4.compose(V.set(s.x + 0.08 * s.s, 0.06, s.z - 0.05 * s.s), Q, S.set(s.s * 0.62, 1, s.s * 0.62)); lotus.setMatrixAt(i, M4);
+      M4.compose(V.set(s.x + 0.08 * s.s, 0.07, s.z - 0.05 * s.s), Q, S.set(s.s * 0.22, 1, s.s * 0.22)); centers.setMatrixAt(i, M4);
+    });
+    pads.instanceMatrix.needsUpdate = padShadows.instanceMatrix.needsUpdate = lotus.instanceMatrix.needsUpdate = centers.instanceMatrix.needsUpdate = true;
+  }
+  /** Petals flutter down, land with a small ring, float for a while and shrink away; then another one falls. */
+  function stepPetals(dt, t) {
+    petalState.forEach((p, i) => {
+      const falling = p.y > 0.036;
+      if (falling) {
+        p.y -= dt * 0.9; p.x += Math.sin(t * 1.3 + i) * dt * 0.25; p.rot += p.spin * dt * 3;
+        if (p.y <= 0.036) { p.y = 0.035; drop(p.x, p.z, 0.4, 0.12); }
+      } else {
+        p.x += (p.vx + Math.sin(t * 0.2 + i) * 0.03) * dt; p.z += p.vz * dt; p.rot += p.spin * dt * 0.3;
+      }
+      if ((p.life -= dt) <= 0) spawnPetal(p, false);
+      const sc = p.s * Math.min(1, Math.max(0.01, p.life / 1.2));
+      Q.setFromEuler(E.set(falling ? Math.sin(t * 3 + i) * 0.6 : 0, p.rot, falling ? Math.cos(t * 2.3 + i) * 0.5 : 0));
+      M4.compose(V.set(p.x, p.y, p.z), Q, S.set(sc, 1, sc));
+      petals.setMatrixAt(i, M4);
+    });
+    petals.instanceMatrix.needsUpdate = true;
+  }
+  function placeLanterns(dt, t) {
+    for (const l of lanterns) {
+      l.u += l.du * dt; l.v += l.dv * dt;
+      if (l.u > 1.15) l.u = -1.15; else if (l.u < -1.15) l.u = 1.15;
+      if (l.v > 1.1) l.v = -1.1; else if (l.v < -1.1) l.v = 1.1;
+      const x = l.u * view.hw, z = l.v * view.hh;
+      l.body.position.set(x, 0.16, z);
+      l.body.rotation.y = l.rot + Math.sin(t * 0.9 + l.phase) * 0.06;
+      l.body.scale.set(0.55, 1, 0.55);
+      const flick = 2.4 * (0.95 + 0.04 * Math.sin(t * 7.1 + l.phase) + 0.03 * Math.sin(t * 13.3 + l.phase * 2));
+      l.pool.position.set(x, 0.012, z);
+      l.pool.scale.set(flick, 1, flick);
+    }
+  }
+  function placeMoon() { // the moon's reflection sits where its light glints: the light direction mirrored through the camera
+    const L = waterUni.uLightDir.value, h = view.h;
+    moon.position.set(camera.position.x + (L.x / L.y) * h, 0.006, camera.position.z + (L.z / L.y) * h);
+    moon.scale.set(2.2, 1, 2.2);
+  }
+  function placeCamera(t) {
+    const cx = Math.sin(t * 0.05) * 0.25, cz = Math.cos(t * 0.04) * 0.2; // a slow drift: the pads, the fish and the pebbles move apart a little
+    camera.position.set(cx, view.h, cz);
+    camera.lookAt(cx, 0, cz);
+    placeMoon();
+  }
+  const onMove = (e) => {
+    if (e.pointerType && e.pointerType !== "mouse") return;
+    const nx = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1, ny = 1 - (e.clientY / Math.max(1, window.innerHeight)) * 2;
+    pointer.x = camera.position.x + nx * view.hw;
+    pointer.z = camera.position.z - ny * view.hh;
+    pointer.at = performance.now();
+  };
+  if (!preview) window.addEventListener("pointermove", onMove, { passive: true });
+
+  // warm up: two seconds of swimming and a few settling rings, so the first frame (and the still one) is already alive
+  for (let i = 0; i < 60; i++) stepFish(1 / 30, i / 30);
+  drop(0.3 * view.hw, -0.2 * view.hh, 0.45, 0.1); // one faint ring: with animation off this frame stays on screen
+  for (let i = 0; i < 70; i++) stepWater();
+  packWater(); placeFish(); placePads(0); stepPetals(0, 0); placeLanterns(0, 0); placeCamera(0);
+
+  let acc = 0, bugAt = 1.5;
+  return {
+    update(dt, t) {
+      time.value = t;
+      measure();
+      const side = Math.max(view.hw, view.hh) * 2.3;
+      if (Math.abs(side - grid.side) / grid.side > 0.12) { grid.side = side; hgt.fill(0); vel.fill(0); } // the window changed shape a lot
+      waterUni.uGrid.value.set(0, 0, grid.side);
+      placeCamera(t);
+      const now = performance.now();
+      pointer.on += ((now - pointer.at < 4000 ? 1 : 0) - pointer.on) * Math.min(1, dt * 2);
+      if (now - pointer.at < 120 && Math.hypot(pointer.x - pointer.lx, pointer.z - pointer.lz) > 0.9) { drop(pointer.x, pointer.z, 0.5, 0.12); pointer.lx = pointer.x; pointer.lz = pointer.z; }
+      stepFish(dt, t);
+      for (const f of fish) if (f.y > -0.14 && (f.dripAt -= dt) <= 0) { drop(f.x + Math.cos(f.heading) * 0.36 * f.size, f.z + Math.sin(f.heading) * 0.36 * f.size, 0.45, 0.2); f.dripAt = r(0.35, 0.7); }
+      placeFish();
+      stepPetals(dt, t);
+      if ((bugAt -= dt) <= 0) { drop(r(-0.85, 0.85) * view.hw, r(-0.85, 0.85) * view.hh, 0.35, 0.1); bugAt = r(1.5, 4); }
+      acc = Math.min(acc + dt, 0.1);
+      let steps = 0;
+      while (acc >= 1 / 60 && steps < 3) { stepWater(); acc -= 1 / 60; steps++; }
+      if (steps) packWater();
+      placePads(t);
+      if (pal.dark) placeLanterns(dt, t);
+    },
+    setPalette: applyPalette,
+    dispose() { window.removeEventListener("pointermove", onMove); disposables.forEach((d) => d.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
