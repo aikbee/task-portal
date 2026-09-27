@@ -4635,7 +4635,555 @@ function inkwash(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash };
+/* ---------- Rainy window: raindrops on the glass, each a tiny sharp upside-down picture of the blurred city behind ---------- */
+// the city is drawn twice a frame: out of focus (uBokeh = 1, what the glass shows) and sharp (uBokeh = 0, what each drop shows)
+const RAIN_QUAD_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const RAIN_SKY_FS = /* glsl */ `
+  uniform vec3 uTop; uniform vec3 uMid; uniform vec3 uLow; uniform vec3 uGlow;
+  varying vec2 vUv;
+  void main() {
+    vec3 col = mix(uLow, uMid, smoothstep(0.0, 0.55, vUv.y));
+    col = mix(col, uTop, smoothstep(0.5, 1.0, vUv.y));
+    col += uGlow * exp(-pow((vUv.y - 0.56) / 0.2, 2.0)); // the city's own light in the low clouds, just above the roofs
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+const RAIN_LAYER_FS = /* glsl */ `
+  uniform sampler2D uSharp; uniform sampler2D uSoft; uniform float uBokeh; uniform vec3 uHaze; uniform float uHazeAmount;
+  varying vec2 vUv;
+  void main() {
+    vec4 t = mix(texture2D(uSharp, vUv), texture2D(uSoft, vUv), uBokeh); // premultiplied: soft edges without dark fringes
+    gl_FragColor = vec4(mix(t.rgb, uHaze * t.a, uHazeAmount), t.a); // rain in the air washes the far blocks out
+  }
+`;
+// city lights: tiny sharp points in one pass, big round bokeh discs with a brighter rim in the other
+const RAIN_LIGHT_VS = /* glsl */ `
+  uniform float uBokeh;
+  attribute vec4 aLight; // x, y, sharp radius, bokeh radius
+  attribute vec4 aColor; // rgb, strength
+  varying vec2 vP; varying vec4 vColor;
+  void main() {
+    vP = position.xy * 2.0;
+    vColor = aColor;
+    float r = mix(aLight.z, aLight.w, uBokeh);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(aLight.xy + position.xy * 2.0 * r, 0.0, 1.0);
+  }
+`;
+const RAIN_LIGHT_FS = /* glsl */ `
+  uniform float uBokeh;
+  varying vec2 vP; varying vec4 vColor;
+  void main() {
+    float r = length(vP);
+    if (r > 1.0) discard;
+    float sharp = exp(-r * r * 5.0) + 0.6 * exp(-r * r * 40.0);
+    float disc = smoothstep(1.0, 0.9, r) * (0.42 + 0.3 * smoothstep(0.55, 0.95, r)); // bokeh: an even disc with a bright rim
+    float k = mix(sharp, disc, uBokeh) * vColor.a;
+    gl_FragColor = vec4(vColor.rgb, k); // added on top: colour × k
+  }
+`;
+const RAIN_STREAK_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uOpacity;
+  varying vec2 vUv;
+  void main() {
+    float a = (1.0 - abs(vUv.x - 0.5) * 2.0) * smoothstep(0.0, 0.3, vUv.y) * smoothstep(1.0, 0.6, vUv.y);
+    gl_FragColor = vec4(uColor, a * uOpacity);
+  }
+`;
+// the drop map: every drop a little hemisphere; rgb = its surface normal and height, a = coverage (normal blending premultiplies)
+const RAIN_DROP_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }
+`;
+const RAIN_DROP_FS = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+    gl_FragColor = vec4(p * 0.5 + 0.5, sqrt(1.0 - r2), smoothstep(1.0, 0.8, sqrt(r2)));
+  }
+`;
+// the condensation: sliding drops wipe it away (white), and it slowly mists over again (a faint black veil every frame)
+const RAIN_STAMP_FS = /* glsl */ `
+  uniform float uAlpha;
+  varying vec2 vUv;
+  void main() {
+    float r = length(vUv * 2.0 - 1.0);
+    gl_FragColor = vec4(1.0, 1.0, 1.0, smoothstep(1.0, 0.35, r) * uAlpha);
+  }
+`;
+const RAIN_VEIL_FS = /* glsl */ `
+  uniform float uAlpha;
+  void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, uAlpha); }
+`;
+const RAIN_GLASS_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = vec4(position.xy * 2.0, 0.0, 1.0); } // always the whole screen
+`;
+const RAIN_GLASS_FS = /* glsl */ `
+  uniform sampler2D tSoft; uniform sampler2D tSharp; uniform sampler2D tDrops; uniform sampler2D tWipe;
+  uniform float uAspect; uniform float uFog; uniform vec3 uFogColor; uniform float uRefract;
+  uniform vec3 uSpec; uniform vec3 uLamp; uniform vec2 uLampPos; uniform float uGather; uniform float uSoftMix;
+  varying vec2 vUv;
+  void main() {
+    vec2 uv = vUv;
+    vec4 d = texture2D(tDrops, uv);
+    float cov = d.a;
+    vec3 enc = d.rgb / max(cov, 0.004);
+    vec2 n = enc.xy * 2.0 - 1.0;
+    float wipe = texture2D(tWipe, uv).r;
+    float fog = uFog * (1.0 - 0.7 * wipe) * (0.8 + 0.35 * smoothstep(0.7, 0.0, uv.y)); // more mist low on the pane
+    vec3 view = texture2D(tSoft, uv, fog * 2.2).rgb; // misted glass blurs the view further
+    view = mix(view, uFogColor, fog * 0.45);
+    // inside a drop: the city behind, sharp, small and upside down, darker towards the drop's edge
+    vec2 ruv = uv - n * vec2(1.0 / uAspect, 1.0) * uRefract * (0.4 + 0.6 * enc.z);
+    vec2 cuv = clamp(ruv, 0.002, 0.998);
+    vec3 drop = mix(texture2D(tSharp, cuv).rgb, texture2D(tSoft, cuv).rgb, uSoftMix); // the glow of the lights comes along
+    float edge = smoothstep(0.55, 1.0, length(n));
+    drop *= uGather * (1.0 - 0.38 * edge); // water gathers light in the middle, bends in the dark at the edge
+    drop += uSpec * 0.4 * edge * smoothstep(0.2, 0.9, dot(n, vec2(0.45, -0.9))); // light focused into a crescent at the lower edge
+    vec3 N = normalize(vec3(n * 1.3, 0.35 + enc.z));
+    drop += uSpec * 1.1 * pow(max(dot(N, normalize(vec3(-0.5, 0.6, 0.62))), 0.0), 20.0); // a glint of the room's lamp
+    vec3 col = mix(view, drop, cov);
+    vec2 q = (uv - uLampPos) * vec2(uAspect, 1.0);
+    col += uLamp * exp(-dot(q, q) * 5.0); // the lamp behind you, reflected in the glass
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+
+/** A soft blur that works in every browser: halve the picture a few times, then scale it back up smoothly. */
+function rainBlur(src, w, h, steps) {
+  let cur = src, cw = src.width, ch = src.height;
+  for (let i = 0; i < steps; i++) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(2, cw >> 1); c.height = Math.max(2, ch >> 1);
+    const g = c.getContext("2d");
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+    g.drawImage(cur, 0, 0, c.width, c.height);
+    cur = c; cw = c.width; ch = c.height;
+  }
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  const g = out.getContext("2d");
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(cur, 0, 0, w, h);
+  return out;
+}
+const RAIN_LAYERS = [ // far to near: building tops (y, screen half-heights), widths and window cells in canvas px
+  { seed: 11, top: [-0.12, 0.42], w: [34, 96], cell: [7, 9], haze: 0.55 },
+  { seed: 23, top: [-0.36, 0.14], w: [54, 140], cell: [10, 13], haze: 0.28 },
+  { seed: 37, top: [-0.62, -0.12], w: [84, 210], cell: [14, 18], haze: 0.08 },
+];
+/**
+ * One layer of the skyline (8 units wide, from y -1 to 0.5) as a sharp picture and a soft one.
+ * The soft one also gets a round glow on every lit window, so out of focus they bloom like real lights.
+ */
+function rainSkyline(THREE, L, dark, W, H) {
+  const r = koiRng(L.seed * 97 + (dark ? 1 : 2));
+  const rowOf = (y) => H * (0.5 - y) / 1.5;
+  const sharp = document.createElement("canvas");
+  sharp.width = W; sharp.height = H;
+  const g = sharp.getContext("2d");
+  const k = W / 1536; // sizes were chosen for the full-size canvas
+  const facade = dark ? ["#10131f", "#141827", "#0d1019", "#171a24"] : ["#6c7782", "#5f6a75", "#77828c", "#66717c"];
+  const unlit = dark ? "rgba(70,80,110,0.35)" : "rgba(40,48,58,0.4)";
+  const litCols = dark ? ["#ffcf8a", "#ffd9a0", "#ffe7c2", "#bcd4ff", "#ffb870"] : ["#f4e2b8", "#f0dcae", "#dfe7f2"];
+  const litP = dark ? 0.34 : 0.16; // a dark rainy afternoon: plenty of lights on
+  const glows = [];
+  let x = 0;
+  while (x < W) {
+    const bw = r(L.w[0], L.w[1]) * k, top = rowOf(r(L.top[0], L.top[1])), cw = r(L.cell[0], L.cell[1]) * k, ch = cw * 1.25;
+    g.fillStyle = facade[(r() * facade.length) | 0];
+    g.fillRect(x, top, bw - 2 * k, H - top);
+    if (r() < 0.35) { g.fillRect(x + bw * r(0.2, 0.6), top - 10 * k, 3 * k, 10 * k); } // an antenna
+    if (r() < 0.25) { g.fillRect(x + bw * 0.15, top - 7 * k, bw * 0.25, 7 * k); } // a water tank or roof room
+    for (let wy = top + cw * 0.8; wy < H - ch; wy += ch) {
+      for (let wx = x + cw * 0.6; wx < x + bw - cw; wx += cw) {
+        const lit = r() < litP;
+        g.fillStyle = lit ? litCols[(r() * litCols.length) | 0] : unlit;
+        g.fillRect(wx, wy, cw * 0.55, ch * 0.55);
+        if (lit) glows.push([wx + cw * 0.27, wy + ch * 0.27, g.fillStyle]);
+      }
+    }
+    x += bw;
+  }
+  const softW = Math.max(64, W >> 1), softH = Math.max(16, H >> 1);
+  const soft = rainBlur(sharp, softW, softH, 3);
+  const sg = soft.getContext("2d");
+  sg.globalCompositeOperation = "lighter";
+  const s = softW / W, rad = L.cell[1] * k * s * 2.2;
+  for (const [gx, gy, col] of glows) {
+    const grad = sg.createRadialGradient(gx * s, gy * s, 0, gx * s, gy * s, rad);
+    grad.addColorStop(0, col); grad.addColorStop(1, "rgba(0,0,0,0)");
+    sg.globalAlpha = dark ? 0.35 : 0.2;
+    sg.fillStyle = grad; sg.fillRect(gx * s - rad, gy * s - rad, rad * 2, rad * 2);
+  }
+  sg.globalAlpha = 1; sg.globalCompositeOperation = "source-over";
+  const tex = (c) => { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.premultiplyAlpha = true; return t; };
+  return { sharp: tex(sharp), soft: tex(soft) };
+}
+/** A neon sign (sharp and soft), redrawn when the accent or the theme changes. */
+function rainSign(THREE, w, h) {
+  const sharp = document.createElement("canvas");
+  sharp.width = w; sharp.height = h;
+  const soft = document.createElement("canvas");
+  soft.width = w >> 1; soft.height = h >> 1;
+  const tex = (c) => { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.premultiplyAlpha = true; return t; };
+  const out = { sharp: tex(sharp), soft: tex(soft) };
+  out.draw = (color, dark, text, vertical, font) => {
+    const g = sharp.getContext("2d");
+    g.clearRect(0, 0, w, h);
+    const pad = Math.min(w, h) * 0.08, rad = Math.min(w, h) * 0.1;
+    g.fillStyle = dark ? "rgba(14,14,20,0.92)" : "rgba(60,64,72,0.92)";
+    g.beginPath(); g.roundRect(pad, pad, w - pad * 2, h - pad * 2, rad); g.fill();
+    const tube = (fn, wide) => { // a glass tube: coloured glow, then a paler core
+      g.lineCap = "round"; g.lineJoin = "round";
+      g.shadowColor = color; g.shadowBlur = dark ? 14 : 0;
+      g.strokeStyle = color; g.lineWidth = wide; g.globalAlpha = dark ? 1 : 0.75; fn(); g.stroke();
+      g.shadowBlur = 0; g.strokeStyle = dark ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)"; g.lineWidth = wide * 0.3; g.globalAlpha = 1; fn(); g.stroke();
+    };
+    tube(() => { g.beginPath(); g.roundRect(pad * 1.7, pad * 1.7, w - pad * 3.4, h - pad * 3.4, rad * 0.7); }, Math.max(2, w * 0.025));
+    g.font = font; g.textAlign = "center"; g.textBaseline = "middle";
+    const chars = vertical ? [...text] : [text];
+    chars.forEach((c, i) => {
+      const cx = w / 2, cy = vertical ? h * (0.5 + (i - (chars.length - 1) / 2) * (0.7 / chars.length)) : h / 2;
+      g.shadowColor = color; g.shadowBlur = dark ? 18 : 0; g.lineWidth = Math.max(2, w * 0.035); g.strokeStyle = color; g.strokeText(c, cx, cy);
+      g.shadowBlur = 0; g.lineWidth = Math.max(1, w * 0.011); g.strokeStyle = dark ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.4)"; g.strokeText(c, cx, cy);
+    });
+    const blurred = rainBlur(sharp, soft.width, soft.height, 4);
+    const sg = soft.getContext("2d");
+    sg.clearRect(0, 0, soft.width, soft.height);
+    sg.drawImage(blurred, 0, 0);
+    if (dark) { sg.globalCompositeOperation = "lighter"; sg.globalAlpha = 0.9; sg.drawImage(blurred, 0, 0); sg.globalAlpha = 1; sg.globalCompositeOperation = "source-over"; } // neon blooms
+    out.sharp.needsUpdate = out.soft.needsUpdate = true;
+  };
+  return out;
+}
+
+function rainwindow(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4711);
+  let A = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // corrected by resize() right after the build
+  const AMAX = 4; // the skyline and the street are 8 units wide: enough for screens up to 4 : 1
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+
+  /* --- the city behind the glass, in its own scene; everything is flat and laid out in screen half-heights --- */
+  const city = new THREE.Scene();
+  const cityCam = new THREE.OrthographicCamera(-A, A, 1, -1, -10, 10);
+  cityCam.position.z = 5;
+  const bokeh = { value: 1 };
+  const flat = (fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: RAIN_QUAD_VS, fragmentShader: fs, transparent: true, depthTest: false, depthWrite: false, ...extra }));
+  const put = (mesh, x, y, w, h, order) => { mesh.position.set(x, y, 0); mesh.scale.set(w, h, 1); mesh.renderOrder = order; mesh.frustumCulled = false; city.add(mesh); return mesh; };
+
+  const skyUni = { uTop: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uLow: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() } };
+  put(new THREE.Mesh(quad, flat(RAIN_SKY_FS, skyUni, { transparent: false })), 0, 0, 2 * AMAX, 2, 0);
+
+  const LW = preview ? 768 : 1536, LH = preview ? 144 : 288;
+  const layerUnis = RAIN_LAYERS.map((L) => ({ uSharp: { value: null }, uSoft: { value: null }, uBokeh: bokeh, uHaze: { value: new THREE.Color() }, uHazeAmount: { value: L.haze } }));
+  RAIN_LAYERS.forEach((L, i) => put(new THREE.Mesh(quad, flat(RAIN_LAYER_FS, layerUnis[i], { premultipliedAlpha: true })), 0, -0.25, 2 * AMAX, 1.5, 1 + i));
+  let layerTex = [];
+  function buildLayers(dark) { // redrawn only when the theme flips
+    layerTex.forEach((t) => { t.sharp.dispose(); t.soft.dispose(); });
+    layerTex = RAIN_LAYERS.map((L) => rainSkyline(THREE, L, dark, LW, LH));
+    layerTex.forEach((t, i) => { layerUnis[i].uSharp.value = t.sharp; layerUnis[i].uSoft.value = t.soft; });
+  }
+
+  // lights: street lamps, two lanes of traffic, signals, lit windows and shop fronts; laid out once over the whole 8 units
+  const L = []; // { x, y, sr, br, hex, night, day, speed, kind }
+  const add = (o) => { L.push({ speed: 0, kind: "fixed", accent: false, phase: r(0, 6.28), ...o }); return L[L.length - 1]; };
+  for (let x = -AMAX + 0.2; x < AMAX; x += r(0.42, 0.6)) add({ x, y: -0.655 + r(-0.01, 0.01), sr: 0.009, br: 0.085, hex: "#ffae55", night: 1, day: 0.06 });
+  const cars = [];
+  for (const lane of [{ y: -0.845, hex: "#fff0d2", dir: 1, night: 0.95, day: 0.6 }, { y: -0.765, hex: "#ff2a2a", dir: -1, night: 0.9, day: 0.65 }]) {
+    for (let x = -AMAX; x < AMAX; x += r(0.35, 0.9)) {
+      const car = { x, dir: lane.dir, speed: r(0.13, 0.22), a: null, b: null };
+      car.a = add({ x, y: lane.y, sr: 0.0055, br: 0.055, hex: lane.hex, night: lane.night, day: lane.day, kind: "car" });
+      car.b = add({ x: x + 0.026, y: lane.y, sr: 0.0055, br: 0.055, hex: lane.hex, night: lane.night, day: lane.day, kind: "car" });
+      cars.push(car);
+    }
+  }
+  const SIGNAL = ["#3dff8a", "#ffc233", "#ff3b3b"];
+  const signals = [];
+  for (let x = -AMAX + 0.9; x < AMAX; x += r(1.6, 2.4)) signals.push(add({ x, y: -0.585, sr: 0.006, br: 0.042, hex: SIGNAL[0], night: 0.85, day: 0.55, kind: "signal", t0: r(0, 12) }));
+  const HERO = ["#ffd08a", "#ffe2b0", "#ffffff", "#9cc8ff", "#ff7eb3", "#66e6ff", "#ffb870"];
+  const heroes = [];
+  for (let i = 0; i < (preview ? 34 : 64); i++) heroes.push(add({ x: r(-AMAX, AMAX), y: r(-0.56, 0.2), sr: r(0.004, 0.0075), br: r(0.028, 0.072), hex: HERO[(r() * HERO.length) | 0], night: r(0.45, 0.9), day: r(0.06, 0.16), kind: "hero", accent: i % 11 === 3, blink: r() < 0.25 }));
+  const N = L.length;
+  const lightGeo = keep(new THREE.PlaneGeometry(1, 1));
+  const aLight = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
+  const aColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
+  aLight.setUsage(THREE.DynamicDrawUsage); aColor.setUsage(THREE.DynamicDrawUsage);
+  lightGeo.setAttribute("aLight", aLight); lightGeo.setAttribute("aColor", aColor);
+  const lightMesh = new THREE.InstancedMesh(lightGeo, keep(new THREE.ShaderMaterial({ uniforms: { uBokeh: bokeh }, vertexShader: RAIN_LIGHT_VS, fragmentShader: RAIN_LIGHT_FS, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending })), N);
+  lightMesh.frustumCulled = false; lightMesh.renderOrder = 6;
+  city.add(lightMesh);
+
+  // neon signs: 咖啡 in the accent colour on the right, a small OPEN on the left
+  const cafe = rainSign(THREE, preview ? 64 : 128, preview ? 160 : 320), open = rainSign(THREE, preview ? 96 : 192, preview ? 40 : 80);
+  [cafe.sharp, cafe.soft, open.sharp, open.soft].forEach(keep);
+  const signMat = (s) => flat(RAIN_LAYER_FS, { uSharp: { value: s.sharp }, uSoft: { value: s.soft }, uBokeh: bokeh, uHaze: { value: new THREE.Color() }, uHazeAmount: { value: 0 } }, { premultipliedAlpha: true });
+  const cafeSign = put(new THREE.Mesh(quad, signMat(cafe)), 0, -0.18, 0.13, 0.33, 7);
+  const openSign = put(new THREE.Mesh(quad, signMat(open)), 0, -0.47, 0.17, 0.07, 7);
+  const CJK = '"PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif';
+
+  // rain falling between the window and the city: only in the out-of-focus picture
+  const STREAKS = preview ? 24 : 70;
+  const streakUni = { uColor: { value: new THREE.Color() }, uOpacity: { value: 0.1 } };
+  const streaks = new THREE.InstancedMesh(quad, keep(new THREE.ShaderMaterial({ uniforms: streakUni, vertexShader: RAIN_DROP_VS, fragmentShader: RAIN_STREAK_FS, transparent: true, depthTest: false, depthWrite: false })), STREAKS);
+  streaks.frustumCulled = false; streaks.renderOrder = 8;
+  city.add(streaks);
+  const drips = [];
+  for (let i = 0; i < STREAKS; i++) drips.push({ x: r(-AMAX, AMAX), y: r(-1.2, 1.2), speed: r(2.2, 3.4), len: r(0.08, 0.16) });
+  const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.12), V = new THREE.Vector3(), S = new THREE.Vector3(), Q0 = new THREE.Quaternion();
+
+  // what the passes render into: the city out of focus and sharp (with mipmaps, so mist can blur it further), the drops, the wiped mist
+  const rtOpts = { minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: true };
+  const softRT = keep(new THREE.WebGLRenderTarget(4, 4, rtOpts)), sharpRT = keep(new THREE.WebGLRenderTarget(4, 4, rtOpts));
+  softRT.texture.colorSpace = sharpRT.texture.colorSpace = THREE.SRGBColorSpace; // stored as sRGB: no banding in the dark sky
+  const dropRT = keep(new THREE.WebGLRenderTarget(4, 4)), wipeRT = keep(new THREE.WebGLRenderTarget(4, 4));
+
+  /* --- the drops on the glass: rain beads up, drops merge, the heavy ones slide down in fits and starts --- */
+  const DS = preview ? 1.8 : 1; // a preview tile is small: bigger drops
+  const MAXD = preview ? 420 : 1600, R_SLIDE = 0.021 * DS;
+  const px = new Float32Array(MAXD), py = new Float32Array(MAXD), pr = new Float32Array(MAXD), pv = new Float32Array(MAXD);
+  const stall = new Float32Array(MAXD), trailY = new Float32Array(MAXD), seed = new Float32Array(MAXD);
+  const alive = new Uint8Array(MAXD), sliding = new Uint8Array(MAXD);
+  const free = [], dying = []; // an index freed this frame is reused only after the grid is rebuilt
+  for (let i = MAXD - 1; i >= 0; i--) free.push(i);
+  let hi = 0;
+  const G = 0.07, GC = Math.ceil((2 * AMAX) / G) + 3, GR = Math.ceil(2.6 / G) + 3;
+  const head = new Int32Array(GC * GR), next = new Int32Array(MAXD);
+  const cellX = (x) => Math.min(GC - 2, Math.max(1, Math.floor((x + AMAX) / G) + 1)), cellY = (y) => Math.min(GR - 2, Math.max(1, Math.floor((y + 1.3) / G) + 1));
+  const gridAdd = (i) => { const c = cellX(px[i]) + cellY(py[i]) * GC; next[i] = head[c]; head[c] = i; };
+  function gridBuild() {
+    head.fill(-1);
+    while (dying.length) free.push(dying.pop());
+    for (let i = 0; i < hi; i++) if (alive[i]) gridAdd(i);
+  }
+  /** Another live drop that i overlaps, or -1. */
+  function hit(i) {
+    const cx = cellX(px[i]), cy = cellY(py[i]);
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
+      for (let j = head[cx + ox + (cy + oy) * GC]; j !== -1; j = next[j]) {
+        if (j === i || !alive[j]) continue;
+        const dx = px[j] - px[i], dy = py[j] - py[i], rr = (pr[i] + pr[j]) * 0.82;
+        if (dx * dx + dy * dy < rr * rr) return j;
+      }
+    }
+    return -1;
+  }
+  const kill = (i) => { alive[i] = 0; dying.push(i); };
+  /** i swallows j: the areas add up, the merged drop sits between them, weighted by size. */
+  function absorb(i, j) {
+    const a = pr[i] * pr[i], b = pr[j] * pr[j];
+    if (!sliding[i]) { px[i] = (px[i] * a + px[j] * b) / (a + b); py[i] = (py[i] * a + py[j] * b) / (a + b); }
+    pr[i] = Math.sqrt(a + b);
+    kill(j);
+  }
+  function spawn(x, y, rad) {
+    if (!free.length) return -1;
+    const i = free.pop();
+    px[i] = x; py[i] = y; pr[i] = rad; pv[i] = 0; stall[i] = 0; trailY[i] = y; seed[i] = r(0, 100); alive[i] = 1; sliding[i] = 0;
+    if (i >= hi) hi = i + 1;
+    let j = hit(i), survivor = i;
+    for (let guard = 0; j !== -1 && guard < 4; guard++) { // landing on drops merges into them
+      if (pr[j] >= pr[survivor]) { absorb(j, survivor); survivor = j; } else absorb(survivor, j);
+      j = hit(survivor);
+    }
+    if (survivor === i) gridAdd(i);
+    return survivor;
+  }
+  const wipes = []; // the drops sliding this frame: they clear a track through the mist
+  let rainAcc = 0;
+  function stepDrops(dt, t) {
+    gridBuild();
+    const width = Math.min(A, AMAX);
+    rainAcc += dt * (preview ? 40 : 95) * (width / 1.6);
+    while (rainAcc >= 1) { // rain hitting the glass
+      rainAcc -= 1;
+      const big = r() < 0.08, mid = r() < 0.3;
+      spawn(r(-width, width), r(-1, 1.08), (big ? r(0.017, 0.024) : mid ? r(0.008, 0.015) : r(0.0032, 0.0072)) * DS);
+    }
+    if (free.length < MAXD * 0.12) for (let k = 0; k < 6; k++) { const i = (r() * hi) | 0; if (alive[i] && !sliding[i] && pr[i] < 0.008 * DS) kill(i); } // the smallest beads dry up
+    wipes.length = 0;
+    for (let i = 0; i < hi; i++) {
+      if (!alive[i]) continue;
+      if (pr[i] < (sliding[i] ? R_SLIDE * 0.72 : R_SLIDE)) { sliding[i] = 0; continue; } // once running, a drop keeps going until it is much smaller
+      sliding[i] = 1;
+      if (stall[i] > 0) { stall[i] -= dt; pv[i] *= Math.exp(-dt * 10); } // held back by the glass for a moment
+      else {
+        pv[i] += (0.11 + (pr[i] - R_SLIDE) * 10 / DS - pv[i]) * Math.min(1, dt * 5);
+        if (r() < dt * 0.3) stall[i] = r(0.12, 0.7);
+      }
+      const step = pv[i] * dt;
+      py[i] -= step;
+      px[i] += (Math.sin(t * 1.9 + seed[i]) + 0.6 * Math.sin(t * 4.3 + seed[i] * 1.7)) * step * 0.14; // small jogs sideways
+      if (trailY[i] - py[i] > pr[i] * 1.5) { // a bead left behind
+        trailY[i] = py[i];
+        const tr = pr[i] * r(0.12, 0.22), rest = pr[i] * pr[i] - tr * tr;
+        if (rest > 0) { pr[i] = Math.sqrt(rest); spawn(px[i] + r(-0.25, 0.25) * pr[i], py[i] + (pr[i] + tr) * 0.95, tr); }
+      }
+      let j = hit(i);
+      for (let guard = 0; j !== -1 && guard < 4; guard++) { absorb(i, j); j = hit(i); } // it swallows what it runs into
+      if (py[i] < -1.15) kill(i);
+      else wipes.push(i);
+    }
+    while (hi > 0 && !alive[hi - 1]) hi--;
+  }
+
+  const dropScene = new THREE.Scene(), wipeScene = new THREE.Scene();
+  const dropMesh = new THREE.InstancedMesh(quad, keep(new THREE.ShaderMaterial({ vertexShader: RAIN_DROP_VS, fragmentShader: RAIN_DROP_FS, transparent: true, depthTest: false, depthWrite: false })), MAXD);
+  dropMesh.frustumCulled = false;
+  dropScene.add(dropMesh);
+  const veilUni = { uAlpha: { value: 0.01 } }, stampUni = { uAlpha: { value: 0.6 } };
+  const veil = new THREE.Mesh(quad, keep(new THREE.ShaderMaterial({ uniforms: veilUni, vertexShader: RAIN_GLASS_VS, fragmentShader: RAIN_VEIL_FS, transparent: true, depthTest: false, depthWrite: false })));
+  const stampMesh = new THREE.InstancedMesh(quad, keep(new THREE.ShaderMaterial({ uniforms: stampUni, vertexShader: RAIN_DROP_VS, fragmentShader: RAIN_STAMP_FS, transparent: true, depthTest: false, depthWrite: false })), MAXD);
+  veil.frustumCulled = stampMesh.frustumCulled = false;
+  veil.renderOrder = 0; stampMesh.renderOrder = 1;
+  wipeScene.add(veil, stampMesh);
+  function writeDrops() {
+    for (let i = 0; i < hi; i++) {
+      if (!alive[i]) { M4.makeScale(0, 0, 0); dropMesh.setMatrixAt(i, M4); continue; }
+      const d = pr[i] * 2, s = sliding[i];
+      M4.compose(V.set(px[i], py[i] + (s ? pr[i] * 0.08 : 0), 0), Q0, S.set(d * (s ? 0.9 : 1), d * (s ? 1.18 : 1), 1));
+      dropMesh.setMatrixAt(i, M4);
+    }
+    dropMesh.count = hi;
+    dropMesh.instanceMatrix.needsUpdate = true;
+  }
+  function writeStamps(list) {
+    const n = Math.min(list.length, MAXD);
+    for (let k = 0; k < n; k++) { const [x, y, rad] = list[k]; M4.compose(V.set(x, y, 0), Q0, S.set(rad * 3, rad * 3.4, 1)); stampMesh.setMatrixAt(k, M4); }
+    stampMesh.count = n;
+    stampMesh.instanceMatrix.needsUpdate = true;
+  }
+  const liveStamps = () => wipes.map((i) => [px[i], py[i], pr[i]]);
+
+  // warm up: twenty seconds of rain, so the first frame (and the still one) already has drops, trails and cleared tracks
+  const warm = [];
+  for (let k = 0; k < 300; k++) {
+    stepDrops(1 / 15, k / 15);
+    if (k > 225 && k % 2 === 0) for (const i of wipes) if (warm.length < 6000) warm.push([px[i], py[i], pr[i]]); // the last five seconds of tracks
+  }
+
+  /* --- the glass: the whole screen --- */
+  const glassUni = {
+    tSoft: { value: softRT.texture }, tSharp: { value: sharpRT.texture }, tDrops: { value: dropRT.texture }, tWipe: { value: wipeRT.texture },
+    uAspect: { value: A }, uFog: { value: 0.5 }, uFogColor: { value: new THREE.Color() }, uRefract: { value: 0.38 },
+    uSpec: { value: new THREE.Color() }, uLamp: { value: new THREE.Color() }, uLampPos: { value: new THREE.Vector2(0.84, 0.16) },
+    uGather: { value: 1.2 }, uSoftMix: { value: 0.3 },
+  };
+  const glass = new THREE.Mesh(quad, keep(new THREE.ShaderMaterial({ uniforms: glassUni, vertexShader: RAIN_GLASS_VS, fragmentShader: RAIN_GLASS_FS, depthTest: false, depthWrite: false })));
+  glass.frustumCulled = false;
+  scene.add(glass);
+  const buf = new THREE.Vector2(), prevClear = new THREE.Color();
+  const fit = (rt, w, h) => { w = Math.max(2, Math.round(w)); h = Math.max(2, Math.round(h)); if (rt.width !== w || rt.height !== h) rt.setSize(w, h); };
+  glass.onBeforeRender = (renderer) => { // like three's Reflector: draw the city and the drops first, then the glass samples them
+    renderer.getDrawingBufferSize(buf);
+    const cs = preview ? 0.6 : 0.5;
+    fit(softRT, buf.x * cs, buf.y * cs); fit(sharpRT, buf.x * cs, buf.y * cs); fit(dropRT, buf.x * 0.75, buf.y * 0.75); fit(wipeRT, buf.x * 0.25, buf.y * 0.25);
+    const before = renderer.getRenderTarget(), auto = renderer.autoClear, alpha = renderer.getClearAlpha();
+    renderer.getClearColor(prevClear);
+    renderer.setClearColor(0x000000, 1);
+    bokeh.value = 1; streaks.visible = true;
+    renderer.setRenderTarget(softRT); renderer.render(city, cityCam);
+    bokeh.value = 0; streaks.visible = false;
+    renderer.setRenderTarget(sharpRT); renderer.render(city, cityCam);
+    renderer.setClearColor(0x000000, 0);
+    renderer.setRenderTarget(dropRT); renderer.render(dropScene, cityCam);
+    renderer.setRenderTarget(wipeRT);
+    renderer.autoClear = false;
+    if (warm.length) { // the first frame: the tracks the warm-up rain left
+      renderer.setClearColor(0x000000, 1); renderer.clear();
+      veil.visible = false;
+      for (let k = 0; k < warm.length; k += MAXD) { writeStamps(warm.slice(k, k + MAXD)); renderer.render(wipeScene, cityCam); }
+      veil.visible = true; warm.length = 0;
+      writeStamps(liveStamps());
+    }
+    renderer.render(wipeScene, cityCam);
+    renderer.autoClear = auto;
+    renderer.setClearColor(prevClear, alpha);
+    renderer.setRenderTarget(before);
+  };
+
+  /* --- colours: day or night, and the accent on the 咖啡 sign and a few shop fronts --- */
+  const tmp = new THREE.Color();
+  const LS = preview ? 1.35 : 1; // bokeh a little bigger in the small preview
+  L.forEach((l, i) => aLight.setXYZW(i, l.x, l.y, l.sr * LS, l.br * LS));
+  aLight.needsUpdate = true;
+  let themeDark = null, signKey = "";
+  const CAFE_FONT = preview ? 40 : 80, OPEN_FONT = preview ? 22 : 44;
+  const colourOf = (l, i, dark, on = 1) => { tmp.set(l.accent ? pal.accent : l.hex); aColor.setXYZW(i, tmp.r, tmp.g, tmp.b, (dark ? l.night : l.day) * on); };
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    if (themeDark !== d) { themeDark = d; buildLayers(d); }
+    skyUni.uTop.value.set(d ? "#060914" : "#6f7b88"); skyUni.uMid.value.set(d ? "#121832" : "#9aa4ae");
+    skyUni.uLow.value.set(d ? "#2b2340" : "#bcc3ca"); skyUni.uGlow.value.set(d ? "#46304a" : "#000000");
+    layerUnis.forEach((u) => u.uHaze.value.set(d ? "#262c48" : "#b3bbc3"));
+    L.forEach((l, i) => colourOf(l, i, d));
+    aColor.needsUpdate = true;
+    streakUni.uColor.value.set(d ? "#a9b8e0" : "#f4f6f8"); streakUni.uOpacity.value = d ? 0.1 : 0.16;
+    glassUni.uFog.value = d ? 0.5 : 0.46;
+    glassUni.uFogColor.value.set(d ? "#1b2238" : "#d3d9df");
+    glassUni.uSpec.value.set(d ? "#ffd8a6" : "#ffffff").multiplyScalar(d ? 0.9 : 0.75);
+    glassUni.uLamp.value.set("#ff9a45").multiplyScalar(d ? 0.2 : 0.03);
+    glassUni.uGather.value = d ? 1.55 : 1.1; glassUni.uSoftMix.value = d ? 0.45 : 0.2;
+    const key = p.accent + (d ? "d" : "l");
+    if (signKey !== key) {
+      signKey = key;
+      cafe.draw(p.accent, d, "咖啡", true, `bold ${CAFE_FONT}px ${CJK}`);
+      open.draw(d ? "#ff5a7a" : "#d6485f", d, "OPEN", false, `bold ${OPEN_FONT}px "Helvetica Neue", Arial, sans-serif`);
+    }
+  }
+  applyPalette(pal);
+
+  function frame(dt, t) {
+    const a = camera.aspect || A;
+    if (Math.abs(a - A) > 1e-3) { A = a; cityCam.left = -A; cityCam.right = A; cityCam.updateProjectionMatrix(); }
+    glassUni.uAspect.value = A;
+    cafeSign.position.x = A * 0.52; openSign.position.x = -A * 0.56;
+    for (const c of cars) { // traffic along the street, both ways
+      c.x += c.dir * c.speed * dt;
+      if (c.dir > 0 && c.x > AMAX + 0.1) c.x -= 2 * AMAX + 0.2;
+      if (c.dir < 0 && c.x < -AMAX - 0.1) c.x += 2 * AMAX + 0.2;
+      c.a.x = c.x; c.b.x = c.x + 0.026;
+    }
+    for (const s of signals) { const ph = (t + s.t0) % 13; s.hex = SIGNAL[ph < 6 ? 0 : ph < 8 ? 1 : 2]; } // green, amber, red
+    const d = pal.dark;
+    L.forEach((l, i) => {
+      aLight.setX(i, l.x);
+      if (l.kind === "signal") colourOf(l, i, d);
+      else if (l.blink) colourOf(l, i, d, Math.sin(t * 0.11 + l.phase * 7) > 0.82 ? 0 : 1); // someone switches a light off for a while
+    });
+    aLight.needsUpdate = aColor.needsUpdate = true;
+    drips.forEach((p, i) => { // rain falling in the street
+      p.y -= p.speed * dt;
+      if (p.y < -1.3) { p.y = 1.3; p.x = r(-AMAX, AMAX); }
+      M4.compose(V.set(p.x, p.y, 0), Q, S.set(0.0035, p.len, 1));
+      streaks.setMatrixAt(i, M4);
+    });
+    streaks.instanceMatrix.needsUpdate = true;
+    stepDrops(dt, t);
+    writeDrops();
+    writeStamps(liveStamps());
+    veilUni.uAlpha.value = 1 - Math.exp(-dt / 14); // the mist creeps back over the tracks in about a quarter of a minute
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { let n = 0; for (let i = 0; i < hi; i++) n += alive[i]; return { drops: n, sliding: wipes.length }; }, // for checking by hand
+    dispose() { layerTex.forEach((x) => { x.sharp.dispose(); x.soft.dispose(); }); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

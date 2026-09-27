@@ -39,6 +39,7 @@ export const BG_STYLES = [
   { value: "campsite", label: "Campsite", desc: "3D forest campsite: crackling fire, a tent lit from inside, fireflies under the stars", three: true },
   { value: "koipond", label: "Koi pond", desc: "3D koi gliding under real ripples, lotus and petals on the water", three: true },
   { value: "inkwash", label: "Ink landscape", desc: "3D Chinese ink painting: misty mountains, a boat on the river, cranes and a poem", three: true },
+  { value: "rainwindow", label: "Rainy window", desc: "3D rain on a window: drops bend the city lights and slide down the glass", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
