@@ -5183,7 +5183,507 @@ function rainwindow(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow };
+/* ---------- Sky lanterns: 天灯 rising over a lake town, the whole scene mirrored in the rippling water ---------- */
+// the sky is a sphere around the viewer; the direction is taken in world space, so the mirrored pass mirrors the gradient too
+const LANTERN_SKY_VS = /* glsl */ `
+  varying vec3 vDir;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vDir = normalize(w.xyz - cameraPosition);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const LANTERN_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uGlow; uniform vec3 uSunDir; uniform vec3 uSunColor; uniform float uSun;
+  varying vec3 vDir;
+  void main() {
+    vec3 dir = vec3(vDir.x, abs(vDir.y), vDir.z); // below the horizon only the mirrored pass looks: it sees the sky upside down
+    float h = dir.y;
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.2, h));
+    col = mix(col, uZenith, smoothstep(0.16, 0.75, h));
+    col += uGlow * exp(-abs(h) * 16.0); // the warm band low over the town: its lights at night, the sunset at dusk
+    float sd = distance(dir, uSunDir);
+    col += uSunColor * uSun * (smoothstep(0.034, 0.029, sd) + 0.45 * exp(-sd * 10.0) + 0.2 * exp(-sd * 2.5));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the town and the hills: an opaque canvas whose channels are masks (R silhouette, G lit windows, B red eave lanterns), coloured here
+const LANTERN_LAYER_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const LANTERN_TOWN_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uWall; uniform vec3 uWindow; uniform vec3 uEave; uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    float flick = 0.85 + 0.15 * sin(uTime * 3.0 + vUv.x * 900.0) * sin(uTime * 1.7 + vUv.x * 430.0);
+    vec3 col = uWall * m.r + uWindow * m.g * flick + uEave * m.b * (0.8 + 0.2 * flick);
+    gl_FragColor = vec4(col, m.r);
+    #include <colorspace_fragment>
+  }
+`;
+const LANTERN_HILLS_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uFar; uniform vec3 uNear;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    gl_FragColor = vec4(mix(uFar, uNear, m.g), max(m.r, m.g));
+    #include <colorspace_fragment>
+  }
+`;
+// lanterns: camera-facing quads; the texture's R is light (lantern and halo), G is the paper body that hides what is behind it.
+// Premultiplied output: the halo adds light, the body covers. In the mirrored pass (uFlip = -1) the picture is turned upside down.
+const LANTERN_VS = /* glsl */ `
+  uniform float uFlip;
+  attribute vec4 aLantern; // size, flicker seed, brightness, opacity
+  attribute vec3 aTint;
+  varying vec2 vUv; varying vec3 vTint; varying float vLight; varying float vAlpha;
+  uniform float uTime;
+  void main() {
+    vec4 c = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    c.xy += position.xy * aLantern.x * 2.0;
+    gl_Position = projectionMatrix * c;
+    vUv = vec2(uv.x, uFlip > 0.0 ? uv.y : 1.0 - uv.y);
+    vTint = aTint;
+    float f = aLantern.y;
+    vLight = aLantern.z * (0.86 + 0.09 * sin(uTime * 7.3 + f * 13.0) + 0.05 * sin(uTime * 17.1 + f * 7.0));
+    vAlpha = aLantern.w;
+  }
+`;
+const LANTERN_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform float uHalo;
+  varying vec2 vUv; varying vec3 vTint; varying float vLight; varying float vAlpha;
+  void main() {
+    vec3 m = texture2D(uMap, vUv).rgb;
+    // the sprite was painted as display values: back to linear light, or its faintest 8-bit step
+    // (1/255) comes out of the sRGB conversion at 12/255 and draws a visible ring on the night sky
+    float light = pow(m.r, 2.2) * mix(uHalo, 1.0, m.g); // the halo is dimmed by day, the paper is not
+    gl_FragColor = vec4(vTint * light * vLight * vAlpha, m.g * vAlpha);
+    #include <colorspace_fragment>
+  }
+`;
+// the lake: the mirrored scene (rendered into a texture first), broken up by ripples that stretch the lights into streaks
+const LANTERN_LAKE_VS = /* glsl */ `
+  varying vec3 vWorld;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const LANTERN_LAKE_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform float uTime; uniform vec3 uDeep; uniform vec3 uSheen;
+  varying vec3 vWorld;
+  float lh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float ln(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(lh(i), lh(i + vec2(1, 0)), f.x), mix(lh(i + vec2(0, 1)), lh(i + vec2(1, 1)), f.x), f.y); }
+  void main() {
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec3 toCam = cameraPosition - vWorld;
+    float dist = length(toCam.xz);
+    float near = clamp(14.0 / (dist + 14.0), 0.04, 1.0); // ripples look smaller and calmer far away
+    float r1 = ln(vec2(vWorld.x * 0.22 + uTime * 0.06, vWorld.z * 1.1 + uTime * 0.45));
+    float r2 = ln(vec2(vWorld.x * 0.08 - uTime * 0.04, vWorld.z * 0.4 + uTime * 0.25));
+    vec2 off = vec2((r2 - 0.5) * 0.006, (r1 - 0.5) * 0.05 + (r2 - 0.5) * 0.03) * near;
+    vec3 refl = texture2D(tReflect, clamp(uv + off, 0.001, 0.999)).rgb;
+    float grazing = 1.0 - clamp(normalize(toCam).y, 0.0, 1.0);
+    vec3 col = mix(uDeep, refl, 0.12 + 0.88 * pow(grazing, 5.0)); // Fresnel: a mirror far away, darker water close by
+    col += uSheen * pow(r1, 8.0) * near * 0.5; // glints on the crests close by
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+
+/** A sky lantern, computed pixel by pixel: R = light (paper glowing from the flame, the halo around it), G = the paper that hides what is behind. */
+function lanternSprite(THREE) {
+  const S = 256, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d"), img = g.createImageData(S, S), d = img.data;
+  const top = 64, bot = 192, cx = 128;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const o = (y * S + x) * 4, dx = x + 0.5 - cx;
+    const hd = Math.hypot(dx, y - 150);
+    const rc = Math.hypot(dx, y + 0.5 - 128), ramp = Math.min(1, Math.max(0, (rc - 36) / 88));
+    const edge = 1 - ramp * ramp * (3 - 2 * ramp); // round, and zero well before the border: faint light shows a lot on a dark sky
+    let light = (0.34 * Math.exp(-((hd / 42) ** 2)) + 0.07 * Math.exp(-((hd / 72) ** 2))) * edge, body = 0;
+    if (y >= top && y <= bot) {
+      const t = (y - top) / (bot - top), k = Math.max(0, (top + 22 - y) / 22);
+      const hw = (46 - 10 * t) * Math.sqrt(Math.max(0, 1 - k * k)); // tapering paper, a rounded crown
+      const e = Math.abs(dx) / Math.max(hw, 0.001);
+      if (e <= 1) {
+        let l = (0.5 + 0.42 * t) * (1 - 0.38 * e * e); // brighter low down, where the flame is; darker at the sides
+        for (const rib of [-0.55, 0, 0.55]) if (Math.abs(dx - rib * hw) < 1.2) l *= 0.82; // bamboo ribs
+        if (Math.abs(y - (top + 45)) < 1 || Math.abs(y - (top + 88)) < 1) l *= 0.9; // paper seams
+        l += 0.55 * Math.exp(-((dx / 20) ** 2) - (((y - 176) / 16) ** 2)); // the flame shining through
+        if (y > bot - 4) l *= 0.62; // the wire ring at the mouth
+        light = Math.min(1, l);
+        body = Math.min(1, (1 - e) * 6); // soft, anti-aliased edge
+      }
+    }
+    if (Math.abs(dx) < 9 && Math.abs(y - (bot + 4)) < 6) light = Math.max(light, 1 - Math.hypot(dx / 9, (y - bot - 4) / 6)); // the flame below the mouth
+    d[o] = Math.round(255 * Math.min(1, light)); d[o + 1] = Math.round(255 * body); d[o + 2] = 0; d[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; // data, not colour
+  return tex;
+}
+/**
+ * The water town on the far shore, 1000 × 60 units, as masks in an opaque canvas (so the channels stay independent):
+ * R = silhouette, G = lit windows, B = red lanterns under the eaves. Huizhou houses with stepped gables and curved roofs,
+ * a seven-storey pagoda, a stone arch bridge whose opening is really open, a pavilion, trees.
+ */
+function lanternTown(THREE, W, H) {
+  const r = koiRng(1717), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const X = (u) => (u + 500) * W / 1000, Y = (v) => H - (v * H) / 60, SX = (u) => (u * W) / 1000, SY = (v) => (v * H) / 60;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  g.globalCompositeOperation = "lighter";
+  const SIL = "rgb(255,0,0)", WIN = "rgb(0,255,0)", EAVE = "rgb(0,0,255)";
+  const rect = (col, x, y, w, h) => { g.fillStyle = col; g.fillRect(X(x), Y(y + h), SX(w), SY(h)); };
+  const dot = (col, x, y, rad) => { g.fillStyle = col; g.beginPath(); g.ellipse(X(x), Y(y), SX(rad), SY(rad), 0, 0, 6.29); g.fill(); };
+  /** A roof: eaves overhanging `over`, ridge `rh` high, tips turned up. */
+  const roof = (x0, x1, y, rh, over) => {
+    g.fillStyle = SIL; g.beginPath();
+    g.moveTo(X(x0 - over), Y(y + over * 0.45));
+    g.quadraticCurveTo(X(x0 - over * 0.2), Y(y - 0.1), X(x0 + (x1 - x0) * 0.18), Y(y + rh * 0.55));
+    g.lineTo(X(x0 + (x1 - x0) * 0.3), Y(y + rh)); g.lineTo(X(x1 - (x1 - x0) * 0.3), Y(y + rh));
+    g.lineTo(X(x1 - (x1 - x0) * 0.18), Y(y + rh * 0.55));
+    g.quadraticCurveTo(X(x1 + over * 0.2), Y(y - 0.1), X(x1 + over), Y(y + over * 0.45));
+    g.lineTo(X(x1 + over * 0.6), Y(y)); g.lineTo(X(x0 - over * 0.6), Y(y)); g.closePath(); g.fill();
+  };
+  const BRIDGE = [4, 34], PAGODA = [-28, -12], PAVILION = [52, 64];
+  const free = (x0, x1) => ![BRIDGE, PAGODA, PAVILION].some(([a, b]) => x1 > a - 1 && x0 < b + 1);
+  // the embankment along the water, open under the bridge
+  rect(SIL, -500, 0, 500 + 8.5, 1.3); rect(SIL, 29.5, 0, 470.5, 1.3);
+  for (let x = -500; x < 500;) {
+    const w = r(7, 15);
+    if (!free(x, x + w)) { x += 2; continue; }
+    if (r() < 0.14) { // a tree
+      const th = r(6, 10);
+      rect(SIL, x + w / 2 - 0.35, 0, 0.7, th * 0.6);
+      for (let k = 0; k < 4; k++) dot(SIL, x + w / 2 + r(-2.2, 2.2), th * 0.62 + r(-0.6, 1.8), r(1.8, 3));
+    } else {
+      const hw = r(4.5, 8.5), rh = r(2, 3.2);
+      rect(SIL, x, 0, w, hw);
+      if (r() < 0.5) { // Huizhou "horse-head" gable: the wall climbs in steps, each step capped with a line of tiles
+        for (const [a0, a1, up] of [[0, 0.2, 0.8], [0.2, 0.4, 1.8], [0.4, 0.6, 2.7], [0.6, 0.8, 1.8], [0.8, 1, 0.8]]) {
+          rect(SIL, x + w * a0, hw, w * (a1 - a0), up);
+          rect(SIL, x + w * a0 - 0.28, hw + up, w * (a1 - a0) + 0.56, 0.32);
+        }
+      } else roof(x, x + w, hw, rh, 1.1);
+      const nw = Math.max(1, Math.floor(w / 4.5));
+      for (let k = 0; k < nw; k++) for (const wy of hw > 6.5 ? [hw * 0.28, hw * 0.62] : [hw * 0.4]) {
+        if (r() < 0.62) rect(WIN, x + (w / (nw + 1)) * (k + 1) - 0.45, wy, 0.9, 1.1);
+      }
+      if (r() < 0.32) for (const lx of [x + 1, x + w - 1]) { rect(SIL, lx - 0.04, hw - 0.9, 0.08, 0.9); dot(EAVE, lx, hw - 1.2, 0.38); }
+    }
+    x += w + r(0, 1.5);
+  }
+  // the pagoda: seven storeys, windows lit, lanterns at the corners
+  for (let i = 0; i < 7; i++) {
+    const bw = 10 - i * 1.05, y = 1.3 + i * 4.6, cx = -20;
+    rect(SIL, cx - bw / 2, y, bw, 4.6);
+    roof(cx - bw / 2, cx + bw / 2, y + 3.4, 1.4, 1.7);
+    rect(WIN, cx - 0.5, y + 1, 1, 1.5);
+    if (i > 0) { rect(WIN, cx - bw / 2 + 1, y + 1, 0.7, 1.3); rect(WIN, cx + bw / 2 - 1.7, y + 1, 0.7, 1.3); }
+    dot(EAVE, cx - bw / 2 - 1.3, y + 3.2, 0.42); dot(EAVE, cx + bw / 2 + 1.3, y + 3.2, 0.42);
+  }
+  rect(SIL, -20.3, 1.3 + 7 * 4.6 + 0.5, 0.6, 4.5); dot(SIL, -20, 1.3 + 7 * 4.6 + 2.5, 0.7); // the spire
+  // the arch bridge: one path with the opening cut out (even-odd), so the water shows through it
+  g.fillStyle = SIL; g.beginPath();
+  g.moveTo(X(BRIDGE[0]), Y(0)); g.lineTo(X(BRIDGE[0]), Y(2.2));
+  g.quadraticCurveTo(X(19), Y(11.5), X(BRIDGE[1]), Y(2.2)); g.lineTo(X(BRIDGE[1]), Y(0)); g.closePath();
+  g.moveTo(X(19 + 7.2), Y(0)); g.ellipse(X(19), Y(0), SX(7.2), SY(7.2), 0, 0, Math.PI, true); g.closePath();
+  g.fill("evenodd");
+  for (let bx = 7; bx <= 31; bx += 2) { const t = (bx - 19) / 15, by = 7.2 - 5.6 * t * t; rect(SIL, bx - 0.12, by, 0.24, 1.1); } // the balustrade
+  // a pavilion on the right: a roof with turned-up corners on four open pillars
+  for (const px of [53, 56.7, 60.3, 64]) rect(SIL, px - 0.25, 1.3, 0.5, 4.2);
+  roof(52, 65, 5.4, 3.4, 2.4); dot(SIL, 58.5, 9.4, 0.6);
+  dot(EAVE, 51.2, 5, 0.45); dot(EAVE, 65.8, 5, 0.45);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+/** Two ranges of hills behind the town, 2400 × 160 units: R the far one, G the near one. */
+function lanternHills(THREE, W, H) {
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  g.globalCompositeOperation = "lighter";
+  const h1 = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const n1 = (x) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return h1(i) * (1 - u) + h1(i + 1) * u; };
+  const fb = (x) => { let s = 0, a = 0.5; for (let o = 0; o < 4; o++) { s += a * n1(x); x = x * 2.1 + 5.3; a *= 0.5; } return s / 0.9375; };
+  for (const [col, base, amp, freq, seed] of [["rgb(255,0,0)", 42, 95, 0.0045, 3], ["rgb(0,255,0)", 14, 42, 0.009, 11]]) {
+    g.fillStyle = col; g.beginPath(); g.moveTo(0, H);
+    for (let px = 0; px <= W; px += 2) { const u = (px / W) * 2400 - 1200; g.lineTo(px, H - ((base + amp * Math.pow(fb(u * freq + seed), 1.6)) * H) / 160); }
+    g.lineTo(W, H); g.closePath(); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** The pier in front, 6 × 3 units, with two people: one holding a lantern up to let it go, a child pointing at the sky. White: tinted by the material. */
+function lanternPier(THREE) {
+  const W = 512, H = 256, c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const X = (u) => (u * W) / 6, Y = (v) => H - (v * H) / 3;
+  g.fillStyle = g.strokeStyle = "#fff"; g.lineCap = "round"; g.lineJoin = "round";
+  g.fillRect(X(0), Y(0.62), X(6), Y(0.45) - Y(0.62)); // the deck
+  for (const px of [0.4, 1.9, 3.4, 4.9]) g.fillRect(X(px), Y(0.62), X(0.12), Y(0) - Y(0.62)); // posts into the water
+  const person = (fx, h, arms) => {
+    const s = h / 1.72, foot = 0.62, hip = foot + 0.86 * s, sh = foot + 1.42 * s, head = foot + 1.6 * s;
+    g.lineWidth = X(0.13 * s);
+    g.beginPath(); g.moveTo(X(fx - 0.09 * s), Y(foot)); g.lineTo(X(fx - 0.05 * s), Y(hip)); g.moveTo(X(fx + 0.09 * s), Y(foot)); g.lineTo(X(fx + 0.05 * s), Y(hip)); g.stroke(); // legs
+    g.beginPath(); g.moveTo(X(fx - 0.14 * s), Y(hip)); g.lineTo(X(fx - 0.2 * s), Y(sh)); g.lineTo(X(fx + 0.2 * s), Y(sh)); g.lineTo(X(fx + 0.14 * s), Y(hip)); g.closePath(); g.fill(); // body
+    g.beginPath(); g.ellipse(X(fx), Y(head), X(0.11 * s), X(0.13 * s), 0, 0, 6.29); g.fill(); // head
+    g.lineWidth = X(0.085 * s); g.beginPath();
+    for (const [ex, ey, hx, hy] of arms) { g.moveTo(X(fx + ex * s), Y(sh - 0.02)); g.quadraticCurveTo(X(fx + (ex + hx) * 0.5 * s), Y(sh + (hy - 0.02) * 0.5 * s), X(fx + hx * s), Y(sh + hy * s)); }
+    g.stroke();
+  };
+  person(3.3, 1.72, [[-0.16, 0, 0.02, 0.5], [0.16, 0, 0.14, 0.52]]); // both hands up under the lantern
+  person(4.05, 1.18, [[-0.14, 0, -0.3, -0.35], [0.14, 0, 0.42, 0.46]]); // a child pointing at the sky
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** A lotus lantern floating on the water: pale petals around a candle. */
+function lanternLotus(THREE) {
+  const S = 128, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d");
+  const halo = g.createRadialGradient(64, 70, 2, 64, 70, 60);
+  halo.addColorStop(0, "rgba(255,200,120,0.55)"); halo.addColorStop(1, "rgba(255,200,120,0)");
+  g.fillStyle = halo; g.fillRect(0, 0, S, S);
+  const petal = (px, py, rx, ry, rot, col) => { g.save(); g.translate(px, py); g.rotate(rot); g.fillStyle = col; g.beginPath(); g.ellipse(0, 0, rx, ry, 0, 0, 6.29); g.fill(); g.restore(); };
+  for (const [a, col] of [[-1.05, "#f3b6c8"], [1.05, "#f3b6c8"], [-0.55, "#f8cfdc"], [0.55, "#f8cfdc"], [0, "#fde6ee"]]) petal(64 + Math.sin(a) * 22, 80 - Math.cos(a) * 12, 10, 22, a, col);
+  const flame = g.createRadialGradient(64, 66, 1, 64, 66, 12);
+  flame.addColorStop(0, "rgba(255,250,220,1)"); flame.addColorStop(1, "rgba(255,170,60,0)");
+  g.fillStyle = flame; g.beginPath(); g.arc(64, 66, 12, 0, 6.29); g.fill();
+  g.fillStyle = "#6b4a3a"; g.fillRect(40, 92, 48, 5); // the base on the water
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function skylanterns(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2026);
+  const EYE = 1.6, PITCH = 0.12; // standing at the water's edge, looking a little up
+  camera.fov = 50; camera.near = 0.1; camera.far = 2600;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const halfW = (dist) => dist * TAN * camera.aspect; // half the visible width at that distance
+  const time = { value: 0 };
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  // double-sided because the mirrored pass turns every face around; one pass each (three draws transparent double-sided things twice by default)
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, ...extra }));
+  const plain = (opts) => keep(new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, ...opts }));
+  // everything above the water lives in `world`: it is drawn twice, the second time mirrored in the water (scale.y = -1)
+  const world = new THREE.Group();
+  scene.add(world);
+  const layer = (mat, x, y, z, w, h, order) => { const m = new THREE.Mesh(quad, mat); m.position.set(x, y, z); m.scale.set(w, h, 1); m.renderOrder = order; m.frustumCulled = false; world.add(m); return m; };
+
+  const skyUni = {
+    uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(Math.sin(0.34), 0.105, -Math.cos(0.34)).normalize() }, uSunColor: { value: new THREE.Color("#fff0c4") }, uSun: { value: 0 },
+  };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(2200, 40, 24)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { transparent: false }));
+  sky.position.set(0, EYE, 0); sky.renderOrder = 0; sky.frustumCulled = false;
+  world.add(sky);
+  const STARS = preview ? 300 : 900, starPos = new Float32Array(STARS * 3);
+  for (let i = 0; i < STARS; i++) { const a = r(0, 6.283), e = Math.asin(r(0.05, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 2000, EYE + Math.sin(e) * 2000, Math.sin(a) * Math.cos(e) * 2000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthTest: false, depthWrite: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = 1; stars.frustumCulled = false;
+  world.add(stars);
+  const mistTex = keep(inkMist(THREE)); // the soft band texture of the ink painting: fades to nothing at every edge
+  const cloudMat = plain({ map: mistTex });
+  const clouds = [];
+  for (let i = 0; i < (preview ? 3 : 6); i++) clouds.push({ m: layer(cloudMat, r(-900, 900), r(110, 330), -1500, r(500, 900), r(40, 80), 2), speed: r(1.5, 4) });
+  const hillUni = { uMask: { value: keep(lanternHills(THREE, preview ? 1024 : 2048, preview ? 96 : 160)) }, uFar: { value: new THREE.Color() }, uNear: { value: new THREE.Color() } };
+  layer(shader(LANTERN_LAYER_VS, LANTERN_HILLS_FS, hillUni), 0, 80, -640, 2400, 160, 3);
+  const mistMat = plain({ map: mistTex });
+  const mists = [[-380, 12, 1500, 34, 4], [-205, 2.5, 900, 9, 7], [-160, 1.2, 600, 5, 7]].map(([z, y, w, h, order], i) => ({ m: layer(mistMat, r(-200, 200), y, z, w, h, order), speed: [1.2, 0.6, 0.9][i] }));
+  const townUni = { uMask: { value: keep(lanternTown(THREE, preview ? 2048 : 4096, preview ? 128 : 256)) }, uWall: { value: new THREE.Color() }, uWindow: { value: new THREE.Color() }, uEave: { value: new THREE.Color() }, uTime: time };
+  layer(shader(LANTERN_LAYER_VS, LANTERN_TOWN_FS, townUni), 0, 30, -220, 1000, 60, 6);
+  // lotus lanterns floating on the water close by
+  const lotusMat = plain({ map: keep(lanternLotus(THREE)) });
+  const lotuses = [];
+  for (let i = 0; i < (preview ? 4 : 10); i++) { const z = r(14, 60); lotuses.push({ m: layer(lotusMat, r(-1, 1) * halfW(z), 0.24, -z, 0.8, 0.8, 8), z, u: r(-0.95, 0.95), speed: r(0.02, 0.06) * (r() < 0.5 ? -1 : 1), phase: r(0, 6.28) }); }
+  // the pier in front, and the two people letting lanterns go
+  const PIER_Z = 11;
+  const pierMat = plain({ map: keep(lanternPier(THREE)) });
+  const pier = layer(pierMat, 0, 1.5, -PIER_Z, 6, 3, 10);
+
+  // the lake: not part of `world`. Before the sky is drawn, the whole world is drawn mirrored into a texture the lake shows.
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4));
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const lakeUni = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: time, uDeep: { value: new THREE.Color() }, uSheen: { value: new THREE.Color() } };
+  const lakeGeo = keep(new THREE.PlaneGeometry(6000, 6000));
+  lakeGeo.rotateX(-Math.PI / 2);
+  const lake = new THREE.Mesh(lakeGeo, shader(LANTERN_LAKE_VS, LANTERN_LAKE_FS, lakeUni, { transparent: false }));
+  lake.position.z = -2900; lake.renderOrder = 5; lake.frustumCulled = false;
+  scene.add(lake);
+  const RS = 0.5, buf = new THREE.Vector2(); // the reflection: half resolution, the ripples blur it anyway
+  let reflecting = false, onFlip = () => {};
+  sky.onBeforeRender = (renderer, sc, cam) => {
+    if (reflecting) return; // the mirrored pass draws the sky too
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf);
+    lakeUni.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    world.scale.y = -1; lake.visible = false; onFlip(-1); // the mirror image of everything above the water
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT);
+    renderer.render(sc, cam);
+    renderer.setRenderTarget(before);
+    world.scale.y = 1; lake.visible = true; onFlip(1);
+    world.updateMatrixWorld(true); // the mirrored pass left mirrored matrices behind
+    reflecting = false;
+  };
+
+  /* --- the lanterns: launched from the town and the shore, rising, drifting with the breeze, burning out high up --- */
+  const NL = preview ? 160 : 520;
+  const lanternGeo = keep(new THREE.PlaneGeometry(1, 1));
+  const aLantern = new THREE.InstancedBufferAttribute(new Float32Array(NL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NL * 3), 3);
+  aLantern.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  lanternGeo.setAttribute("aLantern", aLantern); lanternGeo.setAttribute("aTint", aTint);
+  const lanternUni = { uMap: { value: keep(lanternSprite(THREE)) }, uFlip: { value: 1 }, uTime: time, uHalo: { value: 1 } };
+  const lanternMat = shader(LANTERN_VS, LANTERN_FS, lanternUni, { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor });
+  const lanternMesh = new THREE.InstancedMesh(lanternGeo, lanternMat, NL);
+  lanternMesh.frustumCulled = false; lanternMesh.renderOrder = 9; lanternMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  world.add(lanternMesh);
+  onFlip = (s) => { lanternUni.uFlip.value = s; }; // mirrored lanterns hang upside down
+  const WARM = ["#ffb45a", "#ff9c45", "#ffc56e", "#ff8a3d", "#ffd08a", "#ffa850"].map((c) => new THREE.Color(c));
+  const accentCol = new THREE.Color();
+  const Ls = [];
+  let wind = 0.9, bright = 1.6;
+  const topOfView = (l) => { const dist = Math.max(1, -l.z); return (l.y - EYE) / dist > Math.tan(PITCH + Math.atan(TAN)) + 0.08; };
+  /** A lantern goes up: from the town (most of them) or from boats and the shore closer by. */
+  function launch(l, spread) {
+    const town = r() < 0.72;
+    const dist = town ? r(150, 222) : r(30, 140);
+    l.z = -dist; l.x = r(-1.25, 1.25) * halfW(dist) - wind * r(0, 20);
+    l.y = town ? r(4, 14) : r(0.8, 2.5);
+    l.vy = r(0.9, 1.9); l.vx = r(-0.3, 0.3); l.vz = r(-0.4, 0.05);
+    l.size = r(1.6, 2.3); l.seed = r(0, 100); l.top = r(170, 340); l.age = 0; // the quad: a paper body about a metre tall, and its halo
+    l.warm = WARM[(r() * WARM.length) | 0]; l.accent = r() < 0.14;
+    if (spread) { // already on the way when the scene starts
+      const tt = Math.pow(r(), 0.85) * (l.top - l.y) / l.vy;
+      l.y += l.vy * tt; l.x += (l.vx + wind) * tt; l.z += l.vz * tt; l.age = 99;
+      const hw = halfW(-l.z) * 1.2;
+      l.x = ((((l.x + hw) % (2 * hw)) + 2 * hw) % (2 * hw)) - hw; // the breeze carried it off to the side: bring it back into view at the same height
+      if (topOfView(l)) { l.y = town ? r(4, 60) : r(1, 25); }
+    }
+  }
+  for (let i = 0; i < NL; i++) { const l = { i }; launch(l, true); Ls.push(l); }
+  // the two people's lanterns: held up for a few seconds, let go, and on their way while the next one is lit
+  const heroes = [Ls[0], Ls[1]];
+  const hands = new THREE.Vector3();
+  heroes.forEach((h, k) => { h.hero = true; h.state = k === 0 ? "held" : "wait"; h.timer = k === 0 ? r(2.5, 4) : 9; h.size = 2; h.accent = k === 1; h.warm = WARM[0]; });
+  function stepHero(h, dt) {
+    h.timer -= dt;
+    if (h.state === "wait") { h.alpha = 0; if (h.timer <= 0) { h.state = "held"; h.timer = r(3, 5); h.age = 0; } return; }
+    if (h.state === "held") {
+      h.size = hands.size; h.x = hands.x; h.y = hands.y + Math.sin(h.age * 1.7) * 0.03; h.z = hands.z; h.age += dt;
+      h.alpha = Math.min(1, h.age / 1.2);
+      if (h.timer <= 0) { h.state = "rise"; h.vy = 0.15; h.vx = 0; h.vz = -0.12; h.age = 0; }
+      return;
+    }
+    h.age += dt;
+    h.vy = Math.min(1.25, h.vy + dt * 0.25); h.vx += (wind * 0.8 - h.vx) * Math.min(1, dt * 0.25);
+    h.x += h.vx * dt; h.y += h.vy * dt; h.z += h.vz * dt; h.alpha = 1;
+    if (topOfView(h) || h.y > 120) { h.state = "wait"; h.timer = r(3, 7); const other = heroes[heroes.indexOf(h) ^ 1]; if (other.state === "wait") other.timer = Math.min(other.timer, 0.5); }
+  }
+  const order = Ls.map((_, i) => i);
+  const M4 = new THREE.Matrix4();
+  function stepLanterns(dt) {
+    for (const l of Ls) {
+      if (l.hero) { stepHero(l, dt); continue; }
+      l.age += dt;
+      l.x += (l.vx + wind) * dt + Math.sin(l.age * 0.5 + l.seed) * 0.05 * dt; l.y += l.vy * dt; l.z += l.vz * dt;
+      const burn = 1 - Math.max(0, Math.min(1, (l.y - l.top * 0.82) / (l.top * 0.18))); // burning out near the top of the flight
+      l.alpha = Math.min(1, l.age / 1.5) * burn;
+      if (burn <= 0 || topOfView(l) || l.x > halfW(-l.z) * 1.35 + 5) launch(l, false);
+    }
+    order.sort((a, b) => Ls[a].z - Ls[b].z); // far first: the paper of a near lantern must cover a far one
+    order.forEach((idx, k) => {
+      const l = Ls[idx];
+      M4.makeTranslation(l.x, l.y, l.z);
+      lanternMesh.setMatrixAt(k, M4);
+      aLantern.setXYZW(k, l.size * 0.5, l.seed, bright * (l.hero ? 1.25 : 1), l.alpha);
+      const c = l.accent ? accentCol : l.warm;
+      aTint.setXYZ(k, c.r, c.g, c.b);
+    });
+    lanternMesh.instanceMatrix.needsUpdate = aLantern.needsUpdate = aTint.needsUpdate = true;
+  }
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    skyUni.uZenith.value.set(d ? "#050a1c" : "#3a5698"); skyUni.uMid.value.set(d ? "#0f1b42" : "#d48a94");
+    skyUni.uHorizon.value.set(d ? "#27366a" : "#ffc27e"); skyUni.uGlow.value.set(d ? "#5c3f48" : "#ffb36a").multiplyScalar(d ? 0.9 : 0.6);
+    skyUni.uSun.value = d ? 0 : 1;
+    starMat.opacity = d ? 0.85 : 0;
+    cloudMat.color.set(d ? "#1c2852" : "#ffb49c"); cloudMat.opacity = d ? 0.45 : 0.6;
+    hillUni.uFar.value.set(d ? "#111b3d" : "#8a6f96"); hillUni.uNear.value.set(d ? "#0a1129" : "#5d4872");
+    mistMat.color.set(d ? "#2c3b6c" : "#ffd6b6"); mistMat.opacity = d ? 0.4 : 0.5;
+    townUni.uWall.value.set(d ? "#04060f" : "#231a2e");
+    townUni.uWindow.value.set(d ? "#ffb45c" : "#ffc676").multiplyScalar(d ? 1.7 : 1.25);
+    townUni.uEave.value.set("#ff3b2c").multiplyScalar(d ? 1.5 : 1.1);
+    lakeUni.uDeep.value.set(d ? "#02040c" : "#5a4a6c");
+    lakeUni.uSheen.value.set(d ? "#ffcf8a" : "#fff0d2").multiplyScalar(d ? 0.6 : 0.9);
+    lanternUni.uHalo.value = d ? 2.6 : 0.7;
+    bright = d ? 2.4 : 1.6;
+    accentCol.set(p.accent).multiplyScalar(1.15);
+    pierMat.color.set(d ? "#03050c" : "#19131f");
+    lotusMat.color.set(d ? "#ffffff" : "#f2e6ea");
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function frame(dt, t) {
+    time.value = t;
+    wind = 0.9 + 0.5 * Math.sin(t * 0.031) + 0.25 * Math.sin(t * 0.077); // a slow breeze, left to right
+    const cx = Math.sin(t * 0.023) * 0.4; // the viewer shifts a little: town, hills and lanterns part
+    camera.position.set(cx, EYE + Math.sin(t * 0.05) * 0.03, 0);
+    camera.lookAt(look.set(cx * 0.3, EYE + Math.tan(PITCH) * 100, -100));
+    // the pier stays at the lower left on every screen shape
+    const s = Math.min(1, 0.55 + 0.3 * camera.aspect), px = cx - halfW(PIER_Z) * 0.42;
+    pier.scale.set(6 * s, 3 * s, 1);
+    pier.position.set(px - 0.3 * s, 1.5 * s, -PIER_Z);
+    hands.size = 2 * s; // the paper body rests on the raised hands
+    hands.set(px + 0.08 * s, (0.62 + 1.42 + 0.52) * s + 0.25 * hands.size, -PIER_Z + 0.05);
+    for (const c of clouds) { c.m.position.x += c.speed * dt; if (c.m.position.x > 1300) c.m.position.x = -1300; }
+    for (const m of mists) { m.m.position.x += m.speed * dt; if (m.m.position.x > 350) m.m.position.x = -350; }
+    for (const L of lotuses) {
+      L.u += L.speed * dt * 0.05;
+      if (L.u > 1.1) L.u = -1.1; else if (L.u < -1.1) L.u = 1.1;
+      L.m.position.set(cx + L.u * halfW(L.z), 0.24 + Math.sin(t * 1.1 + L.phase) * 0.02, -L.z);
+    }
+    stepLanterns(dt);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    dispose() { disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

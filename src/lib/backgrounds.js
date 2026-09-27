@@ -40,6 +40,7 @@ export const BG_STYLES = [
   { value: "koipond", label: "Koi pond", desc: "3D koi gliding under real ripples, lotus and petals on the water", three: true },
   { value: "inkwash", label: "Ink landscape", desc: "3D Chinese ink painting: misty mountains, a boat on the river, cranes and a poem", three: true },
   { value: "rainwindow", label: "Rainy window", desc: "3D rain on a window: drops bend the city lights and slide down the glass", three: true },
+  { value: "skylanterns", label: "Sky lanterns", desc: "3D lantern festival: glowing lanterns rise over a lake town, mirrored in the water", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
