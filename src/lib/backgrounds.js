@@ -41,6 +41,7 @@ export const BG_STYLES = [
   { value: "inkwash", label: "Ink landscape", desc: "3D Chinese ink painting: misty mountains, a boat on the river, cranes and a poem", three: true },
   { value: "rainwindow", label: "Rainy window", desc: "3D rain on a window: drops bend the city lights and slide down the glass", three: true },
   { value: "skylanterns", label: "Sky lanterns", desc: "3D lantern festival: glowing lanterns rise over a lake town, mirrored in the water", three: true },
+  { value: "snowglobe", label: "Snow globe", desc: "3D snow globe with a tiny winter village: move the mouse and the snow swirls up", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

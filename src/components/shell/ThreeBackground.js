@@ -5683,7 +5683,734 @@ function skylanterns(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns };
+/* ---------- Snow globe: a winter village in a globe of water on a desk; move the mouse and the snow swirls up ---------- */
+// The glass is not a mesh: for every pixel a ray is traced into a sphere of water. Behind it the room shows upside down
+// (in through the front, across the water, out at the back, as in a real globe), the village inside is magnified,
+// and the glass reflects the lamp and a window. tWorld = the room, desk and base; tInside = the village and the snow.
+const GLOBE_GLASS_FS = /* glsl */ `
+  uniform sampler2D tWorld; uniform sampler2D tInside;
+  uniform mat4 uInvProj; uniform mat4 uCamWorld; uniform mat4 uViewProj;
+  uniform vec3 uCentre; uniform float uR; uniform float uCollarY; uniform float uIor; uniform float uIorIn;
+  uniform vec3 uTint; uniform vec3 uRoom; uniform vec3 uLampDir; uniform vec3 uLamp; uniform vec3 uWinDir; uniform vec3 uWin;
+  varying vec2 vUv;
+  vec2 toUv(vec3 w) { vec4 c = uViewProj * vec4(w, 1.0); return c.w > 0.0 ? c.xy / c.w * 0.5 + 0.5 : vUv; }
+  vec3 behind(vec3 P, vec3 N, vec3 dir, float ior) {
+    vec3 r1 = refract(dir, N, 1.0 / ior);
+    vec3 pc = P - uCentre;
+    float b2 = dot(pc, r1);
+    float t2 = -b2 + sqrt(max(b2 * b2 - dot(pc, pc) + uR * uR, 0.0));
+    vec3 P2 = P + r1 * t2;
+    vec3 N2 = normalize(P2 - uCentre);
+    vec3 r2 = refract(r1, -N2, ior);
+    if (dot(r2, r2) < 0.5) r2 = reflect(r1, -N2); // total internal reflection at the rim
+    return texture2D(tWorld, clamp(toUv(P2 + r2 * 4.0), 0.002, 0.998), 1.5).rgb; // a little softer: the room is out of focus
+  }
+  void main() {
+    vec3 base = texture2D(tWorld, vUv).rgb;
+    vec4 v = uInvProj * vec4(vUv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize((uCamWorld * vec4(v.xyz / v.w, 0.0)).xyz);
+    vec3 oc = cameraPosition - uCentre;
+    float b = dot(oc, dir);
+    float miss = sqrt(max(dot(oc, oc) - b * b, 0.0)); // how far the ray passes from the centre
+    float aa = max(fwidth(miss), 1e-4) * 1.2;
+    float cover = (1.0 - smoothstep(uR - aa, uR, miss)) * step(b, 0.0);
+    vec3 col = base;
+    if (cover > 0.0) {
+      float t = -b - sqrt(max(b * b - dot(oc, oc) + uR * uR, 0.0));
+      vec3 P = cameraPosition + dir * t;
+      vec3 N = normalize(P - uCentre);
+      // the room behind, upside down; each colour bends a little differently: rainbow fringes at the rim
+      float disp = (uIor - 1.0) * 0.06;
+      vec3 bg = vec3(behind(P, N, dir, uIor).r, behind(P, N, dir, uIor + disp).g, behind(P, N, dir, uIor + disp * 2.0).b);
+      // the village inside, magnified by the water
+      vec3 ri = refract(dir, N, 1.0 / uIorIn);
+      vec3 fwd = normalize(uCentre - cameraPosition);
+      float tc = dot(uCentre - P, fwd) / max(dot(ri, fwd), 0.2);
+      vec4 inside = texture2D(tInside, clamp(toUv(P + ri * tc), 0.002, 0.998));
+      vec3 glass = inside.rgb + (1.0 - inside.a) * bg * uTint;
+      // what the glass reflects: the room, a window behind you (its panes and cross), the lamp
+      vec3 R = reflect(dir, N);
+      float ndv = clamp(dot(N, -dir), 0.0, 1.0);
+      float F = 0.035 + 0.965 * pow(1.0 - ndv, 5.0);
+      glass = mix(glass, uRoom, F);
+      vec3 wr = normalize(cross(uWinDir, vec3(0.0, 1.0, 0.0))), wu = cross(wr, uWinDir);
+      float wx = dot(R, wr), wy = dot(R, wu);
+      float pane = smoothstep(0.34, 0.3, abs(wx)) * smoothstep(0.42, 0.38, abs(wy)) * step(0.0, dot(R, uWinDir));
+      pane *= smoothstep(0.012, 0.028, abs(wx)) * smoothstep(0.012, 0.028, abs(wy));
+      glass += uWin * pane * (0.18 + 0.82 * F);
+      float lamp = max(dot(R, uLampDir), 0.0);
+      glass += uLamp * (pow(lamp, 900.0) * 3.0 + pow(lamp, 70.0) * 0.25);
+      glass *= 1.0 - 0.3 * smoothstep(0.3, 0.02, ndv); // thicker glass, seen edge-on
+      float collar = smoothstep(uCollarY - 0.006, uCollarY + 0.006, P.y); // below this the wooden collar hides the glass
+      col = mix(base, glass, cover * collar);
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+const GLOBE_SNOW_VS = /* glsl */ `
+  uniform float uPx; uniform float uTime;
+  attribute vec3 aFlake; // size, kind (0 snow, 1 gold glitter, 2 accent glitter), phase
+  varying float vKind; varying float vGlint;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    vKind = aFlake.y;
+    vGlint = aFlake.y > 0.5 ? pow(max(0.0, sin(uTime * 4.0 + aFlake.z * 6.2831)), 18.0) : 0.0; // glitter catches the light as it turns
+    gl_PointSize = clamp(aFlake.x * uPx / -mv.z, 1.5, 28.0);
+  }
+`;
+const GLOBE_SNOW_FS = /* glsl */ `
+  uniform vec3 uSnow; uniform vec3 uGold; uniform vec3 uAccent;
+  varying float vKind; varying float vGlint;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+    vec3 col = vKind < 0.5 ? uSnow : (vKind < 1.5 ? uGold : uAccent);
+    gl_FragColor = vec4(col * (1.0 + vGlint * 3.0), (1.0 - r2) * (vKind < 0.5 ? 0.9 : 0.8 + 0.2 * vGlint));
+    #include <colorspace_fragment>
+  }
+`;
+
+/**
+ * The room behind the globe as one flat painting (designed at 1600 × 900; the wall is 16 × 9 units, 100 px a unit):
+ * a window with a snowy town outside, curtains, a picture, a bookshelf, a lamp on a sideboard. Blurred afterwards.
+ */
+function globeRoom(W, H, dark) {
+  const r = koiRng(dark ? 404 : 505);
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const k = W / 1600;
+  const X = (u) => u * k;
+  const rect = (col, x0, y0, x1, y1) => { g.fillStyle = col; g.fillRect(X(x0), X(y0), X(x1 - x0), X(y1 - y0)); };
+  const poly = (col, pts) => { g.fillStyle = col; g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(X(x), X(y)) : g.moveTo(X(x), X(y)))); g.closePath(); g.fill(); };
+  // the wall, papered in faint stripes, and wainscoting below
+  const wall = g.createLinearGradient(0, 0, 0, H);
+  wall.addColorStop(0, dark ? "#1c1620" : "#efe6d8"); wall.addColorStop(1, dark ? "#2e2420" : "#e0d2bd");
+  g.fillStyle = wall; g.fillRect(0, 0, W, H);
+  for (let x = 0; x < 1600; x += 40) rect(dark ? "rgba(255,225,190,0.035)" : "rgba(120,90,60,0.05)", x, 0, x + 14, 720);
+  rect(dark ? "#231a17" : "#d6c6ae", 0, 720, 1600, 900);
+  rect(dark ? "#3b2c25" : "#c4b196", 0, 712, 1600, 724);
+  g.lineWidth = X(3); g.strokeStyle = dark ? "rgba(0,0,0,0.35)" : "rgba(0,0,0,0.07)";
+  for (let x = 30; x < 1600; x += 230) g.strokeRect(X(x), X(752), X(190), X(120));
+  // the window: a snowy town outside, the moon at night
+  const wx0 = 170, wx1 = 590, wy0 = 120, wy1 = 600;
+  const sky = g.createLinearGradient(0, X(wy0), 0, X(wy1));
+  sky.addColorStop(0, dark ? "#0a1430" : "#bccde2"); sky.addColorStop(1, dark ? "#26395f" : "#eef2f5");
+  g.fillStyle = sky; g.fillRect(X(wx0), X(wy0), X(wx1 - wx0), X(wy1 - wy0));
+  if (dark) {
+    for (let i = 0; i < 70; i++) { g.fillStyle = `rgba(255,255,255,${r(0.3, 0.9)})`; g.fillRect(X(r(wx0, wx1)), X(r(wy0, wy0 + 280)), X(2.2), X(2.2)); } // stars
+    const moon = g.createRadialGradient(X(492), X(205), 0, X(492), X(205), X(80));
+    moon.addColorStop(0, "rgba(255,250,236,1)"); moon.addColorStop(0.33, "rgba(255,250,236,0.95)"); moon.addColorStop(0.42, "rgba(190,205,255,0.28)"); moon.addColorStop(1, "rgba(190,205,255,0)");
+    g.fillStyle = moon; g.fillRect(X(412), X(125), X(160), X(160));
+  }
+  const farRoof = dark ? "#1d2a4a" : "#aebccb", nearRoof = dark ? "#131b33" : "#8e9eaf", snow = dark ? "#c9d4ee" : "#ffffff";
+  for (let i = 0; i < 7; i++) { // rooftops across the street, snow along their ridges
+    const x0 = wx0 - 20 + i * 70 + r(-10, 10), w = r(60, 90), y = r(430, 480), ridge = y - r(30, 50), col = i % 2 ? farRoof : nearRoof;
+    poly(col, [[x0, wy1], [x0, y], [x0 + w / 2, ridge], [x0 + w, y], [x0 + w, wy1]]);
+    g.strokeStyle = snow; g.lineWidth = X(5); g.beginPath(); g.moveTo(X(x0), X(y)); g.lineTo(X(x0 + w / 2), X(ridge)); g.lineTo(X(x0 + w), X(y)); g.stroke();
+    if (dark && r() < 0.7) rect("#ffc877", x0 + w * 0.3, y + 25, x0 + w * 0.3 + 12, y + 40);
+  }
+  for (let i = 0; i < 5; i++) { const px = wx0 + 30 + i * 95 + r(-15, 15), py = r(520, 560), ph = r(60, 90); poly(dark ? "#0e1528" : "#6f8090", [[px - 22, py], [px, py - ph], [px + 22, py]]); }
+  rect(dark ? "#dfe6f5" : "#ffffff", wx0, 560, wx1, wy1); // snow on the ground
+  // the window frame and its cross
+  const frame = dark ? "#3b2a22" : "#f6f2ea";
+  rect(frame, wx0 - 16, wy0 - 16, wx1 + 16, wy0); rect(frame, wx0 - 16, wy1, wx1 + 16, wy1 + 16);
+  rect(frame, wx0 - 16, wy0, wx0, wy1); rect(frame, wx1, wy0, wx1 + 16, wy1);
+  rect(frame, (wx0 + wx1) / 2 - 6, wy0, (wx0 + wx1) / 2 + 6, wy1); rect(frame, wx0, (wy0 + wy1) / 2 - 6, wx1, (wy0 + wy1) / 2 + 6);
+  rect(dark ? "#4a372c" : "#e8e1d4", wx0 - 34, wy1 + 16, wx1 + 34, wy1 + 34); // the sill
+  // curtains, gathered at the sides
+  const curtain = (x0, x1) => {
+    const gr = g.createLinearGradient(X(x0), 0, X(x1), 0);
+    const base = dark ? [90, 42, 48] : [205, 186, 158];
+    for (let i = 0; i <= 8; i++) { const f = 0.78 + 0.22 * Math.sin(i * 1.9); gr.addColorStop(i / 8, `rgb(${base.map((v) => Math.round(v * f)).join(",")})`); }
+    g.fillStyle = gr; g.beginPath(); g.moveTo(X(x0), X(70)); g.lineTo(X(x1), X(70)); g.quadraticCurveTo(X(x1 - 10), X(420), X(x1 + 12), X(700)); g.lineTo(X(x0 - 12), X(700)); g.quadraticCurveTo(X(x0 + 10), X(420), X(x0), X(70)); g.fill();
+  };
+  curtain(95, 205); curtain(555, 665);
+  rect(dark ? "#5a4636" : "#b8a488", 70, 62, 690, 72); // the rod
+  // a picture on the wall
+  rect(dark ? "#6b5130" : "#b58f55", 720, 190, 920, 350);
+  const art = g.createLinearGradient(0, X(205), 0, X(335));
+  art.addColorStop(0, dark ? "#2b3a58" : "#9fbad0"); art.addColorStop(1, dark ? "#3f4f3a" : "#9db38a");
+  g.fillStyle = art; g.fillRect(X(735), X(205), X(170), X(130));
+  poly(dark ? "#22301f" : "#6f8a5f", [[735, 335], [790, 270], [840, 300], [905, 250], [905, 335]]);
+  // the bookshelf
+  const wood = dark ? "#3a281e" : "#8a6446";
+  rect(wood, 1180, 120, 1200, 712); rect(wood, 1520, 120, 1540, 712); rect(wood, 1180, 120, 1540, 140);
+  const BOOKS = dark ? ["#6b2f2f", "#2f4a6b", "#4a5f3a", "#7a5a2a", "#50305a", "#2a4a4a", "#8a3a2a", "#34385a"] : ["#a64b45", "#4d6f96", "#6b8a55", "#c9973f", "#7a568a", "#4f8a86", "#c26a4a", "#5a6394"];
+  for (const sy of [260, 390, 520, 650]) {
+    rect(wood, 1200, sy, 1520, sy + 14);
+    for (let x = 1206; x < 1500;) {
+      const bw = r(14, 30), bh = r(72, 112), lean = r() < 0.08;
+      if (x + bw > 1512) break;
+      if (lean) { poly(BOOKS[(r() * 8) | 0], [[x, sy], [x + bw, sy], [x + bw + 26, sy - bh + 6], [x + 26, sy - bh + 6]]); x += bw + 30; continue; }
+      rect(BOOKS[(r() * 8) | 0], x, sy - bh, x + bw, sy);
+      rect(dark ? "rgba(255,220,160,0.18)" : "rgba(255,255,255,0.35)", x + 3, sy - bh + 12, x + bw - 3, sy - bh + 16);
+      x += bw + r(1, 4);
+    }
+  }
+  poly(dark ? "#2f4a33" : "#5f8f5a", [[1440, 240], [1420, 195], [1450, 215], [1462, 180], [1478, 218], [1500, 200], [1490, 240]]); // a plant on the top shelf
+  rect(dark ? "#6b4a3a" : "#b8764e", 1438, 236, 1492, 260);
+  // a sideboard with a lamp; at night the shade glows and throws light up and down the wall
+  rect(dark ? "#2e211b" : "#7c5a40", 940, 690, 1160, 712);
+  rect(dark ? "#3b2a22" : "#8f6a4c", 1042, 575, 1058, 690);
+  if (dark) {
+    g.globalCompositeOperation = "lighter";
+    for (const [y, rad] of [[470, 240], [640, 180]]) {
+      const pool = g.createRadialGradient(X(1050), X(y), 0, X(1050), X(y), X(rad));
+      pool.addColorStop(0, "rgba(255,190,110,0.32)"); pool.addColorStop(1, "rgba(255,190,110,0)");
+      g.fillStyle = pool; g.fillRect(X(1050 - rad), X(y - rad), X(rad * 2), X(rad * 2));
+    }
+    g.globalCompositeOperation = "source-over";
+  }
+  const shade = g.createLinearGradient(0, X(480), 0, X(575));
+  shade.addColorStop(0, dark ? "#ffe2b0" : "#f1e6d2"); shade.addColorStop(1, dark ? "#ffc27a" : "#dccbb0");
+  poly(shade, [[1008, 480], [1092, 480], [1116, 575], [984, 575]]);
+  return c;
+}
+/** Wood grain along x, seamless across the width: a desk top, or the rings of a turned base. */
+function globeWood(THREE, W, H, baseHex, seed) {
+  const r = koiRng(seed);
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = baseHex; g.fillRect(0, 0, W, H);
+    for (let i = 0; i < 110; i++) {
+      const y = r(0, H), amp = r(1.5, 7), n = 1 + ((r() * 3) | 0), ph = r(0, 6.28), fr = (Math.PI * 2 * n) / W;
+      g.strokeStyle = r() < 0.62 ? `rgba(35,18,8,${r(0.07, 0.2)})` : `rgba(255,222,180,${r(0.04, 0.11)})`;
+      g.lineWidth = r(0.8, 3.5); g.beginPath();
+      for (let x = 0; x <= W; x += 6) g.lineTo(x, y + Math.sin(x * fr + ph) * amp + Math.sin(x * fr * 2 + ph * 1.7) * amp * 0.3);
+      g.stroke();
+    }
+  });
+  tex.wrapS = THREE.RepeatWrapping;
+  return tex;
+}
+
+/** Placed geometries, each in its own colour, as one: a whole crafted village is a single draw. */
+function mergeColored(THREE, parts) {
+  const chunks = parts.map(([geo, m, hex]) => { const g = geo.toNonIndexed(); g.applyMatrix4(m); return [g, new THREE.Color(hex)]; });
+  const n = chunks.reduce((s, [g]) => s + g.attributes.position.count, 0);
+  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  let o = 0;
+  for (const [g, c] of chunks) {
+    const cnt = g.attributes.position.count;
+    pos.set(g.attributes.position.array, o * 3); nrm.set(g.attributes.normal.array, o * 3);
+    for (let i = 0; i < cnt; i++) { col[(o + i) * 3] = c.r; col[(o + i) * 3 + 1] = c.g; col[(o + i) * 3 + 2] = c.b; }
+    o += cnt;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  out.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+  out.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  return out;
+}
+/** A roof: the ridge along x (−0.5…0.5) at y = 1, the eaves along z = ±0.5 at y = 0. */
+function roofPrism(THREE) {
+  const P = [[-0.5, 0, -0.5], [-0.5, 0, 0.5], [-0.5, 1, 0], [0.5, 0, -0.5], [0.5, 0, 0.5], [0.5, 1, 0]];
+  const T = [[0, 1, 2], [3, 5, 4], [0, 2, 5], [0, 5, 3], [1, 4, 5], [1, 5, 2], [0, 3, 4], [0, 4, 1]];
+  const pos = new Float32Array(T.length * 9);
+  T.forEach((t, i) => t.forEach((k, j) => pos.set(P[k], i * 9 + j * 3)));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+/**
+ * The village on the snowy ground inside the globe (world units; the ground's height comes from groundY).
+ * Returns one geometry for everything that is lit, one for the windows that glow, the lamp heads,
+ * the lights on the big tree and the snowman's frame (his scarf is added in the accent colour).
+ */
+function globeVillage(THREE, groundY, r) {
+  const box = new THREE.BoxGeometry(1, 1, 1), roof = roofPrism(THREE), cone7 = new THREE.ConeGeometry(1, 1, 7), cone4 = new THREE.ConeGeometry(1, 1, 4);
+  const ball = new THREE.SphereGeometry(1, 12, 9), cyl = new THREE.CylinderGeometry(1, 1, 1, 10), puck = new THREE.CylinderGeometry(1, 1, 1, 28);
+  const parts = [], windows = [], lamps = [], treeLights = [];
+  const SNOW = "#f3f6fb", LIT = "#ffc877";
+  const UP = new THREE.Vector3(0, 1, 0);
+  const frame = (x, z, ry) => new THREE.Matrix4().compose(new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(UP, ry), new THREE.Vector3(1, 1, 1));
+  const add = (F, geo, lx, ly, lz, sx, sy, sz, hex, list = parts, rot = null) => {
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(lx, ly, lz), rot ? new THREE.Quaternion().setFromEuler(rot) : new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
+    list.push([geo, new THREE.Matrix4().multiplyMatrices(F, m), hex]);
+  };
+  function house(x, z, w, h, d, ry, wall) {
+    const F = frame(x, z, ry), y0 = groundY(x, z) - 0.004;
+    add(F, box, 0, y0 + h / 2, 0, w, h, d, wall);
+    add(F, roof, 0, y0 + h, 0, w * 1.14, h * 0.62, d * 1.2, SNOW);
+    add(F, box, w * 0.26, y0 + h * 1.36, -d * 0.16, 0.026, 0.07, 0.026, "#7a4a3a"); // chimney
+    add(F, box, w * 0.26, y0 + h * 1.36 + 0.037, -d * 0.16, 0.032, 0.01, 0.032, SNOW);
+    add(F, box, -w * 0.2, y0 + h * 0.23, d / 2 + 0.002, w * 0.2, h * 0.46, 0.004, "#4a3326"); // door
+    add(F, box, w * 0.2, y0 + h * 0.56, d / 2 + 0.003, 0.034, 0.036, 0.004, LIT, windows);
+    add(F, box, w / 2 + 0.003, y0 + h * 0.56, 0, 0.004, 0.036, 0.034, LIT, windows);
+    add(F, box, -w / 2 - 0.003, y0 + h * 0.56, 0, 0.004, 0.036, 0.034, LIT, windows);
+    add(F, ball, w * 0.42, y0, d * 0.5, 0.05, 0.022, 0.04, SNOW); // a drift against the wall
+  }
+  function church(x, z) {
+    const F = frame(x, z, 0), y0 = groundY(x, z) - 0.004, WHITE = "#ece4d4";
+    add(F, box, 0, y0 + 0.11, -0.03, 0.2, 0.22, 0.3, WHITE);
+    add(F, roof, 0, y0 + 0.22, -0.03, 0.34, 0.13, 0.24, SNOW, parts, new THREE.Euler(0, Math.PI / 2, 0));
+    add(F, box, 0, y0 + 0.17, 0.15, 0.1, 0.34, 0.1, WHITE); // the tower
+    add(F, cone4, 0, y0 + 0.44, 0.15, 0.08, 0.2, 0.08, "#3c4654", parts, new THREE.Euler(0, Math.PI / 4, 0)); // the steeple
+    add(F, box, 0, y0 + 0.565, 0.15, 0.008, 0.05, 0.008, "#d4a94a"); add(F, box, 0, y0 + 0.575, 0.15, 0.03, 0.008, 0.008, "#d4a94a"); // a gilded cross
+    add(F, box, 0, y0 + 0.045, 0.203, 0.042, 0.09, 0.004, "#4a3326"); // the door
+    add(F, box, 0, y0 + 0.25, 0.2 + 0.003, 0.03, 0.034, 0.004, "#ffe0a0", windows); // a round window over it
+    for (const wz of [-0.13, -0.03]) for (const sx of [-1, 1]) add(F, box, sx * 0.103, y0 + 0.12, wz, 0.004, 0.07, 0.03, "#ffcf7a", windows); // tall windows
+  }
+  function pine(x, z, s, lights = 0) {
+    const y0 = groundY(x, z) - 0.004, F = frame(x, z, r(0, 6.28));
+    add(F, cyl, 0, y0 + 0.02 * s, 0, 0.01 * s, 0.04 * s, 0.01 * s, "#5a3b28");
+    const tiers = [[0.075, 0.12, 0.08], [0.06, 0.1, 0.15], [0.043, 0.085, 0.215]];
+    tiers.forEach(([rad, h, y], i) => {
+      add(F, cone7, 0, y0 + y * s, 0, rad * s, h * s, rad * s, i % 2 ? "#2f5d3a" : "#285233");
+      add(F, cone7, 0, y0 + (y + h * 0.33) * s, 0, rad * 0.5 * s, h * 0.3 * s, rad * 0.5 * s, SNOW); // snow on the branches
+    });
+    add(F, box, 0, y0 + 0.268 * s, 0, 0.012 * s, 0.012 * s, 0.012 * s, "#e8c35a", parts, new THREE.Euler(0.6, 0.6, 0.6)); // a star on top
+    for (let i = 0; i < lights; i++) { // a garland of lights spiralling down the tree
+      const f = (i + 0.5) / lights, y = 0.06 + f * 0.19, a = f * Math.PI * 7;
+      const tier = tiers.find(([, h, ty]) => y <= ty + h / 2) || tiers[2];
+      const rad = tier[0] * Math.max(0.12, 1 - (y - (tier[2] - tier[1] / 2)) / tier[1]) * 1.06;
+      treeLights.push(new THREE.Vector3(x + Math.cos(a) * rad * s, y0 + y * s, z + Math.sin(a) * rad * s));
+    }
+  }
+  function snowman(x, z) {
+    const y0 = groundY(x, z) - 0.004, F = frame(x, z, -0.35), INK = "#1f1f24";
+    add(F, ball, 0, y0 + 0.04, 0, 0.045, 0.042, 0.045, SNOW);
+    add(F, ball, 0, y0 + 0.1, 0, 0.033, 0.032, 0.033, SNOW);
+    add(F, ball, 0, y0 + 0.148, 0, 0.024, 0.024, 0.024, SNOW);
+    add(F, cyl, 0, y0 + 0.183, 0, 0.017, 0.03, 0.017, INK); add(F, cyl, 0, y0 + 0.169, 0, 0.026, 0.004, 0.026, INK); // his hat
+    add(F, cone7, 0, y0 + 0.148, 0.032, 0.005, 0.024, 0.005, "#e8742c", parts, new THREE.Euler(Math.PI / 2, 0, 0)); // carrot nose
+    for (const ex of [-0.008, 0.008]) add(F, ball, ex, y0 + 0.156, 0.021, 0.0032, 0.0032, 0.0032, INK);
+    for (const by of [0.09, 0.106]) add(F, ball, 0, y0 + by, 0.032, 0.0032, 0.0032, 0.0032, INK);
+    add(F, cyl, 0.046, y0 + 0.112, 0, 0.0022, 0.05, 0.0022, "#5a3b28", parts, new THREE.Euler(0, 0, 1.0));
+    add(F, cyl, -0.046, y0 + 0.112, 0, 0.0022, 0.05, 0.0022, "#5a3b28", parts, new THREE.Euler(0, 0, -1.0));
+    return new THREE.Matrix4().multiplyMatrices(F, new THREE.Matrix4().makeTranslation(0, y0 + 0.126, 0));
+  }
+  function lamp(x, z) {
+    const y0 = groundY(x, z) - 0.004, F = frame(x, z, 0), IRON = "#2a2a30";
+    add(F, cyl, 0, y0 + 0.08, 0, 0.005, 0.16, 0.005, IRON);
+    add(F, box, 0, y0 + 0.165, 0, 0.022, 0.026, 0.022, IRON);
+    add(F, box, 0, y0 + 0.165, 0, 0.016, 0.02, 0.0235, "#ffd98a", windows);
+    add(F, box, 0, y0 + 0.165, 0, 0.0235, 0.02, 0.016, "#ffd98a", windows);
+    add(F, cone4, 0, y0 + 0.187, 0, 0.02, 0.02, 0.02, IRON, parts, new THREE.Euler(0, Math.PI / 4, 0));
+    lamps.push(new THREE.Vector3(x, y0 + 0.165, z));
+  }
+  church(0, -0.34);
+  house(-0.42, -0.1, 0.2, 0.15, 0.17, 0.35, "#b5423a");
+  house(0.4, -0.14, 0.18, 0.14, 0.16, -0.4, "#c9973f");
+  house(-0.2, 0.2, 0.16, 0.13, 0.15, 0.2, "#5e7a93");
+  house(0.27, 0.19, 0.19, 0.14, 0.16, -0.25, "#4f7a5a");
+  pine(0.03, -0.04, 1.45, 22); // the big tree in the middle, with its lights
+  for (const [x, z] of [[-0.2, -0.47], [0.22, -0.46], [-0.46, 0.14], [0.5, 0.05]]) pine(x, z, r(0.85, 1.05));
+  for (const [x, z] of [[-0.62, -0.4], [0.6, -0.44], [-0.72, 0.1], [0.72, 0.16], [0.1, -0.74]]) pine(x, z, r(0.75, 0.9));
+  const scarfAt = snowman(0.14, 0.4);
+  lamp(-0.06, 0.3); lamp(0.43, 0.3);
+  add(frame(-0.3, 0.4, 0), puck, 0, groundY(-0.3, 0.4) - 0.001, 0, 0.09, 0.005, 0.09, "#a9c7de"); // a frozen pond
+  // the railway round the village
+  const TR = 0.62, ty = groundY(TR, 0);
+  for (const rr of [TR - 0.014, TR + 0.014]) parts.push([new THREE.TorusGeometry(rr, 0.0035, 5, 120), new THREE.Matrix4().makeRotationX(Math.PI / 2).setPosition(0, ty + 0.006, 0), "#3a3a42"]);
+  for (let i = 0; i < 64; i++) { const a = (i / 64) * Math.PI * 2; add(frame(Math.cos(a) * TR, Math.sin(a) * TR, Math.PI / 2 - a), box, 0, ty + 0.002, 0, 0.012, 0.004, 0.05, "#5a4030"); }
+  const out = { village: mergeColored(THREE, parts), windows: mergeColored(THREE, windows), lamps, treeLights, scarfAt, trackR: TR, trackY: ty + 0.008 };
+  [box, roof, cone7, cone4, ball, cyl, puck].forEach((g) => g.dispose());
+  parts.forEach(([g]) => { if (g.type === "TorusGeometry") g.dispose(); });
+  return out;
+}
+/** A little steam engine and its carriages, facing +x, standing on the rails at y = 0. */
+function globeTrain(THREE) {
+  const box = new THREE.BoxGeometry(1, 1, 1), cyl = new THREE.CylinderGeometry(1, 1, 1, 14), ball = new THREE.SphereGeometry(1, 10, 8);
+  const Z = (x, y, z, sx, sy, sz, rot) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), rot ? new THREE.Quaternion().setFromEuler(rot) : new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
+  const alongX = new THREE.Euler(0, 0, Math.PI / 2), axle = new THREE.Euler(Math.PI / 2, 0, 0);
+  const IRON = "#26262c", WHEEL = "#1c1c22", SNOW = "#f3f6fb", LIT = "#ffd98a";
+  const wheels = (xs) => xs.flatMap((wx) => [-0.024, 0.024].map((wz) => [cyl, Z(wx, 0.013, wz, 0.013, 0.006, 0.013, axle), WHEEL]));
+  const out = {
+    engineAccent: mergeParts(THREE, [[cyl, Z(0.012, 0.036, 0, 0.022, 0.07, 0.022, alongX)], [box, Z(-0.04, 0.045, 0, 0.042, 0.05, 0.05)]]),
+    engineDark: mergeColored(THREE, [
+      [box, Z(-0.005, 0.01, 0, 0.12, 0.012, 0.042), IRON], [cyl, Z(0.035, 0.066, 0, 0.007, 0.03, 0.007), IRON], [cyl, Z(0.035, 0.083, 0, 0.011, 0.006, 0.011), IRON],
+      [ball, Z(0.005, 0.058, 0, 0.009, 0.009, 0.009), "#d4a94a"], [box, Z(-0.04, 0.073, 0, 0.05, 0.006, 0.058), SNOW],
+      [box, Z(0.062, 0.01, 0, 0.012, 0.014, 0.04, new THREE.Euler(0, 0, 0.5)), "#b8322c"],
+      [box, Z(-0.03, 0.048, 0.026, 0.02, 0.02, 0.002), LIT], [box, Z(-0.03, 0.048, -0.026, 0.02, 0.02, 0.002), LIT],
+      ...wheels([-0.04, -0.005, 0.03]),
+    ]),
+    carAccent: mergeParts(THREE, [[box, Z(0, 0.04, 0, 0.08, 0.042, 0.044)]]),
+    carDark: mergeColored(THREE, [
+      [box, Z(0, 0.01, 0, 0.086, 0.012, 0.04), IRON], [box, Z(0, 0.064, 0, 0.088, 0.008, 0.05), SNOW],
+      ...[-0.024, 0, 0.024].flatMap((wx) => [[box, Z(wx, 0.045, 0.0225, 0.016, 0.016, 0.002), LIT], [box, Z(wx, 0.045, -0.0225, 0.016, 0.016, 0.002), LIT]]),
+      ...wheels([-0.028, 0.028]),
+    ]),
+  };
+  [box, cyl, ball].forEach((g) => g.dispose());
+  return out;
+}
+
+function snowglobe(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1225);
+  const V = new THREE.Vector3();
+  camera.fov = 32; camera.near = 0.1; camera.far = 120;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const C = new THREE.Vector3(0, 1.35, 0), R = 1, COLLAR = 0.6, TOP = 0.86; // the globe; where its wooden collar ends; the crown of the snow inside
+  const sphereR = (y) => Math.sqrt(Math.max(0, R * R - (y - C.y) ** 2));
+  const groundY = (x, z) => { const rr = Math.min(0.84, Math.hypot(x, z)); return TOP - 0.038 * (rr / 0.65) ** 2; };
+  const time = { value: 0 };
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const flat = keep(new THREE.PlaneGeometry(1, 1));
+  flat.rotateX(-Math.PI / 2);
+  const glow = keep(glowTexture(THREE));
+  const world = new THREE.Scene(), inside = new THREE.Scene(); // the room, desk and base; the village and the snow in the water
+  const LAMP = new THREE.Vector3(4, 5.2, 3.2), WINDOW = new THREE.Vector3(-5.5, 4.2, 1.2);
+
+  /* --- the room: a painting out of focus, with fairy lights, snow falling outside the window and the lamp's glow --- */
+  const roomMat = keep(new THREE.MeshBasicMaterial());
+  const wall = new THREE.Mesh(quad, roomMat);
+  world.add(wall);
+  const RW = preview ? 800 : 1600, RH = preview ? 450 : 900, WALL_Z = -7;
+  let roomTex = null;
+  function buildRoom(dark) { // redrawn only when the theme flips
+    roomTex?.dispose();
+    roomTex = new THREE.CanvasTexture(rainBlur(globeRoom(RW, RH, dark), RW >> 1, RH >> 1, 2));
+    roomTex.colorSpace = THREE.SRGBColorSpace;
+    roomMat.map = roomTex; roomMat.needsUpdate = true;
+  }
+  const deco = new THREE.Group(); // in painting units: 16 × 9, origin at the bottom centre of the wall
+  world.add(deco);
+  const NB = 28, bulbs = [];
+  const bulbGeo = keep(new THREE.PlaneGeometry(1, 1));
+  const aLight = new THREE.InstancedBufferAttribute(new Float32Array(NB * 4), 4), aColor = new THREE.InstancedBufferAttribute(new Float32Array(NB * 4), 4);
+  aColor.setUsage(THREE.DynamicDrawUsage);
+  bulbGeo.setAttribute("aLight", aLight); bulbGeo.setAttribute("aColor", aColor);
+  for (let i = 0; i < NB; i++) { // a string of fairy lights sagging across the top of the wall
+    const u = -1 + (2 * i) / (NB - 1);
+    aLight.setXYZW(i, u * 7.6, 5.55 - 0.5 * (1 - u * u) + r(-0.04, 0.04), 0.02, r(0.13, 0.2));
+    bulbs.push({ accent: i % 5 === 2, phase: r(0, 6.28), speed: r(0.6, 1.4) });
+  }
+  const bulbMesh = new THREE.InstancedMesh(bulbGeo, keep(new THREE.ShaderMaterial({ uniforms: { uBokeh: { value: 1 } }, vertexShader: RAIN_LIGHT_VS, fragmentShader: RAIN_LIGHT_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })), NB);
+  bulbMesh.frustumCulled = false; bulbMesh.position.z = 0.02; bulbMesh.renderOrder = 2;
+  deco.add(bulbMesh);
+  const NW = preview ? 0 : 46, wsPos = new Float32Array(Math.max(1, NW) * 3), wsDrift = [];
+  for (let i = 0; i < NW; i++) { wsPos.set([r(-6.2, -2.2), r(3.1, 7.7), 0.03], i * 3); wsDrift.push([r(0.22, 0.45), r(0, 6.28)]); }
+  const wsGeo = keep(new THREE.BufferGeometry());
+  wsGeo.setAttribute("position", new THREE.BufferAttribute(wsPos, 3).setUsage(THREE.DynamicDrawUsage));
+  const wsMat = keep(new THREE.PointsMaterial({ map: glow, size: 0.12, transparent: true, depthWrite: false }));
+  const windowSnow = new THREE.Points(wsGeo, wsMat);
+  windowSnow.frustumCulled = false; windowSnow.renderOrder = 1; windowSnow.visible = NW > 0;
+  deco.add(windowSnow);
+  // flat on the wall: a camera-facing sprite leans back into the wall when the camera looks down, and gets cut off along a line
+  const lampGlowMat = keep(new THREE.MeshBasicMaterial({ map: glow, color: 0xffb865, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const lampGlow = new THREE.Mesh(quad, lampGlowMat);
+  lampGlow.position.set(2.5, 3.8, 0.04); lampGlow.scale.set(3, 3, 1); lampGlow.renderOrder = 3;
+  deco.add(lampGlow);
+
+  /* --- the desk, and the globe's turned wooden base with brass rings and a plaque in the accent colour --- */
+  const deskTex = keep(globeWood(THREE, 1024, 512, "#8b5b3c", 5151));
+  deskTex.repeat.set(3, 1);
+  const deskGeo = keep(new THREE.PlaneGeometry(40, 26));
+  deskGeo.rotateX(-Math.PI / 2);
+  const desk = new THREE.Mesh(deskGeo, keep(new THREE.MeshStandardMaterial({ map: deskTex, roughness: 0.55 })));
+  desk.position.z = 6; // from the wall to well behind the camera
+  world.add(desk);
+  const baseTex = keep(globeWood(THREE, 512, 256, "#4b2f20", 77));
+  baseTex.repeat.set(2, 1);
+  const profile = [[0.001, 0], [1.02, 0], [1.06, 0.03], [1.05, 0.11], [0.99, 0.15], [0.95, 0.3], [0.9, 0.42], [0.85, 0.5], [0.8, 0.56], [0.77, 0.6], [0.66, 0.6], [0.62, 0.5]].map(([x, y]) => new THREE.Vector2(x, y));
+  world.add(new THREE.Mesh(keep(new THREE.LatheGeometry(profile, preview ? 48 : 96)), keep(new THREE.MeshStandardMaterial({ map: baseTex, roughness: 0.38, side: THREE.DoubleSide }))));
+  const brass = keep(new THREE.MeshPhongMaterial({ color: 0xc9a14a, specular: 0xfff0c8, shininess: 70 }));
+  for (const [rad, tube, y] of [[1.04, 0.02, 0.125], [0.785, 0.016, 0.592]]) {
+    const ring = new THREE.Mesh(keep(new THREE.TorusGeometry(rad, tube, 10, preview ? 64 : 128)), brass);
+    ring.rotation.x = Math.PI / 2; ring.position.y = y;
+    world.add(ring);
+  }
+  const plaqueCanvas = document.createElement("canvas");
+  plaqueCanvas.width = 256; plaqueCanvas.height = 72;
+  const plaqueTex = keep(new THREE.CanvasTexture(plaqueCanvas));
+  plaqueTex.colorSpace = THREE.SRGBColorSpace;
+  let plaqueKey = "";
+  function drawPlaque(hex) {
+    const g = plaqueCanvas.getContext("2d"), w = 256, h = 72;
+    const gold = g.createLinearGradient(0, 0, 0, h);
+    gold.addColorStop(0, "#f3d58a"); gold.addColorStop(0.5, "#b8862f"); gold.addColorStop(1, "#e2bd66");
+    g.fillStyle = gold; g.fillRect(0, 0, w, h);
+    const enamel = g.createLinearGradient(0, 8, 0, h - 8);
+    enamel.addColorStop(0, hex); enamel.addColorStop(1, "#000000");
+    g.fillStyle = hex; g.fillRect(8, 8, w - 16, h - 16);
+    g.globalAlpha = 0.25; g.fillStyle = enamel; g.fillRect(8, 8, w - 16, h - 16); g.globalAlpha = 1;
+    g.strokeStyle = "rgba(255,244,214,0.95)"; g.lineWidth = 3; g.lineCap = "round";
+    for (const cx of [w / 2]) for (let k = 0; k < 6; k++) { // a snowflake: six arms with little branches
+      const a = (k * Math.PI) / 3, ex = cx + Math.cos(a) * 22, ey = h / 2 + Math.sin(a) * 22;
+      g.beginPath(); g.moveTo(cx, h / 2); g.lineTo(ex, ey); g.stroke();
+      for (const [f, sgn] of [[0.55, 1], [0.55, -1]]) { const bx = cx + Math.cos(a) * 22 * f, by = h / 2 + Math.sin(a) * 22 * f; g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + Math.cos(a + sgn * 0.8) * 8, by + Math.sin(a + sgn * 0.8) * 8); g.stroke(); }
+    }
+    for (const dx of [-70, 70]) { g.beginPath(); g.arc(w / 2 + dx, h / 2, 3, 0, 6.29); g.fillStyle = "rgba(255,244,214,0.9)"; g.fill(); }
+    plaqueTex.needsUpdate = true;
+  }
+  const plaqueMat = keep(new THREE.MeshPhongMaterial({ map: plaqueTex, shininess: 80, specular: 0x999999 }));
+  const plaque = new THREE.Mesh(keep(new THREE.BoxGeometry(0.44, 0.12, 0.02)), plaqueMat);
+  plaque.position.set(0, 0.3, 0.96); plaque.rotation.x = -0.32;
+  world.add(plaque);
+  // a soft contact shadow, the globe's shadow away from the light, and the bright spot the water focuses into it
+  const shadowTex = keep(glowTexture(THREE, "rgba(0,0,0,1)", "rgba(0,0,0,0)"));
+  const contact = new THREE.Mesh(flat, keep(new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.55, depthWrite: false })));
+  contact.position.y = 0.002; contact.scale.set(2.9, 1, 2.9);
+  const cast = new THREE.Mesh(flat, keep(new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.32, depthWrite: false })));
+  const causticMat = keep(new THREE.MeshBasicMaterial({ map: glow, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const caustic = new THREE.Mesh(flat, causticMat);
+  contact.renderOrder = cast.renderOrder = 1; caustic.renderOrder = 2;
+  world.add(contact, cast, caustic);
+  const lightsFor = (sc) => { const L = { hemi: new THREE.HemisphereLight(0xffffff, 0x000000, 1), key: new THREE.DirectionalLight(0xffffff, 1), fill: new THREE.DirectionalLight(0xffffff, 1) }; sc.add(L.hemi, L.key, L.fill); return L; };
+  const lights = [lightsFor(world), lightsFor(inside)];
+  const lampPool = new THREE.PointLight(0xffb46a, 0, 14, 1.4); // at night the lamp on the sideboard lights the back of the desk
+  lampPool.position.set(3.2, 2.4, -5.6);
+  world.add(lampPool);
+  const villageLight = new THREE.PointLight(0xffb45c, 0, 1.4, 1.6); // the village's own glow at night
+  villageLight.position.set(0, 1.0, 0.05);
+  inside.add(villageLight);
+
+  /* --- inside the globe: the snowy ground, the village, the train, the snow --- */
+  const vil = globeVillage(THREE, groundY, r);
+  const villageMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, flatShading: true, side: THREE.DoubleSide }));
+  inside.add(new THREE.Mesh(keep(vil.village), villageMat));
+  const windowMat = keep(new THREE.MeshBasicMaterial({ vertexColors: true }));
+  inside.add(new THREE.Mesh(keep(vil.windows), windowMat));
+  const groundProfile = [[0.001, TOP], [0.25, groundY(0.25, 0)], [0.45, groundY(0.45, 0)], [0.65, groundY(0.65, 0)], [sphereR(0.8) * 0.99, 0.8], [sphereR(0.7) * 0.99, 0.7], [sphereR(0.62) * 0.99, 0.62], [sphereR(0.57) * 0.99, 0.57]].map(([x, y]) => new THREE.Vector2(x, y));
+  inside.add(new THREE.Mesh(keep(new THREE.LatheGeometry(groundProfile, preview ? 48 : 96)), keep(new THREE.MeshStandardMaterial({ color: 0xf3f6fb, roughness: 0.95, side: THREE.DoubleSide }))));
+  const accentIn = keep(new THREE.MeshStandardMaterial({ roughness: 0.55 }));
+  const scarfTorus = new THREE.TorusGeometry(0.027, 0.0075, 6, 18), scarfTail = new THREE.BoxGeometry(0.013, 0.036, 0.006);
+  const scarf = new THREE.Mesh(keep(mergeParts(THREE, [[scarfTorus, new THREE.Matrix4().makeRotationX(Math.PI / 2)], [scarfTail, new THREE.Matrix4().compose(new THREE.Vector3(0.012, -0.018, 0.028), new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2, 0, 0.25)), new THREE.Vector3(1, 1, 1))]])), accentIn);
+  scarfTorus.dispose(); scarfTail.dispose();
+  scarf.matrixAutoUpdate = false; scarf.matrix.copy(vil.scarfAt); // round the snowman's neck
+  inside.add(scarf);
+  const trainGeo = globeTrain(THREE);
+  Object.values(trainGeo).forEach(keep);
+  const trainMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, flatShading: true }));
+  const cars = [[trainGeo.engineAccent, trainGeo.engineDark], [trainGeo.carAccent, trainGeo.carDark], [trainGeo.carAccent, trainGeo.carDark]].map(([a, d]) => {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(a, accentIn), new THREE.Mesh(d, trainMat));
+    inside.add(g);
+    return g;
+  });
+  const SPACING = 0.115 / vil.trackR;
+  let trainAngle = r(0, 6.28);
+  const headMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffe2a8, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const headlight = new THREE.Sprite(headMat);
+  headlight.scale.setScalar(0.07);
+  inside.add(headlight);
+  const puffs = [];
+  for (let i = 0; i < 7; i++) { const m = keep(new THREE.SpriteMaterial({ map: glow, transparent: true, opacity: 0, depthWrite: false })); const s = new THREE.Sprite(m); inside.add(s); puffs.push({ s, m, age: 99 }); }
+  let puffT = 0;
+  const lampMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffc46e, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  vil.lamps.forEach((p) => { const s = new THREE.Sprite(lampMat); s.position.copy(p); s.scale.setScalar(0.09); inside.add(s); });
+  const NT = vil.treeLights.length, tlPos = new Float32Array(NT * 3), tlCol = new Float32Array(NT * 3);
+  vil.treeLights.forEach((p, i) => tlPos.set([p.x, p.y, p.z], i * 3));
+  const tlGeo = keep(new THREE.BufferGeometry());
+  tlGeo.setAttribute("position", new THREE.BufferAttribute(tlPos, 3));
+  tlGeo.setAttribute("color", new THREE.BufferAttribute(tlCol, 3).setUsage(THREE.DynamicDrawUsage));
+  const tlMat = keep(new THREE.PointsMaterial({ map: glow, size: 0.05, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  inside.add(new THREE.Points(tlGeo, tlMat));
+  const TL = ["#ffd27a", "#ff6b6b", "#7bd88f", "#ffe9b0", "#6fb7ff"].map((c) => new THREE.Color(c));
+
+  // the snow: resting on the ground or drifting in the water; the glitter catches the light
+  const NF = preview ? 320 : 1100, RI = 0.94;
+  const fx = new Float32Array(NF), fy = new Float32Array(NF), fz = new Float32Array(NF), vx = new Float32Array(NF), vy = new Float32Array(NF), vz = new Float32Array(NF), fall = new Float32Array(NF);
+  const rest = new Uint8Array(NF), flakePos = new Float32Array(NF * 3), flakeAttr = new Float32Array(NF * 3);
+  function place(i, onGround) {
+    for (let k = 0; k < 30; k++) {
+      const x = r(-RI, RI), y = C.y + r(-RI, RI), z = r(-RI, RI);
+      if (x * x + (y - C.y) ** 2 + z * z > RI * RI) continue;
+      if (onGround) { if (Math.hypot(x, z) > 0.8) continue; fx[i] = x; fz[i] = z; fy[i] = groundY(x, z) + 0.004; rest[i] = 1; return; }
+      if (y > groundY(x, z) + 0.03) { fx[i] = x; fy[i] = y; fz[i] = z; rest[i] = 0; return; }
+    }
+    fx[i] = 0; fy[i] = C.y; fz[i] = 0; rest[i] = 0;
+  }
+  for (let i = 0; i < NF; i++) {
+    place(i, r() < 0.45);
+    fall[i] = r(0.05, 0.12);
+    const kind = r() < 0.12 ? 1 : r() < 0.07 ? 2 : 0;
+    flakeAttr.set([kind ? r(0.013, 0.02) : r(0.012, 0.026), kind, r(0, 1)], i * 3);
+  }
+  const snowGeo = keep(new THREE.BufferGeometry());
+  snowGeo.setAttribute("position", new THREE.BufferAttribute(flakePos, 3).setUsage(THREE.DynamicDrawUsage));
+  snowGeo.setAttribute("aFlake", new THREE.BufferAttribute(flakeAttr, 3));
+  const snowUni = { uPx: { value: 700 }, uTime: time, uSnow: { value: new THREE.Color() }, uGold: { value: new THREE.Color() }, uAccent: { value: new THREE.Color() } };
+  const snow = new THREE.Points(snowGeo, keep(new THREE.ShaderMaterial({ uniforms: snowUni, vertexShader: GLOBE_SNOW_VS, fragmentShader: GLOBE_SNOW_FS, transparent: true, depthWrite: false })));
+  snow.frustumCulled = false; snow.renderOrder = 5;
+  const buf = new THREE.Vector2();
+  snow.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); snowUni.uPx.value = buf.y / (2 * TAN); };
+  inside.add(snow);
+  let energy = 1.1, spin = 0.8; // how stirred up the water is, and which way it turns
+  function stepSnow(dt, t) {
+    energy *= Math.exp(-dt / 2.4);
+    spin *= Math.exp(-dt / 3.2);
+    const k = Math.min(1, dt * 2.2);
+    for (let i = 0; i < NF; i++) {
+      let x = fx[i], y = fy[i], z = fz[i];
+      if (rest[i]) { // lying on the ground: a strong enough stir lifts it again
+        if (energy > 0.3 && r() < (energy - 0.25) * dt * 3) { rest[i] = 0; vy[i] = r(0.25, 0.6) * energy; vx[i] = -z * spin * 0.6; vz[i] = x * spin * 0.6; } else continue;
+      }
+      // the water rolls like a real shaken globe (Hill's spherical vortex: up through the middle, out along the top,
+      // down the glass, back in along the bottom, never through the glass), turns round the middle, and is churned a little
+      const hx = x / RI, hy = (y - C.y) / RI, hz = z / RI, A = energy * 0.75;
+      const ur = A * hy, uy = A * (1 - 2 * (hx * hx + hz * hz) - hy * hy);
+      const tw = energy * 0.3, wob = 0.012 * Math.sin(t * 0.7 + i * 1.3); // churn while stirred; a gentle drift as it falls
+      const tx = tw * Math.sin(4.1 * y + 2.3 * t) * Math.cos(3.7 * z) + wob, tz = tw * Math.sin(3.3 * x - 1.9 * t) * Math.cos(4.3 * y) + wob * Math.cos(i);
+      const ty = tw * Math.sin(3.9 * z + 1.3 * t) * Math.cos(3.1 * x);
+      vx[i] += (-z * spin + ur * hx + tx - vx[i]) * k;
+      vz[i] += (x * spin + ur * hz + tz - vz[i]) * k;
+      vy[i] += (uy + ty - fall[i] - vy[i]) * k;
+      x += vx[i] * dt; y += vy[i] * dt; z += vz[i] * dt;
+      let qx = x, qy = y - C.y, qz = z;
+      const d = Math.hypot(qx, qy, qz);
+      if (d > RI) { // the glass
+        const s = RI / d; qx *= s; qy *= s; qz *= s; x = qx; y = C.y + qy; z = qz;
+        const vn = (vx[i] * qx + vy[i] * qy + vz[i] * qz) / RI;
+        if (vn > 0) { vx[i] -= (vn * qx) / RI; vy[i] -= (vn * qy) / RI; vz[i] -= (vn * qz) / RI; }
+      }
+      const g = groundY(x, z) + 0.004;
+      if (y < g) { y = g; if (energy < 0.3) { rest[i] = 1; vx[i] = vy[i] = vz[i] = 0; } else vy[i] = Math.abs(vy[i]) * 0.25; }
+      fx[i] = x; fy[i] = y; fz[i] = z;
+    }
+    for (let i = 0; i < NF; i++) { flakePos[i * 3] = fx[i]; flakePos[i * 3 + 1] = fy[i]; flakePos[i * 3 + 2] = fz[i]; }
+    snowGeo.attributes.position.needsUpdate = true;
+  }
+  for (let i = 0; i < 150; i++) stepSnow(1 / 60, i / 60); // it was shaken a moment ago: the still frame is snowing
+
+  // the mouse shakes it: how far it moved stirs the water, which way it went turns it
+  let moved = 0, swirlIn = 0, lastX = null, lastY = null, lastT = 0, idle = 0;
+  const onMove = (e) => {
+    if (lastX !== null && e.timeStamp - lastT < 250) { const dx = e.clientX - lastX, dy = e.clientY - lastY; moved += Math.hypot(dx, dy); swirlIn += dx; }
+    lastX = e.clientX; lastY = e.clientY; lastT = e.timeStamp;
+  };
+  if (!preview) window.addEventListener("pointermove", onMove, { passive: true });
+
+  /* --- the passes: the room into one picture, the inside of the globe into another, then the glass over both --- */
+  const rtOpts = { samples: preview ? 0 : 4 };
+  const worldRT = keep(new THREE.WebGLRenderTarget(4, 4, { ...rtOpts, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter })), insideRT = keep(new THREE.WebGLRenderTarget(4, 4, rtOpts));
+  worldRT.texture.colorSpace = insideRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const glassUni = {
+    tWorld: { value: worldRT.texture }, tInside: { value: insideRT.texture },
+    uInvProj: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uViewProj: { value: new THREE.Matrix4() },
+    uCentre: { value: C }, uR: { value: R }, uCollarY: { value: COLLAR }, uIor: { value: 1.13 }, uIorIn: { value: 1.2 }, // gentler than water: true water turns the whole desk upside down into the top half
+    uTint: { value: new THREE.Color() }, uRoom: { value: new THREE.Color() }, uLampDir: { value: LAMP.clone().normalize() }, uLamp: { value: new THREE.Color() },
+    uWinDir: { value: new THREE.Vector3(-1.3, 0.8, 1.2).normalize() }, uWin: { value: new THREE.Color() },
+  };
+  const glass = new THREE.Mesh(quad, keep(new THREE.ShaderMaterial({ uniforms: glassUni, vertexShader: RAIN_GLASS_VS, fragmentShader: GLOBE_GLASS_FS, depthTest: false, depthWrite: false })));
+  glass.frustumCulled = false;
+  scene.add(glass);
+  const prevClear = new THREE.Color();
+  const fit = (rt, w, h) => { if (rt.width !== w || rt.height !== h) rt.setSize(w, h); };
+  glass.onBeforeRender = (renderer) => {
+    renderer.getDrawingBufferSize(buf);
+    const w = Math.max(2, Math.round(buf.x)), h = Math.max(2, Math.round(buf.y));
+    fit(worldRT, w, h); fit(insideRT, w, h);
+    glassUni.uInvProj.value.copy(camera.projectionMatrixInverse);
+    glassUni.uCamWorld.value.copy(camera.matrixWorld);
+    glassUni.uViewProj.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const before = renderer.getRenderTarget(), alpha = renderer.getClearAlpha();
+    renderer.getClearColor(prevClear);
+    renderer.setClearColor(0x000000, 1);
+    renderer.setRenderTarget(worldRT); renderer.render(world, camera);
+    renderer.setClearColor(0x000000, 0);
+    renderer.setRenderTarget(insideRT); renderer.render(inside, camera);
+    renderer.setClearColor(prevClear, alpha);
+    renderer.setRenderTarget(before);
+  };
+
+  /* --- day and night, and the accent --- */
+  let themeDark = null;
+  const warm = new THREE.Color("#ffd9a0"), accent = new THREE.Color();
+  function applyPalette(p) {
+    const d = p.dark;
+    if (themeDark !== d) { themeDark = d; buildRoom(d); }
+    pal = p;
+    accent.set(p.accent);
+    for (const L of lights) {
+      L.hemi.color.set(d ? "#6d5f78" : "#f4f2ee"); L.hemi.groundColor.set(d ? "#1c1411" : "#b9a78e"); L.hemi.intensity = d ? 0.55 : 1.05;
+      L.key.color.set(d ? "#ffc27a" : "#f3f7ff"); L.key.intensity = d ? 2.6 : 2.1; L.key.position.copy(d ? LAMP : WINDOW);
+      L.fill.color.set(d ? "#7d93d8" : "#ffe3c0"); L.fill.intensity = d ? 0.35 : 0.45; L.fill.position.copy(d ? WINDOW : LAMP);
+    }
+    villageLight.intensity = d ? 0.9 : 0;
+    lampPool.intensity = d ? 18 : 0;
+    windowMat.color.set(d ? "#ffffff" : "#70747c").multiplyScalar(d ? 1.5 : 1);
+    lampMat.opacity = d ? 0.85 : 0; headMat.opacity = d ? 0.9 : 0; tlMat.opacity = d ? 1 : 0.3; lampGlowMat.opacity = d ? 0.55 : 0;
+    wsMat.color.set(d ? "#dfe8ff" : "#ffffff"); wsMat.opacity = d ? 0.5 : 0.65;
+    snowUni.uSnow.value.set(d ? "#e9eefb" : "#ffffff"); snowUni.uGold.value.set(d ? "#ffcf73" : "#e8bf5e"); snowUni.uAccent.value.copy(accent);
+    accentIn.color.copy(accent);
+    if (plaqueKey !== p.accent) { plaqueKey = p.accent; drawPlaque(p.accent); }
+    glassUni.uTint.value.set(d ? "#dce9f5" : "#d3e5ec"); // water and glass: a cool tint, a little light lost on the way through
+    glassUni.uRoom.value.set(d ? "#120c0b" : "#6d6a66");
+    glassUni.uLamp.value.set(d ? "#ffcb8a" : "#fff4e4").multiplyScalar(d ? 1.3 : 0.5);
+    glassUni.uWin.value.set(d ? "#6f84b8" : "#ffffff").multiplyScalar(d ? 0.45 : 0.9);
+    // the globe's shadow falls away from the light; the water focuses that light into a bright spot inside it
+    const L = (d ? LAMP : WINDOW).clone().normalize(), ox = (-L.x / L.y) * C.y, oz = (-L.z / L.y) * C.y;
+    cast.position.set(ox * 0.8, 0.003, oz * 0.8); cast.rotation.y = Math.atan2(-oz, ox); cast.scale.set(2.8, 1, 1.9);
+    caustic.position.set(ox * 0.95, 0.004, oz * 0.95); caustic.rotation.y = cast.rotation.y; caustic.scale.set(0.75, 1, 0.42);
+    causticMat.color.set(d ? "#ffc27a" : "#fff5e0"); causticMat.opacity = d ? 0.5 : 0.28;
+  }
+  applyPalette(pal);
+
+  const target = new THREE.Vector3(0, 1.32, 0);
+  function placeCamera(t) {
+    const A = camera.aspect || 1, pitch = 0.13, yaw = Math.sin(t * 0.06) * 0.11; // a slow sway: the room slides behind the glass
+    const dist = Math.max(6.4, 1.32 / (TAN * A)); // portrait phones step back until the whole globe fits
+    camera.position.set(Math.sin(yaw) * Math.cos(pitch) * dist, target.y + Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
+    camera.lookAt(target);
+    const toWall = camera.position.z - WALL_Z, halfW = toWall * TAN * A;
+    const top = camera.position.y + Math.tan(Math.atan(TAN) - pitch) * toWall;
+    const s = Math.max(1, (2.3 * halfW) / 16, (1.15 * top) / (9 - 1.7)); // the wall always covers the view
+    const sink = 1.7 * s; // the bottom of the painting (the wainscoting) sits behind the desk
+    wall.scale.set(16 * s, 9 * s, 1); wall.position.set(0, 4.5 * s - sink, WALL_Z);
+    deco.scale.set(s, s, 1); deco.position.set(0, -sink, WALL_Z);
+    wsMat.size = 0.12 * s;
+  }
+  function frame(dt, t) {
+    time.value = t;
+    placeCamera(t);
+    if (moved > 0) {
+      energy = Math.min(1.6, energy + moved * 0.0005);
+      spin = Math.max(-2.6, Math.min(2.6, spin + swirlIn * 0.0014));
+      moved = 0; swirlIn = 0; idle = 0;
+    } else if ((idle += dt) > (preview ? 7 : 40)) { // nobody about: now and then it gets a gentle shake anyway
+      energy = Math.min(1.6, energy + 0.95); spin += (r() < 0.5 ? -1 : 1) * 1.3; idle = 0;
+    }
+    stepSnow(dt, t);
+    trainAngle += dt * 0.24;
+    cars.forEach((g, k) => { const a = trainAngle - k * SPACING; g.position.set(Math.cos(a) * vil.trackR, vil.trackY, Math.sin(a) * vil.trackR); g.rotation.y = -(a + Math.PI / 2); });
+    cars[0].updateMatrixWorld();
+    headlight.position.copy(V.set(0.075, 0.035, 0).applyMatrix4(cars[0].matrixWorld));
+    if ((puffT += dt) > 0.42) { // steam from the chimney
+      puffT = 0;
+      const p = puffs.find((q) => q.age >= 2.2) || puffs[0];
+      p.age = 0; p.s.position.copy(V.set(0.035, 0.1, 0).applyMatrix4(cars[0].matrixWorld));
+    }
+    for (const p of puffs) {
+      if (p.age >= 2.2) { p.m.opacity = 0; continue; }
+      p.age += dt; p.s.position.y += dt * 0.05;
+      const f = Math.min(1, p.age / 2.2);
+      p.s.scale.setScalar(0.03 + f * 0.07);
+      p.m.opacity = Math.sin(Math.PI * f) * (pal.dark ? 0.35 : 0.6);
+    }
+    for (let i = 0; i < NT; i++) { const c = TL[i % TL.length], b = 0.55 + 0.45 * Math.sin(t * 2.2 + i * 1.7); tlCol[i * 3] = c.r * b; tlCol[i * 3 + 1] = c.g * b; tlCol[i * 3 + 2] = c.b * b; }
+    tlGeo.attributes.color.needsUpdate = true;
+    bulbs.forEach((b, i) => { const c = b.accent ? accent : warm; aColor.setXYZW(i, c.r, c.g, c.b, (0.75 + 0.25 * Math.sin(t * b.speed + b.phase)) * (pal.dark ? 0.9 : 0.12)); });
+    aColor.needsUpdate = true;
+    for (let i = 0; i < NW; i++) { // snow falling outside the window
+      let y = wsPos[i * 3 + 1] - dt * wsDrift[i][0];
+      if (y < 3.1) y = 7.7;
+      wsPos[i * 3 + 1] = y; wsPos[i * 3] += Math.sin(t * 0.8 + wsDrift[i][1]) * dt * 0.08;
+    }
+    wsGeo.attributes.position.needsUpdate = NW > 0;
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { let n = 0; for (let i = 0; i < NF; i++) n += rest[i]; return { flakes: NF, resting: n, energy: +energy.toFixed(2), spin: +spin.toFixed(2) }; }, // for checking by hand
+    shake(amount = 1) { energy = Math.min(1.6, energy + amount); spin += amount; },
+    dispose() { window.removeEventListener("pointermove", onMove); roomTex?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
