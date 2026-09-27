@@ -4356,7 +4356,7 @@ function inkBoat(THREE) {
     g.fillStyle = "rgba(27,27,29,0.35)"; for (let i = 0; i < 4; i++) g.fillRect(4 + i * 3, 74 + i * 4, 20 - i * 4, 1.5); // the wake
   });
 }
-/** A red-crowned crane flying to the left, and one wing drawn upwards from the shoulder (bottom edge). */
+/** A red-crowned crane flying to the left, and one wing drawn upwards from the shoulder (bottom edge), swept back. */
 function inkCrane(THREE) {
   const body = canvasTexture(THREE, 256, 128, (g) => {
     g.lineCap = "round";
@@ -4371,6 +4371,8 @@ function inkCrane(THREE) {
     g.strokeStyle = "#6b6258"; g.lineWidth = 2.5; g.beginPath(); g.moveTo(37, 55); g.lineTo(12, 57); g.stroke(); // beak
   });
   const wing = canvasTexture(THREE, 256, 128, (g) => {
+    // mirrored, so the wing sweeps BACK towards the tail: a wing swept towards the head makes the bird read as flying backwards
+    g.translate(270, 0); g.scale(-1, 1);
     g.fillStyle = "#f7f4ec"; g.strokeStyle = "rgba(28,28,30,0.6)"; g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(100, 126); g.quadraticCurveTo(80, 60, 30, 14); g.quadraticCurveTo(110, 40, 170, 126); g.closePath(); g.fill(); g.stroke();
     g.fillStyle = "#1c1c1e"; // black flight feathers at the tip and along the trailing edge
