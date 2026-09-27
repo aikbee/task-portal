@@ -5889,7 +5889,7 @@ function globeWood(THREE, W, H, baseHex, seed) {
 
 /** Placed geometries, each in its own colour, as one: a whole crafted village is a single draw. */
 function mergeColored(THREE, parts) {
-  const chunks = parts.map(([geo, m, hex]) => { const g = geo.toNonIndexed(); g.applyMatrix4(m); return [g, new THREE.Color(hex)]; });
+  const chunks = parts.map(([geo, m, hex]) => { const g = geo.index ? geo.toNonIndexed() : geo; g.applyMatrix4(m); return [g, new THREE.Color(hex)]; }); // a roof prism has no index already
   const n = chunks.reduce((s, [g]) => s + g.attributes.position.count, 0);
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), col = new Float32Array(n * 3);
   let o = 0;
@@ -6410,7 +6410,874 @@ function snowglobe(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe };
+/* ---------- Lighthouse: a storm at night (the beam sweeping through the rain, waves breaking on the rocks, lightning); by day the calm after it ---------- */
+// One tileable noise texture (two independent fbm channels) does the clouds, the ripples, the foam and the haze in the beams.
+const LH_SKY_VS = /* glsl */ `
+  varying vec3 vDir;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vDir = w.xyz - cameraPosition; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const LH_SKY_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime;
+  uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uCloudDark; uniform vec3 uCloudLight; uniform float uCover;
+  uniform vec3 uOrbDir; uniform vec3 uOrbCol; uniform float uOrbSize; uniform float uFlash; uniform vec3 uFlashDir;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir);
+    float h = max(d.y, 0.0);
+    vec3 col = mix(uHorizon, uZenith, pow(smoothstep(-0.02, 0.6, h), 0.8));
+    // a deck of cloud overhead, squeezed together towards the horizon, drifting with the wind
+    vec2 p = d.xz / (h + 0.08) * 0.15 - vec2(uTime * 0.0016, uTime * 0.0006);
+    float n = texture2D(uNoise, p).r * 0.6 + texture2D(uNoise, p * 2.7 + 0.37).g * 0.4;
+    float cover = smoothstep(1.0 - uCover, 1.0 - uCover + 0.28, n) * smoothstep(-0.01, 0.12, d.y);
+    vec3 cloud = mix(uCloudDark, uCloudLight, smoothstep(0.35, 0.85, texture2D(uNoise, p * 1.6 + 0.61).r));
+    cloud += vec3(0.7, 0.78, 1.0) * uFlash * (0.25 + 2.6 * exp(-distance(d, uFlashDir) * 3.5)) * (0.3 + n); // lightning inside the clouds
+    col += vec3(0.4, 0.46, 0.66) * uFlash * 0.15;
+    float od = distance(d, uOrbDir);
+    col += uOrbCol * (smoothstep(uOrbSize, uOrbSize * 0.8, od) + 0.35 * exp(-od * 8.0)) * (1.0 - cover * 0.92); // the sun, or the moon behind the storm
+    col = mix(col, cloud, cover);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the sea: five Gerstner waves (the spray and the ship read the same ones on the CPU), ripples, foam, the lamp and the beams on it
+const LH_SEA_VS = /* glsl */ `
+  uniform float uTime; uniform vec4 uWave[8]; uniform float uSteep[8]; uniform float uAmp; uniform float uSteepSum;
+  varying vec3 vWorld; varying vec3 vNormal; varying float vCrest; varying float vDist;
+  void main() {
+    vec3 p = (modelMatrix * vec4(position, 1.0)).xyz;
+    float dist = length(p.xz - cameraPosition.xz);
+    vec3 q = p, n = vec3(0.0, 1.0, 0.0);
+    float crest = 0.0;
+    for (int i = 0; i < 8; i++) {
+      vec4 w = uWave[i];
+      float k = w.z, L = 6.2832 / k;
+      float att = 1.0 - smoothstep(L * 3.0, L * 6.0, dist); // a wave finer than the grid out there melts away (instead of a moiré)
+      float A = w.w * uAmp * att, s = uSteep[i] * uAmp * att;
+      float th = k * dot(w.xy, p.xz) - sqrt(9.8 * k) * uTime;
+      float c = cos(th), sn = sin(th);
+      q.x += s / k * w.x * c; q.z += s / k * w.y * c; q.y += A * sn;
+      n.x -= w.x * k * A * c; n.z -= w.y * k * A * c; n.y -= s * sn;
+      crest += s * sn; // where the surface bunches up into a sharp crest: whitecaps
+    }
+    vWorld = q; vNormal = n; vCrest = crest / uSteepSum; vDist = dist;
+    gl_Position = projectionMatrix * viewMatrix * vec4(q, 1.0);
+  }
+`;
+const LH_SEA_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uDeep; uniform vec3 uScatter; uniform vec3 uZenith; uniform vec3 uHorizon;
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar; uniform float uRipple; uniform float uRippleScale; uniform float uReflect;
+  uniform vec3 uOrbDir; uniform vec3 uOrbCol; uniform float uGlitter;
+  uniform vec3 uLampPos; uniform vec3 uLampCol; uniform float uLampOn; uniform float uGlint; uniform vec3 uShipPos; uniform vec3 uShipCol;
+  uniform vec3 uBeamA; uniform vec3 uBeamB; uniform vec2 uBeamCos; uniform float uBeamOn; uniform float uFlash; uniform vec3 uFoamCol; uniform float uFoamOn; uniform vec4 uRocks[2];
+  varying vec3 vWorld; varying vec3 vNormal; varying float vCrest; varying float vDist;
+  float beamAt(vec3 p) { vec3 d = normalize(p - uLampPos); return max(smoothstep(uBeamCos.x, uBeamCos.y, dot(d, uBeamA)), smoothstep(uBeamCos.x, uBeamCos.y, dot(d, uBeamB))); }
+  void main() {
+    vec3 N = normalize(vNormal);
+    float near = 1.0 - smoothstep(40.0, 400.0, vDist);
+    vec2 uv = vWorld.xz, ru = uv * uRippleScale; // a calm sea only has small ripples
+    // three layers, each turned its own way so the tile never lines up; each fades out where it gets finer than the pixels (moiré)
+    float fine = vDist * uRippleScale;
+    vec2 rp = (texture2D(uNoise, mat2(0.825, 0.565, -0.565, 0.825) * ru * 0.07 + vec2(uTime * 0.013, uTime * 0.021)).rg - 0.5) * 0.9 * (1.0 - smoothstep(80.0, 260.0, fine))
+      + (texture2D(uNoise, mat2(0.454, -0.891, 0.891, 0.454) * ru * 0.19 - vec2(uTime * 0.027, uTime * 0.011)).gr - 0.5) * 0.6 * (1.0 - smoothstep(30.0, 100.0, fine))
+      + (texture2D(uNoise, mat2(-0.667, 0.745, -0.745, -0.667) * uv * 0.017 + vec2(uTime * 0.004, 0.0)).rg - 0.5) * 0.5; // gusts: always the broad scale
+    N = normalize(N + vec3(rp.x, 0.0, rp.y) * uRipple); // chop and ripples on the swell (far off the mipmaps smooth them out)
+    vec3 V = normalize(cameraPosition - vWorld);
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 R = reflect(-V, N);
+    R.y = abs(R.y);
+    vec3 col = mix(uDeep + uScatter * smoothstep(0.05, 0.6, vCrest), mix(uHorizon, uZenith, smoothstep(0.0, 0.5, R.y)), fres * uReflect);
+    float rough = smoothstep(15.0, 600.0, vDist); // further off the ripples are too small to see: one broad, softer highlight
+    col += uOrbCol * pow(max(dot(R, uOrbDir), 0.0), mix(380.0, 70.0, rough)) * uGlitter * mix(1.0, 0.3, rough); // glitter on the water
+    vec3 toL = uLampPos - vWorld;
+    float dl = length(toL);
+    col += uLampCol * uLampOn * (pow(max(dot(R, toL / dl), 0.0), mix(700.0, 160.0, rough)) * (0.1 + 0.9 * uGlint) * mix(1.0, 0.45, rough) + 6.0 / (dl * dl + 120.0)); // the lamp's broken path on the water (flaring as a beam swings past), a little glow round the rocks
+    col += uShipCol * pow(max(dot(R, normalize(uShipPos - vWorld)), 0.0), 900.0) * 1.2;
+    col += uLampCol * uBeamOn * beamAt(vWorld) * 0.2; // where a beam sweeps low over the water, far out
+    float fn = texture2D(uNoise, uv * 0.05 + vec2(uTime * 0.01, 0.0)).r, fd = texture2D(uNoise, uv * 0.21 - vec2(0.0, uTime * 0.02)).g;
+    float patches = smoothstep(0.38, 0.62, texture2D(uNoise, uv * 0.023 + vec2(0.0, uTime * 0.006)).g); // whitecaps come and go along a crest
+    float foam = smoothstep(0.24, 0.52, vCrest + (fn - 0.5) * 0.4) * (0.3 + 0.7 * fd) * (0.25 + 0.75 * patches) * near * uFoamOn;
+    for (int i = 0; i < 2; i++) { // white water round the rocks
+      float d = distance(vWorld.xz, uRocks[i].xy) - uRocks[i].z;
+      foam = max(foam, (1.0 - smoothstep(0.0, 10.0, d)) * uRocks[i].w * smoothstep(0.3, 0.65, texture2D(uNoise, uv * 0.09 - uTime * 0.03).g * 0.8 + (1.0 - smoothstep(-2.0, 5.0, d)) * 0.5));
+    }
+    col = mix(col, uFoamCol * (1.0 + uFlash * 1.2), clamp(foam, 0.0, 1.0) * 0.85);
+    col += vec3(0.5, 0.6, 0.85) * uFlash * 0.2 * (0.3 + fres);
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, vDist));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// a beam: an open cone from the lamp, bright through the middle of the shaft and soft at its edges, the rain and mist drifting through it
+const LH_BEAM_VS = /* glsl */ `
+  uniform float uLen;
+  varying float vT; varying vec3 vWorld; varying vec3 vN; varying vec3 vAxis;
+  void main() {
+    vT = position.y / uLen;
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    vN = normalize(mat3(modelMatrix) * normal);
+    vAxis = normalize(mat3(modelMatrix) * vec3(0.0, 1.0, 0.0));
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const LH_BEAM_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform vec3 uColor; uniform float uStrength; uniform float uTime;
+  varying float vT; varying vec3 vWorld; varying vec3 vN; varying vec3 vAxis;
+  void main() {
+    vec3 V = normalize(cameraPosition - vWorld);
+    float body = pow(abs(dot(normalize(vN), V)), 2.2);
+    float along = pow(1.0 - vT, 2.6) * smoothstep(0.0, 0.01, vT);
+    float haze = 0.45 + 1.1 * texture2D(uNoise, vWorld.xz * 0.012 - vec2(uTime * 0.02, 0.0)).r * texture2D(uNoise, vec2(vWorld.x + vWorld.z, vWorld.y) * 0.02 + vec2(0.0, uTime * 0.05)).g;
+    haze *= 0.8 + 0.4 * texture2D(uNoise, vec2((vWorld.x - vWorld.z) * 0.07 + vWorld.y * 0.01, vWorld.y * 0.01 + uTime * 0.3)).r; // rain streaking down through the light
+    float fwd = 1.0 + 3.0 * pow(max(dot(V, vAxis), 0.0), 8.0); // brighter when it swings towards you
+    gl_FragColor = vec4(uColor * body * along * haze * fwd * uStrength, 1.0);
+  }
+`;
+// rain round the viewer: streaks falling on the wind; a drop inside a beam lights up
+const LH_RAIN_VS = /* glsl */ `
+  uniform float uTime; uniform vec3 uFall; uniform float uLen; uniform float uWidth; uniform float uPix;
+  uniform vec3 uLampPos; uniform vec3 uBeamA; uniform vec3 uBeamB; uniform vec2 uBeamCos; uniform float uBeamOn; uniform float uFlash;
+  attribute vec4 aDrop; attribute vec3 aBoxC; attribute vec3 aBoxS;
+  varying float vAcross; varying float vAlong; varying float vLight; varying float vBeam; varying float vFade;
+  void main() {
+    vec3 vel = uFall * aDrop.w;
+    vec3 p = aBoxC + mod(aDrop.xyz * aBoxS + vel * uTime, aBoxS) - aBoxS * 0.5;
+    vec3 tail = p - normalize(vel) * uLen * aDrop.w;
+    vec4 a = viewMatrix * vec4(p, 1.0), b = viewMatrix * vec4(tail, 1.0);
+    vec2 s = normalize(b.xy - a.xy + vec2(1e-5, 0.0));
+    float w = max(uWidth, uPix * -a.z); // never thinner than a pixel
+    vec4 v = mix(a, b, position.y);
+    v.xy += vec2(-s.y, s.x) * w * position.x;
+    gl_Position = projectionMatrix * v;
+    vec3 d = normalize(p - uLampPos);
+    vBeam = uBeamOn * max(smoothstep(uBeamCos.x, uBeamCos.y, dot(d, uBeamA)), smoothstep(uBeamCos.x, uBeamCos.y, dot(d, uBeamB))) * 4.0 / (1.0 + distance(p, uLampPos) * 0.015);
+    vLight = 1.0 + uFlash * 2.5;
+    vFade = uWidth / w * smoothstep(0.6, 3.0, -a.z); // a pixel-wide streak far off is fainter; one right against the eye is gone
+    vAcross = position.x; vAlong = position.y;
+  }
+`;
+const LH_RAIN_FS = /* glsl */ `
+  uniform vec3 uColor; uniform vec3 uBeamCol; uniform float uAlpha;
+  varying float vAcross; varying float vAlong; varying float vLight; varying float vBeam; varying float vFade;
+  void main() {
+    float a = (1.0 - abs(vAcross) * 2.0) * sin(vAlong * 3.14159);
+    gl_FragColor = vec4(uColor * vLight + uBeamCol * vBeam, a * uAlpha * max(vFade, min(1.0, vBeam)));
+    #include <colorspace_fragment>
+  }
+`;
+// the rain the beams light up. Only the drops near the two beams are drawn: every instance shows one cell of a grid fixed round
+// the lamp (angle × distance), so the drops stay put while a beam sweeps across them, and new cells come in dark at its leading edge
+const LH_BEAMRAIN_VS = /* glsl */ `
+  uniform float uTime; uniform float uPhi; uniform vec3 uLamp; uniform float uTilt; uniform float uCone; uniform float uCell; uniform float uCells;
+  uniform float uR0; uniform float uRatio; uniform float uSpeed; uniform vec2 uDrift; uniform float uLen; uniform float uPix;
+  uniform vec3 uBeamA; uniform vec3 uBeamB;
+  attribute vec4 aSlot; // slot across the beam, ring, drop in the cell, which beam
+  varying float vAcross; varying float vAlong; varying float vBeam;
+  float h1(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+  void main() {
+    float c = mod(floor((uPhi + aSlot.w * 3.14159265 - uCone * 1.4) / uCell) + aSlot.x, uCells);
+    float r0 = uR0 * pow(uRatio, aSlot.y + 0.5);
+    float band = 2.8 * r0 * tan(uCone) + 1.5; // the height of the beam out there, and a little more
+    vec3 seed = vec3(c, aSlot.y, aSlot.z);
+    float ph = h1(seed + 3.1) * band + uSpeed * (0.85 + 0.3 * h1(seed + 5.3)) * uTime;
+    float cyc = floor(ph / band), f = ph - cyc * band;
+    vec3 s2 = seed + vec3(0.0, 0.0, cyc * 7.0); // every fall a new drop somewhere else in the cell
+    float th = (c + h1(s2)) * uCell, rr = uR0 * pow(uRatio, aSlot.y + h1(s2 + 1.7));
+    vec3 p = uLamp + vec3(sin(th) * rr, rr * tan(uTilt) + band * 0.5 - f, -cos(th) * rr);
+    p.xz += uDrift * f;
+    vec3 d = normalize(p - uLamp);
+    float lit = max(smoothstep(cos(uCone * 1.25), cos(uCone * 0.4), dot(d, uBeamA)), smoothstep(cos(uCone * 1.25), cos(uCone * 0.4), dot(d, uBeamB)));
+    lit *= step(h1(s2 + 9.1), clamp(pow(rr / 70.0, 1.5), 0.06, 1.0)); // fewer drops close to the lamp, where the cells are tiny
+    vBeam = lit * 3.0 / (1.0 + rr * 0.012);
+    vec3 vel = normalize(vec3(uDrift.x, -1.0, uDrift.y));
+    vec4 a = viewMatrix * vec4(p, 1.0), b = viewMatrix * vec4(p - vel * uLen, 1.0);
+    vec2 s = normalize(b.xy - a.xy + vec2(1e-5, 0.0));
+    vec4 v = mix(a, b, position.y);
+    v.xy += vec2(-s.y, s.x) * max(0.02, uPix * -a.z) * position.x;
+    gl_Position = vBeam > 0.001 ? projectionMatrix * v : vec4(2.0, 2.0, 2.0, 1.0); // dark drops are not drawn at all
+    vAcross = position.x; vAlong = position.y;
+  }
+`;
+const LH_BEAMRAIN_FS = /* glsl */ `
+  uniform vec3 uColor;
+  varying float vAcross; varying float vAlong; varying float vBeam;
+  void main() { gl_FragColor = vec4(uColor * vBeam * (1.0 - abs(vAcross) * 2.0) * sin(vAlong * 3.14159), 1.0); }
+`;
+const LH_SPRAY_VS = /* glsl */ `
+  uniform float uPx;
+  attribute float aSize; attribute float aLife;
+  varying float vLife;
+  void main() {
+    vLife = aLife;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = aLife > 0.0 ? clamp(aSize * uPx / -mv.z, 1.0, 96.0) : 0.0;
+  }
+`;
+const LH_SPRAY_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uFlash; uniform float uAlpha;
+  varying float vLife;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0 || vLife <= 0.0) discard;
+    gl_FragColor = vec4(uColor * (1.0 + uFlash * 1.5), (1.0 - r2) * (1.0 - r2) * min(1.0, vLife * 2.5) * uAlpha);
+    #include <colorspace_fragment>
+  }
+`;
+// gulls: the wings bend at the wrist (a gull's shallow M when gliding) and beat from the shoulder
+const LH_GULL_VS = /* glsl */ `
+  attribute vec2 aGull; attribute float aTone;
+  varying float vTone; varying float vShade;
+  void main() {
+    float ax = abs(position.x), sx = sign(position.x);
+    float beat = sin(aGull.x) * aGull.y;
+    float a1 = 0.16 + beat, a2 = -0.24 + beat * 1.5;
+    float inner = min(ax, 0.4), outer = max(ax - 0.4, 0.0);
+    vec3 p = vec3(sx * (inner * cos(a1) + outer * cos(a2)), position.y + inner * sin(a1) + outer * sin(a2), position.z);
+    vTone = aTone; vShade = 0.82 + 0.18 * cos(beat * 2.0);
+    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(p, 1.0);
+  }
+`;
+const LH_GULL_FS = /* glsl */ `
+  uniform vec3 uBody; uniform vec3 uWing; uniform vec3 uTip;
+  varying float vTone; varying float vShade;
+  void main() {
+    vec3 c = mix(mix(uBody, uWing, smoothstep(0.0, 0.5, vTone)), uTip, smoothstep(0.6, 1.0, vTone));
+    gl_FragColor = vec4(c * vShade, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** Two independent tileable fbm noises in r and g (256², wraps both ways). */
+function lhNoise(THREE) {
+  const N = 256, data = new Uint8Array(N * N * 4), r = koiRng(911);
+  const OCT = [[4, 0.5], [8, 0.25], [16, 0.125], [32, 0.0625]];
+  const grids = [0, 1].map(() => OCT.map(([c]) => Float32Array.from({ length: c * c }, () => r())));
+  const acc = new Float32Array(N * N);
+  for (let ch = 0; ch < 2; ch++) {
+    acc.fill(0);
+    OCT.forEach(([c, w], o) => {
+      const g = grids[ch][o];
+      for (let y = 0; y < N; y++) {
+        const fy = (y / N) * c, iy = Math.floor(fy), ty0 = fy - iy, ty = ty0 * ty0 * (3 - 2 * ty0), y0 = (iy % c) * c, y1 = ((iy + 1) % c) * c;
+        for (let x = 0; x < N; x++) {
+          const fx = (x / N) * c, ix = Math.floor(fx), tx0 = fx - ix, tx = tx0 * tx0 * (3 - 2 * tx0), x0 = ix % c, x1 = (ix + 1) % c;
+          acc[y * N + x] += w * ((g[y0 + x0] * (1 - tx) + g[y0 + x1] * tx) * (1 - ty) + (g[y1 + x0] * (1 - tx) + g[y1 + x1] * tx) * ty);
+        }
+      }
+    });
+    for (let i = 0; i < N * N; i++) data[i * 4 + ch] = Math.round((acc[i] / 0.9375) * 255);
+  }
+  for (let i = 0; i < N * N; i++) data[i * 4 + 3] = 255;
+  const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.anisotropy = 8; // the sea is seen at a grazing angle (three caps it at what the GPU allows)
+  tex.needsUpdate = true;
+  return tex;
+}
+/** A round glow on black, stored gamma-encoded: its faint tail stays smooth instead of stepping into a ring on a dark sky. */
+function lhGlow(THREE) {
+  const S = 128, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d"), img = g.createImageData(S, S);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const d = Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2) / (S / 2);
+      const v = d >= 1 ? 0 : Math.exp(-d * d * 6) * (1 - d * d) ** 2 * 0.8 + 0.2 * Math.max(0, 1 - d * 5) ** 2; // a soft halo round a hot core
+      const e = Math.round(Math.pow(v, 1 / 2.2) * 255), o = (y * S + x) * 4;
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = e;
+      img.data[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** Three lightning bolts side by side (each 256 × 512, on black for additive drawing), fading into the cloud at the top. */
+function lhBolts(THREE) {
+  return canvasTexture(THREE, 768, 512, (g, w, h) => {
+    g.fillStyle = "#000"; g.fillRect(0, 0, w, h);
+    const r = koiRng(313);
+    for (let k = 0; k < 3; k++) {
+      const x0 = 128 + k * 256;
+      const bolt = (x, y, len, lean, width, depth) => {
+        const pts = [[x, y]], steps = Math.max(3, Math.round(len / 13));
+        let cx = x, cy = y;
+        for (let i = 1; i <= steps; i++) {
+          cx = Math.max(x0 - 112, Math.min(x0 + 112, cx + r(-10, 10) + lean * 4));
+          cy = y + (len * i) / steps;
+          pts.push([cx, cy]);
+          if (depth < 2 && i < steps - 2 && r() < 0.12) bolt(cx, cy, len * r(0.18, 0.4) * (1 - i / steps), r() < 0.5 ? -1 : 1, width * 0.55, depth + 1);
+        }
+        for (const [lw, a, blur] of [[width * 5, 0.16, 18], [width * 2.2, 0.4, 7], [width, 1, 0]]) {
+          g.strokeStyle = `rgba(255,255,255,${a})`; g.lineWidth = lw; g.lineJoin = "round";
+          g.shadowColor = "rgba(185,205,255,0.9)"; g.shadowBlur = blur;
+          g.beginPath(); pts.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py))); g.stroke();
+        }
+      };
+      bolt(x0 + r(-20, 20), 0, h - 6, r(-0.5, 0.5), 2.4, 0);
+    }
+    g.shadowBlur = 0;
+    g.globalCompositeOperation = "multiply"; // the top reaches up into the cloud
+    const fade = g.createLinearGradient(0, 0, 0, h * 0.3);
+    fade.addColorStop(0, "#000"); fade.addColorStop(1, "#fff");
+    g.fillStyle = fade; g.fillRect(0, 0, w, h * 0.3);
+    g.globalCompositeOperation = "source-over";
+  });
+}
+/** A distant rain shaft: slanted streaks of grey hanging from the cloud (white rgb, the shape in alpha: no dark fringes). */
+function lhCurtain(THREE) {
+  const W = 256, H = 128, r = koiRng(515), data = new Uint8Array(W * H * 4);
+  const cols = Float32Array.from({ length: 48 }, () => r());
+  const band = (u) => { const f = (((u % 1) + 1) % 1) * 48, i = Math.floor(f), t = f - i, s = t * t * (3 - 2 * t); return cols[i] * (1 - s) + cols[(i + 1) % 48] * s; };
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  for (let y = 0; y < H; y++) {
+    const v = y / (H - 1); // row 0 is the bottom of the quad
+    const vert = sm(0, 0.3, v) * (1 - sm(0.72, 1, v));
+    for (let x = 0; x < W; x++) {
+      const u = x / (W - 1), env = Math.pow(Math.sin(Math.PI * u), 0.8);
+      const s = band(u * 0.9 + v * 0.1) * 0.6 + band(u * 3.1 + v * 0.25 + 0.5) * 0.4;
+      const o = (y * W + x) * 4;
+      data[o] = data[o + 1] = data[o + 2] = 255;
+      data[o + 3] = Math.round(255 * env * vert * (0.2 + 0.8 * s * s));
+    }
+  }
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+/** The sea: rows spaced further apart with distance (even on screen), each row as wide as the view out there. */
+function lhSeaGrid(THREE, cols, rows, near, far, spread) {
+  const pos = new Float32Array((cols + 1) * (rows + 1) * 3);
+  for (let j = 0; j <= rows; j++) {
+    const z = -near * Math.pow(far / near, j / rows), hw = -z * spread + 40;
+    for (let i = 0; i <= cols; i++) pos.set([((i / cols) * 2 - 1) * hw, 0, z], (j * (cols + 1) + i) * 3);
+  }
+  const idx = new Uint32Array(cols * rows * 6);
+  let o = 0;
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) { const a = j * (cols + 1) + i, b = a + 1, c = a + cols + 1, d = c + 1; idx.set([a, b, c, b, d, c], o); o += 6; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g;
+}
+/** Smooth 3D value noise for shaping rocks (0…1). */
+function lhNoise3(x, y, z) {
+  const h = (a, b, c) => { const s = Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453; return s - Math.floor(s); };
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z), sm = (t) => t * t * (3 - 2 * t);
+  const fx = sm(x - ix), fy = sm(y - iy), fz = sm(z - iz), L = (a, b, t) => a + (b - a) * t;
+  return L(L(L(h(ix, iy, iz), h(ix + 1, iy, iz), fx), L(h(ix, iy + 1, iz), h(ix + 1, iy + 1, iz), fx), fy),
+    L(L(h(ix, iy, iz + 1), h(ix + 1, iy, iz + 1), fx), L(h(ix, iy + 1, iz + 1), h(ix + 1, iy + 1, iz + 1), fx), fy), fz);
+}
+/** The island: lumpy boulders round a flattened top for the tower, a shoulder for the keeper's house, a few rocks awash. */
+function lhRocks(THREE) {
+  const BLOBS = [ // centre, size
+    [0, 0.8, 0, 14, 5.6, 11], [-9, 0.4, 3.5, 9.5, 4.8, 7.5], [9, -0.2, 3, 8.5, 4.4, 7], [3, 0.2, -8, 11, 4.6, 7], [-8, -0.5, -6, 8, 4.2, 6],
+    [17, -1.2, -1, 5, 3.2, 4.2], [-19, -1.5, 4, 4.5, 2.9, 4], [25, -2, 7, 3.2, 2.6, 2.8], [-27, -2.2, -5, 3.4, 2.7, 3.2], [13, -1.6, 11, 3.5, 2.5, 3],
+  ];
+  const STONE = [new THREE.Color("#3b3733"), new THREE.Color("#5e5850")], GRASS = new THREE.Color("#56693a"), c = new THREE.Color();
+  const pos = [], col = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), d = new THREE.Vector3(), e = new THREE.Vector3(), n = new THREE.Vector3();
+  BLOBS.forEach(([cx, cy, cz, sx, sy, sz], k) => {
+    const g = new THREE.IcosahedronGeometry(1, 3), p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      const s = 1 + 0.32 * (lhNoise3(x * 1.3 + k * 7, y * 1.3, z * 1.3) - 0.5) + 0.16 * (lhNoise3(x * 2.6, y * 2.6 + k * 3, z * 2.6) - 0.5);
+      let wy = cy + y * s * sy;
+      if (wy > 5.6) wy = 5.6 + (wy - 5.6) * 0.25; // the flat top the tower stands on
+      p.setXYZ(i, cx + x * s * sx, wy, cz + z * s * sz);
+    }
+    for (let f = 0; f < p.count; f += 3) {
+      a.fromBufferAttribute(p, f); b.fromBufferAttribute(p, f + 1); d.fromBufferAttribute(p, f + 2);
+      n.subVectors(b, a).cross(e.subVectors(d, a)).normalize();
+      const my = (a.y + b.y + d.y) / 3, mx = (a.x + b.x + d.x) / 3, mz = (a.z + b.z + d.z) / 3;
+      c.copy(STONE[0]).lerp(STONE[1], lhNoise3(mx * 0.35, my * 0.35, mz * 0.35));
+      if (my < 1.4) c.multiplyScalar(0.62); // wet and dark where the sea reaches
+      const up = Math.abs(n.y);
+      if (up > 0.72 && my > 3.2) c.lerp(GRASS, 0.55 + 0.4 * lhNoise3(mx * 0.5, 0, mz * 0.5));
+      for (const v of [a, b, d]) { pos.push(v.x, v.y, v.z); col.push(c.r, c.g, c.b); }
+    }
+    g.dispose();
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+/** The lighthouse and the keeper's house (sea level at y = 0): white parts, parts in the accent colour, dark metal, the lantern glass, windows. */
+function lhTower(THREE) {
+  const at = (x, y, z, ry = 0, sx = 1, sy = 1, sz = 1, rx = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, 0)), new THREE.Vector3(sx, sy, sz));
+  const white = [], accent = [], dark = [], glass = [], windows = [];
+  const BASE = 5.2, TOP = 30.6, R0 = 3.3, R1 = 2.4, NB = 7;
+  const rad = (y) => R0 + ((R1 - R0) * (y - BASE)) / (TOP - BASE);
+  white.push([new THREE.CylinderGeometry(3.8, 4.1, 2.4, 40), at(0, 4.2, 0), "#bdb7ac"]); // the stone plinth
+  for (let i = 0; i < NB; i++) { // bands up the tapering tower
+    const y0 = BASE + (i * (TOP - BASE)) / NB, y1 = BASE + ((i + 1) * (TOP - BASE)) / NB;
+    (i % 2 ? accent : white).push([new THREE.CylinderGeometry(rad(y1), rad(y0), y1 - y0, 40, 1, true), at(0, (y0 + y1) / 2, 0), "#ffffff"]);
+  }
+  white.push([new THREE.CylinderGeometry(3.15, R1, 0.8, 40, 1, true), at(0, TOP + 0.4, 0), "#ebe8e1"]); // the corbel under the gallery
+  dark.push([new THREE.CylinderGeometry(3.45, 3.45, 0.28, 40), at(0, 31.54, 0), "#2b2f35"]);
+  for (let i = 0; i < 18; i++) { const a = (i / 18) * Math.PI * 2; dark.push([new THREE.CylinderGeometry(0.045, 0.045, 1.05, 5), at(Math.sin(a) * 3.35, 32.2, Math.cos(a) * 3.35), "#2b2f35"]); }
+  dark.push([new THREE.TorusGeometry(3.35, 0.055, 5, 48), at(0, 32.72, 0, 0, 1, 1, 1, Math.PI / 2), "#2b2f35"]);
+  dark.push([new THREE.TorusGeometry(3.35, 0.035, 4, 48), at(0, 32.2, 0, 0, 1, 1, 1, Math.PI / 2), "#2b2f35"]);
+  dark.push([new THREE.CylinderGeometry(1.95, 1.95, 0.75, 32), at(0, 32.05, 0), "#30353c"]);
+  glass.push([new THREE.CylinderGeometry(1.75, 1.75, 2.5, 24, 1, true), at(0, 33.68, 0), "#ffffff"]);
+  for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2 + 0.2; dark.push([new THREE.BoxGeometry(0.09, 2.5, 0.09), at(Math.sin(a) * 1.77, 33.68, Math.cos(a) * 1.77, a), "#2b2f35"]); }
+  dark.push([new THREE.CylinderGeometry(1.98, 1.98, 0.22, 32), at(0, 35.04, 0), "#2b2f35"]);
+  accent.push([new THREE.SphereGeometry(2.05, 32, 10, 0, Math.PI * 2, 0, Math.PI / 2), at(0, 35.15, 0, 0, 1, 0.75, 1), "#ffffff"]); // the dome
+  dark.push([new THREE.SphereGeometry(0.32, 12, 8), at(0, 36.94, 0), "#2b2f35"]);
+  dark.push([new THREE.CylinderGeometry(0.035, 0.05, 1.5, 5), at(0, 37.9, 0), "#2b2f35"]);
+  for (const [y, a] of [[11, 0.15], [17.5, -0.2], [24, 0.1]]) windows.push([new THREE.PlaneGeometry(0.55, 0.95), at(Math.sin(a) * (rad(y) + 0.03), y, Math.cos(a) * (rad(y) + 0.03), a), "#ffffff"]);
+  dark.push([new THREE.PlaneGeometry(1.3, 2.3), at(0, BASE + 1.15, rad(BASE + 1.15) + 0.03), "#3a2f2a"]); // the door
+  // the keeper's house on the shoulder to the left, a little in front
+  white.push([new THREE.BoxGeometry(7.5, 6.4, 5), at(-8.6, 4.7, 2.6), "#efeae0"]);
+  dark.push([roofPrism(THREE), at(-8.6, 7.9, 2.6, 0, 8.3, 2.1, 5.8), "#6b4638"]);
+  dark.push([new THREE.BoxGeometry(0.7, 1.8, 0.7), at(-11.2, 9.5, 2.0), "#8a8378"]);
+  dark.push([new THREE.PlaneGeometry(1.0, 2.0), at(-8.8, 5.3, 5.12), "#3a2f2a"]);
+  for (const x of [-11.2, -6.4]) windows.push([new THREE.PlaneGeometry(0.9, 1.1), at(x, 6.2, 5.12), "#ffffff"]);
+  windows.push([new THREE.PlaneGeometry(0.9, 1.1), at(-12.37, 6.2, 2.6, -Math.PI / 2), "#ffffff"]);
+  return { white: mergeColored(THREE, white), accent: mergeColored(THREE, accent), dark: mergeColored(THREE, dark), glass: mergeColored(THREE, glass), windows: mergeColored(THREE, windows), lamp: 33.7 };
+}
+/** A small coaster (bow towards +x, waterline at y = 0): hull and superstructure, containers in the accent colour, lit windows. */
+function lhShip(THREE) {
+  const at = (x, y, z, ry = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, 0)), new THREE.Vector3(1, 1, 1));
+  const hull = new THREE.BoxGeometry(28, 6.4, 6, 8, 1, 1), p = hull.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const t = (p.getX(i) + 14) / 28;
+    let z = p.getZ(i), y = p.getY(i);
+    if (t > 0.7) z *= 1 - Math.pow((t - 0.7) / 0.3, 1.5) * 0.96; // the bow comes to a point
+    if (y > 0) y += Math.pow(t, 3) * 1.3; // and rises a little
+    p.setXYZ(i, p.getX(i), y, z);
+  }
+  hull.computeVertexNormals();
+  const body = [[hull, at(0, -0.8, 0), "#22303d"]], accent = [], lit = [];
+  body.push([new THREE.BoxGeometry(5.5, 4.3, 5.2), at(-7.5, 4.55, 0), "#e8ebee"]);
+  body.push([new THREE.BoxGeometry(6.2, 0.3, 6.5), at(-7.5, 6.85, 0), "#e8ebee"]);
+  body.push([new THREE.CylinderGeometry(0.85, 0.95, 6, 12), at(-11.5, 5.4, 0), "#2a2e33"]);
+  body.push([new THREE.CylinderGeometry(0.1, 0.12, 6.5, 6), at(-7.5, 10.2, 0), "#2a2e33"]);
+  body.push([new THREE.BoxGeometry(0.15, 0.15, 2.8), at(-7.5, 12, 0), "#2a2e33"]);
+  body.push([new THREE.CylinderGeometry(0.1, 0.12, 6, 6), at(10.5, 5.7, 0), "#2a2e33"]);
+  accent.push([new THREE.CylinderGeometry(0.9, 0.9, 1.0, 12), at(-11.5, 7.2, 0), "#ffffff"]);
+  accent.push([new THREE.BoxGeometry(4.8, 2.5, 5.2), at(-1.5, 3.65, 0), "#ffffff"]);
+  accent.push([new THREE.BoxGeometry(4.8, 2.5, 5.2), at(3.6, 3.65, 0), "#b8b8b8"]);
+  accent.push([new THREE.BoxGeometry(4.8, 2.5, 5.2), at(-1.5, 6.15, 0), "#dcdcdc"]);
+  for (const z of [-1.6, -0.55, 0.55, 1.6]) lit.push([new THREE.PlaneGeometry(0.7, 0.55), at(-4.73, 5.9, z, Math.PI / 2), "#ffffff"]);
+  for (const x of [-9.5, -8.3, -7.1, -5.9]) lit.push([new THREE.PlaneGeometry(0.6, 0.5), at(x, 5.9, 2.62), "#ffffff"]);
+  for (const x of [-9.5, -7.5, -5.5]) lit.push([new THREE.PlaneGeometry(0.4, 0.4), at(x, 3.9, 2.62), "#ffffff"]);
+  return { body: mergeColored(THREE, body), accent: mergeColored(THREE, accent), lit: mergeColored(THREE, lit), lights: { mast: [-7.5, 13.6, 0], fore: [10.5, 8.9, 0], side: [-7.5, 7.1, 3.3] } };
+}
+/** A gull flying towards −z: a small body and two wings, their tips black (aTone: 0 body, 0.5 wing, 1 tip). */
+function lhGull(THREE) {
+  const P = { head: [0, 0, -0.34], tail: [0, 0, 0.38], bl: [-0.06, 0, 0.02], br: [0.06, 0, 0.02] };
+  const tris = [[P.head, P.bl, P.br, 0, 0, 0], [P.tail, P.br, P.bl, 0, 0, 0]];
+  for (const s of [-1, 1]) {
+    const rl = [0.05 * s, 0, -0.1], rt = [0.05 * s, 0, 0.14], el = [0.42 * s, 0, -0.11], et = [0.42 * s, 0, 0.12], tip = [0.98 * s, 0, 0.16], tt = [0.8 * s, 0, 0.22];
+    tris.push([rl, rt, et, 0.3, 0.3, 0.5], [rl, et, el, 0.3, 0.5, 0.5], [el, et, tt, 0.5, 0.5, 0.85], [el, tt, tip, 0.5, 0.85, 1]);
+  }
+  const pos = [], tone = [];
+  for (const [a, b, c, ta, tb, tc] of tris) { pos.push(...a, ...b, ...c); tone.push(ta, tb, tc); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aTone", new THREE.Float32BufferAttribute(tone, 1));
+  return g;
+}
+function lighthouse(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1890);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(0, 0, 0, "YXZ"), SC = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const EYE = 9, D = 150, SHIP_Z = -380; // eye height on the headland, the lighthouse and the ship out at sea
+  camera.fov = 45; camera.near = 0.5; camera.far = 6000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  let TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const halfW = (dist) => dist * TAN * camera.aspect; // half the visible width at that distance
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color(), warm = new THREE.Color("#ffc98a");
+  scene.fog = new THREE.Fog(0x000000, 80, 1200);
+
+  /* --- light: sky and ground, the sun (or the moon behind the storm), and the lightning --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const key = new THREE.DirectionalLight(0xffffff, 1);
+  const flashLight = new THREE.DirectionalLight(0xd6e0ff, 0);
+  scene.add(hemi, key, flashLight);
+
+  /* --- the sky: a gradient under a deck of cloud that the lightning lights from inside --- */
+  const skyUni = {
+    uNoise: { value: noise }, uTime: time, uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uCloudDark: { value: new THREE.Color() }, uCloudLight: { value: new THREE.Color() },
+    uCover: { value: 0.8 }, uOrbDir: { value: new THREE.Vector3() }, uOrbCol: { value: new THREE.Color() }, uOrbSize: { value: 0.02 }, uFlash: { value: 0 }, uFlashDir: { value: new THREE.Vector3(0, 0.3, -1).normalize() },
+  };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(4000, 48, 24)), keep(new THREE.ShaderMaterial({ uniforms: skyUni, vertexShader: LH_SKY_VS, fragmentShader: LH_SKY_FS, side: THREE.BackSide, depthWrite: false, depthTest: false })));
+  sky.renderOrder = -2; sky.frustumCulled = false;
+  scene.add(sky);
+
+  /* --- the sea --- */
+  const WAVES = [[0.25, 1, 90, 1.8, 0.22], [-0.35, 1, 55, 1.1, 0.18], [0.6, 0.8, 33, 0.8, 0.14], [-0.5, 0.86, 21, 0.55, 0.12], [0.1, 1, 13, 0.35, 0.1], [0.8, 0.6, 8, 0.2, 0.08], [-0.7, 0.7, 5, 0.12, 0.07], [0.35, 0.94, 3.2, 0.06, 0.06]].map(([x, z, L, A, s]) => {
+    const n = Math.hypot(x, z), k = (2 * Math.PI) / L; // direction, wavelength, height, sharpness of the crest
+    return { x: x / n, z: z / n, L, k, A, s, w: Math.sqrt(9.8 * k) };
+  });
+  const seaUni = {
+    uTime: time, uNoise: { value: noise }, uWave: { value: WAVES.map((w) => new THREE.Vector4(w.x, w.z, w.k, w.A)) }, uSteep: { value: WAVES.map((w) => w.s) },
+    uAmp: { value: 1 }, uSteepSum: { value: WAVES.reduce((s, w) => s + w.s, 0) },
+    uDeep: { value: new THREE.Color() }, uScatter: { value: new THREE.Color() }, uZenith: skyUni.uZenith, uHorizon: skyUni.uHorizon,
+    uFog: skyUni.uHorizon, uFogNear: { value: 150 }, uFogFar: { value: 1400 }, uRipple: { value: 0.3 }, uRippleScale: { value: 1 }, uReflect: { value: 1 },
+    uOrbDir: skyUni.uOrbDir, uOrbCol: { value: new THREE.Color() }, uGlitter: { value: 0 },
+    uLampPos: { value: new THREE.Vector3() }, uLampCol: { value: new THREE.Color() }, uLampOn: { value: 1 }, uGlint: { value: 0 }, uShipPos: { value: new THREE.Vector3() }, uShipCol: { value: new THREE.Color() },
+    uBeamA: { value: new THREE.Vector3(0, 0, -1) }, uBeamB: { value: new THREE.Vector3(0, 0, 1) }, uBeamCos: { value: new THREE.Vector2(Math.cos(0.036 * 1.3), Math.cos(0.036 * 0.45)) }, uBeamOn: { value: 1 }, uFlash: skyUni.uFlash,
+    uFoamCol: { value: new THREE.Color() }, uFoamOn: { value: 1 }, uRocks: { value: [new THREE.Vector4(), new THREE.Vector4()] },
+  };
+  const sea = new THREE.Mesh(keep(lhSeaGrid(THREE, preview ? 120 : 240, preview ? 130 : 260, 2, 3600, 1.55)), keep(new THREE.ShaderMaterial({ uniforms: seaUni, vertexShader: LH_SEA_VS, fragmentShader: LH_SEA_FS })));
+  sea.frustumCulled = false;
+  scene.add(sea);
+  let amp = 1; // the waves' height: a storm at night, the calm after it by day
+  /** The sea's height at (x, z) as drawn (the fine waves fade with distance there), or the whole sea for dist = 0. */
+  function waveH(x, z, t, dist) {
+    let h = 0;
+    for (const w of WAVES) h += w.A * (dist > 0 ? 1 - sm(w.L * 3, w.L * 6, dist) : 1) * Math.sin(w.k * (w.x * x + w.z * z) - w.w * t);
+    return h * amp;
+  }
+
+  /* --- the lighthouse on its island, and the keeper's house --- */
+  const lh = new THREE.Group();
+  scene.add(lh);
+  const T = lhTower(THREE), LAMP_Y = T.lamp;
+  const rockMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }));
+  const whiteMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }));
+  const accentMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.65 }));
+  const darkMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 }));
+  const glassMat = keep(new THREE.MeshBasicMaterial({ vertexColors: true }));
+  const winMat = keep(new THREE.MeshBasicMaterial({ vertexColors: true }));
+  for (const [geo, mat] of [[lhRocks(THREE), rockMat], [T.white, whiteMat], [T.accent, accentMat], [T.dark, darkMat], [T.glass, glassMat], [T.windows, winMat]]) lh.add(new THREE.Mesh(keep(geo), mat));
+  const lamp = new THREE.Vector3();
+  const glowMat = (hex, depthTest) => keep(new THREE.SpriteMaterial({ map: glow, color: hex, blending: THREE.AdditiveBlending, depthWrite: false, depthTest, fog: false, transparent: true }));
+  const lampGlowMat = glowMat(0xffd9a0, false), flareMat = glowMat(0xfff0d6, false), streakMat = glowMat(0xffe0b0, false);
+  const lampGlow = new THREE.Sprite(lampGlowMat), flare = new THREE.Sprite(flareMat), streak = new THREE.Sprite(streakMat);
+  lampGlow.renderOrder = 30; flare.renderOrder = 31; streak.renderOrder = 31;
+  scene.add(lampGlow, flare, streak);
+
+  /* --- the beams: two opposite cones turning once every 16 s, tilted a little down to the horizon --- */
+  const BEAM_LEN = preview ? 520 : 760, CONE = 0.036, TILT = -0.02, OMEGA = (2 * Math.PI) / 16, PHI0 = -Math.PI / 2 - 0.3;
+  const beamGeo = keep(new THREE.CylinderGeometry(BEAM_LEN * Math.tan(CONE), 0, BEAM_LEN, 32, 24, true));
+  beamGeo.translate(0, BEAM_LEN / 2, 0); // the apex at the lamp, opening along +y
+  const beamUni = { uNoise: { value: noise }, uTime: time, uLen: { value: BEAM_LEN }, uColor: { value: new THREE.Color("#fff2dc") }, uStrength: { value: 0.75 } };
+  const beamMat = keep(new THREE.ShaderMaterial({ uniforms: beamUni, vertexShader: LH_BEAM_VS, fragmentShader: LH_BEAM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  const beams = [0, 1].map(() => { const m = new THREE.Mesh(beamGeo, beamMat); m.frustumCulled = false; m.renderOrder = 12; scene.add(m); return m; });
+  const beamDir = (phi, out) => out.set(Math.sin(phi) * Math.cos(TILT), Math.sin(TILT), -Math.cos(phi) * Math.cos(TILT));
+  const dirA = new THREE.Vector3(), dirB = new THREE.Vector3(), toCam = new THREE.Vector3();
+
+  /* --- rain: streaks round the viewer and further out; and the drops the beams light up --- */
+  const rainBase = keep(new THREE.PlaneGeometry(1, 1));
+  rainBase.translate(0, 0.5, 0); // x across the streak, y from its head (0) to its tail (1)
+  const streakGeo = (n) => { const g = keep(new THREE.InstancedBufferGeometry()); g.index = rainBase.index; g.setAttribute("position", rainBase.attributes.position); g.instanceCount = n; return g; };
+  const NR = preview ? 700 : 2400, NRM = preview ? 150 : 500; // near, and the rest further out
+  const rainGeo = streakGeo(NR + NRM);
+  const drop = new Float32Array((NR + NRM) * 4), boxC = new Float32Array((NR + NRM) * 3), boxS = new Float32Array((NR + NRM) * 3);
+  for (let i = 0; i < NR + NRM; i++) {
+    drop.set([r(), r(), r(), r(0.85, 1.15)], i * 4);
+    if (i < NR) { boxC.set([0, EYE, -27], i * 3); boxS.set([66, 34, 50], i * 3); } else { boxC.set([20, 25, -95], i * 3); boxS.set([240, 60, 90], i * 3); }
+  }
+  rainGeo.setAttribute("aDrop", new THREE.InstancedBufferAttribute(drop, 4));
+  rainGeo.setAttribute("aBoxC", new THREE.InstancedBufferAttribute(boxC, 3));
+  rainGeo.setAttribute("aBoxS", new THREE.InstancedBufferAttribute(boxS, 3));
+  const rainUni = {
+    uTime: time, uFall: { value: new THREE.Vector3(4.5, -15, 1.2) }, uLen: { value: 0.7 }, uWidth: { value: 0.028 }, uPix: { value: 0.001 },
+    uLampPos: seaUni.uLampPos, uBeamA: seaUni.uBeamA, uBeamB: seaUni.uBeamB, uBeamCos: seaUni.uBeamCos, uBeamOn: seaUni.uBeamOn, uFlash: skyUni.uFlash,
+    uColor: { value: new THREE.Color() }, uBeamCol: { value: new THREE.Color("#ffe2b0") }, uAlpha: { value: 0.3 },
+  };
+  const rain = new THREE.Mesh(rainGeo, keep(new THREE.ShaderMaterial({ uniforms: rainUni, vertexShader: LH_RAIN_VS, fragmentShader: LH_RAIN_FS, transparent: true, depthWrite: false })));
+  rain.frustumCulled = false; rain.renderOrder = 14;
+  scene.add(rain);
+  const BR_CELLS = 840, BR_K = 18, BR_J = preview ? 24 : 36, BR_M = preview ? 2 : 3; // cells round the lamp; slots across a beam, rings out from it, drops per cell
+  const brGeo = streakGeo(BR_K * BR_J * BR_M * 2);
+  const slot = new Float32Array(BR_K * BR_J * BR_M * 2 * 4);
+  for (let b = 0, o = 0; b < 2; b++) for (let k = 0; k < BR_K; k++) for (let j = 0; j < BR_J; j++) for (let m = 0; m < BR_M; m++, o += 4) slot.set([k, j, m, b], o);
+  brGeo.setAttribute("aSlot", new THREE.InstancedBufferAttribute(slot, 4));
+  const brUni = {
+    uTime: time, uPhi: { value: 0 }, uLamp: seaUni.uLampPos, uTilt: { value: TILT }, uCone: { value: CONE }, uCell: { value: (2 * Math.PI) / BR_CELLS }, uCells: { value: BR_CELLS },
+    uR0: { value: 7 }, uRatio: { value: Math.pow(300 / 7, 1 / BR_J) }, uSpeed: { value: 14 }, uDrift: { value: new THREE.Vector2(0.3, 0.08) }, uLen: { value: 0.9 }, uPix: rainUni.uPix,
+    uBeamA: seaUni.uBeamA, uBeamB: seaUni.uBeamB, uColor: { value: new THREE.Color("#ffe6bf") },
+  };
+  const beamRain = new THREE.Mesh(brGeo, keep(new THREE.ShaderMaterial({ uniforms: brUni, vertexShader: LH_BEAMRAIN_VS, fragmentShader: LH_BEAMRAIN_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  beamRain.frustumCulled = false; beamRain.renderOrder = 15;
+  scene.add(beamRain);
+  // rain shafts hanging from the cloud far out to sea
+  const curtainMat = keep(new THREE.MeshBasicMaterial({ map: keep(lhCurtain(THREE)), transparent: true, depthWrite: false, fog: false }));
+  const curtainCol = new THREE.Color();
+  const curtains = [];
+  for (let i = 0; i < (preview ? 2 : 4); i++) {
+    const m = new THREE.Mesh(quad, curtainMat), dist = 650 + i * 260 + r(0, 120), w = r(300, 560);
+    m.position.set(r(-1, 1) * halfW(dist), 115, -dist); m.scale.set(w, 250, 1); m.renderOrder = 2; m.frustumCulled = false;
+    scene.add(m); curtains.push({ m, dist, w, speed: r(2.5, 4.5) });
+  }
+  // lightning: a flash inside the cloud, now and then a bolt down to the sea on the horizon
+  const boltTex = keep(lhBolts(THREE));
+  boltTex.repeat.set(1 / 3, 1);
+  const boltMat = keep(new THREE.MeshBasicMaterial({ map: boltTex, color: 0xdfe8ff, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide, opacity: 0 }));
+  const bolt = new THREE.Mesh(quad, boltMat);
+  bolt.visible = false; bolt.renderOrder = 3; bolt.frustumCulled = false;
+  scene.add(bolt);
+
+  /* --- spray: thrown up where a crest meets the rocks --- */
+  const NS = preview ? 260 : 900;
+  const sPos = new Float32Array(NS * 3), sVel = new Float32Array(NS * 3), sAge = new Float32Array(NS).fill(9), sMax = new Float32Array(NS).fill(1), sLife = new Float32Array(NS), sSize = new Float32Array(NS);
+  const sprayGeo = keep(new THREE.BufferGeometry());
+  sprayGeo.setAttribute("position", new THREE.BufferAttribute(sPos, 3).setUsage(THREE.DynamicDrawUsage));
+  sprayGeo.setAttribute("aLife", new THREE.BufferAttribute(sLife, 1).setUsage(THREE.DynamicDrawUsage));
+  sprayGeo.setAttribute("aSize", new THREE.BufferAttribute(sSize, 1).setUsage(THREE.DynamicDrawUsage));
+  const sprayUni = { uPx: { value: 600 }, uColor: { value: new THREE.Color() }, uFlash: skyUni.uFlash, uAlpha: { value: 0.45 } };
+  const spray = new THREE.Points(sprayGeo, keep(new THREE.ShaderMaterial({ uniforms: sprayUni, vertexShader: LH_SPRAY_VS, fragmentShader: LH_SPRAY_FS, transparent: true, depthWrite: false })));
+  spray.frustumCulled = false; spray.renderOrder = 13;
+  scene.add(spray);
+  const buf = new THREE.Vector2();
+  spray.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); sprayUni.uPx.value = buf.y / (2 * TAN); rainUni.uPix.value = (2 * TAN) / Math.max(1, buf.y); };
+  const IMPACTS = [-2.8, -2.3, -1.9, -1.57, -1.25, -0.85, -0.4, 0, 0.35, 3.14, 2.8, 2.45].map((a) => ({ a, prev: 0, cool: 0 })); // round the island: its seaward side and both flanks
+  let sNext = 0, lhX = 0;
+  function burst(x, y, z, nx, nz, power) {
+    const n = Math.round((preview ? 18 : 48) * power);
+    for (let i = 0; i < n; i++) {
+      const k = sNext;
+      sNext = (sNext + 1) % NS;
+      sPos[k * 3] = x + r(-3.5, 3.5); sPos[k * 3 + 1] = y + r(-0.5, 1.5); sPos[k * 3 + 2] = z + r(-3.5, 3.5);
+      const up = r(8, 22) * power * (pal.dark ? 1 : 0.35); // a plume: most of it low and wide, some of it thrown high up the rocks
+      sVel[k * 3] = -nx * r(0.5, 3) + r(-1.5, 1.5) + 1.5; sVel[k * 3 + 1] = up; sVel[k * 3 + 2] = -nz * r(0.5, 3) + r(-1.5, 1.5) + 1;
+      sAge[k] = 0; sMax[k] = r(1.6, 3.2) * (pal.dark ? 1 : 0.6); sSize[k] = r(2.5, 6) * (0.5 + 0.5 * power) * (pal.dark ? 1 : 0.55);
+    }
+  }
+  function stepSpray(dt, t) {
+    for (const p of IMPACTS) {
+      const x = lhX + Math.cos(p.a) * 13, z = -D + Math.sin(p.a) * 10.5, h = waveH(x, z, t, D), thr = 0.75 * amp;
+      p.cool -= dt;
+      if (h > thr && p.prev <= thr && p.cool <= 0) { burst(x, h, z, Math.cos(p.a), Math.sin(p.a), Math.min(1.3, 0.6 + (h - thr) / (1.4 * amp))); p.cool = 1.5; }
+      p.prev = h;
+    }
+    const drag = Math.max(0, 1 - 0.7 * dt);
+    for (let k = 0; k < NS; k++) {
+      if (sAge[k] >= sMax[k]) { sLife[k] = 0; continue; }
+      sAge[k] += dt;
+      sVel[k * 3] = sVel[k * 3] * drag + 3 * dt; sVel[k * 3 + 1] = sVel[k * 3 + 1] * drag - 6.5 * dt; sVel[k * 3 + 2] *= drag; // the wind carries it off to the right
+      sPos[k * 3] += sVel[k * 3] * dt; sPos[k * 3 + 1] += sVel[k * 3 + 1] * dt; sPos[k * 3 + 2] += sVel[k * 3 + 2] * dt;
+      sSize[k] *= 1 + 0.35 * dt; // the spray spreads into mist
+      sLife[k] = sPos[k * 3 + 1] < -1 ? 0 : 1 - sAge[k] / sMax[k];
+    }
+    sprayGeo.attributes.position.needsUpdate = sprayGeo.attributes.aLife.needsUpdate = sprayGeo.attributes.aSize.needsUpdate = true;
+  }
+
+  /* --- a small ship out at sea: its lights ride the swell at night; the lighthouse beam catches it as it passes --- */
+  const SH = lhShip(THREE);
+  const ship = new THREE.Group();
+  const shipBodyMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7 }));
+  const shipAccentMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }));
+  const shipLitMat = keep(new THREE.MeshBasicMaterial({ vertexColors: true }));
+  for (const [geo, mat] of [[SH.body, shipBodyMat], [SH.accent, shipAccentMat], [SH.lit, shipLitMat]]) ship.add(new THREE.Mesh(keep(geo), mat));
+  const navLights = [[SH.lights.mast, 0xfff2dc, 5], [SH.lights.fore, 0xfff2dc, 4], [SH.lights.side, 0x5dffa0, 4]].map(([p, hex, s]) => {
+    const m = new THREE.Sprite(glowMat(hex, true));
+    m.position.set(p[0], p[1], p[2]); m.scale.setScalar(s); m.renderOrder = 16;
+    ship.add(m);
+    return m;
+  });
+  scene.add(ship);
+  let shipX = -halfW(-SHIP_Z) * 0.45;
+  const mastTop = new THREE.Vector3(...SH.lights.mast);
+  function stepShip(dt, t) {
+    const hw = halfW(-SHIP_Z) * 1.12 + 25;
+    shipX += dt * 3.2;
+    if (shipX > hw) shipX = -hw;
+    const z = SHIP_Z, h = waveH(shipX, z, t, 0), bow = waveH(shipX + 10, z, t, 0), stern = waveH(shipX - 10, z, t, 0), near = waveH(shipX, z + 3, t, 0), far = waveH(shipX, z - 3, t, 0);
+    ship.position.set(shipX, h * 0.75 - 0.2, z);
+    ship.rotation.set(-Math.atan2(near - far, 6) * 0.6, 0, Math.atan2(bow - stern, 20) * 0.9);
+    ship.updateMatrixWorld();
+    seaUni.uShipPos.value.copy(mastTop).applyMatrix4(ship.matrixWorld);
+    // the beam sweeping past lights the hull for a moment
+    V.set(shipX - lamp.x, 0, z - lamp.z).normalize();
+    const hit = pal.dark ? Math.max(sm(0.9975, 0.9995, V.x * dirA.x + V.z * dirA.z), sm(0.9975, 0.9995, V.x * dirB.x + V.z * dirB.z)) : 0;
+    shipBodyMat.emissive.copy(warm).multiplyScalar(hit * 0.55); shipAccentMat.emissive.copy(warm).multiplyScalar(hit * 0.4);
+  }
+
+  /* --- gulls by day: circling the lighthouse, and now and then one gliding past closer by --- */
+  const NG = preview ? 5 : 9;
+  const gullGeo = keep(lhGull(THREE));
+  const aGull = new THREE.InstancedBufferAttribute(new Float32Array(NG * 2), 2);
+  aGull.setUsage(THREE.DynamicDrawUsage);
+  gullGeo.setAttribute("aGull", aGull);
+  const gullUni = { uBody: { value: new THREE.Color("#f5f7f9") }, uWing: { value: new THREE.Color("#c2c9d1") }, uTip: { value: new THREE.Color("#1c2025") } };
+  const gullMesh = new THREE.InstancedMesh(gullGeo, keep(new THREE.ShaderMaterial({ uniforms: gullUni, vertexShader: LH_GULL_VS, fragmentShader: LH_GULL_FS, side: THREE.DoubleSide })), NG);
+  gullMesh.frustumCulled = false; gullMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(gullMesh);
+  const gulls = Array.from({ length: NG }, (_, i) => ({ cross: i >= NG - 2, a: r(0, 6.28), R: r(16, 55), w: (r() < 0.5 ? -1 : 1) * r(0.14, 0.26), h: r(16, 46), ph: r(0, 6.28), beat: r(0, 6.28), amp: 0.3, flap: r() < 0.5, timer: r(0.5, 4), s: r(1.2, 1.6), yaw: 0, first: true }));
+  function spawnCrosser(g) {
+    g.dist = r(40, 85); g.dir = r() < 0.5 ? -1 : 1; g.x = -g.dir * (halfW(g.dist) * 1.15 + 5); g.h = r(12, 26); g.speed = r(8, 11); g.first = true;
+  }
+  gulls.forEach((g) => { if (g.cross) { spawnCrosser(g); g.x = r(-1, 1) * halfW(g.dist); } });
+  const gp = new THREE.Vector3(), gv = new THREE.Vector3();
+  function stepGulls(dt, t) {
+    gulls.forEach((g, i) => {
+      if ((g.timer -= dt) <= 0) { g.flap = !g.flap; g.timer = g.flap ? r(1.5, 3.5) : r(2.5, 6); } // a few beats, then a long glide
+      g.amp += ((g.flap ? 0.5 : 0.05) - g.amp) * Math.min(1, dt * 3);
+      g.beat += dt * (g.flap ? 8.5 : 2);
+      if (g.cross) {
+        g.x += g.dir * g.speed * dt;
+        if (Math.abs(g.x) > halfW(g.dist) * 1.2 + 6) spawnCrosser(g);
+        gp.set(g.x, g.h + Math.sin(t * 0.5 + g.ph) * 1.5, -g.dist);
+        gv.set(g.dir * g.speed, Math.cos(t * 0.5 + g.ph) * 0.75, 0);
+      } else {
+        g.a += g.w * dt;
+        const y = g.h + Math.sin(g.a * 0.7 + g.ph) * 3;
+        gp.set(lhX + Math.cos(g.a) * g.R, y, -D + Math.sin(g.a) * g.R * 0.8);
+        gv.set(-Math.sin(g.a) * g.R * g.w, Math.cos(g.a * 0.7 + g.ph) * 2.1 * g.w, Math.cos(g.a) * g.R * 0.8 * g.w);
+      }
+      const yaw = Math.atan2(-gv.x, -gv.z);
+      let turn = g.first ? 0 : yaw - g.yaw;
+      turn = Math.atan2(Math.sin(turn), Math.cos(turn)) / Math.max(dt, 1e-3);
+      g.yaw = yaw; g.first = false;
+      E.set(Math.atan2(gv.y, Math.hypot(gv.x, gv.z)) * 0.6, yaw, Math.max(-0.6, Math.min(0.6, turn * 1.4)), "YXZ");
+      gullMesh.setMatrixAt(i, M4.compose(gp, Q.setFromEuler(E), SC.setScalar(g.s)));
+      aGull.setXY(i, g.beat, g.amp);
+    });
+    gullMesh.instanceMatrix.needsUpdate = aGull.needsUpdate = true;
+  }
+
+  /* --- lightning: 2–4 flickers per strike, every few seconds --- */
+  let flash = 0, nextStrike = 2.5, pulses = [], boltUntil = 0;
+  function stepLightning(t) {
+    if (!pal.dark) { flash = 0; bolt.visible = false; return; }
+    const last = pulses.length ? pulses[pulses.length - 1][0] : -9;
+    if (t >= nextStrike && t > last + 0.8) {
+      const az = r(-0.85, 0.85) * Math.atan(TAN * camera.aspect), el = r(0.1, 0.36);
+      skyUni.uFlashDir.value.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+      flashLight.position.set(Math.sin(az) * 60, 100, -Math.cos(az) * 60);
+      pulses = [];
+      let t0 = t;
+      for (let i = 0, n = 2 + Math.floor(r(0, 3)); i < n; i++) { pulses.push([t0, r(0.45, 1)]); t0 += r(0.05, 0.2); }
+      nextStrike = t0 + r(4, 11);
+      boltUntil = 0;
+      if (r() < 0.45) { // now and then a bolt comes down to the sea on the horizon
+        const dist = r(1300, 2100), h = dist * Math.tan(el + 0.05);
+        bolt.position.set(Math.sin(az) * dist, h / 2 - 4, -Math.cos(az) * dist);
+        bolt.scale.set(h * 0.5 * (r() < 0.5 ? -1 : 1), h, 1);
+        bolt.rotation.set(0, Math.atan2(camera.position.x - bolt.position.x, camera.position.z - bolt.position.z), 0);
+        boltTex.offset.x = Math.floor(r(0, 3)) / 3;
+        boltUntil = t0 + 0.25;
+      }
+    }
+    flash = 0;
+    for (const [t0, a] of pulses) if (t >= t0) flash = Math.max(flash, a * Math.exp(-(t - t0) * 14));
+    bolt.visible = t < boltUntil && flash > 0.02;
+    boltMat.opacity = Math.min(1, flash * 1.5);
+  }
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    skyUni.uZenith.value.set(d ? "#05080f" : "#3d7fcf");
+    skyUni.uHorizon.value.set(d ? "#1a2230" : "#d4e8f5");
+    skyUni.uCloudDark.value.set(d ? "#080c14" : "#b4c4d4");
+    skyUni.uCloudLight.value.set(d ? "#232d3d" : "#ffffff");
+    skyUni.uCover.value = d ? 0.86 : 0.5;
+    const oa = d ? -0.5 : -0.42, oe = d ? 0.42 : 0.24; // the moon high behind the storm; the sun over the sea to the left
+    skyUni.uOrbDir.value.set(Math.sin(oa) * Math.cos(oe), Math.sin(oe), -Math.cos(oa) * Math.cos(oe));
+    skyUni.uOrbCol.value.set(d ? "#8494b4" : "#fff3dc").multiplyScalar(d ? 0.7 : 1.6);
+    skyUni.uOrbSize.value = d ? 0.018 : 0.016;
+    scene.fog.color.copy(skyUni.uHorizon.value); scene.fog.near = d ? 60 : 400; scene.fog.far = d ? 1100 : 4200;
+    hemi.color.set(d ? "#2a3650" : "#d8e8f7"); hemi.groundColor.set(d ? "#07090d" : "#7c705e"); hemi.intensity = d ? 1.3 : 1.4;
+    key.color.set(d ? "#8da2c8" : "#fff2de"); key.intensity = d ? 0.25 : 2.8;
+    key.position.set(d ? -40 : -80, d ? 70 : 55, d ? -30 : 25);
+    amp = d ? 1 : 0.22;
+    seaUni.uAmp.value = amp;
+    seaUni.uDeep.value.set(d ? "#03070d" : "#0c4a74");
+    seaUni.uScatter.value.set(d ? "#0a1c24" : "#1d8f95").multiplyScalar(d ? 0.6 : 0.5);
+    seaUni.uFogNear.value = d ? 120 : 700; seaUni.uFogFar.value = d ? 1500 : 3400;
+    seaUni.uRipple.value = d ? 0.55 : 0.17; seaUni.uRippleScale.value = d ? 1 : 6;
+    seaUni.uOrbCol.value.set("#fff3dc"); seaUni.uGlitter.value = d ? 0 : 4.5; seaUni.uReflect.value = d ? 1 : 0.8;
+    seaUni.uLampCol.value.set("#ffe2b8"); seaUni.uLampOn.value = d ? 1 : 0;
+    seaUni.uShipCol.value.set(d ? "#fff0d8" : "#000000").multiplyScalar(0.8);
+    seaUni.uBeamOn.value = d ? 1 : 0;
+    seaUni.uFoamCol.value.set(d ? "#8494a8" : "#f4f8fb"); seaUni.uFoamOn.value = d ? 1 : 0.2;
+    rockFoam = d ? 0.95 : 0.6;
+    glassMat.color.set(d ? "#ffd9a0" : "#8fa6b4").multiplyScalar(d ? 1.6 : 1);
+    winMat.color.set(d ? "#ffc27a" : "#37424c").multiplyScalar(d ? 1.4 : 1);
+    accentMat.color.copy(accent); shipAccentMat.color.copy(accent);
+    shipLitMat.color.set(d ? "#ffcf8a" : "#3a4550").multiplyScalar(d ? 1.3 : 1);
+    for (const o of [lampGlow, flare, streak, rain, beamRain, ...beams, ...navLights]) o.visible = d;
+    curtains.forEach((c) => { c.m.visible = d; });
+    gullMesh.visible = !d;
+    rainUni.uColor.value.set("#a4b3c8"); rainUni.uAlpha.value = 0.4;
+    sprayUni.uColor.value.set(d ? "#a3b1c4" : "#ffffff"); sprayUni.uAlpha.value = d ? 0.5 : 0.55;
+    curtainCol.set("#3a4658");
+  }
+  let rockFoam = 0.9;
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function layout() {
+    const A = camera.aspect || 1, fov = A >= 1 ? 45 : 45 + (1 - A) * 22; // a phone held upright gets a wider lens
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); TAN = Math.tan((fov * Math.PI) / 360); }
+    lhX = halfW(D) * (0.1 + 0.3 * sm(0.45, 1.3, A)); // the lighthouse at the right third; nearer the middle on a phone
+    lh.position.set(lhX, 0, -D);
+    lamp.set(lhX, LAMP_Y, -D);
+    seaUni.uLampPos.value.copy(lamp);
+    seaUni.uRocks.value[0].set(lhX, -D, 12.5, rockFoam);
+    seaUni.uRocks.value[1].set(lhX + 23, -D + 5, 4, rockFoam);
+  }
+  function frame(dt, t) {
+    time.value = t;
+    layout();
+    const cx = Math.sin(t * 0.021) * 2.5; // standing on the headland, shifting a little
+    camera.position.set(cx, EYE + Math.sin(t * 0.047) * 0.25, 0);
+    camera.lookAt(look.set(cx * 0.3, EYE - 13.5, -300));
+    sky.position.copy(camera.position);
+    // the beams
+    const phi = (((PHI0 + t * OMEGA) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    beamDir(phi, dirA); beamDir(phi + Math.PI, dirB);
+    seaUni.uBeamA.value.copy(dirA); seaUni.uBeamB.value.copy(dirB);
+    beams[0].position.copy(lamp); beams[0].quaternion.setFromUnitVectors(UP, dirA);
+    beams[1].position.copy(lamp); beams[1].quaternion.setFromUnitVectors(UP, dirB);
+    brUni.uPhi.value = phi;
+    // how squarely a beam swings towards the viewer (only the direction round the tower counts: the lens throws a tall fan of light)
+    toCam.subVectors(camera.position, lamp).setY(0).normalize();
+    const face = sm(Math.cos(0.2), Math.cos(0.01), Math.max(dirA.x * toCam.x + dirA.z * toCam.z, dirB.x * toCam.x + dirB.z * toCam.z) / Math.cos(TILT));
+    lampGlow.position.copy(lamp); lampGlow.scale.setScalar(9 + face * 8); lampGlowMat.opacity = 0.9;
+    flare.position.copy(lamp); flare.scale.setScalar(12 + face * 80); flareMat.opacity = Math.pow(face, 1.5);
+    seaUni.uGlint.value = face;
+    streak.position.copy(lamp); streak.scale.set(14 + face * 260, 3 + face * 5, 1); streakMat.opacity = face * face * 0.7;
+    stepLightning(t);
+    flashLight.intensity = flash * 5;
+    curtainMat.color.copy(curtainCol).multiplyScalar(1 + flash * 2.5); curtainMat.opacity = 0.35;
+    for (const c of curtains) {
+      c.m.position.x += c.speed * dt;
+      const lim = halfW(c.dist) * 1.3 + c.w / 2;
+      if (c.m.position.x > lim) c.m.position.x = -lim;
+    }
+    stepSpray(dt, t);
+    stepShip(dt, t);
+    navLights.forEach((m, i) => { m.material.opacity = 0.85 + 0.15 * Math.sin(t * (2.1 + i) + i); });
+    if (!pal.dark) stepGulls(dt, t);
+  }
+  for (let k = 0; k < 60; k++) frame(0.05, -3 + k * 0.05); // spray already in the air on the first (or only) frame
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { let n = 0; for (let k = 0; k < NS; k++) n += sLife[k] > 0 ? 1 : 0; return { spray: n, flash: +flash.toFixed(2), shipX: Math.round(shipX), lhX: Math.round(lhX) }; }, // for checking by hand
+    dispose() { scene.fog = null; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

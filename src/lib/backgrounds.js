@@ -42,6 +42,7 @@ export const BG_STYLES = [
   { value: "rainwindow", label: "Rainy window", desc: "3D rain on a window: drops bend the city lights and slide down the glass", three: true },
   { value: "skylanterns", label: "Sky lanterns", desc: "3D lantern festival: glowing lanterns rise over a lake town, mirrored in the water", three: true },
   { value: "snowglobe", label: "Snow globe", desc: "3D snow globe with a tiny winter village: move the mouse and the snow swirls up", three: true },
+  { value: "lighthouse", label: "Lighthouse", desc: "3D lighthouse in a storm: the beam sweeps the rain, waves crash on the rocks; calm with gulls by day", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
