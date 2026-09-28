@@ -8484,7 +8484,544 @@ function sakura(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura };
+/* ---------- Observatory: inside a domed observatory; the telescope tracks the sky, the moon in today's real phase, the stars turning with the real time ---------- */
+// The light of the sun (or the moon) only reaches a point if its ray towards the sun leaves the dome through the slit.
+// The dome is a sphere (centre uDomeC, radius uDomeR); the slit is the band |x| < uSlitHalf from its south foot up over the top to z = uSlitEnd.
+const OBS_SLIT = /* glsl */ `
+  uniform vec3 uLightDir; uniform vec3 uDomeC; uniform float uDomeR; uniform float uSlitHalf; uniform float uSlitEnd;
+  float obsSlit(vec3 p) {
+    vec3 q = p - uDomeC;
+    float b = dot(q, uLightDir), c = dot(q, q) - uDomeR * uDomeR, disc = b * b - c;
+    if (disc < 0.0) return 0.0;
+    vec3 e = q + uLightDir * (-b + sqrt(disc)); // where the ray leaves the dome
+    if (e.y < 0.0) return 0.0; // through the wall below the dome: blocked
+    return smoothstep(uSlitHalf + 0.05, uSlitHalf - 0.05, abs(e.x)) * smoothstep(uSlitEnd + 0.05, uSlitEnd - 0.05, e.z);
+  }
+`;
+const OBS_SKY_VS = /* glsl */ `
+  varying vec3 vDir;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vDir = normalize(w.xyz - cameraPosition); gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const OBS_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uSun;
+  varying vec3 vDir;
+  void main() {
+    vec3 col = mix(uHorizon, uZenith, smoothstep(0.0, 0.7, vDir.y));
+    float sd = distance(vDir, uSunDir);
+    col += uSunCol * uSun * (smoothstep(0.03, 0.024, sd) * 2.5 + 0.35 * exp(-sd * 14.0) + 0.06 * exp(-sd * 3.0)); // the slit is narrow: keep the glare tight
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// stars: size and colour from the catalogue, a gentle twinkle
+const OBS_STAR_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx;
+  attribute vec4 aStar; // size in px, colour index, twinkle seed, brightness
+  varying vec3 vCol; varying float vB;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = aStar.x * uPx;
+    float k = aStar.y;
+    vCol = k < 0.5 ? vec3(0.75, 0.85, 1.0) : k < 1.5 ? vec3(1.0) : k < 2.5 ? vec3(1.0, 0.95, 0.82) : k < 3.5 ? vec3(1.0, 0.8, 0.6) : vec3(1.0, 0.65, 0.5);
+    vB = aStar.w * (0.8 + 0.2 * sin(uTime * (1.5 + aStar.z * 3.0) + aStar.z * 40.0));
+  }
+`;
+const OBS_STAR_FS = /* glsl */ `
+  uniform float uAlpha;
+  varying vec3 vCol; varying float vB;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float a = exp(-dot(p, p) * 4.0);
+    gl_FragColor = vec4(vCol * vB * a * uAlpha, 1.0);
+  }
+`;
+// the moon in today's phase: lit where its surface faces the sun, a faint earthshine on the rest
+const OBS_MOON_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform float uPhase; uniform vec3 uTint; uniform float uOn;
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    float disc = smoothstep(1.0, 0.96, sqrt(r2));
+    if (disc <= 0.0) discard;
+    vec3 n = vec3(p, sqrt(max(0.0, 1.0 - r2)));
+    float th = 6.2831853 * uPhase;
+    float lit = smoothstep(-0.04, 0.08, dot(n, vec3(sin(th), 0.0, -cos(th))));
+    vec3 tex = texture2D(uMap, vUv).rgb;
+    vec3 col = tex * uTint * (lit * (0.55 + 0.45 * n.z) + 0.035); // limb darkening; earthshine
+    gl_FragColor = vec4(col * uOn, disc * uOn);
+    #include <colorspace_fragment>
+  }
+`;
+const OBS_WORLD_VS = /* glsl */ `
+  varying vec3 vWorld; varying vec2 vUv;
+  void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+// the shaft of light: marched along the view ray inside the dome, each sample lit or not by obsSlit
+const OBS_BEAM_FS = /* glsl */ `
+  ${OBS_SLIT}
+  uniform sampler2D uNoise; uniform vec3 uColor; uniform float uTime; uniform float uFloorY;
+  varying vec3 vWorld;
+  void main() {
+    vec3 ro = cameraPosition, rd = normalize(vWorld - cameraPosition);
+    vec3 q = ro - uDomeC;
+    float b = dot(q, rd), c = dot(q, q) - uDomeR * uDomeR, disc = b * b - c;
+    if (disc <= 0.0) discard;
+    float t1 = -b + sqrt(disc);
+    if (rd.y < 0.0) t1 = min(t1, (uFloorY - ro.y) / rd.y);
+    float t0 = 0.0; // the viewer is inside the dome: from the eye to where the ray leaves it (or meets the floor)
+    if (t1 <= t0) discard;
+    float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float dt = (t1 - t0) / float(OBS_STEPS), sum = 0.0;
+    for (int i = 0; i < OBS_STEPS; i++) {
+      vec3 x = ro + rd * (t0 + dt * (float(i) + j));
+      float haze = 0.6 + 0.8 * texture2D(uNoise, x.xz * 0.23 + vec2(x.y * 0.07, uTime * 0.006)).r;
+      sum += obsSlit(x) * haze;
+    }
+    float toward = max(dot(rd, uLightDir), 0.0); // looking along the shaft at the sun it would pile up into a blank glare: keep that part faint
+    gl_FragColor = vec4(uColor * sum * dt * (1.0 - 0.88 * toward * toward * toward), 1.0);
+  }
+`;
+const OBS_DUST_VS = /* glsl */ `
+  ${OBS_SLIT}
+  uniform float uTime; uniform float uPx; uniform vec3 uBox; uniform vec3 uBoxC;
+  attribute vec4 aSeed;
+  varying float vLit; varying float vTw;
+  void main() {
+    vec3 p = aSeed.xyz * uBox + vec3(sin(uTime * 0.07 + aSeed.w * 6.3), sin(uTime * 0.05 + aSeed.w * 12.1) * 0.5 - uTime * 0.012, cos(uTime * 0.06 + aSeed.w * 9.2)) * 0.6;
+    p = uBoxC + mod(p, uBox) - uBox * 0.5;
+    vLit = obsSlit(p);
+    vTw = 0.55 + 0.45 * sin(uTime * (0.8 + aSeed.w * 2.0) + aSeed.w * 30.0);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = clamp((0.012 + 0.01 * aSeed.w) * uPx / -mv.z, 1.0, 6.0);
+  }
+`;
+const OBS_DUST_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uBase;
+  varying float vLit; varying float vTw;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    gl_FragColor = vec4(uColor * (uBase + vLit * vTw) * smoothstep(1.0, 0.2, length(p)), 1.0);
+  }
+`;
+/**
+ * The dome with its slit (centre at the origin, radius R, the slit the band |x| < SH from the south foot over the top to z = zEnd).
+ * Built as two halves of half-circles in planes x = const, so the slit's edges are exact curves; faces point inwards.
+ */
+function obsDome(THREE, R, SH, zEnd, nA = 18, nP = 56) {
+  const pos = [], nrm = [], uv = [], idx = [];
+  const put = (x, y, z) => {
+    const l = Math.hypot(x, y, z);
+    pos.push(x, y, z); nrm.push(-x / l, -y / l, -z / l);
+    uv.push((Math.atan2(x, -z) / (Math.PI * 2) + 0.5) * 24, (Math.asin(Math.min(1, y / l)) / (Math.PI / 2)) * 6); // 24 panels round, 6 rows up
+    return pos.length / 3 - 1;
+  };
+  const grid = (rows, cols, at, flip) => {
+    const base = pos.length / 3;
+    for (let i = 0; i <= rows; i++) for (let j = 0; j <= cols; j++) put(...at(i / rows, j / cols));
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      const a = base + i * (cols + 1) + j, b = a + 1, c = a + cols + 1, d = c + 1;
+      if (flip) idx.push(a, b, c, b, d, c); else idx.push(a, c, b, b, c, d);
+    }
+  };
+  const b0 = Math.asin(SH / R);
+  for (const s of [1, -1]) grid(nA, nP, (u, v) => { // the halves beside the slit
+    const a = Math.sin(b0 + (Math.PI / 2 - b0) * u), rr = R * Math.sqrt(Math.max(0, 1 - a * a)), psi = Math.PI * v;
+    return [s * a * R, rr * Math.sin(psi), -rr * Math.cos(psi)];
+  }, s < 0);
+  grid(8, 20, (u, v) => { // behind the end of the slit
+    const x = SH * (2 * u - 1), rr = Math.sqrt(R * R - x * x), p0 = Math.acos(Math.max(-1, Math.min(1, -zEnd / rr))), psi = p0 + (Math.PI - p0) * v;
+    return [x, rr * Math.sin(psi), -rr * Math.cos(psi)];
+  }, false);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+/** The dome's iron: meridian ribs and rings that stop at the slit, the shutter rails along it, the base ring. */
+function obsRibs(THREE, R, SH, zEnd) {
+  const parts = [], inSlit = (p) => Math.abs(p.x) < SH + 0.12 && p.z < zEnd + 0.12, r = R - 0.1;
+  const tube = (pts, rad) => { if (pts.length > 1) parts.push([new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), pts.length * 2, rad, 6), new THREE.Matrix4()]); };
+  for (let k = 0; k < 24; k++) {
+    const phi = (k / 24) * Math.PI * 2, pts = [];
+    for (let i = 0; i <= 24; i++) {
+      const th = (i / 24) * (Math.PI / 2 - 0.02), p = new THREE.Vector3(Math.cos(th) * Math.sin(phi) * r, Math.sin(th) * r, -Math.cos(th) * Math.cos(phi) * r);
+      if (inSlit(p)) break;
+      pts.push(p);
+    }
+    tube(pts, 0.06);
+  }
+  for (const th of [0.02, 0.45, 0.9]) { // rings, broken by the slit
+    let pts = [];
+    for (let i = 0; i <= 96; i++) {
+      const phi = (i / 96) * Math.PI * 2, p = new THREE.Vector3(Math.cos(th) * Math.sin(phi) * r, Math.sin(th) * r, -Math.cos(th) * Math.cos(phi) * r);
+      if (th > 0.05 && inSlit(p)) { tube(pts, 0.05); pts = []; } else pts.push(p);
+    }
+    tube(pts, th < 0.05 ? 0.12 : 0.05);
+  }
+  for (const s of [-1, 1]) { // the shutter rails
+    const a = (SH + 0.08) / R, rr = r * Math.sqrt(1 - a * a), pts = [];
+    for (let i = 0; i <= 40; i++) { const psi = (i / 40) * Math.PI, z = -rr * Math.cos(psi); if (z > zEnd + 0.1) break; pts.push(new THREE.Vector3(s * a * r, rr * Math.sin(psi), z)); }
+    tube(pts, 0.1);
+  }
+  const ye = Math.sqrt(r * r - zEnd * zEnd);
+  tube([new THREE.Vector3(-SH - 0.1, ye, zEnd + 0.05), new THREE.Vector3(0, Math.sqrt(r * r - zEnd * zEnd), zEnd + 0.05), new THREE.Vector3(SH + 0.1, ye, zEnd + 0.05)], 0.1);
+  return mergeParts(THREE, parts);
+}
+/** The dome's inside: painted steel panels with seams and rivets (one panel per texture tile). */
+function obsPanels(THREE) {
+  const tex = canvasTexture(THREE, 256, 256, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, "#d9d6cf"); grad.addColorStop(0.5, "#e6e3dc"); grad.addColorStop(1, "#d5d2ca");
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    g.fillStyle = "rgba(90,80,70,0.35)"; g.fillRect(0, 0, 3, h); g.fillRect(0, 0, w, 3);
+    g.fillStyle = "rgba(90,80,70,0.45)";
+    for (let i = 8; i < h; i += 24) { g.beginPath(); g.arc(8, i, 2.2, 0, Math.PI * 2); g.fill(); g.beginPath(); g.arc(i, 8, 2.2, 0, Math.PI * 2); g.fill(); }
+    const r = koiRng(81);
+    for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(120,105,90,${r(0.02, 0.06)})`; g.fillRect(r(0, w), r(0, h), r(10, 60), r(20, 120)); } // weathering
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+/** The moon's face: its seas where they really are (roughly), Tycho with its rays, a darker limb. */
+function obsMoonTex(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const grad = g.createRadialGradient(128, 128, 20, 128, 128, 128);
+    grad.addColorStop(0, "#f4f1e8"); grad.addColorStop(1, "#d9d4c6");
+    g.fillStyle = grad; g.beginPath(); g.arc(128, 128, 127, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "rgba(118,116,112,0.55)";
+    for (const [x, y, rx, ry, a] of [[92, 74, 34, 28, 0.3], [132, 80, 20, 18, 0], [150, 108, 24, 20, 0.2], [178, 96, 14, 16, 0], [62, 120, 30, 46, 0.2], [118, 150, 18, 14, 0.4], [150, 142, 16, 12, 0], [96, 176, 22, 12, 0.3]]) { g.beginPath(); g.ellipse(x, y, rx, ry, a, 0, Math.PI * 2); g.fill(); }
+    const r = koiRng(9);
+    g.strokeStyle = "rgba(90,88,84,0.25)"; g.lineWidth = 1.2;
+    for (let i = 0; i < 70; i++) { const x = r(20, 236), y = r(20, 236); if (Math.hypot(x - 128, y - 128) > 118) continue; g.beginPath(); g.arc(x, y, r(1.5, 6), 0, Math.PI * 2); g.stroke(); }
+    g.strokeStyle = "rgba(255,255,250,0.28)"; g.lineWidth = 1.5; // Tycho's rays
+    for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 2 + r(-0.1, 0.1); g.beginPath(); g.moveTo(112, 206); g.lineTo(112 + Math.cos(a) * r(30, 80), 206 + Math.sin(a) * r(30, 80)); g.stroke(); }
+    g.fillStyle = "rgba(255,255,250,0.8)"; g.beginPath(); g.arc(112, 206, 4, 0, Math.PI * 2); g.fill();
+  });
+}
+// the brightest stars: right ascension (hours), declination (degrees), magnitude, colour (0 blue … 4 red)
+const OBS_STARS = [
+  [6.752, -16.72, -1.46, 1], [6.399, -52.7, -0.74, 1], [14.66, -60.83, -0.27, 2], [14.261, 19.18, -0.05, 3], [18.616, 38.78, 0.03, 1], [5.278, 45.99, 0.08, 2],
+  [5.242, -8.2, 0.13, 0], [7.655, 5.22, 0.34, 2], [5.919, 7.41, 0.5, 4], [1.629, -57.24, 0.46, 0], [19.846, 8.87, 0.76, 1], [12.443, -63.1, 0.77, 0],
+  [4.599, 16.51, 0.86, 3], [13.42, -11.16, 0.97, 0], [16.49, -26.43, 1.06, 4], [7.755, 28.03, 1.14, 3], [22.961, -29.62, 1.16, 1], [20.69, 45.28, 1.25, 1],
+  [12.795, -59.69, 1.25, 0], [10.139, 11.97, 1.35, 0], [6.977, -28.97, 1.5, 0], [7.577, 31.89, 1.58, 1], [12.52, -57.11, 1.63, 4], [5.418, 6.35, 1.64, 0],
+  [5.438, 28.61, 1.65, 0], [5.604, -1.2, 1.69, 0], [5.679, -1.94, 1.74, 0], [5.533, -0.3, 2.23, 0], [5.796, -9.67, 2.09, 0], [11.062, 61.75, 1.79, 3],
+  [11.031, 56.38, 2.37, 1], [11.897, 53.69, 2.44, 1], [12.257, 57.03, 3.31, 1], [12.9, 55.96, 1.77, 1], [13.399, 54.93, 2.23, 1], [13.792, 49.31, 1.86, 0],
+  [2.53, 89.26, 1.98, 2], [0.675, 56.54, 2.24, 3], [0.153, 59.15, 2.28, 1], [0.945, 60.72, 2.47, 0], [1.43, 60.24, 2.68, 1], [1.907, 63.67, 3.37, 0],
+  [3.791, 24.11, 2.87, 0], [3.747, 24.37, 3.7, 0], [3.82, 24.05, 3.64, 0], [16.836, -34.29, 2.29, 3], [17.56, -37.1, 1.62, 0], [17.622, -43.0, 1.86, 1],
+  [15.981, -26.11, 2.89, 0], [16.005, -22.62, 2.32, 0], [2.119, 23.46, 2.0, 3], [23.063, 28.08, 2.42, 4], [0.14, 29.09, 2.06, 0], [23.079, 15.21, 2.49, 0],
+  [21.736, 9.88, 2.39, 3], [19.771, 10.61, 2.72, 3], [20.37, 40.26, 2.23, 2], [19.512, 27.96, 3.08, 3], [18.921, -26.3, 2.05, 0], [18.403, -34.38, 1.85, 0],
+];
+/** The celestial sphere (unit vectors in equatorial coordinates, radius `rad`): the bright stars above, a field of faint ones and the Milky Way. */
+function obsStarGeometry(THREE, rad, count) {
+  const r = koiRng(4471), pos = [], star = [];
+  const eq = (raH, decD) => { const a = (raH / 24) * Math.PI * 2, d = (decD * Math.PI) / 180; return [Math.cos(d) * Math.cos(a) * rad, Math.cos(d) * Math.sin(a) * rad, Math.sin(d) * rad]; };
+  for (const [ra, dec, mag, col] of OBS_STARS) { pos.push(...eq(ra, dec)); star.push(Math.max(1.4, 4.6 - mag * 1.1), col, r(), Math.min(1.6, 1.25 - mag * 0.2)); }
+  const gnp = new THREE.Vector3(...eq(12.857, 27.13)).normalize(), gu = new THREE.Vector3(0, 0, 1).cross(gnp).normalize(), gv = gnp.clone().cross(gu);
+  for (let i = 0; i < count; i++) {
+    let p;
+    if (i % 5 < 2) { // two in five along the Milky Way
+      const a = r(0, Math.PI * 2), lat = (r() + r() + r() - 1.5) * 0.16;
+      p = gu.clone().multiplyScalar(Math.cos(a) * Math.cos(lat)).addScaledVector(gv, Math.sin(a) * Math.cos(lat)).addScaledVector(gnp, Math.sin(lat)).multiplyScalar(rad);
+    } else { const z = r(-1, 1), a = r(0, Math.PI * 2), s = Math.sqrt(1 - z * z); p = new THREE.Vector3(s * Math.cos(a) * rad, s * Math.sin(a) * rad, z * rad); }
+    const m = r();
+    pos.push(p.x, p.y, p.z); star.push(0.8 + 1.6 * m * m * m, ((r() * 5) | 0) % 4 + (r() < 0.6 ? 0 : 0), r(), 0.25 + 0.6 * m * m);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aStar", new THREE.Float32BufferAttribute(star, 4));
+  return g;
+}
+/** A planisphere pinned to the wall: the star disc, constellation lines, a date ring. */
+function obsChart(THREE) {
+  return canvasTexture(THREE, 512, 512, (g) => {
+    g.fillStyle = "#e9dfc6"; g.fillRect(0, 0, 512, 512);
+    g.fillStyle = "#1c2a4a"; g.beginPath(); g.arc(256, 256, 220, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#8a6d3b"; g.lineWidth = 6; g.stroke();
+    g.strokeStyle = "rgba(233,223,198,0.35)"; g.lineWidth = 1;
+    for (const rr of [60, 120, 180]) { g.beginPath(); g.arc(256, 256, rr, 0, Math.PI * 2); g.stroke(); }
+    for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 2; g.beginPath(); g.moveTo(256, 256); g.lineTo(256 + Math.cos(a) * 220, 256 + Math.sin(a) * 220); g.stroke(); }
+    const r = koiRng(12);
+    const pts = Array.from({ length: 140 }, () => { const a = r(0, 6.28), d = Math.sqrt(r()) * 210; return [256 + Math.cos(a) * d, 256 + Math.sin(a) * d, r(0.6, 2.6)]; });
+    g.strokeStyle = "rgba(233,223,198,0.55)"; g.lineWidth = 1.2;
+    for (let c = 0; c < 9; c++) { const k = (r() * 130) | 0; g.beginPath(); g.moveTo(pts[k][0], pts[k][1]); for (let s = 1; s < 5; s++) g.lineTo(pts[k + s][0], pts[k + s][1]); g.stroke(); }
+    g.fillStyle = "#f6efdc";
+    for (const [x, y, s] of pts) { g.beginPath(); g.arc(x, y, s, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = "#6b5530"; g.font = "bold 22px Georgia, serif"; g.textAlign = "center";
+    g.fillText("PLANISPHAERIUM", 256, 30); g.fillText("COELESTE", 256, 500);
+  });
+}
+/** The brass lamp's glow and the room, as the telescope's paint and brass mirror them: the slit a bright band to the south. */
+function obsEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, dark ? "#0b0e16" : "#d9d4c8"); grad.addColorStop(0.5, dark ? "#141824" : "#b8b0a0"); grad.addColorStop(1, dark ? "#08090c" : "#5a4a3a");
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    const sx = w * 0.25, band = g.createLinearGradient(sx - 30, 0, sx + 30, 0); // the slit, straight up from the south
+    band.addColorStop(0, "rgba(0,0,0,0)"); band.addColorStop(0.5, dark ? "rgba(70,90,150,1)" : "rgba(200,225,255,1)"); band.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = band; g.fillRect(sx - 30, 0, 60, h * 0.5);
+    const gx = w * (dark ? 0.9 : 0.25), gy = h * (dark ? 0.45 : 0.2), rg = g.createRadialGradient(gx, gy, 0, gx, gy, h * 0.14);
+    rg.addColorStop(0, dark ? "rgba(255,196,130,1)" : "rgba(255,250,235,1)"); rg.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = rg; g.fillRect(gx - h * 0.14, gy - h * 0.14, h * 0.28, h * 0.28); // the lamp by night, the sun by day
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function observatory(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const TAU = Math.PI * 2;
+  const r = koiRng(1609);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4();
+  camera.fov = 60; camera.near = 0.05; camera.far = 200;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const R = 7, WALL = 2.6, C = new THREE.Vector3(0, WALL, 0), SH = 1.5, Z_END = 1.8; // the dome; the slit's half-width and where it ends past the top
+  const LAT = 30; // an assumed latitude (the browser does not know where we are); the longitude comes from the time zone
+  const dirAt = (elevDeg, x = 0) => new THREE.Vector3(x, Math.sin((elevDeg * Math.PI) / 180), -Math.cos((elevDeg * Math.PI) / 180)).normalize();
+  const MOON = dirAt(42), SUN = dirAt(40), PLANET = dirAt(31, 0.07), STAR = dirAt(55, -0.06);
+  const time = { value: 0 }, accent = new THREE.Color();
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+
+  /* --- light from the sky only reaches what sees it through the slit: a test added to every lit material --- */
+  const slitUni = { uLightDir: { value: SUN.clone() }, uDomeC: { value: C }, uDomeR: { value: R - 0.05 }, uSlitHalf: { value: SH }, uSlitEnd: { value: Z_END } };
+  const lightsChunk = THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= obsSlit( vObsWorld );");
+  const lit = (opts) => {
+    const mat = new THREE.MeshStandardMaterial(opts);
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, slitUni);
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vObsWorld;").replace("#include <begin_vertex>", "#include <begin_vertex>\nvObsWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", `#include <common>\nvarying vec3 vObsWorld;\n${OBS_SLIT}`).replace("#include <lights_fragment_begin>", lightsChunk);
+    };
+    mat.customProgramCacheKey = () => "obs-slit";
+    return keep(mat);
+  };
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const sky1 = new THREE.DirectionalLight(0xffffff, 1); // the sun, or the moon
+  sky1.target.position.copy(C);
+  const lampLight = new THREE.PointLight(0xffb46a, 0, 0, 2);
+  scene.add(hemi, sky1, sky1.target, lampLight);
+  let envTex = null;
+  const buildEnv = (dark) => { envTex?.dispose(); envTex = obsEnv(THREE, dark); scene.environment = envTex; };
+
+  /* --- the sky through the slit: gradient and sun, the stars turning with the real time, the moon in its real phase, clouds, meteors --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSunDir: { value: SUN }, uSunCol: { value: new THREE.Color("#fff6e0") }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(90, 32, 16)), keep(new THREE.ShaderMaterial({ uniforms: skyUni, vertexShader: OBS_SKY_VS, fragmentShader: OBS_SKY_FS, side: THREE.BackSide, depthWrite: false, depthTest: false })));
+  sky.position.copy(C); sky.renderOrder = -10; sky.frustumCulled = false;
+  scene.add(sky);
+  const starUni = { uTime: time, uPx: { value: 1 }, uAlpha: { value: 1 } };
+  const stars = new THREE.Points(keep(obsStarGeometry(THREE, 70, preview ? 1500 : 4200)), keep(new THREE.ShaderMaterial({ uniforms: starUni, vertexShader: OBS_STAR_VS, fragmentShader: OBS_STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  stars.matrixAutoUpdate = false; stars.frustumCulled = false; stars.renderOrder = -5;
+  scene.add(stars);
+  const phi = (LAT * Math.PI) / 180, Mer = new THREE.Vector3(0, Math.cos(phi), -Math.sin(phi)), East = new THREE.Vector3(-1, 0, 0), Pole = new THREE.Vector3(0, Math.sin(phi), Math.cos(phi));
+  const skyBasis = new THREE.Matrix4().makeBasis(Mer, East, Pole), spin = new THREE.Matrix4(), place = new THREE.Matrix4().makeTranslation(C.x, C.y, C.z);
+  const moonUni = { uMap: { value: keep(obsMoonTex(THREE)) }, uPhase: { value: 0.5 }, uTint: { value: new THREE.Color(1, 1, 1) }, uOn: { value: 1 } };
+  const moon = new THREE.Mesh(quad, keep(new THREE.ShaderMaterial({ uniforms: moonUni, vertexShader: LANTERN_LAYER_VS, fragmentShader: OBS_MOON_FS, transparent: true, depthWrite: false })));
+  moon.position.copy(C).addScaledVector(MOON, 60); moon.scale.setScalar(3.4); moon.renderOrder = -4;
+  scene.add(moon);
+  const haloMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0x9fb2d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  const halo = new THREE.Sprite(haloMat);
+  halo.position.copy(moon.position); halo.scale.setScalar(16); halo.renderOrder = -6;
+  scene.add(halo);
+  const planet = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0xfff1d6, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false })));
+  planet.position.copy(C).addScaledVector(PLANET, 60); planet.scale.setScalar(0.9); planet.renderOrder = -4;
+  scene.add(planet);
+  const cloudMat = keep(new THREE.MeshBasicMaterial({ map: keep(cloudTexture(THREE)), transparent: true, depthWrite: false, fog: false }));
+  const clouds = Array.from({ length: preview ? 3 : 5 }, (_, i) => { const m = new THREE.Mesh(quad, cloudMat); m.renderOrder = -3; m.frustumCulled = false; scene.add(m); return { m, u: r(-1, 1), el: 26 + i * 9 + r(-3, 3), speed: r(0.012, 0.025), w: r(14, 22) }; });
+  const meteorGeo = keep(new THREE.BufferGeometry());
+  meteorGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3).setUsage(THREE.DynamicDrawUsage));
+  meteorGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array([1, 1, 1, 0, 0, 0]), 3));
+  const meteor = new THREE.Line(meteorGeo, keep(new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })));
+  meteor.frustumCulled = false; meteor.renderOrder = -3; meteor.visible = false;
+  scene.add(meteor);
+  let meteorT = -1, nextMeteor = 4;
+  const mFrom = new THREE.Vector3(), mDir = new THREE.Vector3();
+
+  /* --- the room: the dome with its ribs and shutter rails, the wooden wall, the floor --- */
+  const domeMat = lit({ map: keep(obsPanels(THREE)), roughness: 0.85, envMapIntensity: 0.25 });
+  const dome = new THREE.Mesh(keep(obsDome(THREE, R, SH, Z_END, preview ? 10 : 18, preview ? 32 : 56)), domeMat);
+  dome.position.copy(C);
+  scene.add(dome);
+  const ironMat = lit({ color: 0x2c2f35, metalness: 0.5, roughness: 0.55 });
+  const ribs = new THREE.Mesh(keep(obsRibs(THREE, R, SH, Z_END)), ironMat);
+  ribs.position.copy(C);
+  scene.add(ribs);
+  const wallTex = keep(globeWood(THREE, 1024, 256, "#6b4a33", 314));
+  wallTex.repeat.set(6, 1);
+  const wallMat = lit({ map: wallTex, roughness: 0.8, side: THREE.BackSide, envMapIntensity: 0.25 });
+  const wall = new THREE.Mesh(keep(new THREE.CylinderGeometry(R, R, WALL, 64, 1, true)), wallMat);
+  wall.position.y = WALL / 2;
+  scene.add(wall);
+  const floorGeo = keep(new THREE.CircleGeometry(R, 64));
+  floorGeo.rotateX(-Math.PI / 2);
+  const fp = floorGeo.attributes.position, fu = floorGeo.attributes.uv;
+  for (let i = 0; i < fp.count; i++) fu.setXY(i, fp.getX(i) / 4, -fp.getZ(i) / 4);
+  const floorMat = lit({ map: keep(cwPlanks(THREE, preview ? 512 : 1024, preview ? 512 : 1024)), roughness: 0.75, envMapIntensity: 0.25 });
+  scene.add(new THREE.Mesh(floorGeo, floorMat));
+  // on the south-west wall: a planisphere and a brass lamp (lit at night)
+  const onWall = (az, y, off = 0.12) => new THREE.Vector3(Math.sin(az) * (R - off), y, -Math.cos(az) * (R - off));
+  const chart = new THREE.Mesh(quad, lit({ map: keep(obsChart(THREE)), roughness: 0.9, envMapIntensity: 0.2 }));
+  chart.position.copy(onWall(-0.62, 1.55, 0.06)); chart.scale.setScalar(1.1); chart.lookAt(0, 1.55, 0);
+  scene.add(chart);
+  const brass = lit({ color: 0xd4a856, metalness: 1, roughness: 0.3 });
+  const lamp = new THREE.Group();
+  lamp.position.copy(onWall(-0.3, 2.1, 0.08)); lamp.lookAt(0, 2.1, 0);
+  lamp.add(new THREE.Mesh(keep(mergeParts(THREE, [[new THREE.CylinderGeometry(0.09, 0.09, 0.03, 20), new THREE.Matrix4().makeRotationX(Math.PI / 2)], [new THREE.CylinderGeometry(0.015, 0.015, 0.3, 8), new THREE.Matrix4().compose(new THREE.Vector3(0, 0, 0.15), new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), new THREE.Vector3(1, 1, 1))], [new THREE.CylinderGeometry(0.07, 0.15, 0.16, 24, 1, true), new THREE.Matrix4().makeTranslation(0, -0.02, 0.32)]])), brass));
+  const bulbMat = keep(new THREE.MeshBasicMaterial({ color: 0xffe2b0 }));
+  const bulb = new THREE.Mesh(keep(new THREE.SphereGeometry(0.045, 12, 8)), bulbMat);
+  bulb.position.set(0, -0.08, 0.32);
+  lamp.add(bulb);
+  const lampGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffb870, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  const lampGlow = new THREE.Sprite(lampGlowMat);
+  lampGlow.position.set(0, -0.1, 0.32); lampGlow.scale.setScalar(0.9);
+  lamp.add(lampGlow);
+  scene.add(lamp);
+  lamp.updateMatrixWorld();
+  lampLight.position.copy(bulb.getWorldPosition(V));
+
+  /* --- the telescope: a refractor on a German equatorial mount, its polar axis aimed at the celestial pole --- */
+  const P = Pole.clone(), H0 = new THREE.Vector3(0, 1.42, 0), HD = H0.clone().addScaledVector(P, 0.45);
+  const alongZ = (g) => { g.rotateX(Math.PI / 2); return g; }, alongX = (g) => { g.rotateZ(-Math.PI / 2); return g; };
+  const paint = lit({ metalness: 0.35, roughness: 0.32 }), steel = lit({ color: 0xb7bdc6, metalness: 1, roughness: 0.25 }), mountMat = lit({ color: 0x3a3f47, metalness: 0.4, roughness: 0.5 });
+  scene.add(new THREE.Mesh(keep(mergeParts(THREE, [[new THREE.CylinderGeometry(0.29, 0.35, 1.3, 32), new THREE.Matrix4().makeTranslation(0, 0.65, 0)], [new THREE.CylinderGeometry(0.55, 0.58, 0.06, 32), new THREE.Matrix4().makeTranslation(0, 0.03, 0)], [new THREE.BoxGeometry(0.36, 0.26, 0.36), new THREE.Matrix4().makeTranslation(H0.x, H0.y, H0.z)],
+    [new THREE.CylinderGeometry(0.13, 0.13, 0.75, 24), new THREE.Matrix4().compose(H0.clone().addScaledVector(P, 0.22), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), P), new THREE.Vector3(1, 1, 1))]])), mountMat));
+  const scope = new THREE.Group(); // local x = declination axis, z = where the tube points
+  scope.position.copy(HD);
+  scene.add(scope);
+  const TX = 0.62;
+  const part = (geo, mat, x, y, z) => { geo.translate(x, y, z); const m = new THREE.Mesh(keep(geo), mat); scope.add(m); return m; };
+  part(alongX(new THREE.CylinderGeometry(0.1, 0.1, 0.5, 20)), mountMat, 0.25, 0, 0);
+  part(alongX(new THREE.CylinderGeometry(0.035, 0.035, 1.0, 10)), steel, -0.5, 0, 0);
+  for (const x of [-0.6, -0.8]) part(alongX(new THREE.CylinderGeometry(0.17, 0.17, 0.15, 28)), mountMat, x, 0, 0);
+  part(alongZ(new THREE.CylinderGeometry(0.19, 0.19, 2.5, 40)), paint, TX, 0, 0.2);
+  part(alongZ(new THREE.CylinderGeometry(0.215, 0.215, 0.55, 40, 1, true)), paint, TX, 0, 1.68);
+  for (const z of [-0.25, 0.75]) part(new THREE.TorusGeometry(0.205, 0.028, 8, 32), brass, TX, 0, z);
+  part(alongZ(new THREE.CylinderGeometry(0.21, 0.21, 0.05, 40)), brass, TX, 0, 1.43);
+  part(alongZ(new THREE.CylinderGeometry(0.07, 0.07, 0.34, 16)), brass, TX, 0, -1.2);
+  part(new THREE.BoxGeometry(0.1, 0.1, 0.1), mountMat, TX, 0, -1.4);
+  part(new THREE.CylinderGeometry(0.035, 0.035, 0.14, 12), brass, TX, 0.1, -1.4);
+  part(alongZ(new THREE.CylinderGeometry(0.045, 0.045, 0.6, 14)), paint, TX, 0.29, 0.35);
+  for (const z of [0.15, 0.55]) part(new THREE.BoxGeometry(0.03, 0.1, 0.03), mountMat, TX, 0.23, z);
+  const lensMat = keep(new THREE.MeshStandardMaterial({ color: 0x0a0f18, metalness: 0.9, roughness: 0.08 }));
+  part(new THREE.CircleGeometry(0.19, 32), lensMat, TX, 0, 1.46); // the objective behind the dew shield (a circle already faces along the tube)
+  const filterMat = keep(new THREE.MeshStandardMaterial({ color: 0x3a2a12, metalness: 0.6, roughness: 0.3 }));
+  const filter = part(alongZ(new THREE.CylinderGeometry(0.235, 0.235, 0.05, 40)), filterMat, TX, 0, 1.97); // a solar filter over the lens by day
+  const aim = MOON.clone(), aimFrom = MOON.clone(), aimTo = MOON.clone(), basis = new THREE.Matrix4(), Dx = new THREE.Vector3(), Uy = new THREE.Vector3();
+  let targets = [MOON, PLANET, MOON, STAR], ti = 0, slewT = 1, nextSlew = 40;
+  function pointAt(T) { // declination axis square to the polar axis and the tube
+    Dx.crossVectors(P, T).normalize(); Uy.crossVectors(T, Dx);
+    scope.quaternion.setFromRotationMatrix(basis.makeBasis(Dx, Uy, T));
+  }
+
+  /* --- the air: god rays through the slit (traced inside the dome), dust in them --- */
+  const beamUni = { ...slitUni, uNoise: { value: noise }, uColor: { value: new THREE.Color() }, uTime: time, uFloorY: { value: 0 } };
+  const beamGeo = keep(new THREE.SphereGeometry(R - 0.1, 32, 16));
+  const beam = new THREE.Mesh(beamGeo, keep(new THREE.ShaderMaterial({ uniforms: beamUni, vertexShader: OBS_WORLD_VS, fragmentShader: OBS_BEAM_FS, defines: { OBS_STEPS: preview ? 7 : 12 }, side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  beam.position.copy(C); beam.frustumCulled = false; beam.renderOrder = 5;
+  scene.add(beam);
+  const ND = preview ? 200 : 700, dust = new THREE.BufferGeometry();
+  dust.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ND * 3), 3));
+  dust.setAttribute("aSeed", new THREE.BufferAttribute(Float32Array.from({ length: ND * 4 }, () => r()), 4));
+  keep(dust);
+  const dustUni = { ...slitUni, uTime: time, uPx: { value: 600 }, uBox: { value: new THREE.Vector3(11, 8, 11) }, uBoxC: { value: new THREE.Vector3(0, 4.5, -0.5) }, uColor: { value: new THREE.Color() }, uBase: { value: 0.03 } };
+  const motes = new THREE.Points(dust, keep(new THREE.ShaderMaterial({ uniforms: dustUni, vertexShader: OBS_DUST_VS, fragmentShader: OBS_DUST_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  motes.frustumCulled = false; motes.renderOrder = 6;
+  scene.add(motes);
+  const buf = new THREE.Vector2();
+  motes.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); dustUni.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); starUni.uPx.value = Math.max(1, buf.y / 900); };
+
+  /* --- today's moon and the turning sky --- */
+  let night = true;
+  function skyNow(ms) {
+    const phase = ((((ms - Date.UTC(2000, 0, 6, 18, 14)) / 86400000 / 29.530588853) % 1) + 1) % 1; // 0 new, ½ full
+    moonUni.uPhase.value = phase;
+    const lon = (-new Date(ms).getTimezoneOffset() / 60) * 15; // roughly, from the time zone
+    const d = ms / 86400000 + 2440587.5 - 2451545.0, lst = (((280.46061837 + 360.98564736629 * d + lon) % 360) + 360) % 360;
+    stars.matrix.copy(place).multiply(skyBasis).multiply(spin.makeRotationZ((-lst * Math.PI) / 180));
+    stars.matrixWorldNeedsUpdate = true; // its matrix is set by hand
+    return phase;
+  }
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    night = d;
+    accent.set(p.accent);
+    paint.color.copy(accent);
+    buildEnv(d);
+    skyUni.uZenith.value.set(d ? "#050a1a" : "#3b7fd4"); skyUni.uHorizon.value.set(d ? "#16213f" : "#bcdcf5"); skyUni.uSun.value = d ? 0 : 1;
+    starUni.uAlpha.value = d ? 1 : 0; stars.visible = d;
+    moon.visible = halo.visible = planet.visible = d; haloMat.opacity = 0.5;
+    clouds.forEach((c) => { c.m.visible = !d; });
+    cloudMat.color.set("#ffffff"); cloudMat.opacity = 0.92;
+    slitUni.uLightDir.value.copy(d ? MOON : SUN);
+    sky1.color.set(d ? "#b8c8f0" : "#fff1d8"); sky1.intensity = d ? 0.9 : 4.2; sky1.position.copy(C).addScaledVector(slitUni.uLightDir.value, 20);
+    hemi.color.set(d ? "#27324e" : "#d9e6f5"); hemi.groundColor.set(d ? "#0b0a0c" : "#7a6452"); hemi.intensity = d ? 0.24 : 0.5;
+    lampLight.intensity = d ? 5 : 0; bulbMat.color.set(d ? "#ffe2b0" : "#8a8474"); lampGlow.visible = d;
+    beamUni.uColor.value.set(d ? "#9fb4ff" : "#ffe6b8").multiplyScalar(d ? 0.04 : 0.035);
+    dustUni.uColor.value.set(d ? "#b9c7ff" : "#fff0d4"); dustUni.uBase.value = d ? 0.008 : 0; // only the dust in the light glints
+    filter.visible = !d;
+    targets = d ? [MOON, PLANET, MOON, STAR] : [SUN, SUN]; ti = 0; aimFrom.copy(aim); aimTo.copy(targets[0]); slewT = 0;
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function frame(dt, t) {
+    time.value = t;
+    skyNow(Date.now());
+    // the camera: standing by the wall, looking up the slit; a phone held upright gets a taller view
+    const A = camera.aspect || 1, fov = A >= 1 ? 64 : 64 + (1 - A) * 24;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const sway = Math.sin(t * 0.045) * 0.25;
+    camera.position.set(0.5 + sway, 1.7, 6.2); // by the north wall: the whole telescope under the slit
+    camera.lookAt(look.set(-0.1 + sway * 0.4, 1.7 + Math.tan(((A >= 1 ? 17 : 24) * Math.PI) / 180) * 10, -3.8));
+    moon.lookAt(camera.position);
+    // slewing now and then from one target to the next, easing in and out
+    if ((nextSlew -= dt) <= 0) { ti = (ti + 1) % targets.length; aimFrom.copy(aim); aimTo.copy(targets[ti]); slewT = 0; nextSlew = r(35, 55); }
+    if (slewT < 1) { slewT = Math.min(1, slewT + dt / 6); const e = slewT * slewT * (3 - 2 * slewT); aim.copy(aimFrom).lerp(aimTo, e).normalize(); }
+    pointAt(aim);
+    for (const c of clouds) {
+      c.u += c.speed * dt;
+      if (c.u > 1.2) c.u = -1.2;
+      const az = c.u * 0.45, el = (c.el * Math.PI) / 180;
+      c.m.position.set(C.x + Math.sin(az) * Math.cos(el) * 55, C.y + Math.sin(el) * 55, C.z - Math.cos(az) * Math.cos(el) * 55);
+      c.m.lookAt(C); c.m.scale.set(c.w, c.w * 0.45, 1);
+    }
+    if (night && t > nextMeteor && meteorT < 0) { // a meteor across the slit now and then
+      meteorT = 0; nextMeteor = t + r(7, 16);
+      mFrom.set(r(-0.14, 0.14), Math.sin(r(0.5, 1.0)), -1).normalize();
+      mDir.set(r(-1, 1), r(-0.6, -0.2), r(-0.2, 0.2)).normalize();
+    }
+    if (meteorT >= 0) {
+      meteorT += dt;
+      const k = meteorT / 0.7, head = V.copy(mFrom).addScaledVector(mDir, 0.25 * k).normalize().multiplyScalar(65).add(C);
+      const tail = mFrom.clone().addScaledVector(mDir, Math.max(0, 0.25 * k - 0.12)).normalize().multiplyScalar(65).add(C);
+      const pa = meteorGeo.attributes.position;
+      pa.setXYZ(0, head.x, head.y, head.z); pa.setXYZ(1, tail.x, tail.y, tail.z); pa.needsUpdate = true;
+      const b = Math.sin(Math.PI * Math.min(1, k)), ca = meteorGeo.attributes.color;
+      ca.setXYZ(0, b, b, b); ca.needsUpdate = true;
+      meteor.visible = true;
+      if (k >= 1) { meteorT = -1; meteor.visible = false; }
+    }
+    lampGlowMat.opacity = 0.8 + 0.06 * Math.sin(t * 5.3) * Math.sin(t * 2.1);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { const ph = moonUni.uPhase.value, names = ["new moon", "waxing crescent", "first quarter", "waxing gibbous", "full moon", "waning gibbous", "last quarter", "waning crescent"]; return { phase: +ph.toFixed(3), moon: names[Math.round(ph * 8) % 8], target: ti }; }, // for checking by hand
+    dispose() { scene.environment = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
