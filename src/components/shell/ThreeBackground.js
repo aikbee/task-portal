@@ -7873,7 +7873,618 @@ function clockwork(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork };
+/* ---------- Sakura and Fuji: Mount Fuji behind a five-storey pagoda in cherry blossom, petals drifting onto a mirror lake; lanterns and a full moon at night ---------- */
+// Mount Fuji, drawn in its quad: a concave cone with a flat crater rim, snow reaching down the gullies, lit from the right, hazy at the foot
+const SAKURA_FUJI_FS = /* glsl */ `
+  uniform vec3 uRock; uniform vec3 uRockLit; uniform vec3 uSnow; uniform vec3 uSnowShade; uniform vec3 uForest; uniform vec3 uHaze;
+  varying vec2 vUv;
+  float fh(float x) { return fract(sin(x * 127.1) * 43758.5453); }
+  float fn(float x) { float i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(fh(i), fh(i + 1.0), f); }
+  void main() {
+    float x = vUv.x * 2.0 - 1.0, y = vUv.y;
+    float s = max(abs(x), 0.045);
+    float h = 0.95 * pow(1.0 - s, 1.62) + 0.006 * fn(x * 80.0) * step(abs(x), 0.045) + 0.012 * exp(-pow((x - 0.3) / 0.05, 2.0)); // the crater rim; the Hoei bump on the right flank
+    float edge = fwidth(y) * 1.5;
+    float inside = 1.0 - smoothstep(h - edge, h + edge, y);
+    if (inside <= 0.001) discard;
+    float fall = x / max(1.0 - y, 0.05); // constant along a line down from the summit: the gullies
+    float gully = fn(fall * 30.0) * 0.6 + fn(fall * 85.0) * 0.4;
+    float snowLine = 0.53 + 0.07 * fn(x * 6.0 + 3.0) - 0.14 * pow(gully, 2.5);
+    float snow = smoothstep(snowLine - 0.015, snowLine + 0.015, y);
+    float lit = smoothstep(-0.3, 0.45, x);
+    vec3 rock = mix(uRock, uRockLit, lit) * (0.82 + 0.3 * gully);
+    vec3 col = mix(rock, mix(uSnowShade, uSnow, 0.3 + 0.7 * lit) * (0.94 + 0.08 * gully), snow);
+    col = mix(uForest, col, smoothstep(0.1, 0.3, y));
+    col = mix(col, uHaze, 0.1 + 0.4 * (1.0 - smoothstep(0.0, 0.75, y))); // the air between: the foot of the mountain hazier
+    gl_FragColor = vec4(col, inside);
+    #include <colorspace_fragment>
+  }
+`;
+// cherry canopies: clusters of blossom as camera-facing quads (a 2 × 2 atlas), swaying in the breeze; near a lantern they glow warm at night
+const SAKURA_BLOOM_VS = /* glsl */ `
+  uniform float uFlip; uniform float uTime;
+  attribute vec4 aBloom; // size, atlas cell, sway phase, lantern light
+  attribute vec3 aTint;
+  varying vec2 vUv; varying vec3 vTint; varying float vLamp;
+  void main() {
+    vec4 c = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    float sway = sin(uTime * 0.8 + aBloom.z) * 0.05 + sin(uTime * 1.9 + aBloom.z * 2.3) * 0.02;
+    vec2 q = position.xy;
+    q = vec2(q.x * cos(sway) - q.y * sin(sway), q.x * sin(sway) + q.y * cos(sway));
+    c.xy += q * aBloom.x * 2.0;
+    gl_Position = projectionMatrix * c;
+    vec2 t = vec2(uv.x, uFlip > 0.0 ? uv.y : 1.0 - uv.y);
+    vUv = (t + vec2(mod(aBloom.y, 2.0), 1.0 - floor(aBloom.y / 2.0))) * 0.5;
+    vTint = aTint; vLamp = aBloom.w;
+  }
+`;
+const SAKURA_BLOOM_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uLight; uniform vec3 uLamp;
+  varying vec2 vUv; varying vec3 vTint; varying float vLamp;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.06) discard;
+    gl_FragColor = vec4(t.rgb * (vTint * uLight + uLamp * vLamp), t.a);
+    #include <colorspace_fragment>
+  }
+`;
+// petals: falling on the breeze and tumbling as they go (a box of them round the viewer, wrapping)
+const SAKURA_PETAL_VS = /* glsl */ `
+  uniform float uTime; uniform vec3 uBoxC; uniform vec3 uBox; uniform vec2 uWind; uniform float uSize;
+  attribute vec4 aSeed;
+  varying vec2 vUv; varying float vShade;
+  void main() {
+    float sp = 0.6 + 0.8 * fract(aSeed.w * 7.13);
+    vec3 drift = vec3(uWind.x, -0.5 * sp, uWind.y) * uTime + vec3(sin(uTime * 0.7 + aSeed.w * 20.0), 0.0, cos(uTime * 0.5 + aSeed.w * 13.0)) * 0.8;
+    vec3 p = uBoxC + mod(aSeed.xyz * uBox + drift, uBox) - uBox * 0.5;
+    float a1 = uTime * (1.2 + 2.0 * fract(aSeed.w * 3.7)) + aSeed.w * 30.0, a2 = uTime * (0.7 + 1.4 * fract(aSeed.w * 5.3)) + aSeed.w * 11.0;
+    vec3 q = vec3(position.xy * uSize * (0.7 + 0.6 * fract(aSeed.w * 9.1)), 0.0);
+    q = vec3(q.x, q.y * cos(a1), q.y * sin(a1));
+    q = vec3(q.x * cos(a2) + q.z * sin(a2), q.y, -q.x * sin(a2) + q.z * cos(a2));
+    vShade = 0.72 + 0.28 * abs(cos(a1));
+    vUv = uv;
+    gl_Position = projectionMatrix * viewMatrix * vec4(p + q, 1.0);
+  }
+`;
+// petals afloat on the lake, drifting with the current, rocking a little
+const SAKURA_FLOAT_VS = /* glsl */ `
+  uniform float uTime; uniform vec3 uBoxC; uniform vec3 uBox; uniform float uSize;
+  attribute vec4 aSeed;
+  varying vec2 vUv; varying float vShade;
+  void main() {
+    vec3 p = uBoxC + mod(aSeed.xyz * uBox + vec3(0.12, 0.0, 0.03) * uTime, uBox) - uBox * 0.5;
+    float a = aSeed.w * 40.0 + sin(uTime * 0.3 + aSeed.w * 9.0) * 0.4, s = uSize * (0.7 + 0.6 * fract(aSeed.w * 9.1));
+    vec2 q = position.xy * s;
+    q = vec2(q.x * cos(a) - q.y * sin(a), q.x * sin(a) + q.y * cos(a));
+    p += vec3(q.x, 0.02 + 0.01 * sin(uTime * 1.3 + aSeed.w * 17.0), q.y);
+    vShade = 0.85 + 0.15 * fract(aSeed.w * 4.7);
+    vUv = uv;
+    gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  }
+`;
+const SAKURA_PETAL_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uLight;
+  varying vec2 vUv; varying float vShade;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.05) discard;
+    gl_FragColor = vec4(t.rgb * uLight * vShade, t.a);
+    #include <colorspace_fragment>
+  }
+`;
+// paper lanterns (drawn with LANTERN_VS): plain paper with black rims and a painted 桜 by day, lit from inside at night with a halo
+const SAKURA_CHOCHIN_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform float uNight;
+  varying vec2 vUv; varying vec3 vTint; varying float vLight; varying float vAlpha;
+  void main() {
+    vec3 m = texture2D(uMap, vUv).rgb;
+    vec3 day = vTint * (0.92 - 0.84 * m.b) * m.g;
+    vec3 night = vTint * pow(m.r, 2.2) * vLight;
+    gl_FragColor = vec4(mix(day, night, uNight) * vAlpha, m.g * vAlpha); // premultiplied: the halo adds light, the paper covers
+    #include <colorspace_fragment>
+  }
+`;
+/** One cherry blossom: five notched petals round a deep pink heart. */
+function sakuraFlower(g, x, y, rad, fill, rot) {
+  g.save(); g.translate(x, y); g.rotate(rot);
+  g.fillStyle = fill;
+  for (let p = 0; p < 5; p++) {
+    g.beginPath(); g.moveTo(0, 0);
+    g.bezierCurveTo(-rad * 0.6, -rad * 0.3, -rad * 0.55, -rad * 0.95, -rad * 0.13, -rad);
+    g.lineTo(0, -rad * 0.84); g.lineTo(rad * 0.13, -rad);
+    g.bezierCurveTo(rad * 0.55, -rad * 0.95, rad * 0.6, -rad * 0.3, 0, 0);
+    g.fill();
+    g.rotate((Math.PI * 2) / 5);
+  }
+  g.fillStyle = "rgba(200,55,95,0.9)"; g.beginPath(); g.arc(0, 0, rad * 0.2, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+const SAKURA_PINKS = ["#ffe3ec", "#ffd3e1", "#ffc2d5", "#fbb0c7", "#fff0f4"];
+/** Four clusters of blossom in a 2 × 2 atlas: twigs peeking through, lighter on top where the sky lights them. */
+function sakuraClusters(THREE, S) {
+  return canvasTexture(THREE, S, S, (g) => {
+    const r = koiRng(3141), cell = S / 2;
+    for (let c = 0; c < 4; c++) {
+      const ox = (c % 2) * cell, oy = Math.floor(c / 2) * cell, cx = ox + cell / 2, cy = oy + cell / 2;
+      g.save(); g.beginPath(); g.rect(ox, oy, cell, cell); g.clip();
+      g.strokeStyle = "rgba(58,36,34,0.95)"; g.lineCap = "round";
+      for (let t = 0; t < 5; t++) {
+        g.lineWidth = r(1.2, 3) * (S / 512); g.beginPath();
+        g.moveTo(cx + r(-0.15, 0.15) * cell, cy + r(0.25, 0.48) * cell);
+        g.quadraticCurveTo(cx + r(-0.25, 0.25) * cell, cy + r(-0.05, 0.1) * cell, cx + r(-0.42, 0.42) * cell, cy + r(-0.42, -0.1) * cell);
+        g.stroke();
+      }
+      const flowers = [];
+      for (let k = 0; k < 95; k++) {
+        const a = r(0, Math.PI * 2), d = Math.pow(r(), 0.6) * cell * 0.4;
+        flowers.push([cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.82, r(0.042, 0.068) * cell]);
+      }
+      flowers.sort((p, q) => q[1] - p[1] + (p[2] - q[2]) * 0.1); // the lower, shaded ones first, the sunlit top ones over them
+      for (const [fx, fy, fr] of flowers) {
+        const low = (fy - oy) / cell; // 0 top … 1 bottom
+        const i = Math.min(SAKURA_PINKS.length - 1, Math.max(0, Math.round(low * 3.2 + r(-0.8, 0.8))));
+        sakuraFlower(g, fx, fy, fr, SAKURA_PINKS[[4, 0, 1, 2, 3][i]], r(0, 6.28));
+      }
+      for (let b = 0; b < 8; b++) { g.fillStyle = "rgba(226,92,130,0.95)"; g.beginPath(); g.arc(cx + r(-0.38, 0.38) * cell, cy + r(-0.33, 0.33) * cell, r(0.012, 0.02) * cell, 0, Math.PI * 2); g.fill(); }
+      g.restore();
+    }
+  });
+}
+/** A branch in bloom reaching in from a top corner, close to the viewer (soft, a little out of focus). Transparent. */
+function sakuraBranch(THREE, S, seed) {
+  const r = koiRng(seed), main = [], c = document.createElement("canvas");
+  c.width = c.height = S;
+  ((g) => {
+    const k = S / 1024, blooms = [];
+    const limb = (x, y, a, len, w, depth, path) => {
+      const steps = 6;
+      let px = x, py = y;
+      for (let i = 1; i <= steps; i++) {
+        a += r(-0.18, 0.18);
+        const nx = px + Math.cos(a) * (len / steps), ny = py + Math.sin(a) * (len / steps);
+        g.strokeStyle = "#3a2826"; g.lineCap = "round"; g.lineWidth = w * (1 - (0.55 * i) / steps);
+        g.beginPath(); g.moveTo(px, py); g.lineTo(nx, ny); g.stroke();
+        g.strokeStyle = "rgba(150,110,100,0.35)"; g.lineWidth = Math.max(1, w * 0.18 * (1 - (0.55 * i) / steps));
+        g.beginPath(); g.moveTo(px, py - w * 0.2); g.lineTo(nx, ny - w * 0.2); g.stroke();
+        if (path) path.push([nx, ny]);
+        if (i > 1 && r() < 0.8) blooms.push([nx, ny, depth]);
+        if (depth < 2 && i > 1 && r() < 0.4) limb(nx, ny, a + (r() < 0.6 ? -1 : 1) * r(0.3, 0.75), len * r(0.28, 0.45), w * 0.5, depth + 1);
+        px = nx; py = ny;
+      }
+      blooms.push([px, py, depth]);
+    };
+    limb(-20 * k, 120 * k, 0.16, 760 * k, 34 * k, 0, main);
+    for (const [bx, by, depth] of blooms) {
+      const n = depth === 0 ? 12 : 16;
+      for (let f = 0; f < n; f++) {
+        const a = r(0, 6.28), d = r(0, 55) * k;
+        sakuraFlower(g, bx + Math.cos(a) * d, by + Math.sin(a) * d * 0.8 + 10 * k, r(13, 22) * k, SAKURA_PINKS[(r() * 5) | 0], r(0, 6.28));
+      }
+      g.fillStyle = "rgba(222,86,126,0.95)";
+      for (let b = 0; b < 3; b++) { g.beginPath(); g.arc(bx + r(-40, 40) * k, by + r(-30, 30) * k, r(3, 5) * k, 0, Math.PI * 2); g.fill(); }
+    }
+    // whatever reaches the right or the bottom edge fades out there, so the quad's border never shows as a cut
+    g.globalCompositeOperation = "destination-out";
+    const fr = g.createLinearGradient(S * 0.8, 0, S, 0); fr.addColorStop(0, "rgba(0,0,0,0)"); fr.addColorStop(1, "rgba(0,0,0,1)");
+    g.fillStyle = fr; g.fillRect(S * 0.8, 0, S * 0.2, S);
+    const fb = g.createLinearGradient(0, S * 0.75, 0, S); fb.addColorStop(0, "rgba(0,0,0,0)"); fb.addColorStop(1, "rgba(0,0,0,1)");
+    g.fillStyle = fb; g.fillRect(0, S * 0.75, S, S * 0.25);
+    g.globalCompositeOperation = "source-over";
+  })(c.getContext("2d"));
+  // softened by a trip through half size (ctx.filter would be simpler, but Chrome drew nothing at all with a blur set for this many strokes)
+  const tex = new THREE.CanvasTexture(rainBlur(c, S, S, 1));
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.userData.main = main.map(([x, y]) => [x / S, y / S]); // where the main limb runs, for lanterns to hang from
+  return tex;
+}
+/** A falling petal: notched at its tip, pinker at its base. */
+function sakuraPetalTex(THREE) {
+  return canvasTexture(THREE, 64, 64, (g) => {
+    const grad = g.createLinearGradient(32, 60, 32, 4);
+    grad.addColorStop(0, "#f59ab6"); grad.addColorStop(0.5, "#ffd0de"); grad.addColorStop(1, "#fff1f5");
+    g.fillStyle = grad;
+    g.beginPath(); g.moveTo(32, 62);
+    g.bezierCurveTo(8, 48, 6, 10, 24, 4); g.lineTo(32, 12); g.lineTo(40, 4); g.bezierCurveTo(58, 10, 56, 48, 32, 62);
+    g.fill();
+  });
+}
+/** The full moon: a pale disc with its seas, a little darker at the rim. */
+function sakuraMoon(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const grad = g.createRadialGradient(118, 116, 10, 128, 128, 124);
+    grad.addColorStop(0, "#fffdf4"); grad.addColorStop(0.8, "#f1ecdc"); grad.addColorStop(1, "#d8d2c2");
+    g.fillStyle = grad; g.beginPath(); g.arc(128, 128, 122, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "rgba(150,146,140,0.35)";
+    for (const [x, y, rx, ry] of [[92, 88, 34, 26], [150, 80, 26, 20], [120, 132, 22, 30], [170, 140, 30, 22], [96, 170, 18, 14], [150, 190, 22, 12]]) { g.beginPath(); g.ellipse(x, y, rx, ry, 0.4, 0, Math.PI * 2); g.fill(); }
+  });
+}
+/** A paper chōchin: R = its light (and halo), G = the paper that covers what is behind, B = ink (black caps, the character 桜). */
+function sakuraChochin(THREE) {
+  const S = 256, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d");
+  const ink = document.createElement("canvas");
+  ink.width = ink.height = S;
+  const ig = ink.getContext("2d");
+  ig.fillStyle = "#fff"; ig.font = `bold 58px "Hiragino Mincho ProN", "Yu Mincho", "Songti SC", "Noto Serif CJK JP", serif`; ig.textAlign = "center"; ig.textBaseline = "middle";
+  ig.fillText("桜", 128, 132);
+  const inkA = ig.getImageData(0, 0, S, S).data, img = g.createImageData(S, S), d = img.data;
+  const cy = 130, ry = 66, rx = 50;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const o = (y * S + x) * 4, dx = x + 0.5 - 128, dy = y + 0.5 - cy;
+    const rc = Math.hypot(dx / 1.1, dy), ramp = Math.min(1, Math.max(0, (rc - 50) / 72));
+    let light = (0.3 * Math.exp(-((rc / 60) ** 2)) + 0.08 * Math.exp(-((rc / 95) ** 2))) * (1 - ramp * ramp * (3 - 2 * ramp)), body = 0, inkV = 0;
+    const e = (dx / rx) ** 2 + (dy / ry) ** 2;
+    if (e <= 1 && Math.abs(dy) < ry - 2) {
+      let l = 0.95 - 0.35 * e; // brightest in the middle
+      if (Math.abs(((dy + ry) % 11) - 5.5) < 0.9) l *= 0.8; // the bamboo ribs
+      const cap = Math.abs(dy) > ry - 12; // black lacquered rims
+      if (cap) { l = 0.05; inkV = 1; }
+      const ia = inkA[o + 3] / 255;
+      if (ia > 0 && !cap) { l *= 1 - 0.8 * ia; inkV = Math.max(inkV, ia); }
+      light = Math.min(1, l);
+      body = Math.min(1, (1 - Math.sqrt(e)) * 8);
+    }
+    if (Math.abs(dx) < 2 && y < cy - ry && y > cy - ry - 16) { body = 1; inkV = 1; light = 0; } // the hook
+    d[o] = Math.round(255 * Math.min(1, light)); d[o + 1] = Math.round(255 * body); d[o + 2] = Math.round(255 * inkV); d[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** A pagoda roof: four concave slopes from a small top to wide eaves whose corners sweep up. */
+function sakuraRoof(THREE, top, eave, H, lift, n = 10) {
+  const pos = [], idx = [];
+  for (let side = 0; side < 4; side++) {
+    const base = pos.length / 3, c = Math.cos((side * Math.PI) / 2), s = Math.sin((side * Math.PI) / 2);
+    for (let j = 0; j <= 5; j++) {
+      const v = j / 5, half = top / 2 + (eave / 2 - top / 2) * v, y = H * (1 - v) * (1 - v);
+      for (let i = 0; i <= n; i++) {
+        const u = (i / n) * 2 - 1, lx = u * half, lz = half, up = lift * Math.pow(Math.abs(u), 3) * v * v;
+        pos.push(lx * c + lz * s, y + up, -lx * s + lz * c);
+      }
+    }
+    for (let j = 0; j < 5; j++) for (let i = 0; i < n; i++) { const a = base + j * (n + 1) + i, b = a + 1, cc = a + n + 1, d = cc + 1; idx.push(a, cc, b, b, cc, d); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+/** A five-storey pagoda standing at y = 0: vermilion posts and beams, white walls, dark roofs, railings (in the accent colour), a bronze spire. */
+function sakuraPagoda(THREE) {
+  const at = (x, y, z, sx = 1, sy = 1, sz = 1) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
+  const box = new THREE.BoxGeometry(1, 1, 1), red = [], white = [], roofs = [], trim = [], gold = [];
+  const Hs = [3.4, 2.6, 2.5, 2.4, 2.3];
+  white.push([box, at(0, 0.8, 0, 11, 1.6, 11)]); // the stone platform (tinted by the wall material)
+  let y = 1.6;
+  Hs.forEach((h, i) => {
+    const w = 6.4 - i * 0.5;
+    white.push([box, at(0, y + h / 2, 0, w, h, w)]);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) red.push([box, at((sx * w) / 2, y + h / 2, (sz * w) / 2, 0.42, h, 0.42)]);
+    for (const off of [-w / 6, w / 6]) for (const [ax, az] of [[off, w / 2], [off, -w / 2], [w / 2, off], [-w / 2, off]]) red.push([box, at(ax, y + h / 2, az, 0.3, h, 0.3)]);
+    red.push([box, at(0, y + h - 0.22, 0, w + 0.14, 0.44, w + 0.14)]);
+    red.push([box, at(0, y + h + 0.25, 0, w * 1.22, 0.5, w * 1.22)]); // the bracket layer under the eaves
+    if (i === 0) roofs.push([box, at(0, y + 1.3, w / 2 + 0.01, 1.6, 2.4, 0.05)]); // the door
+    if (i > 0) { // a balcony railing round each upper storey
+      const rw = w + 1.1;
+      for (const [sx, sz] of [[rw, 0.12], [0.12, rw]]) for (const s of [-1, 1]) trim.push([box, at(sx === rw ? 0 : (s * rw) / 2, y + 0.55, sz === rw ? 0 : (s * rw) / 2, sx, 0.14, sz)]);
+      for (let k = 0; k < 4; k++) for (const s of [-1, 1]) { const t = -rw / 2 + (k + 0.5) * (rw / 4); trim.push([box, at(t, y + 0.3, (s * rw) / 2, 0.1, 0.5, 0.1)]); trim.push([box, at((s * rw) / 2, y + 0.3, t, 0.1, 0.5, 0.1)]); }
+    }
+    roofs.push([sakuraRoof(THREE, w * 0.9, w * 2.05, 1.35, 0.75), at(0, y + h + 0.45, 0)]);
+    y += h + 1.5;
+  });
+  gold.push([new THREE.CylinderGeometry(0.16, 0.2, 9, 10), at(0, y + 4.1, 0)]);
+  for (let k = 0; k < 9; k++) gold.push([new THREE.TorusGeometry(0.55 - k * 0.02, 0.08, 6, 20), new THREE.Matrix4().compose(new THREE.Vector3(0, y + 1.4 + k * 0.6, 0), new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), new THREE.Vector3(1, 1, 1))]);
+  gold.push([new THREE.SphereGeometry(0.34, 12, 8), at(0, y + 8.9, 0)]);
+  gold.push([new THREE.ConeGeometry(0.28, 1.0, 10), at(0, y + 9.6, 0)]);
+  return { red: mergeParts(THREE, red), white: mergeParts(THREE, white), roof: mergeParts(THREE, roofs), trim: mergeParts(THREE, trim), gold: mergeParts(THREE, gold), height: y + 10 };
+}
+/** Grass strewn with fallen cherry petals, tiling. */
+function sakuraGrass(THREE, S) {
+  const r = koiRng(606);
+  const tex = canvasTexture(THREE, S, S, (g) => {
+    g.fillStyle = "#4f6d3c"; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < S * 6; i++) { // blades and tufts in a few greens
+      g.strokeStyle = ["#3d5a30", "#5f7f45", "#6e8f4e", "#46663a"][(r() * 4) | 0]; g.lineWidth = r(0.6, 1.6) * (S / 512);
+      const x = r(0, S), y = r(0, S); g.beginPath(); g.moveTo(x, y); g.lineTo(x + r(-2, 2), y - r(2, 6) * (S / 512)); g.stroke();
+    }
+    for (let i = 0; i < S * 1.4; i++) { // fallen petals, gathered in drifts
+      const x = r(0, S), y = r(0, S), drift = 0.5 + 0.5 * Math.sin(x * 0.02 + Math.sin(y * 0.015) * 2);
+      if (r() > drift) continue;
+      g.fillStyle = SAKURA_PINKS[(r() * 5) | 0]; g.beginPath(); g.ellipse(x, y, r(1.2, 2.4) * (S / 512), r(0.8, 1.5) * (S / 512), r(0, 3.14), 0, Math.PI * 2); g.fill();
+    }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+/** The mound the pagoda stands on: a grassy hill rising out of the lake (textured, shaded by vertex colours). */
+function sakuraMound(THREE) {
+  const g = new THREE.SphereGeometry(1, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2), p = g.attributes.position, uv = g.attributes.uv, col = [];
+  const c = new THREE.Color(), earth = new THREE.Color("#4a3e30");
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = lhNoise3(x * 3 + 2, y * 3, z * 3);
+    p.setXYZ(i, x * 95, y * (12 + 3 * n) - 0.6, z * 34);
+    uv.setXY(i, (x * 95) / 24, (z * 34) / 24); // the grass texture tiles every 24 m, seen from above
+    c.setScalar(0.8 + 0.25 * n + 0.1 * y);
+    if (y < 0.12) c.lerp(earth, 0.7); // bare and wet where the lake laps
+    col.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+function sakura(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2204);
+  const EYE = 6, PITCH = 0.05; // standing on the shore, looking a little up at the mountain
+  camera.fov = 50; camera.near = 0.1; camera.far = 5000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const halfW = (dist) => dist * TAN * camera.aspect;
+  const time = { value: 0 };
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const glow = keep(lhGlow(THREE));
+  const accent = new THREE.Color();
+  // everything above the water is in `world`: drawn twice, the second time mirrored into the lake. Double-sided (the mirror turns faces round), one pass each.
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, ...extra }));
+  const plain = (opts) => keep(new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, fog: false, ...opts }));
+  const std = (opts) => keep(new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, forceSinglePass: true, ...opts }));
+  const world = new THREE.Group();
+  scene.add(world);
+  const layer = (mat, x, y, z, w, h, order, parent = world) => { const m = new THREE.Mesh(quad, mat); m.position.set(x, y, z); m.scale.set(w, h, 1); m.renderOrder = order; m.frustumCulled = false; parent.add(m); return m; };
+
+  /* --- light for the pagoda, the mound and the trees (mirrored along with them in the reflection) --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 1);
+  const flood = new THREE.PointLight(0xffb070, 0, 0, 2); // the floodlights on the pagoda at night
+  scene.add(hemi, sun, flood);
+
+  /* --- the sky, the stars and the full moon --- */
+  const skyUni = {
+    uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(0.66, 0.64, -0.38).normalize() }, uSunColor: { value: new THREE.Color("#fff4dc") }, uSun: { value: 0 },
+  };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(4200, 40, 24)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { transparent: false, depthTest: false }));
+  sky.position.set(0, EYE, 0); sky.renderOrder = -10; sky.frustumCulled = false;
+  world.add(sky);
+  const NSTAR = preview ? 300 : 900, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.04, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 3800, EYE + Math.sin(e) * 3800, Math.sin(a) * Math.cos(e) * 3800], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = 1; stars.frustumCulled = false;
+  world.add(stars);
+  const moonHalo = layer(plain({ map: glow, blending: THREE.AdditiveBlending, color: 0x9fb2e0 }), 0, 0, -2560, 700, 700, 2);
+  const moon = layer(plain({ map: keep(sakuraMoon(THREE)) }), 0, 0, -2550, 160, 160, 2);
+
+  /* --- Mount Fuji, clouds on its flanks, the far shore --- */
+  const fujiUni = { uRock: { value: new THREE.Color() }, uRockLit: { value: new THREE.Color() }, uSnow: { value: new THREE.Color() }, uSnowShade: { value: new THREE.Color() }, uForest: { value: new THREE.Color() }, uHaze: skyUni.uHorizon };
+  const FUJI_W = 5400, FUJI_H = 820;
+  const fuji = layer(shader(LANTERN_LAYER_VS, SAKURA_FUJI_FS, fujiUni), 0, FUJI_H / 2 - 40, -2600, FUJI_W, FUJI_H, 3);
+  const mist = keep(inkMist(THREE));
+  const cloudMat = plain({ map: mist });
+  const clouds = [[0, 800, 620, 46], [-900, 330, 1500, 90], [800, 250, 1300, 80]].map(([x, y, w, h]) => ({ m: layer(cloudMat, x, y, -2540, w, h, 4), x, speed: r(1.5, 3) }));
+  const hillUni = { uMask: { value: keep(lanternHills(THREE, preview ? 1024 : 2048, preview ? 96 : 160)) }, uFar: { value: new THREE.Color() }, uNear: { value: new THREE.Color() } };
+  layer(shader(LANTERN_LAYER_VS, LANTERN_HILLS_FS, hillUni), 0, 38, -1100, 3800, 76, 5);
+  const hazeMat = plain({ map: mist });
+  const haze = layer(hazeMat, 0, 6, -900, 3200, 26, 6); // morning mist lying on the water by the far shore
+
+  /* --- the pagoda on its mound among the cherry trees --- */
+  const pg = new THREE.Group();
+  world.add(pg);
+  const moundMat = std({ vertexColors: true, roughness: 1, map: keep(sakuraGrass(THREE, preview ? 256 : 512)) });
+  const MOX = -32; // the hill's middle lies left of the pagoda; it runs on off the left edge
+  const mound = new THREE.Mesh(keep(sakuraMound(THREE)), moundMat);
+  mound.position.x = MOX;
+  pg.add(mound);
+  const moundY = (x, z) => { const q = 1 - ((x - MOX) / 95) ** 2 - (z / 34) ** 2; return q > 0 ? 12.4 * Math.sqrt(q) - 0.6 : -0.6; };
+  const P = sakuraPagoda(THREE);
+  const redMat = std({ color: 0xc53a22, roughness: 0.7 }), whiteMat = std({ color: 0xefe8dc, roughness: 0.85 }), roofMat = std({ color: 0x3b4047, roughness: 0.75 });
+  const trimMat = std({ roughness: 0.6 }), goldMat = std({ color: 0xb8913f, metalness: 0.6, roughness: 0.4 }), barkMat = std({ color: 0x3a2a26, roughness: 0.9 });
+  const pagoda = new THREE.Group();
+  pagoda.position.set(0, moundY(0, 0) - 0.4, 0);
+  for (const [geo, mat] of [[P.red, redMat], [P.white, whiteMat], [P.roof, roofMat], [P.trim, trimMat], [P.gold, goldMat]]) pagoda.add(new THREE.Mesh(keep(geo), mat));
+  pg.add(pagoda);
+  flood.position.set(0, 14, 16); // follows the group in layout()
+  // cherry trees round the pagoda: a trunk and branches, a canopy of blossom clusters (smaller ones in front, framing the pagoda's foot)
+  const TREES = [[-36, 4, 6.8], [-24, -12, 7.2], [-13, 15, 5.2], [14, 13, 5.6], [25, -9, 7.6], [37, 7, 6.2], [-47, -3, 5.2], [48, -2, 5.4], [3, -21, 6.6], [-4, 22, 4.2], [31, 19, 4.6], [-30, 20, 4.4],
+    [-62, 8, 7], [-74, -10, 7.8], [-88, 6, 6.4], [-100, -6, 7.2], [-58, 24, 4.6], [-84, 22, 4.2], [-112, 12, 6], [52, 16, 3.6], [-120, -8, 6.8]];
+  const LANTERN_PATH = [];
+  for (let i = 0; i < 14; i++) { const x = -44 + (i * 88) / 13, z = 24 + 3 * Math.sin(i * 0.9); LANTERN_PATH.push([x, Math.max(0.2, moundY(x, z)) + 2.0, z]); }
+  const trunkParts = [], blooms = [];
+  for (const [tx, tz, R] of TREES) {
+    const gy = Math.max(0, moundY(tx, tz)), th = R * 0.95, lean = r(-0.12, 0.12);
+    const top = new THREE.Vector3(tx + lean * th, gy + th, tz);
+    const trunk = new THREE.CylinderGeometry(R * 0.045, R * 0.08, th, 7);
+    trunk.translate(0, th / 2, 0);
+    trunkParts.push([trunk, new THREE.Matrix4().compose(new THREE.Vector3(tx, gy, tz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -lean)), new THREE.Vector3(1, 1, 1))]);
+    for (let b = 0; b < 3; b++) {
+      const a = (b / 3) * Math.PI * 2 + r(0, 1), len = R * r(0.7, 1.0), br = new THREE.CylinderGeometry(R * 0.02, R * 0.045, len, 5);
+      br.translate(0, len / 2, 0);
+      const dir = new THREE.Vector3(Math.cos(a) * 0.8, 0.6, Math.sin(a) * 0.5).normalize();
+      trunkParts.push([br, new THREE.Matrix4().compose(top, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir), new THREE.Vector3(1, 1, 1))]);
+    }
+    const n = Math.round(8 + R * 2.2);
+    for (let k = 0; k < n; k++) {
+      const u = r(0, Math.PI * 2), v = Math.acos(r(-0.3, 1)), rr = Math.cbrt(r(0.3, 1));
+      const p = new THREE.Vector3(top.x + Math.cos(u) * Math.sin(v) * R * 1.15 * rr, top.y + R * 0.35 + Math.cos(v) * R * 0.6 * rr, top.z + Math.sin(u) * Math.sin(v) * R * 0.9 * rr);
+      let lamp = 0;
+      for (const [lx, ly, lz] of LANTERN_PATH) lamp = Math.max(lamp, Math.max(0, 1 - Math.hypot(p.x - lx, p.y - ly, p.z - lz) / 11));
+      lamp = Math.max(lamp * lamp, 0.35 * Math.max(0, 1 - Math.hypot(p.x, p.z - 6) / 26)); // and the floodlit pagoda
+      blooms.push({ p, size: R * r(0.42, 0.62), cell: (r() * 4) | 0, phase: r(0, 6.28), lamp, tint: r(0.9, 1.05) });
+    }
+  }
+  pg.add(new THREE.Mesh(keep(mergeParts(THREE, trunkParts)), barkMat));
+  const clusterTex = keep(sakuraClusters(THREE, preview ? 256 : 512));
+  const bloomGeo = keep(new THREE.PlaneGeometry(1, 1));
+  const aBloom = new THREE.InstancedBufferAttribute(new Float32Array(blooms.length * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(blooms.length * 3), 3);
+  bloomGeo.setAttribute("aBloom", aBloom); bloomGeo.setAttribute("aTint", aTint);
+  const bloomUni = { uMap: { value: clusterTex }, uFlip: { value: 1 }, uTime: time, uLight: { value: new THREE.Color() }, uLamp: { value: new THREE.Color() } };
+  const bloomMesh = new THREE.InstancedMesh(bloomGeo, keep(new THREE.ShaderMaterial({ uniforms: bloomUni, vertexShader: SAKURA_BLOOM_VS, fragmentShader: SAKURA_BLOOM_FS, side: THREE.DoubleSide, forceSinglePass: true, alphaToCoverage: true })), blooms.length);
+  const M4 = new THREE.Matrix4();
+  blooms.sort((a, b) => a.p.z - b.p.z).forEach((b, i) => { bloomMesh.setMatrixAt(i, M4.makeTranslation(b.p.x, b.p.y, b.p.z)); aBloom.setXYZW(i, b.size, b.cell, b.phase, b.lamp); aTint.setXYZ(i, b.tint, b.tint * r(0.96, 1.02), b.tint); });
+  bloomMesh.frustumCulled = false;
+  pg.add(bloomMesh);
+  // lanterns along the path round the mound (lit at night), reflected in the lake
+  const chochin = keep(sakuraChochin(THREE));
+  const makeLanterns = (count, parent, order) => {
+    const geo = keep(new THREE.PlaneGeometry(1, 1)), aL = new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4), aT = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+    geo.setAttribute("aLantern", aL); geo.setAttribute("aTint", aT);
+    const uni = { uMap: { value: chochin }, uFlip: { value: 1 }, uTime: time, uNight: { value: 0 } };
+    const mesh = new THREE.InstancedMesh(geo, shader(LANTERN_VS, SAKURA_CHOCHIN_FS, uni, { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor }), count);
+    mesh.frustumCulled = false; mesh.renderOrder = order;
+    parent.add(mesh);
+    return { mesh, aL, aT, uni };
+  };
+  const far = makeLanterns(LANTERN_PATH.length, pg, 12);
+  const lanternTints = [new THREE.Color("#fff3e0"), new THREE.Color("#ff6a4a"), accent]; // white paper, red paper, and the accent colour
+  LANTERN_PATH.forEach(([x, y, z], i) => { far.mesh.setMatrixAt(i, M4.makeTranslation(x, y, z)); far.aL.setXYZW(i, 0.9, r(0, 10), 1.6, 1); });
+
+  /* --- the lake: the mirrored world, broken by ripples --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); // multisampled: the blossom cut-outs stay smooth in the mirror
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const lakeUni = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: time, uDeep: { value: new THREE.Color() }, uSheen: { value: new THREE.Color() } };
+  const lakeGeo = keep(new THREE.PlaneGeometry(8000, 8000));
+  lakeGeo.rotateX(-Math.PI / 2);
+  const lake = new THREE.Mesh(lakeGeo, keep(new THREE.ShaderMaterial({ uniforms: lakeUni, vertexShader: LANTERN_LAKE_VS, fragmentShader: LANTERN_LAKE_FS })));
+  lake.position.z = -3900; lake.renderOrder = -5; lake.frustumCulled = false;
+  scene.add(lake);
+
+  /* --- close by: branches in bloom at the top corners, a string of lanterns between them, petals in the air and on the water --- */
+  const near = new THREE.Group(); // not in the reflection
+  scene.add(near);
+  const branchMat = plain({ map: keep(sakuraBranch(THREE, preview ? 512 : 1024, 77)) });
+  const branches = [-1, 1].map((side) => { const pivot = new THREE.Group(), m = new THREE.Mesh(quad, branchMat); m.position.set(0.5, -0.5, 0); m.renderOrder = 22; m.frustumCulled = false; pivot.add(m); pivot.scale.x = -side; near.add(pivot); return { pivot, m, side }; });
+  const HANG = [[-1, 0.3, 0.9], [-1, 0.52, 0.55], [-1, 0.74, 1.05], [1, 0.4, 0.7], [1, 0.63, 1.0]]; // branch, how far along its limb, cord length
+  const FEST = HANG.length, fest = makeLanterns(FEST, near, 21);
+  const cordMat = keep(new THREE.MeshBasicMaterial({ color: 0x2a1c1a }));
+  let cords = null, hungAt = 0;
+  const NP = preview ? 160 : 560, petalGeo = keep(new THREE.InstancedBufferGeometry()), petalBase = keep(new THREE.PlaneGeometry(1, 1));
+  petalGeo.index = petalBase.index; petalGeo.setAttribute("position", petalBase.attributes.position); petalGeo.setAttribute("uv", petalBase.attributes.uv);
+  petalGeo.setAttribute("aSeed", new THREE.InstancedBufferAttribute(Float32Array.from({ length: NP * 4 }, () => r()), 4));
+  petalGeo.instanceCount = NP;
+  const petalTex = keep(sakuraPetalTex(THREE));
+  const petalUni = { uTime: time, uBoxC: { value: new THREE.Vector3(0, 8, -24) }, uBox: { value: new THREE.Vector3(70, 16, 44) }, uWind: { value: new THREE.Vector2(1.1, 0.25) }, uSize: { value: 0.13 }, uMap: { value: petalTex }, uLight: { value: new THREE.Color() } };
+  const petals = new THREE.Mesh(petalGeo, keep(new THREE.ShaderMaterial({ uniforms: petalUni, vertexShader: SAKURA_PETAL_VS, fragmentShader: SAKURA_PETAL_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide })));
+  petals.frustumCulled = false; petals.renderOrder = 20;
+  near.add(petals);
+  const NF = preview ? 120 : 420, floatGeo = keep(new THREE.InstancedBufferGeometry()), fseed = new Float32Array(NF * 4);
+  floatGeo.index = petalBase.index; floatGeo.setAttribute("position", petalBase.attributes.position); floatGeo.setAttribute("uv", petalBase.attributes.uv);
+  for (let i = 0; i < NF; i++) { const c = (i * 7) % 11, cxs = ((c * 0.618) % 1), czs = ((c * 0.377) % 1); fseed.set([cxs + r(-0.05, 0.05), 0.5, czs + r(-0.06, 0.06), r()], i * 4); } // drifting in loose rafts
+  floatGeo.setAttribute("aSeed", new THREE.InstancedBufferAttribute(fseed, 4));
+  floatGeo.instanceCount = NF;
+  const floatUni = { uTime: time, uBoxC: { value: new THREE.Vector3(0, 0, -34) }, uBox: { value: new THREE.Vector3(70, 1, 60) }, uSize: { value: 0.16 }, uMap: { value: petalTex }, uLight: petalUni.uLight };
+  const floating = new THREE.Mesh(floatGeo, keep(new THREE.ShaderMaterial({ uniforms: floatUni, vertexShader: SAKURA_FLOAT_VS, fragmentShader: SAKURA_PETAL_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide })));
+  floating.frustumCulled = false; floating.renderOrder = 2;
+  near.add(floating);
+
+  /* --- the reflection: before the sky is drawn, the world is drawn mirrored into a texture the lake shows --- */
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  const flip = (s) => {
+    bloomUni.uFlip.value = s; far.uni.uFlip.value = s;
+    sun.position.y = Math.abs(sun.position.y) * s; flood.position.y = Math.abs(flood.position.y) * s; // the light comes from below in the mirror image
+    const c = hemi.color.clone(); hemi.color.copy(hemi.groundColor); hemi.groundColor.copy(c);
+  };
+  sky.onBeforeRender = (renderer, sc, cam) => {
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf);
+    lakeUni.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    world.scale.y = -1; lake.visible = false; near.visible = false; flip(-1);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT);
+    renderer.render(sc, cam);
+    renderer.setRenderTarget(before);
+    world.scale.y = 1; lake.visible = true; near.visible = true; flip(1);
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    skyUni.uZenith.value.set(d ? "#040a1c" : "#3f7cc9"); skyUni.uMid.value.set(d ? "#0c1838" : "#94c0e8"); skyUni.uHorizon.value.set(d ? "#22305a" : "#e4eff6");
+    skyUni.uGlow.value.set(d ? "#3c2c3a" : "#fff0dc").multiplyScalar(d ? 0.5 : 0.25); skyUni.uSun.value = d ? 0 : 1;
+    starMat.opacity = d ? 0.85 : 0; moon.visible = moonHalo.visible = d; moonHalo.material.opacity = 0.55;
+    fujiUni.uRock.value.set(d ? "#131a2b" : "#62768f"); fujiUni.uRockLit.value.set(d ? "#1e2842" : "#8395ad"); fujiUni.uSnow.value.set(d ? "#b6c3e0" : "#f8fafd");
+    fujiUni.uSnowShade.value.set(d ? "#6b7ca3" : "#c3d0e2"); fujiUni.uForest.value.set(d ? "#0b111f" : "#3f5a57");
+    cloudMat.color.set(d ? "#2c3a64" : "#ffffff"); cloudMat.opacity = d ? 0.3 : 0.85;
+    hazeMat.color.set(d ? "#1a2548" : "#ffffff"); hazeMat.opacity = d ? 0.25 : 0.55;
+    hillUni.uFar.value.set(d ? "#101a33" : "#7d9aaf"); hillUni.uNear.value.set(d ? "#0a1024" : "#56766f");
+    hemi.color.set(d ? "#2e3a62" : "#dcebff"); hemi.groundColor.set(d ? "#0a0a10" : "#6a5c48"); hemi.intensity = d ? 0.55 : 1.3;
+    sun.color.set(d ? "#aab8e0" : "#fff2dc"); sun.intensity = d ? 0.45 : 2.2;
+    sun.position.set(d ? 25 : 66, d ? 36 : 64, d ? -90 : -38); // the moon ahead to the right; the morning sun high on the right
+    flood.intensity = d ? 700 : 0;
+    redMat.emissive.set(d ? "#46140b" : "#000000"); whiteMat.emissive.set(d ? "#32281e" : "#000000"); roofMat.emissive.set(d ? "#0b0c10" : "#000000");
+    trimMat.color.copy(accent);
+    bloomUni.uLight.value.set(d ? "#6570a0" : "#ffffff").multiplyScalar(d ? 0.6 : 1); bloomUni.uLamp.value.set("#ffae6a").multiplyScalar(d ? 1.1 : 0);
+    lakeUni.uDeep.value.set(d ? "#02040c" : "#284d69"); lakeUni.uSheen.value.set(d ? "#ffcf8a" : "#ffffff").multiplyScalar(d ? 0.3 : 0.45);
+    petalUni.uLight.value.set(d ? "#8088b8" : "#ffffff").multiplyScalar(d ? 0.75 : 1);
+    branchMat.color.set(d ? "#7a80a8" : "#ffffff");
+    far.uni.uNight.value = fest.uni.uNight.value = d ? 1 : 0; far.mesh.visible = d; // far off, unlit paper lanterns only read as confetti
+    const tintAll = (L, count) => { for (let i = 0; i < count; i++) { const c = lanternTints[i % 3 === 2 ? 2 : i % 2]; L.aT.setXYZ(i, c.r, c.g, c.b); } L.aT.needsUpdate = true; };
+    tintAll(far, LANTERN_PATH.length); tintAll(fest, FEST);
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function layout() {
+    const A = camera.aspect || 1;
+    const fx = halfW(2600) * 0.12;
+    fuji.position.x = fx;
+    moon.position.set(fx + 400, 860, -2550); moonHalo.position.set(fx + 400, 860, -2560); // rising over the mountain's right shoulder
+    pg.position.set(-halfW(125) * (A >= 1 ? 0.5 : 0.38), 0, -125);
+    flood.position.set(pg.position.x, 14, -109);
+    // the branches hang into the top corners, the lanterns on a rope between them
+    const z = 9, hw = halfW(z), top = EYE + Math.tan(Math.atan(TAN) + PITCH) * z, s = Math.max(3.4, hw * 0.75); // they frame the top corners, no more
+    for (const b of branches) { b.pivot.position.set(b.side * (hw + 0.4), top + 0.25, -z); b.m.scale.set(s, s, 1); b.m.position.set(s / 2, -s / 2, 0); } // hung from its top corner
+    if (hungAt !== s + A) { // lanterns on cords from points along each branch's main limb
+      hungAt = s + A;
+      const main = branchMat.map.userData.main, parts = [];
+      HANG.forEach(([side, f, cord], i) => {
+        const [u, v] = main[Math.min(main.length - 1, Math.round(f * (main.length - 1)))];
+        const b = branches[side < 0 ? 0 : 1], x = b.pivot.position.x - side * u * s, y = b.pivot.position.y - v * s;
+        if (camera.aspect >= 0.8 || i % 2 === 0) parts.push([new THREE.CylinderGeometry(0.01, 0.01, cord, 4), new THREE.Matrix4().makeTranslation(x, y - cord / 2, -z - 0.05)]);
+        fest.mesh.setMatrixAt(i, M4.makeTranslation(x, y - cord - 0.3, -z - 0.05));
+        fest.aL.setXYZW(i, 0.58, r(0, 10), 1.5, camera.aspect < 0.8 && i % 2 ? 0 : 1); // a narrow screen only has room for every other one
+      });
+      fest.mesh.instanceMatrix.needsUpdate = fest.aL.needsUpdate = true;
+      if (cords) { near.remove(cords); cords.geometry.dispose(); }
+      cords = new THREE.Mesh(mergeParts(THREE, parts), cordMat);
+      cords.renderOrder = 21;
+      near.add(cords);
+    }
+  }
+  function frame(dt, t) {
+    time.value = t;
+    layout();
+    const cx = Math.sin(t * 0.02) * 0.6;
+    camera.position.set(cx, EYE + Math.sin(t * 0.045) * 0.04, 0);
+    camera.lookAt(look.set(cx * 0.3, EYE + Math.tan(PITCH) * 100, -100));
+    for (const c of clouds) { c.m.position.x = c.x + fuji.position.x + Math.sin(t * 0.01 * c.speed) * 60; }
+    for (const b of branches) b.pivot.rotation.z = b.side * (Math.sin(t * 0.5 + b.side) * 0.012 + Math.sin(t * 1.3) * 0.004);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    dispose() { cords?.geometry.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
