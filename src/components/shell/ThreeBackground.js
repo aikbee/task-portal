@@ -9407,7 +9407,585 @@ function hotair(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair };
+/* ---------- Coral reef: on the sand of a sunlit reef; rays and caustics, corals swaying, a turtle passing, a school of fish round the pointer ---------- */
+// the caustic pattern: where two ridged noises cross, the light the surface focuses on to whatever is below
+const REEF_CAUST = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime;
+  float reefCaust(vec2 p) {
+    float a = texture2D(uNoise, p * 0.06 + vec2(uTime * 0.018, uTime * 0.011)).r;
+    float b = texture2D(uNoise, p * 0.09 - vec2(uTime * 0.014, -uTime * 0.02)).g;
+    float rr = (1.0 - abs(2.0 * a - 1.0)) * (1.0 - abs(2.0 * b - 1.0));
+    return pow(rr, 1.6) * 2.5 + pow(rr, 6.0) * 6.0;
+  }
+`;
+// the water all round: deep blue below, brighter towards the surface, the sky in Snell's window overhead, the sun above it
+const REEF_WATER_FS = /* glsl */ `
+  ${REEF_CAUST}
+  uniform vec3 uDeep; uniform vec3 uMid; uniform vec3 uUp; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uWindow;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir);
+    vec3 col = mix(uDeep, uMid, smoothstep(-0.35, 0.12, d.y));
+    col = mix(col, uUp, smoothstep(0.08, 0.75, d.y));
+    vec2 sp = d.xz / max(d.y, 0.06) * 6.0;
+    float rip = texture2D(uNoise, sp * 0.04 + uTime * 0.01).r;
+    float win = smoothstep(0.22, 0.6, d.y + (rip - 0.5) * 0.35);
+    col += uUp * win * uWindow * (0.42 + 0.06 * reefCaust(sp));
+    float sd = distance(d, uSunDir);
+    col += uSunCol * (0.7 * exp(-sd * 9.0) + 0.18 * exp(-sd * 2.2)) * smoothstep(0.0, 0.3, d.y);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the rays: marched from the eye; each sample is lit by the caustic at the surface point its light came through, fading with depth
+const REEF_RAY_FS = /* glsl */ `
+  ${REEF_CAUST}
+  uniform vec3 uSunDir; uniform vec3 uColor; uniform float uSurf; uniform float uFloorY; uniform float uAbsorb;
+  varying vec3 vWorld;
+  void main() {
+    vec3 ro = cameraPosition, rd = normalize(vWorld - cameraPosition);
+    float t1 = REEF_RANGE;
+    if (rd.y < 0.0) t1 = min(t1, (uFloorY - ro.y) / rd.y);
+    if (rd.y > 0.0) t1 = min(t1, (uSurf - ro.y) / rd.y);
+    float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float dt = t1 / float(REEF_STEPS), sum = 0.0;
+    for (int i = 0; i < REEF_STEPS; i++) {
+      float t = dt * (float(i) + j);
+      vec3 x = ro + rd * t;
+      vec2 s = x.xz + uSunDir.xz * (uSurf - x.y) / uSunDir.y;
+      sum += reefCaust(s * 0.5) * exp(-(uSurf - x.y) * uAbsorb) * exp(-t * 0.03);
+    }
+    float toward = 1.0 + 1.5 * pow(max(dot(rd, uSunDir), 0.0), 4.0);
+    gl_FragColor = vec4(uColor * (sum * dt / REEF_RANGE) * toward, 1.0); // the average along the ray, so the gain is in plain units
+  }
+`;
+const REEF_FLOOR_VS = /* glsl */ `
+  varying vec3 vWorld; varying vec3 vN; varying vec2 vUv; varying vec3 vTint;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vUv = uv; vTint = color; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const REEF_FLOOR_FS = /* glsl */ `
+  ${REEF_CAUST}
+  uniform sampler2D uMap; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform float uCaustic; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec3 vWorld; varying vec3 vN; varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    vec3 N = normalize(vN);
+    vec3 sand = texture2D(uMap, vUv).rgb * vTint;
+    vec3 col = sand * (uAmb + uSunCol * (max(dot(N, uSunDir), 0.0) * 0.8 + reefCaust(vWorld.xz) * uCaustic));
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// corals, fans and weed: one shader for every kind; aSway says how far each vertex follows the surge (0 at the base)
+const REEF_CORAL_VS = /* glsl */ `
+  uniform float uTime;
+  attribute float aSway;
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway;
+  void main() {
+    vec3 p = position;
+    vec2 at = instanceMatrix[3].xz;
+    float ph = at.x * 0.7 + at.y * 0.9;
+    float s = aSway * (0.12 * sin(uTime * 1.1 + ph) + 0.05 * sin(uTime * 2.3 + ph * 1.7));
+    p.x += s; p.z += s * 0.6;
+    vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+    vWorld = w.xyz; vN = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+    #ifdef USE_INSTANCING_COLOR
+      vCol = instanceColor;
+    #else
+      vCol = vec3(1.0);
+    #endif
+    vUv = uv; vSway = aSway;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const REEF_CORAL_FS = /* glsl */ `
+  ${REEF_CAUST}
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uAmbDown; uniform float uCaustic; uniform float uGlow;
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  #ifdef REEF_MAP
+    uniform sampler2D uMap;
+  #endif
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway;
+  void main() {
+    vec3 base = vCol;
+    #ifdef REEF_MAP
+      vec4 t = texture2D(uMap, vUv);
+      if (t.a < 0.5) discard;
+      base *= t.rgb;
+    #endif
+    vec3 N = normalize(vN);
+    if (!gl_FrontFacing) N = -N;
+    float diff = max(dot(N, uSunDir), 0.0);
+    vec3 col = base * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) + uSunCol * (diff * 0.9 + reefCaust(vWorld.xz) * uCaustic * max(N.y, 0.0))) * (1.0 + 0.3 * vSway);
+    col += base * base * uGlow; // fluorescence at night
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the fish: a tail that beats faster the faster it swims, silver bellies
+const REEF_FISH_VS = /* glsl */ `
+  uniform float uTime;
+  attribute vec2 aFish; // phase, beat
+  varying vec3 vN; varying vec3 vCol; varying vec3 vWorld; varying float vBelly;
+  void main() {
+    vec3 p = position;
+    p.x += sin(uTime * 9.0 * aFish.y + aFish.x - p.z * 5.0) * 0.14 * smoothstep(0.25, -0.55, p.z);
+    vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+    vWorld = w.xyz; vN = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+    #ifdef USE_INSTANCING_COLOR
+      vCol = instanceColor;
+    #else
+      vCol = vec3(1.0);
+    #endif
+    vBelly = smoothstep(0.1, -0.3, position.y);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const REEF_FISH_FS = /* glsl */ `
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uAmbDown; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec3 vN; varying vec3 vCol; varying vec3 vWorld; varying float vBelly;
+  void main() {
+    vec3 N = normalize(vN);
+    if (!gl_FrontFacing) N = -N;
+    vec3 base = mix(vCol, vec3(0.92, 0.94, 0.96), vBelly * 0.7);
+    vec3 col = base * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) + uSunCol * max(dot(N, uSunDir), 0.0));
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// plankton that lights up in a fish's wake at night: a ring buffer of sparks, each born at a time and fading out
+const REEF_SPARK_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx;
+  attribute float aBorn; attribute float aSize;
+  varying float vA;
+  void main() {
+    float age = uTime - aBorn;
+    vA = aBorn < 0.0 ? 0.0 : smoothstep(0.0, 0.1, age) * (1.0 - smoothstep(0.6, 1.6, age));
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = vA > 0.001 ? clamp(aSize * (1.0 + age) * uPx / -mv.z, 1.0, 24.0) : 0.0;
+  }
+`;
+const REEF_SPARK_FS = /* glsl */ `
+  uniform vec3 uColor;
+  varying float vA;
+  void main() { vec2 p = gl_PointCoord * 2.0 - 1.0; float r2 = dot(p, p); if (r2 > 1.0) discard; gl_FragColor = vec4(uColor * (1.0 - r2) * (1.0 - r2) * vA, 1.0); }
+`;
+const REEF_BOMMIES = [[-9, -14, 4.5, 2.6], [10, -18, 5.5, 3.2], [-3, -28, 6, 3.6], [16, -9, 3.5, 1.8], [-16, -22, 4, 2.2], [4, -40, 8, 4.5]]; // x, z, radius, height
+/** The sea floor: rippled sand with a few rocky mounds (bommies) that the corals grow on. */
+function reefFloorHeight(x, z) {
+  let h = 0.5 * lhNoise3(x * 0.06 + 3, 0, z * 0.06) + 0.22 * lhNoise3(x * 0.2, 1, z * 0.2 + 5);
+  for (const [bx, bz, rad, bh] of REEF_BOMMIES) h += bh * Math.exp(-(((x - bx) ** 2 + (z - bz) ** 2) / (rad * rad)) * 1.6) * (0.85 + 0.3 * lhNoise3(x * 0.5, 2, z * 0.5));
+  return h;
+}
+function reefRockiness(x, z) { let k = 0; for (const [bx, bz, rad] of REEF_BOMMIES) k += Math.exp(-(((x - bx) ** 2 + (z - bz) ** 2) / (rad * rad)) * 1.6); return Math.min(1, k * 1.4); }
+/** Sand: pale, rippled by the surge, speckled; tiles. */
+function reefSand(THREE, S) {
+  const r = koiRng(808), k = S / 512;
+  const tex = canvasTexture(THREE, S, S, (g) => {
+    g.fillStyle = "#e6d9b9"; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 24; i++) { // ripples: soft bands across, wandering a little (periodic in S so the tile joins)
+      g.strokeStyle = `rgba(150,125,90,${r(0.07, 0.16)})`; g.lineWidth = r(6, 14) * k; g.beginPath();
+      const y0 = (i / 24) * S;
+      for (let x = 0; x <= S; x += 8) g.lineTo(x, y0 + Math.sin((x / S) * Math.PI * 4 + i) * 9 * k);
+      g.stroke();
+    }
+    for (let i = 0; i < S * 5; i++) { g.fillStyle = `rgba(${r() < 0.45 ? "110,85,60" : "255,250,235"},${r(0.05, 0.14)})`; g.fillRect(r(0, S), r(0, S), r(1, 2.5) * k, r(1, 2.5) * k); }
+    for (let i = 0; i < 30; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "230,190,180" : "250,246,236"},0.8)`; g.beginPath(); g.ellipse(r(0, S), r(0, S), r(2, 4) * k, r(1.5, 3) * k, r(0, 3), 0, Math.PI * 2); g.fill(); }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+/** A sea fan: a lattice of branches spreading up from the base, white on transparent (the instance colour tints it). */
+function reefFanTex(THREE, S) {
+  const r = koiRng(4040);
+  return canvasTexture(THREE, S, S, (g) => {
+    g.strokeStyle = "#ffffff"; g.lineCap = "round";
+    const limb = (x, y, a, len, w, depth) => {
+      const steps = 5;
+      let px = x, py = y;
+      for (let i = 1; i <= steps; i++) {
+        a += r(-0.22, 0.22);
+        const nx = px + Math.cos(a) * (len / steps), ny = py - Math.sin(a) * (len / steps);
+        g.lineWidth = w * (1 - (0.5 * i) / steps); g.beginPath(); g.moveTo(px, py); g.lineTo(nx, ny); g.stroke();
+        if (depth < 4 && i > 1 && r() < 0.7) limb(nx, ny, a + (r() < 0.5 ? -1 : 1) * r(0.35, 0.8), len * r(0.4, 0.62), w * 0.6, depth + 1);
+        px = nx; py = ny;
+      }
+    };
+    g.fillStyle = "rgba(255,255,255,0.28)"; g.beginPath(); g.moveTo(S * 0.5, S * 0.98); // the mesh between the branches, a translucent fan shape
+    for (let i = 0; i <= 24; i++) { const a = Math.PI + (i / 24) * Math.PI, rad = S * (0.72 + 0.1 * Math.sin(i * 1.7)); g.lineTo(S * 0.5 + Math.cos(a) * rad * 0.62, S * 0.98 + Math.sin(a) * rad); }
+    g.closePath(); g.fill();
+    for (let k = 0; k < 9; k++) limb(S * 0.5, S * 0.98, Math.PI / 2 + (k - 4) * 0.27 + r(-0.08, 0.08), S * r(0.55, 0.85), 13 * (S / 512), 0);
+    g.lineWidth = 2.4 * (S / 512); g.strokeStyle = "rgba(255,255,255,0.85)";
+    for (let i = 0; i < 2600; i++) { const x = r(S * 0.05, S * 0.95), y = r(S * 0.1, S * 0.94), a = r(0, 6.28), l = r(5, 16) * (S / 512); if (Math.hypot((x - S / 2) / 0.62, y - S) > S * 0.78) continue; g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke(); }
+  });
+}
+/** A turtle's shell: olive scutes with dark seams. */
+function reefScutes(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    g.fillStyle = "#7a8a4c"; g.fillRect(0, 0, 256, 256);
+    const rr = koiRng(66);
+    for (let row = 0; row < 6; row++) for (let col = 0; col < 6; col++) {
+      const cx = col * 44 + (row % 2 ? 22 : 0), cy = row * 40 + 20, rad = 22;
+      g.fillStyle = `hsl(${78 + rr(-8, 8)}, ${rr(30, 42)}%, ${rr(38, 50)}%)`; g.beginPath();
+      for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2 + 0.52; g.lineTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad); }
+      g.closePath(); g.fill(); g.strokeStyle = "#2f3a22"; g.lineWidth = 3; g.stroke();
+    }
+  });
+}
+/** A bubble: a thin ring with a highlight, on transparent. */
+function reefRing(THREE) {
+  return canvasTexture(THREE, 64, 64, (g) => {
+    g.strokeStyle = "rgba(255,255,255,0.9)"; g.lineWidth = 3; g.beginPath(); g.arc(32, 32, 26, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = "rgba(255,255,255,0.35)"; g.beginPath(); g.arc(32, 32, 24, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "rgba(255,255,255,0.95)"; g.beginPath(); g.ellipse(22, 20, 6, 4, -0.6, 0, Math.PI * 2); g.fill();
+  });
+}
+/** Give a geometry its sway weights from a rule on each vertex's position. */
+function reefSway(THREE, geo, fn) {
+  const p = geo.attributes.position, a = new Float32Array(p.count);
+  for (let i = 0; i < p.count; i++) a[i] = fn(p.getX(i), p.getY(i), p.getZ(i));
+  geo.setAttribute("aSway", new THREE.BufferAttribute(a, 1));
+  return geo;
+}
+const reefAt = (THREE, x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sx, sy, sz));
+/** Staghorn coral: a stem forking into branches that fork again, base at y = 0, about 1 unit tall. */
+function reefStaghorn(THREE, r) {
+  const parts = [], up = new THREE.Vector3(0, 1, 0);
+  const branch = (from, dir, len, rad, depth) => {
+    const to = from.clone().addScaledVector(dir, len), mid = from.clone().add(to).multiplyScalar(0.5);
+    parts.push([new THREE.CylinderGeometry(rad * 0.6, rad, len, 6), new THREE.Matrix4().compose(mid, new THREE.Quaternion().setFromUnitVectors(up, dir), new THREE.Vector3(1, 1, 1))]);
+    if (depth >= 3) return;
+    for (let k = 0; k < (depth === 0 ? 4 : 2); k++) {
+      const d = dir.clone().add(new THREE.Vector3(r(-0.8, 0.8), r(0.3, 0.9), r(-0.8, 0.8))).normalize();
+      branch(to, d, len * r(0.55, 0.8), rad * 0.65, depth + 1);
+    }
+  };
+  branch(new THREE.Vector3(0, 0, 0), up, 0.32, 0.075, 0);
+  return reefSway(THREE, mergeParts(THREE, parts), (x, y) => Math.max(0, y) * 0.2);
+}
+/** A boulder or brain coral: a lumpy, squashed ball half sunk in the sand. */
+function reefBoulder(THREE, seed) {
+  const g = new THREE.IcosahedronGeometry(1, 2), p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), s = 0.86 + 0.28 * lhNoise3(x * 2 + seed, y * 2, z * 2 + seed); p.setXYZ(i, x * s, y * s * 0.7 + 0.35, z * s); }
+  g.computeVertexNormals();
+  return reefSway(THREE, g, () => 0);
+}
+/** A table coral: a flat plate on a short stalk. */
+function reefTable(THREE) {
+  const plate = new THREE.CylinderGeometry(1.1, 0.9, 0.14, 14), p = plate.attributes.position;
+  for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), d = Math.hypot(x, z); if (d > 0.5) { const s = 1 + 0.12 * Math.sin(Math.atan2(z, x) * 5); p.setXYZ(i, x * s, p.getY(i), z * s); } }
+  plate.computeVertexNormals();
+  return reefSway(THREE, mergeParts(THREE, [[new THREE.CylinderGeometry(0.12, 0.2, 0.55, 8), reefAt(THREE, 0, 0.27, 0)], [plate, reefAt(THREE, 0, 0.6, 0)]]), () => 0);
+}
+/** A sea fan: a flat quad, base at y = 0, swaying more the higher up. */
+function reefFan(THREE) {
+  const g = new THREE.PlaneGeometry(1.1, 1.3, 1, 4);
+  g.translate(0, 0.65, 0);
+  return reefSway(THREE, g, (x, y) => Math.pow(y / 1.3, 1.2));
+}
+/** A tuft of sea grass: three blades at different angles. */
+function reefGrass(THREE, r) {
+  const parts = [];
+  for (let k = 0; k < 3; k++) {
+    const b = new THREE.PlaneGeometry(0.12, 1.6, 1, 6), bp = b.attributes.position;
+    for (let i = 0; i < bp.count; i++) bp.setX(i, bp.getX(i) * (1 - 0.8 * (bp.getY(i) + 0.8) / 1.6)); // narrowing to the tip
+    b.translate(0, 0.8, 0);
+    parts.push([b, reefAt(THREE, r(-0.08, 0.08), 0, r(-0.08, 0.08), r(-0.12, 0.12), r(0, 6.28), r(-0.15, 0.15))]);
+  }
+  return reefSway(THREE, mergeParts(THREE, parts), (x, y) => Math.pow(Math.max(0, y) / 1.6, 1.5));
+}
+/** An anemone: a disc with a crown of tentacles leaning outwards. */
+function reefAnemone(THREE, r) {
+  const parts = [[new THREE.CylinderGeometry(0.34, 0.28, 0.16, 12), reefAt(THREE, 0, 0.08, 0)]];
+  for (let k = 0; k < 18; k++) {
+    const a = (k / 18) * Math.PI * 2 + r(-0.15, 0.15), lean = r(0.25, 0.75), rad = r(0.06, 0.28);
+    parts.push([new THREE.CylinderGeometry(0.02, 0.045, 0.55, 5), reefAt(THREE, Math.cos(a) * rad, 0.16 + 0.24, Math.sin(a) * rad, Math.sin(a) * lean, 0, -Math.cos(a) * lean)]);
+  }
+  return reefSway(THREE, mergeParts(THREE, parts), (x, y) => Math.max(0, (y - 0.16) / 0.55));
+}
+/** A small fish, nose towards +z, about 1.2 units long. */
+function reefFish(THREE) {
+  const tri = (pts) => { const sh = new THREE.Shape(); pts.forEach(([x, y], i) => (i ? sh.lineTo(x, y) : sh.moveTo(x, y))); sh.closePath(); const g = new THREE.ShapeGeometry(sh); g.rotateY(-Math.PI / 2); return g; }; // drawn in (z, y), then stood along the body
+  const tail = tri([[0, 0], [-0.36, 0.24], [-0.26, 0], [-0.36, -0.24]]), dorsal = tri([[0.15, 0], [-0.1, 0.2], [-0.25, 0]]), belly = tri([[0.05, 0], [-0.08, -0.14], [-0.2, 0]]);
+  return mergeParts(THREE, [[new THREE.SphereGeometry(1, 10, 7), reefAt(THREE, 0, 0, 0, 0, 0, 0, 0.11, 0.3, 0.56)], [tail, reefAt(THREE, 0, 0, -0.5)], [dorsal, reefAt(THREE, 0, 0.28, 0.05)], [belly, reefAt(THREE, 0, -0.26, -0.1)]]);
+}
+function reef(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2468);
+  const V = new THREE.Vector3(), V2 = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S3 = new THREE.Vector3(), E = new THREE.Euler();
+  camera.fov = 60; camera.near = 0.1; camera.far = 400;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const SURF = 9, EYE = 2.4;
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(glowTexture(THREE));
+  const accent = new THREE.Color();
+  const SUN = new THREE.Vector3(0.25, 0.9, -0.36).normalize();
+  const floorAt = reefFloorHeight;
+  const fogUni = { uFog: { value: new THREE.Color() }, uFogNear: { value: 6 }, uFogFar: { value: 60 } };
+  const lightUni = { uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() }, uAmbDown: { value: new THREE.Color() }, uCaustic: { value: 0.5 } };
+  const common = { uNoise: { value: noise }, uTime: time, ...fogUni, ...lightUni };
+
+  /* --- light for the turtle (a standard material), and the fog for it --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.position.copy(SUN).multiplyScalar(30);
+  scene.add(hemi, sun);
+  scene.fog = new THREE.Fog(0x1e8fc0, 6, 60);
+
+  /* --- the water: all round, with the surface overhead; the rays, marched through it --- */
+  const waterUni = { ...common, uDeep: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uUp: { value: new THREE.Color() }, uWindow: { value: 1 } };
+  const water = new THREE.Mesh(keep(new THREE.SphereGeometry(300, 32, 20)), keep(new THREE.ShaderMaterial({ uniforms: waterUni, vertexShader: LANTERN_SKY_VS, fragmentShader: REEF_WATER_FS, side: THREE.BackSide, depthWrite: false, depthTest: false })));
+  water.renderOrder = -10; water.frustumCulled = false;
+  scene.add(water);
+  const rayUni = { ...common, uColor: { value: new THREE.Color() }, uSurf: { value: SURF }, uFloorY: { value: 0 }, uAbsorb: { value: 0.09 } };
+  const rays = new THREE.Mesh(keep(new THREE.SphereGeometry(80, 24, 12)), keep(new THREE.ShaderMaterial({ uniforms: rayUni, vertexShader: OBS_WORLD_VS, fragmentShader: REEF_RAY_FS, defines: { REEF_STEPS: preview ? 7 : 12, REEF_RANGE: "55.0" }, side: THREE.BackSide, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending })));
+  rays.renderOrder = 6; rays.frustumCulled = false;
+  scene.add(rays);
+
+  /* --- the sand and the bommies --- */
+  const floorGeo = keep(new THREE.PlaneGeometry(220, 220, preview ? 60 : 110, preview ? 60 : 110));
+  floorGeo.rotateX(-Math.PI / 2);
+  floorGeo.translate(0, 0, -40);
+  {
+    const p = floorGeo.attributes.position, uv = floorGeo.attributes.uv, col = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), z = p.getZ(i), rock = reefRockiness(x, z);
+      p.setY(i, floorAt(x, z));
+      uv.setXY(i, x / 6, z / 6);
+      col.set([1 - 0.45 * rock, 1 - 0.5 * rock, 1 - 0.52 * rock], i * 3);
+    }
+    floorGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    floorGeo.computeVertexNormals();
+  }
+  const floorUni = { ...common, uMap: { value: keep(reefSand(THREE, preview ? 256 : 512)) } };
+  const floor = new THREE.Mesh(floorGeo, keep(new THREE.ShaderMaterial({ uniforms: floorUni, vertexShader: REEF_FLOOR_VS, fragmentShader: REEF_FLOOR_FS, vertexColors: true })));
+  floor.frustumCulled = false;
+  scene.add(floor);
+
+  /* --- the corals: six kinds, instanced, growing thickest on the bommies --- */
+  const coralUni = { ...common, uGlow: { value: 0 } };
+  const coralMat = keep(new THREE.ShaderMaterial({ uniforms: coralUni, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS }));
+  const leafMat = keep(new THREE.ShaderMaterial({ uniforms: coralUni, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS, side: THREE.DoubleSide }));
+  const fanMat = keep(new THREE.ShaderMaterial({ uniforms: { ...coralUni, uMap: { value: keep(reefFanTex(THREE, preview ? 256 : 512)) } }, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS, defines: { REEF_MAP: 1 }, side: THREE.DoubleSide, alphaToCoverage: true }));
+  const accentFans = [];
+  const spotFor = (near) => { // a place on the floor: most on or beside a bommie, the rest anywhere on the reef, never right at the viewer's feet
+    for (let tries = 0; tries < 20; tries++) {
+      let x, z;
+      if (r() < near) { const [bx, bz, rad] = REEF_BOMMIES[(r() * REEF_BOMMIES.length) | 0]; const a = r(0, 6.28), d = rad * Math.sqrt(r()) * 1.25; x = bx + Math.cos(a) * d; z = bz + Math.sin(a) * d; }
+      else { const a = r(-1.35, 1.35), d = r(6, 46); x = Math.sin(a) * d; z = -Math.cos(a) * d; }
+      if (z > -4 || (Math.abs(x) < 2.5 && z > -7)) continue;
+      return [x, z];
+    }
+    return [r(-20, 20), -20];
+  };
+  const plant = (geo, mat, n, near, sizes, colours, tilt = 0.1, fixed = []) => { // `fixed`: places given outright (the foreground), the rest found on the reef
+    const mesh = new THREE.InstancedMesh(keep(geo), mat, n);
+    const c = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const [x, z] = i < fixed.length ? fixed[i] : spotFor(near), s = r(sizes[0], sizes[1]);
+      mesh.setMatrixAt(i, M4.compose(V.set(x, floorAt(x, z) - 0.04, z), Q.setFromEuler(E.set(r(-tilt, tilt), r(0, 6.28), r(-tilt, tilt))), S3.set(s * r(0.85, 1.15), s, s * r(0.85, 1.15))));
+      const pick = colours[(r() * colours.length) | 0];
+      if (pick === "accent") { accentFans.push({ mesh, i }); c.copy(accent); } else c.set(pick);
+      c.multiplyScalar(r(0.85, 1.1));
+      mesh.setColorAt(i, c);
+    }
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    return mesh;
+  };
+  const k = preview ? 0.33 : 1;
+  plant(reefStaghorn(THREE, r), coralMat, Math.round(55 * k), 0.75, [0.9, 2.2], ["#c9a27a", "#d9b98f", "#b58fd6", "#8fb8d9", "#e2c8a0", "#d99a8a"]);
+  plant(reefBoulder(THREE, 3), coralMat, Math.round(22 * k), 0.8, [0.5, 1.4], ["#7c9a4f", "#a0a65a", "#8a6b45", "#5f8f6a", "#b7965a"], 0.3);
+  plant(reefBoulder(THREE, 11), coralMat, Math.round(20 * k), 0.8, [0.4, 1.1], ["#8a9a4a", "#9a7a50", "#6f9a7a", "#b08a5a"], 0.3);
+  plant(reefTable(THREE), coralMat, Math.round(18 * k) + 2, 0.7, [0.7, 1.6], ["#8fa56a", "#b0a070", "#9c8a5a", "#a8b07a"], 0.1, [[-4.6, -5.2], [5.2, -6.4]]);
+  plant(reefBoulder(THREE, 7), coralMat, 2, 0.8, [1.3, 1.7], ["#8a6b45", "#7c9a4f"], 0.3, [[-3.8, -4.2], [4.2, -5.0]]);
+  plant(reefFan(THREE), fanMat, Math.round(45 * k), 0.7, [0.8, 1.8], ["#b04a7a", "#d4553d", "#7a4fb8", "#e08a3a", "accent", "accent"], 0.15);
+  plant(reefAnemone(THREE, r), coralMat, Math.round(45 * k) + 3, 0.65, [0.6, 1.3], ["#d97aa5", "#e7c26a", "#8ad3c8", "#f0a070", "#c6a2e6", "#ff7f6e"], 0.1, [[-2.6, -3.6], [3.1, -4.1], [-5.4, -3.4]]);
+  plant(reefGrass(THREE, r), leafMat, Math.round(70 * k) + 6, 0.35, [0.6, 1.4], ["#3f8a4a", "#5aa05a", "#2f7a55", "#6aa84f"], 0.2, [[-1.9, -3.2], [-3.2, -3.0], [2.2, -3.4], [3.6, -3.0], [-6.2, -4.6], [6.4, -4.4]]);
+
+  /* --- the school: a couple of hundred small fish that hold a loose shape round a point and swirl about it; the point follows the pointer --- */
+  const NF = preview ? 80 : 220;
+  const fishGeo = keep(reefFish(THREE));
+  const aFish = new THREE.InstancedBufferAttribute(new Float32Array(NF * 2), 2);
+  fishGeo.setAttribute("aFish", aFish);
+  const fishMat = keep(new THREE.ShaderMaterial({ uniforms: { uTime: time, ...fogUni, ...lightUni }, vertexShader: REEF_FISH_VS, fragmentShader: REEF_FISH_FS, side: THREE.DoubleSide }));
+  const school = new THREE.InstancedMesh(fishGeo, fishMat, NF);
+  school.frustumCulled = false; school.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(school);
+  const FISH_COLS = ["#ffb347", "#f2c14e", "#4f8fe0", "#e86f4a", "#ffd166", "#7fd8ff", "#ff6b9d", "#9be564"];
+  const F = [], accentFish = [];
+  const home = new THREE.Vector3(0, 3.5, -14), att = home.clone(), want = new THREE.Vector3(), tang = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < NF; i++) {
+    const f = { p: home.clone().add(V.set(r(-3, 3), r(-1.2, 1.2), r(-3, 3))), v: new THREE.Vector3(r(-1, 1), 0, r(-1, 1)), off: new THREE.Vector3(r(-3.2, 3.2), r(-1.3, 1.3), r(-3.2, 3.2)), size: r(0.4, 0.6), accent: r() < 0.3 };
+    F.push(f);
+    aFish.setXY(i, r(0, 6.28), r(0.8, 1.3));
+    if (f.accent) accentFish.push(i); else school.setColorAt(i, new THREE.Color(FISH_COLS[(r() * FISH_COLS.length) | 0]));
+  }
+  let pointerT = -99;
+  const ndc = new THREE.Vector2();
+  const onMove = (e) => { ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1); pointerT = time.value; };
+  if (!preview) window.addEventListener("pointermove", onMove);
+  function stepFish(dt, t) {
+    if (t - pointerT < 5) { // the pointer's ray, met by a plane a little way in front
+      V.set(ndc.x, ndc.y, 0.5).unproject(camera).sub(camera.position).normalize();
+      const s = (-11 - camera.position.z) / V.z;
+      if (s > 0) V2.copy(camera.position).addScaledVector(V, s); else V2.copy(home);
+    } else V2.set(12 * Math.sin(t * 0.13), 3.5 + 1.5 * Math.sin(t * 0.21), -14 + 5 * Math.cos(t * 0.09));
+    V2.y = Math.min(SURF - 1.2, Math.max(floorAt(V2.x, V2.z) + 1.2, V2.y));
+    att.lerp(V2, Math.min(1, dt * 2.5));
+    for (let i = 0; i < NF; i++) {
+      const f = F[i];
+      want.copy(att).add(f.off).sub(f.p);
+      const d = want.length();
+      tang.crossVectors(up, V.copy(f.p).sub(att)).normalize();
+      want.multiplyScalar(Math.min(2.6, d * 0.8) / Math.max(d, 1e-3)).addScaledVector(tang, 1.1);
+      f.v.lerp(want, Math.min(1, dt * 1.6));
+      const sp = f.v.length();
+      if (sp < 0.5) f.v.multiplyScalar(0.5 / Math.max(sp, 1e-3)); else if (sp > 3.5) f.v.multiplyScalar(3.5 / sp);
+      f.p.addScaledVector(f.v, dt);
+      const fl = floorAt(f.p.x, f.p.z) + 0.5;
+      if (f.p.y < fl) { f.p.y = fl; f.v.y = Math.abs(f.v.y) * 0.5 + 0.3; }
+      if (f.p.y > SURF - 0.8) { f.p.y = SURF - 0.8; f.v.y = -Math.abs(f.v.y); }
+      const yaw = Math.atan2(f.v.x, f.v.z), pitch = Math.atan2(f.v.y, Math.hypot(f.v.x, f.v.z));
+      school.setMatrixAt(i, M4.compose(f.p, Q.setFromEuler(E.set(-pitch, yaw, 0)), S3.setScalar(f.size)));
+    }
+    school.instanceMatrix.needsUpdate = true;
+  }
+
+  /* --- a green turtle gliding by on a long loop through the reef --- */
+  const shellMat = keep(new THREE.MeshStandardMaterial({ map: keep(reefScutes(THREE)), roughness: 0.6 }));
+  const skinMat = keep(new THREE.MeshStandardMaterial({ color: 0x8c9a66, roughness: 0.8 }));
+  const ball = keep(new THREE.SphereGeometry(1, 20, 14));
+  const turtle = new THREE.Group();
+  const shell = new THREE.Mesh(ball, shellMat); shell.scale.set(0.62, 0.3, 0.8);
+  const plastron = new THREE.Mesh(ball, keep(new THREE.MeshStandardMaterial({ color: 0xc9c08f, roughness: 0.8 }))); plastron.scale.set(0.56, 0.17, 0.72); plastron.position.y = -0.1;
+  const head = new THREE.Mesh(ball, skinMat); head.scale.set(0.15, 0.13, 0.2); head.position.set(0, 0.02, 0.88);
+  turtle.add(shell, plastron, head);
+  const flippers = [[1, 0.42, 0.42, 0.14], [-1, 0.42, 0.42, 0.14], [1, -0.5, 0.26, 0.1], [-1, -0.5, 0.26, 0.1]].map(([side, z, len, w]) => {
+    const pivot = new THREE.Group(); pivot.position.set(side * 0.5, -0.06, z);
+    const m = new THREE.Mesh(ball, skinMat); m.scale.set(len, 0.045, w); m.position.x = side * len * 0.9; m.rotation.y = side * -0.35;
+    pivot.add(m); turtle.add(pivot);
+    return { pivot, side, front: z > 0 };
+  });
+  turtle.scale.setScalar(1.9);
+  scene.add(turtle);
+  let ta = r(0, 6.28);
+
+  /* --- bubbles rising from the rocks, plankton drifting; at night the fish leave sparks behind them --- */
+  const NBUB = preview ? 20 : 60, bub = new Float32Array(NBUB * 3), bubSpot = [];
+  for (let i = 0; i < NBUB; i++) { const [bx, bz] = REEF_BOMMIES[i % 4]; const x = bx + r(-1.5, 1.5), z = bz + r(-1.5, 1.5); bubSpot.push([x, z, r(0.5, 0.9)]); bub.set([x, floorAt(x, z) + r(0, SURF - 2), z], i * 3); }
+  const bubGeo = keep(new THREE.BufferGeometry());
+  bubGeo.setAttribute("position", new THREE.BufferAttribute(bub, 3).setUsage(THREE.DynamicDrawUsage));
+  const bubbles = new THREE.Points(bubGeo, keep(new THREE.PointsMaterial({ map: keep(reefRing(THREE)), size: 0.16, transparent: true, depthWrite: false, opacity: 0.7, fog: false })));
+  bubbles.frustumCulled = false; bubbles.renderOrder = 7;
+  scene.add(bubbles);
+  const NM = preview ? 120 : 400, mote = new Float32Array(NM * 3), moteV = [];
+  for (let i = 0; i < NM; i++) { mote.set([r(-25, 25), r(0.3, SURF - 0.3), r(-50, 4)], i * 3); moteV.push([r(-0.04, 0.04), r(-0.02, 0.03), r(-0.04, 0.04)]); }
+  const moteGeo = keep(new THREE.BufferGeometry());
+  moteGeo.setAttribute("position", new THREE.BufferAttribute(mote, 3).setUsage(THREE.DynamicDrawUsage));
+  const moteMat = keep(new THREE.PointsMaterial({ map: glow, size: 0.07, transparent: true, depthWrite: false, opacity: 0.35, fog: true }));
+  const motes = new THREE.Points(moteGeo, moteMat);
+  motes.frustumCulled = false; motes.renderOrder = 7;
+  scene.add(motes);
+  const NSP = preview ? 150 : 500, spPos = new Float32Array(NSP * 3), spBorn = new Float32Array(NSP).fill(-1), spSize = new Float32Array(NSP);
+  for (let i = 0; i < NSP; i++) spSize[i] = r(0.05, 0.11);
+  const sparkGeo = keep(new THREE.BufferGeometry());
+  sparkGeo.setAttribute("position", new THREE.BufferAttribute(spPos, 3).setUsage(THREE.DynamicDrawUsage));
+  sparkGeo.setAttribute("aBorn", new THREE.BufferAttribute(spBorn, 1).setUsage(THREE.DynamicDrawUsage));
+  sparkGeo.setAttribute("aSize", new THREE.BufferAttribute(spSize, 1));
+  const sparkUni = { uTime: time, uPx: { value: 600 }, uColor: { value: new THREE.Color("#7fffd4") } };
+  const sparks = new THREE.Points(sparkGeo, keep(new THREE.ShaderMaterial({ uniforms: sparkUni, vertexShader: REEF_SPARK_VS, fragmentShader: REEF_SPARK_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  sparks.frustumCulled = false; sparks.renderOrder = 8;
+  scene.add(sparks);
+  let spHead = 0, spAcc = 0;
+  const buf = new THREE.Vector2();
+  sparks.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); sparkUni.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    const c = new THREE.Color();
+    for (const { mesh, i } of accentFans) { mesh.setColorAt(i, c.copy(accent).multiplyScalar(1.1)); mesh.instanceColor.needsUpdate = true; }
+    for (const i of accentFish) school.setColorAt(i, c.copy(accent).multiplyScalar(1.15));
+    school.instanceColor.needsUpdate = true;
+    waterUni.uDeep.value.set(d ? "#02101f" : "#0a4f80"); waterUni.uMid.value.set(d ? "#041a30" : "#1a8fbf"); waterUni.uUp.value.set(d ? "#0a2c4a" : "#5fd0ee"); waterUni.uWindow.value = d ? 0.3 : 1;
+    lightUni.uSunCol.value.set(d ? "#5d7fb0" : "#fff2d8").multiplyScalar(d ? 0.28 : 0.6);
+    lightUni.uAmb.value.set(d ? "#12243a" : "#6a9fc2").multiplyScalar(d ? 1 : 0.6); lightUni.uAmbDown.value.set(d ? "#050c16" : "#284a66");
+    lightUni.uCaustic.value = d ? 0.05 : 0.2;
+    rayUni.uColor.value.set(d ? "#6f90c0" : "#cfe8ff").multiplyScalar(d ? 0.14 : 0.55);
+    coralUni.uGlow.value = d ? 0.5 : 0;
+    fogUni.uFog.value.set(d ? "#041226" : "#1e8fc0"); fogUni.uFogNear.value = d ? 4 : 6; fogUni.uFogFar.value = d ? 40 : 60;
+    scene.fog.color.copy(fogUni.uFog.value); scene.fog.near = fogUni.uFogNear.value; scene.fog.far = fogUni.uFogFar.value;
+    hemi.color.set(d ? "#1b3350" : "#a6d6f0"); hemi.groundColor.set(d ? "#040a12" : "#3a6a88"); hemi.intensity = d ? 0.6 : 1.6;
+    sun.color.set(d ? "#6d8fc0" : "#fff2d8"); sun.intensity = d ? 0.5 : 2.0;
+    moteMat.color.set(d ? "#9fd8ff" : "#ffffff"); moteMat.opacity = d ? 0.25 : 0.35;
+    sparks.visible = d;
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function frame(dt, t) {
+    time.value = t;
+    const A = camera.aspect || 1, fov = A >= 1 ? 60 : 60 + (1 - A) * 22;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.set(Math.sin(t * 0.11) * 0.25, EYE + Math.sin(t * 0.17) * 0.12, 0); // a diver hanging in the water
+    camera.lookAt(look.set(Math.sin(t * 0.07) * 0.8, EYE - 0.25, -12));
+    camera.rotateZ(Math.sin(t * 0.13) * 0.012);
+    stepFish(dt, t);
+    // the turtle on its loop, banked into the turn, flippers stroking
+    ta += dt * 0.055;
+    const tx = 24 * Math.cos(ta), tz = -18 + 11 * Math.sin(ta), ty = 3.4 + 0.7 * Math.sin(ta * 2 + 1);
+    turtle.position.set(tx, ty, tz);
+    turtle.lookAt(tx - 24 * Math.sin(ta), ty + 0.4 * Math.cos(ta * 2 + 1), tz + 11 * Math.cos(ta));
+    turtle.rotateZ(-0.22);
+    for (const f of flippers) f.pivot.rotation.z = f.side * (f.front ? 0.35 + 0.45 * Math.sin(t * 2.0) : 0.2 + 0.25 * Math.sin(t * 2.0 + 1));
+    for (let i = 0; i < NBUB; i++) { // bubbles wobble up and start again at their rock
+      const [x, z, sp] = bubSpot[i];
+      let y = bub[i * 3 + 1] + sp * dt;
+      if (y > SURF - 0.3) y = floorAt(x, z) + 0.2;
+      bub[i * 3] = x + Math.sin(t * 2.1 + i) * 0.12; bub[i * 3 + 1] = y; bub[i * 3 + 2] = z + Math.cos(t * 1.7 + i * 1.3) * 0.12;
+    }
+    bubGeo.attributes.position.needsUpdate = true;
+    for (let i = 0; i < NM; i++) { // plankton adrift
+      const v = moteV[i];
+      let x = mote[i * 3] + v[0] * dt, y = mote[i * 3 + 1] + v[1] * dt + Math.sin(t * 0.5 + i) * 0.002, z = mote[i * 3 + 2] + v[2] * dt;
+      if (x < -25) x = 25; else if (x > 25) x = -25;
+      if (y < 0.3) y = SURF - 0.3; else if (y > SURF - 0.3) y = 0.3;
+      if (z < -50) z = 4; else if (z > 4) z = -50;
+      mote[i * 3] = x; mote[i * 3 + 1] = y; mote[i * 3 + 2] = z;
+    }
+    moteGeo.attributes.position.needsUpdate = true;
+    if (pal.dark) { // sparks in the fishes' wakes
+      spAcc += dt * 45;
+      while (spAcc > 1) {
+        spAcc -= 1;
+        const f = F[(r() * NF) | 0];
+        spPos.set([f.p.x - f.v.x * 0.15 + r(-0.1, 0.1), f.p.y + r(-0.1, 0.1), f.p.z - f.v.z * 0.15 + r(-0.1, 0.1)], spHead * 3);
+        spBorn[spHead] = t;
+        spHead = (spHead + 1) % NSP;
+      }
+      sparkGeo.attributes.position.needsUpdate = sparkGeo.attributes.aBorn.needsUpdate = true;
+    }
+  }
+  for (let k2 = 0; k2 < 60; k2++) stepFish(0.05, -3 + k2 * 0.05); // the school already in formation on the first frame
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { let n = 0; for (let i = 0; i < NSP; i++) if (spBorn[i] >= 0 && time.value - spBorn[i] < 1.6) n++; return { fish: NF, following: time.value - pointerT < 5 ? "pointer" : "wandering", school: [att.x, att.y, att.z].map((v) => +v.toFixed(1)), turtle: +ta.toFixed(2), sparks: n }; }, // for checking by hand
+    dispose() { window.removeEventListener("pointermove", onMove); scene.fog = null; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
