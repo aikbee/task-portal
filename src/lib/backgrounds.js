@@ -46,6 +46,7 @@ export const BG_STYLES = [
   { value: "clockwork", label: "Clockwork", desc: "3D clock tower: brass gears tick through a real escapement, the pendulum swings, the dial shows the real time", three: true },
   { value: "sakura", label: "Sakura and Fuji", desc: "3D Mount Fuji behind a pagoda in cherry blossom, petals drifting onto a mirror lake; lanterns and a full moon at night", three: true },
   { value: "observatory", label: "Observatory", desc: "3D domed observatory: the telescope tracks the sky, the moon in today's real phase, stars turning with the real time", three: true },
+  { value: "hotair", label: "Hot-air balloons", desc: "3D sunrise over a fairy-chimney valley: dozens of balloons drift up it, burners flaring, their shadows sliding over the rock; at night they glow like lanterns", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

@@ -9021,7 +9021,393 @@ function observatory(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory };
+/* ---------- Hot-air balloons: sunrise over a fairy-chimney valley, dozens of balloons drifting up it; at night they glow like lanterns when a burner fires ---------- */
+// the envelope: gores and bands in two colours per balloon, lit by the sun, glowing where the sun is behind it, and lit from inside by the burner
+const HOTAIR_ENV_VS = /* glsl */ `
+  attribute vec3 aColA; attribute vec3 aColB; attribute vec4 aInfo; // pattern, seed, burner, spare
+  varying vec3 vN; varying vec2 vUv; varying vec3 vColA; varying vec3 vColB; varying vec4 vInfo; varying vec3 vWorld;
+  void main() {
+    vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    vN = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+    vUv = uv; vColA = aColA; vColB = aColB; vInfo = aInfo;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const HOTAIR_ENV_FS = /* glsl */ `
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uSkyCol; uniform vec3 uGroundCol; uniform vec3 uBurnCol; uniform float uBurnGain;
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec3 vN; varying vec2 vUv; varying vec3 vColA; varying vec3 vColB; varying vec4 vInfo; varying vec3 vWorld;
+  void main() {
+    float gore = mod(floor(vUv.x * 16.0), 2.0), band = mod(floor(vUv.y * 6.0 + 0.5), 2.0), p = vInfo.x, k;
+    if (p < 0.5) k = gore; else if (p < 1.5) k = band; else if (p < 2.5) k = mod(gore + band, 2.0);
+    else if (p < 3.5) k = mix(gore, 1.0, step(0.58, vUv.y)); else k = step(0.36, vUv.y) * (1.0 - step(0.5, vUv.y));
+    vec3 base = mix(vColA, vColB, k) * (1.0 - 0.18 * pow(abs(fract(vUv.x * 16.0) - 0.5) * 2.0, 10.0)); // the gores' seams
+    vec3 N = normalize(vN);
+    float diff = max(dot(N, uSunDir), 0.0), back = pow(max(dot(-N, uSunDir), 0.0), 1.5);
+    vec3 col = base * (mix(uGroundCol, uSkyCol, N.y * 0.5 + 0.5) + uSunCol * diff + uSunCol * 0.45 * back);
+    col += base * uBurnCol * vInfo.z * uBurnGain * exp(-vUv.y * 2.4); // the burner's glow inside, brightest at the throat
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the burner flames: a point each, sized by the balloon and how hard it is burning
+const HOTAIR_FLAME_VS = /* glsl */ `
+  uniform float uPx;
+  attribute float aSize; attribute float aBurn;
+  varying float vBurn;
+  void main() {
+    vBurn = aBurn;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = aBurn > 0.02 ? clamp(aSize * (0.6 + 0.4 * aBurn) * uPx / -mv.z, 2.0, 90.0) : 0.0;
+  }
+`;
+const HOTAIR_FLAME_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uColor; uniform float uGain;
+  varying float vBurn;
+  void main() {
+    float m = pow(texture2D(uMap, gl_PointCoord).a, 2.2); // the sprite was painted as display values
+    gl_FragColor = vec4(uColor * m * vBurn * uGain, 1.0);
+  }
+`;
+/** The valley's height at (x, z): soft eroded ridges, a winding valley floor, and the ridge the viewer stands on at the origin. */
+function hotairHeight(x, z) {
+  const n = (s, o) => lhNoise3(x * s + o, 7.3, z * s + o);
+  const ridges = 1 - Math.abs(2 * n(0.0032, 3) - 1);
+  let h = 22 * ridges + 26 * n(0.0075, 11) + 9 * n(0.02, 5) + 3 * n(0.05, 1);
+  const vx = 70 + 60 * Math.sin(z * 0.005 + 1); // the valley floor winds up the view
+  h -= 24 * Math.exp(-(((x - vx) / 150) ** 2));
+  h += 42 * Math.exp(-(x * x + (z - 26) * (z - 26)) / (52 * 52)); // the outcrop the viewer stands on: its top behind, the drop in front
+  const far = Math.min(1, Math.max(0, (-z - 450) / 500));
+  h += 55 * far * far * (1 - Math.abs(2 * n(0.0018, 21) - 1)); // higher hills close the valley off far away
+  return Math.max(0, h);
+}
+/** Tuff strata: bands of cream, rose and tan with a little grain; contours on the ground, rings round a chimney. */
+function hotairRock(THREE, S) {
+  const r = koiRng(2718), k = S / 512;
+  const tex = canvasTexture(THREE, S, S, (g) => {
+    const cols = ["#ecd3b6", "#dfae94", "#d4987e", "#e6c3a4", "#cf9680", "#f1dcc4", "#dcae92"];
+    g.fillStyle = "#e3c7a8"; g.fillRect(0, 0, S, S);
+    for (let y = 0; y < S;) {
+      const h = r(6, 26) * k;
+      g.fillStyle = cols[(r() * cols.length) | 0]; g.beginPath(); g.moveTo(0, y);
+      for (let x = 0; x <= S; x += 16) g.lineTo(x, y + Math.sin(x * 0.02 + y) * 2 * k);
+      g.lineTo(S, y + h); g.lineTo(0, y + h); g.closePath(); g.fill();
+      y += h;
+    }
+    for (let i = 0; i < S * 4; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "90,60,40" : "255,240,220"},${r(0.03, 0.09)})`; g.fillRect(r(0, S), r(0, S), r(1, 3) * k, r(1, 2) * k); }
+    for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(110,70,50,${r(0.05, 0.14)})`; const x = r(0, S); g.fillRect(x, 0, r(1, 3) * k, S); } // erosion channels
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+/** Mottled tuff for the ground, erosion channels running down the slopes; tiles. */
+function hotairGround(THREE, S) {
+  const r = koiRng(1414), k = S / 512;
+  const tex = canvasTexture(THREE, S, S, (g) => {
+    g.fillStyle = "#e6cdb0"; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 260; i++) {
+      const x = r(0, S), y = r(0, S), rad = r(12, 70) * k, c = ["232,205,176", "214,168,140", "240,224,200", "200,150,125", "225,190,160"][(r() * 5) | 0], a = r(0.25, 0.6);
+      for (const ox of [0, -S, S]) for (const oy of [0, -S, S]) { // drawn wrapped, so the tile has no seam
+        if (x + ox < -rad || x + ox > S + rad || y + oy < -rad || y + oy > S + rad) continue;
+        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+        gr.addColorStop(0, `rgba(${c},${a})`); gr.addColorStop(1, `rgba(${c},0)`);
+        g.fillStyle = gr; g.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
+      }
+    }
+    for (let i = 0; i < 70; i++) {
+      const x0 = r(0, S);
+      g.strokeStyle = `rgba(120,80,60,${r(0.025, 0.07)})`; g.lineWidth = r(1.5, 4) * k; g.beginPath();
+      for (let y = 0; y <= S; y += 16) g.lineTo(x0 + Math.sin((y / S) * Math.PI * 6 + x0) * 3 * k, y);
+      g.stroke();
+    }
+    for (let i = 0; i < S * 3; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "90,60,40" : "255,245,225"},${r(0.04, 0.1)})`; g.fillRect(r(0, S), r(0, S), r(1, 3) * k, r(1, 2) * k); }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+/** The valley as a heightfield in world coordinates (its middle at z = zc): vertex colours pale on the ridges, rosy on the slopes, olive on the floor. */
+function hotairTerrain(THREE, W, D, nx, nz, zc, height) {
+  const g = new THREE.PlaneGeometry(W, D, nx, nz);
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, 0, zc);
+  const p = g.attributes.position, uv = g.attributes.uv, col = [], c = new THREE.Color();
+  const pale = new THREE.Color("#f2e3cd"), rose = new THREE.Color("#c99a86"), floor = new THREE.Color("#9c9c72");
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), h = height(x, z);
+    p.setY(i, h);
+    uv.setXY(i, x / 30, z / 30);
+    const n = lhNoise3(x * 0.01 + 9, 0, z * 0.01);
+    c.copy(rose).lerp(pale, Math.min(1, Math.max(0, (h - 10) / 45)) * 0.8 + n * 0.3);
+    if (h < 12) c.lerp(floor, Math.min(1, (12 - h) / 10));
+    c.multiplyScalar(0.85 + 0.3 * n);
+    col.push(c.r, c.g, c.b);
+  }
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+/** A fairy chimney: a tapering cone of tuff; kind 0 with a cap of harder rock, 1 a slender spire, 2 a stout one under a broad cap. */
+function hotairChimney(THREE, kind) {
+  const profs = [
+    [[3.4, 0], [2.5, 3], [1.8, 6], [1.4, 9], [1.25, 11.4], [1.45, 11.6], [2.1, 12.4], [2.15, 13.4], [1.6, 14.4], [0.7, 15.2], [0, 15.5]],
+    [[3.0, 0], [2.2, 3], [1.5, 6.5], [1.05, 10], [0.7, 13.5], [0.35, 16], [0, 17.5]],
+    [[4.0, 0], [3.2, 2.5], [2.6, 5], [2.3, 7.5], [2.05, 9.5], [2.3, 9.8], [2.9, 10.6], [2.8, 11.6], [2.0, 12.4], [0.8, 13.0], [0, 13.2]],
+  ];
+  const capY = [11.5, 99, 9.7][kind];
+  const g = new THREE.LatheGeometry(profs[kind].map(([x, y]) => new THREE.Vector2(x, y)), kind === 1 ? 8 : 9), p = g.attributes.position, col = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) col.set(p.getY(i) > capY ? [0.58, 0.5, 0.46] : [1, 1, 1], i * 3);
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  return g;
+}
+/** A balloon envelope (units of its widest radius; the throat at y = 0, the crown at 2.36). */
+function hotairEnvelope(THREE, segs) {
+  const prof = [[0.27, 0], [0.55, 0.22], [0.8, 0.5], [0.95, 0.85], [1, 1.22], [0.97, 1.58], [0.84, 1.9], [0.58, 2.16], [0.24, 2.32], [0, 2.36]].map(([x, y]) => new THREE.Vector2(x, y));
+  return new THREE.LatheGeometry(prof, segs);
+}
+/** The basket, burner and ropes below the throat, in the envelope's units, as one coloured geometry. */
+function hotairBasket(THREE) {
+  const at = (x, y, z) => new THREE.Matrix4().makeTranslation(x, y, z);
+  const parts = [
+    [new THREE.BoxGeometry(0.16, 0.12, 0.14), at(0, -0.5, 0), "#7d5a36"], [new THREE.BoxGeometry(0.17, 0.02, 0.15), at(0, -0.45, 0), "#5a3f26"],
+    [new THREE.BoxGeometry(0.07, 0.05, 0.07), at(0, -0.31, 0), "#3b3b3f"],
+    [new THREE.TorusGeometry(0.26, 0.012, 6, 24), new THREE.Matrix4().makeRotationX(Math.PI / 2), "#8f8f95"],
+  ];
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    parts.push([new THREE.CylinderGeometry(0.008, 0.008, 0.16, 5), at(sx * 0.055, -0.36, sz * 0.05), "#4a4a50"]); // the burner frame
+    const a = new THREE.Vector3(sx * 0.075, -0.44, sz * 0.065), b = new THREE.Vector3(sx * 0.19, 0, sz * 0.17), d = b.clone().sub(a);
+    parts.push([new THREE.CylinderGeometry(0.006, 0.006, d.length(), 4), new THREE.Matrix4().compose(a.add(b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(up, d.normalize()), new THREE.Vector3(1, 1, 1)), "#cfc6b4"]);
+  }
+  return mergeColored(THREE, parts);
+}
+function hotair(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1783);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S3 = new THREE.Vector3(), E = new THREE.Euler();
+  camera.fov = 55; camera.near = 0.5; camera.far = 6000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 };
+  const glow = keep(glowTexture(THREE)), mist = keep(inkMist(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color();
+  const ground = hotairHeight;
+  const SUN = new THREE.Vector3(0.6, 0.26, -0.76).normalize(), MOON = new THREE.Vector3(-0.37, 0.29, -0.88).normalize(); // the sun low over the valley's far right; the moon over the hills on the left
+
+  /* --- light: the sky and ground, the low sun (or the moon); the sun casts real shadows, so the balloons' shadows slide over the rock --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.set(40, 20, -330);
+  if (!preview) {
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -560, right: 560, top: 560, bottom: -560, near: 1, far: 2400 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0006; sun.shadow.normalBias = 1.5;
+  }
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 300, 1600);
+
+  /* --- the sky: a sunrise gradient with the sun; stars and the moon at night; cirrus far off --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#fff3d8") }, uSun: { value: 1 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(3800, 40, 20)), keep(new THREE.ShaderMaterial({ uniforms: skyUni, vertexShader: LANTERN_SKY_VS, fragmentShader: LANTERN_SKY_FS, side: THREE.BackSide, depthWrite: false, depthTest: false })));
+  sky.renderOrder = -10; sky.frustumCulled = false;
+  scene.add(sky);
+  const NS = preview ? 300 : 900, sp = new Float32Array(NS * 3);
+  for (let i = 0; i < NS; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)); sp.set([Math.cos(a) * Math.cos(e) * 3600, Math.sin(e) * 3600, Math.sin(a) * Math.cos(e) * 3600], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(sp, 3));
+  const stars = new THREE.Points(starGeo, keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, depthTest: false, fog: false })));
+  stars.renderOrder = -9; stars.frustumCulled = false;
+  scene.add(stars);
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, depthTest: false, fog: false })));
+  moon.position.copy(MOON).multiplyScalar(3400); moon.scale.setScalar(150); moon.lookAt(0, 40, 0); moon.renderOrder = -8;
+  scene.add(moon);
+  const haloMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, fog: false, opacity: 0.45 }));
+  const halo = new THREE.Sprite(haloMat);
+  halo.position.copy(moon.position); halo.scale.setScalar(520); halo.renderOrder = -9;
+  scene.add(halo);
+  const cloudMat = keep(new THREE.MeshBasicMaterial({ map: mist, transparent: true, depthWrite: false, depthTest: false, fog: false }));
+  const clouds = Array.from({ length: preview ? 3 : 6 }, (_, i) => { const m = new THREE.Mesh(quad, cloudMat); m.renderOrder = -7; m.frustumCulled = false; scene.add(m); return { m, x: r(-1800, 1800), y: r(380, 820), z: -2300 - i * 120, w: r(700, 1400), h: r(28, 60), speed: r(2, 5) }; });
+
+  /* --- the valley: tuff terrain, fairy chimneys, a village on the floor, mist lying in the low ground --- */
+  const rockTex = keep(hotairRock(THREE, preview ? 256 : 512));
+  const rockMat = keep(new THREE.MeshStandardMaterial({ map: rockTex, vertexColors: true, roughness: 0.95 }));
+  const groundMat = keep(new THREE.MeshStandardMaterial({ map: keep(hotairGround(THREE, preview ? 256 : 512)), vertexColors: true, roughness: 0.95 }));
+  const terrain = new THREE.Mesh(keep(hotairTerrain(THREE, 1700, 1500, preview ? 70 : 140, preview ? 62 : 124, -450, ground)), groundMat);
+  terrain.receiveShadow = terrain.castShadow = !preview;
+  scene.add(terrain);
+  const vx = (z) => 70 + 60 * Math.sin(z * 0.005 + 1);
+  const spots = [[], [], []];
+  const spot = (x, z, s) => spots[(r() * 3) | 0].push([x, z, s]);
+  for (const z of [-150, -270, -420, -600, -800]) for (const side of [-1, 1]) { // groups along both sides of the valley
+    const cx = vx(z) + side * r(70, 120), n = preview ? 5 : Math.round(r(9, 16));
+    for (let i = 0; i < n; i++) spot(cx + r(-55, 55), z + r(-45, 45), r(0.7, 1.7));
+  }
+  for (let i = 0; i < 8; i++) spot((i < 4 ? -1 : 1) * r(30, 95), -r(30, 120), r(1.1, 2.0)); // and a few close by, below the viewer on both sides
+  spots.forEach((list, kind) => {
+    const mesh = new THREE.InstancedMesh(keep(hotairChimney(THREE, kind)), rockMat, Math.max(1, list.length));
+    list.forEach(([x, z, sc], i) => mesh.setMatrixAt(i, M4.compose(V.set(x, ground(x, z) - 0.6, z), Q.setFromEuler(E.set(r(-0.05, 0.05), r(0, 6.28), r(-0.05, 0.05))), S3.set(sc * r(0.85, 1.15), sc, sc * r(0.85, 1.15)))));
+    mesh.count = list.length; mesh.castShadow = mesh.receiveShadow = !preview; mesh.frustumCulled = false;
+    scene.add(mesh);
+  });
+  const VZ = -330, VX = vx(VZ), NH = preview ? 24 : 60;
+  const houseMat = keep(new THREE.MeshStandardMaterial({ color: 0xe2d2bc, roughness: 0.9 }));
+  const houses = new THREE.InstancedMesh(keep(new THREE.BoxGeometry(1, 1, 1)), houseMat, NH);
+  const lampPos = [];
+  for (let i = 0; i < NH; i++) {
+    const x = VX + (r() + r() - 1) * 90, z = VZ + (r() + r() - 1) * 70, w = r(5, 9), h = r(3.5, 7), dpt = r(5, 9), gy = ground(x, z);
+    houses.setMatrixAt(i, M4.compose(V.set(x, gy + h / 2 - 0.5, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), S3.set(w, h, dpt)));
+    for (let k = 0; k < 2; k++) lampPos.push(x + r(-w / 2, w / 2), gy + r(1.2, h - 0.5), z + r(-dpt / 2, dpt / 2));
+  }
+  houses.castShadow = houses.receiveShadow = !preview; houses.frustumCulled = false;
+  scene.add(houses);
+  const lampGeo = keep(new THREE.BufferGeometry());
+  lampGeo.setAttribute("position", new THREE.Float32BufferAttribute(lampPos, 3));
+  const lamps = new THREE.Points(lampGeo, keep(new THREE.PointsMaterial({ map: glow, color: 0xffb060, size: 6, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })));
+  lamps.frustumCulled = false; lamps.renderOrder = 8;
+  scene.add(lamps);
+  const hazeMat = keep(new THREE.MeshBasicMaterial({ map: mist, transparent: true, depthWrite: false, fog: false }));
+  const hazes = [-230, -420, -650].map((z) => { const m = new THREE.Mesh(quad, hazeMat); m.position.set(vx(z), ground(vx(z), z) + 8, z); m.scale.set(700, 34, 1); m.renderOrder = 7; m.frustumCulled = false; scene.add(m); return m; });
+
+  /* --- the balloons: an envelope, a basket and a flame each; dozens of them drifting up the valley on the wind --- */
+  const NB = preview ? 14 : 40, SCHEMES = [["#e63946", "#f1faee"], ["#f4a261", "#264653"], ["#ffd166", "#ef476f"], ["#06a77d", "#f8f1e5"], ["#3a6ff0", "#ffffff"], ["#8338ec", "#ffbe0b"], ["#ff6b35", "#ffffff"], ["#2ec4b6", "#ffffff"], ["#d62828", "#fcbf49"], ["#ffffff", "#1d3557"], ["#ff8fab", "#ffffff"], ["#1b998b", "#f46036"]];
+  const envGeo = keep(hotairEnvelope(THREE, preview ? 18 : 28));
+  const aColA = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3), aColB = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3), aInfo = new THREE.InstancedBufferAttribute(new Float32Array(NB * 4), 4);
+  aColA.setUsage(THREE.DynamicDrawUsage); aColB.setUsage(THREE.DynamicDrawUsage); aInfo.setUsage(THREE.DynamicDrawUsage);
+  envGeo.setAttribute("aColA", aColA); envGeo.setAttribute("aColB", aColB); envGeo.setAttribute("aInfo", aInfo);
+  const envUni = { uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uSkyCol: { value: new THREE.Color() }, uGroundCol: { value: new THREE.Color() }, uBurnCol: { value: new THREE.Color("#ffa848") }, uBurnGain: { value: 0.35 }, uFog: { value: new THREE.Color() }, uFogNear: { value: 300 }, uFogFar: { value: 1600 } };
+  const envelopes = new THREE.InstancedMesh(envGeo, keep(new THREE.ShaderMaterial({ uniforms: envUni, vertexShader: HOTAIR_ENV_VS, fragmentShader: HOTAIR_ENV_FS })), NB);
+  envelopes.castShadow = !preview; envelopes.frustumCulled = false; envelopes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(envelopes);
+  const basketMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }));
+  const baskets = new THREE.InstancedMesh(keep(hotairBasket(THREE)), basketMat, NB);
+  baskets.castShadow = !preview; baskets.frustumCulled = false; baskets.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(baskets);
+  const flameGeo = keep(new THREE.BufferGeometry());
+  const fPos = new Float32Array(NB * 3), fSize = new Float32Array(NB), fBurn = new Float32Array(NB);
+  flameGeo.setAttribute("position", new THREE.BufferAttribute(fPos, 3).setUsage(THREE.DynamicDrawUsage));
+  flameGeo.setAttribute("aSize", new THREE.BufferAttribute(fSize, 1));
+  flameGeo.setAttribute("aBurn", new THREE.BufferAttribute(fBurn, 1).setUsage(THREE.DynamicDrawUsage));
+  const flameUni = { uPx: { value: 600 }, uMap: { value: glow }, uColor: { value: new THREE.Color("#ffb36a") }, uGain: { value: 1 } };
+  const flames = new THREE.Points(flameGeo, keep(new THREE.ShaderMaterial({ uniforms: flameUni, vertexShader: HOTAIR_FLAME_VS, fragmentShader: HOTAIR_FLAME_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  flames.frustumCulled = false; flames.renderOrder = 9;
+  scene.add(flames);
+  const buf = new THREE.Vector2();
+  flames.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); flameUni.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); };
+  const B = [];
+  const paint = (b, i) => {
+    const a = b.accent ? [accent, b.white] : b.scheme;
+    aColA.setXYZ(i, a[0].r, a[0].g, a[0].b); aColB.setXYZ(i, a[1].r, a[1].g, a[1].b);
+  };
+  function spawn(b, i, first) {
+    b.size = r(6.5, 9);
+    b.z = first ? r(-70, -720) : r(-110, -720);
+    if (b.z > -140 && r() < 0.6) b.z -= 220; // only a few in the near lane
+    b.x = first ? r(-430, 430) : r(-520, -450);
+    b.low = i % 6 === 0; // one in six stays low over the near plain, its shadow sliding over the rock in view
+    if (b.low) { b.z = r(-280, -470); if (first) b.x = r(-100, 300); }
+    const floor = ground(b.x, b.z) + 3.2 * b.size + 4;
+    b.y = b.low ? floor + r(2, 22) : Math.max(floor, r(20, 175)); b.targetY = b.y; b.vy = 0;
+    b.dx = r(-0.15, 0.15); b.dz = r(-0.1, 0.1);
+    b.burn = 0; b.burnLen = 0; b.burnT = r(1, 9); b.retarget = r(6, 30);
+    b.accent = r() < 0.3;
+    b.scheme = SCHEMES[(r() * SCHEMES.length) | 0].map((c) => new THREE.Color(c));
+    b.white = new THREE.Color(r() < 0.5 ? "#ffffff" : "#f6efe0");
+    b.pattern = (r() * 5) | 0;
+    paint(b, i);
+    aInfo.setXYZW(i, b.pattern, r(), 0, 0);
+    fSize[i] = b.size * 0.6;
+  }
+  for (let i = 0; i < NB; i++) { const b = {}; spawn(b, i, true); B.push(b); }
+  aColA.needsUpdate = aColB.needsUpdate = aInfo.needsUpdate = true;
+  function stepBalloons(dt) {
+    for (let i = 0; i < NB; i++) {
+      const b = B[i];
+      if ((b.retarget -= dt) <= 0) { const floor = ground(b.x, b.z) + 3.2 * b.size + 5; b.targetY = b.low ? floor + r(2, 26) : Math.min(190, Math.max(floor, b.y + r(-45, 55))); b.retarget = r(12, 35); }
+      const want = Math.max(-1.2, Math.min(1.4, (b.targetY - b.y) * 0.08));
+      b.vy += (want - b.vy) * Math.min(1, dt * 0.4);
+      if (b.burnLen > 0) { b.burnLen -= dt; b.burn += (1 - b.burn) * Math.min(1, dt * 8); }
+      else {
+        b.burn += (0 - b.burn) * Math.min(1, dt * 3);
+        b.burnT -= dt * (want > 0.25 ? 1 : 0.3); // climbing takes long burns; level flight the odd short one
+        if (b.burnT <= 0) { b.burnLen = want > 0.25 ? r(1.5, 4) : r(0.5, 1.4); b.burnT = (want > 0.25 ? r(3, 10) : r(8, 25)) * (pal.dark ? 0.4 : 1); } // a night glow: burners far busier
+      }
+      b.x += (0.9 + 0.003 * b.y + b.dx) * dt; b.z += (0.32 + b.dz) * dt; b.y += b.vy * dt;
+      if (b.x > 480 || b.z > -40) spawn(b, i, false);
+      envelopes.setMatrixAt(i, M4.compose(V.set(b.x, b.y, b.z), Q.identity(), S3.setScalar(b.size)));
+      baskets.setMatrixAt(i, M4);
+      aInfo.setZ(i, b.burn);
+      fPos[i * 3] = b.x; fPos[i * 3 + 1] = b.y - 0.3 * b.size; fPos[i * 3 + 2] = b.z; fBurn[i] = b.burn;
+    }
+    envelopes.instanceMatrix.needsUpdate = baskets.instanceMatrix.needsUpdate = aInfo.needsUpdate = true;
+    flameGeo.attributes.position.needsUpdate = flameGeo.attributes.aBurn.needsUpdate = true;
+  }
+
+  // real shadows are switched on from the first draw (the renderer is only reachable there) and a second frame follows at once:
+  // it renders the shadow maps, and the materials are rebuilt to read them. A still frame is drawn only once, so it needs that too.
+  let shadowsOn = false, gone = false;
+  sky.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.enabled = true;
+    setTimeout(() => { if (gone) return; rockMat.needsUpdate = groundMat.needsUpdate = houseMat.needsUpdate = basketMat.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    B.forEach((b, i) => { if (b.accent) paint(b, i); });
+    aColA.needsUpdate = aColB.needsUpdate = true;
+    skyUni.uZenith.value.set(d ? "#040816" : "#3e6cb4"); skyUni.uMid.value.set(d ? "#0b1530" : "#d8a190"); skyUni.uHorizon.value.set(d ? "#1b2748" : "#ffd6a6");
+    skyUni.uGlow.value.set(d ? "#2a2c48" : "#ff9f60").multiplyScalar(0.5); skyUni.uSun.value = d ? 0 : 1;
+    stars.visible = moon.visible = halo.visible = d;
+    cloudMat.color.set(d ? "#141c36" : "#ffc9a0"); cloudMat.opacity = d ? 0.5 : 0.85;
+    const L = d ? MOON : SUN;
+    sun.color.set(d ? "#95a6d6" : "#ffd9a8"); sun.intensity = d ? 0.7 : 2.4; sun.position.copy(sun.target.position).addScaledVector(L, 900);
+    hemi.color.set(d ? "#26304f" : "#b9c8e6"); hemi.groundColor.set(d ? "#0c0a0a" : "#a07a5c"); hemi.intensity = d ? 0.85 : 1.0;
+    scene.fog.color.set(d ? "#0f1730" : "#f6d3b0"); scene.fog.near = d ? 200 : 250; scene.fog.far = d ? 1200 : 1500;
+    envUni.uFog.value.copy(scene.fog.color); envUni.uFogNear.value = scene.fog.near; envUni.uFogFar.value = scene.fog.far;
+    envUni.uSunDir.value.copy(L); envUni.uSunCol.value.set(d ? "#8090c0" : "#ffdcae").multiplyScalar(d ? 0.6 : 1.1);
+    envUni.uSkyCol.value.set(d ? "#2a3560" : "#a8bde6").multiplyScalar(d ? 0.8 : 0.9); envUni.uGroundCol.value.set(d ? "#0a0a10" : "#8a6a52").multiplyScalar(0.8);
+    envUni.uBurnGain.value = d ? 2.8 : 0.35;
+    flameUni.uGain.value = d ? 1.6 : 0.9;
+    rockMat.color.set(d ? "#8d97b8" : "#ffffff"); groundMat.color.copy(rockMat.color); houseMat.color.set(d ? "#8a90a8" : "#e8dcc8"); basketMat.color.set(d ? "#7a80a0" : "#ffffff");
+    lamps.visible = d;
+    hazeMat.color.set(d ? "#1e2846" : "#ffd9b0"); hazeMat.opacity = d ? 0.3 : 0.38;
+  }
+  applyPalette(pal);
+
+  const eyeY = ground(0, 0) + 2.2, look = new THREE.Vector3();
+  function frame(dt, t) {
+    time.value = t;
+    const A = camera.aspect || 1, fov = A >= 1 ? 55 : 55 + (1 - A) * 24;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const cx = Math.sin(t * 0.03) * 1.5;
+    camera.position.set(cx, eyeY + Math.sin(t * 0.07) * 0.15, 0);
+    camera.lookAt(look.set(cx * 0.5, eyeY - 11, -150));
+    for (const c of clouds) { c.x += c.speed * dt; if (c.x > 2400) c.x = -2400; c.m.position.set(c.x, c.y, c.z); c.m.scale.set(c.w, c.h, 1); }
+    stepBalloons(dt);
+  }
+  for (let k = 0; k < 40; k++) stepBalloons(0.5); // a spread of burners already going on the first frame
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { let burning = 0, lo = 1e9, hi = 0; for (const b of B) { if (b.burn > 0.5) burning++; lo = Math.min(lo, b.y); hi = Math.max(hi, b.y); } return { balloons: NB, burning, lowest: Math.round(lo), highest: Math.round(hi), shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
