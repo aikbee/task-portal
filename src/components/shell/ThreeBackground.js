@@ -7278,13 +7278,13 @@ function lighthouse(THREE, scene, camera, pal, preview) {
 }
 
 /* ---------- Clockwork: inside a clock tower. Brass wheels driven through a real escapement, the pendulum, and the great dial seen from behind with the real time ---------- */
-// The dial is seen from inside the tower: its numerals are painted on the outside of frosted glass (so they read mirrored),
-// the hands are outside too and show as soft shadows. p = a point on the dial seen from inside, x to the right, radius 1.
+// The dial is seen from inside the tower, backlit frosted glass with the hands outside it as soft shadows. It reads the right
+// way round from the room (a real one would be mirrored from in here, and read as wrong numbers). p = a point on the dial, x to the right, radius 1.
 const CW_DIAL_COMMON = /* glsl */ `
   uniform sampler2D uMask; uniform float uHour; uniform float uMinute;
-  vec4 cwMask(vec2 p) { return texture2D(uMask, vec2(0.5 - p.x * 0.5, 0.5 + p.y * 0.5)); } // r ironwork, g paint, b pane tint (painted as seen from outside)
+  vec4 cwMask(vec2 p) { return texture2D(uMask, p * 0.5 + 0.5); } // r ironwork, g paint, b pane tint
   float cwHand(vec2 p, float ang, float len, float w, float tail, float blur) {
-    vec2 q = vec2(-p.x, p.y), d = vec2(sin(ang), cos(ang)); // clockwise from twelve, as seen from outside
+    vec2 q = p, d = vec2(sin(ang), cos(ang)); // clockwise from twelve
     float along = dot(q, d), across = abs(q.x * d.y - q.y * d.x);
     float inLen = smoothstep(-tail - blur, -tail + blur, along) * (1.0 - smoothstep(len - blur, len + blur, along));
     float wd = w * mix(1.0, 0.45, clamp(along / len, 0.0, 1.0));
@@ -7444,7 +7444,7 @@ function cwBars(THREE, bars, bosses, depth) {
   for (const [x, y, r, d = depth * 1.3] of bosses) parts.push([new THREE.CylinderGeometry(r, r, d, 28), new THREE.Matrix4().compose(new THREE.Vector3(x, y, 0), new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), new THREE.Vector3(1, 1, 1))]);
   return mergeParts(THREE, parts);
 }
-/** The great dial as painted, seen from OUTSIDE: r = ironwork, g = paint (numerals, minute track), b = each pane's tint. */
+/** The great dial as seen from the room: r = ironwork, g = paint (numerals, minute track), b = each pane's tint. */
 function cwDialMask(S) {
   const c = document.createElement("canvas");
   c.width = c.height = S;
@@ -7464,10 +7464,10 @@ function cwDialMask(S) {
     const a = (i / 60) * TAU, big = i % 5 === 0, w = (big ? 0.016 : 0.007) * k;
     g.save(); g.rotate(a); g.fillRect(-w / 2, -0.95 * k, w, (big ? 0.07 : 0.045) * k); g.restore();
   }
-  const NUM = ["XII", "I", "II", "III", "IIII", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
-  g.font = `bold ${Math.round(0.118 * k)}px "Times New Roman", Georgia, serif`;
+  const NUM = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  g.font = `bold ${Math.round(0.108 * k)}px "Times New Roman", Georgia, serif`;
   g.textAlign = "center"; g.textBaseline = "middle";
-  NUM.forEach((t, i) => { g.save(); g.rotate((i / 12) * TAU); g.fillText(t, 0, -0.79 * k); g.restore(); });
+  NUM.forEach((t, i) => { const a = (i / 12) * TAU; g.fillText(t, Math.sin(a) * 0.79 * k, -Math.cos(a) * 0.79 * k); }); // upright, so every numeral reads the right way up
   // ironwork: rings, the bars between the panes, the hub
   g.fillStyle = g.strokeStyle = "rgb(255,0,0)";
   for (const [rr, w] of [[0.982, 0.036], [0.705, 0.022], [0.405, 0.02], [0.12, 0.03]]) { g.lineWidth = w * k; g.beginPath(); g.arc(0, 0, rr * k, 0, TAU); g.stroke(); }
@@ -7650,7 +7650,7 @@ function clockwork(THREE, scene, camera, pal, preview) {
     [new THREE.BoxGeometry(0.38, 0.42, 16), at(7.4, 8.5, 6)], [new THREE.BoxGeometry(0.42, 9.2, 0.42), at(7.8, 4.4, 2.2)], [new THREE.BoxGeometry(0.42, 9.2, 0.42), at(-8.6, 4.4, 2.2)],
   ])), wood));
 
-  /* --- the great dial, seen from behind; the ring of light it throws on the wall --- */
+  /* --- the great dial, backlit; the ring of light it throws on the wall --- */
   const maskTex = keep(new THREE.CanvasTexture(cwDialMask(preview ? 512 : 1024)));
   maskTex.anisotropy = 4;
   const dialUni = {
@@ -7745,7 +7745,7 @@ function clockwork(THREE, scene, camera, pal, preview) {
   const cx = PC[0] * MS + MX, cz = 0.28 * MS + MZ;
   scene.add(new THREE.Mesh(keep(mergeParts(THREE, [
     [new THREE.BoxGeometry(0.28, 0.28, 0.26), at(cx, D.y, 0.3)], [new THREE.BoxGeometry(0.28, 0.28, 0.26), at(D.x, D.y, 0.3)],
-    [new THREE.BoxGeometry(0.1, 0.1, 0.32), at(0.9, D.y, 0.14)], [new THREE.BoxGeometry(0.3, 0.3, 0.1), at(0.9, D.y, 0.02)],
+    [new THREE.BoxGeometry(0.1, 0.1, 0.32), at(D.x - R - 0.55, D.y, 0.14)], [new THREE.BoxGeometry(0.3, 0.3, 0.1), at(D.x - R - 0.55, D.y, 0.02)], // a wall bracket beside the dial, not over it
   ])), iron));
   scene.add(new THREE.Mesh(keep(mergeParts(THREE, [
     [zAxis(new THREE.CylinderGeometry(0.035, 0.035, cz - 0.3, 10)), at(cx, D.y, (cz + 0.3) / 2)],
