@@ -43,6 +43,7 @@ export const BG_STYLES = [
   { value: "skylanterns", label: "Sky lanterns", desc: "3D lantern festival: glowing lanterns rise over a lake town, mirrored in the water", three: true },
   { value: "snowglobe", label: "Snow globe", desc: "3D snow globe with a tiny winter village: move the mouse and the snow swirls up", three: true },
   { value: "lighthouse", label: "Lighthouse", desc: "3D lighthouse in a storm: the beam sweeps the rain, waves crash on the rocks; calm with gulls by day", three: true },
+  { value: "clockwork", label: "Clockwork", desc: "3D clock tower: brass gears tick through a real escapement, the pendulum swings, the dial shows the real time", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

@@ -2615,7 +2615,7 @@ function canvasTexture(THREE, w, h, draw) {
 }
 /** Several placed geometries as one, so a whole ingot or lantern is a single draw. */
 function mergeParts(THREE, parts) {
-  const chunks = parts.map(([geo, m]) => { const g = geo.toNonIndexed(); g.applyMatrix4(m); return g; });
+  const chunks = parts.map(([geo, m]) => { const g = geo.index ? geo.toNonIndexed() : geo; g.applyMatrix4(m); return g; }); // extruded shapes have no index already
   const n = chunks.reduce((s, g) => s + g.attributes.position.count, 0);
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), uv = new Float32Array(n * 2);
   let o = 0;
@@ -7277,7 +7277,603 @@ function lighthouse(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse };
+/* ---------- Clockwork: inside a clock tower. Brass wheels driven through a real escapement, the pendulum, and the great dial seen from behind with the real time ---------- */
+// The dial is seen from inside the tower: its numerals are painted on the outside of frosted glass (so they read mirrored),
+// the hands are outside too and show as soft shadows. p = a point on the dial seen from inside, x to the right, radius 1.
+const CW_DIAL_COMMON = /* glsl */ `
+  uniform sampler2D uMask; uniform float uHour; uniform float uMinute;
+  vec4 cwMask(vec2 p) { return texture2D(uMask, vec2(0.5 - p.x * 0.5, 0.5 + p.y * 0.5)); } // r ironwork, g paint, b pane tint (painted as seen from outside)
+  float cwHand(vec2 p, float ang, float len, float w, float tail, float blur) {
+    vec2 q = vec2(-p.x, p.y), d = vec2(sin(ang), cos(ang)); // clockwise from twelve, as seen from outside
+    float along = dot(q, d), across = abs(q.x * d.y - q.y * d.x);
+    float inLen = smoothstep(-tail - blur, -tail + blur, along) * (1.0 - smoothstep(len - blur, len + blur, along));
+    float wd = w * mix(1.0, 0.45, clamp(along / len, 0.0, 1.0));
+    return inLen * (1.0 - smoothstep(wd - blur, wd + blur, across));
+  }
+  float cwHands(vec2 p, float blur) { return max(cwHand(p, uHour, 0.52, 0.05, 0.12, blur), cwHand(p, uMinute, 0.84, 0.034, 0.15, blur)); }
+  // how much light comes through at p: none through the ironwork, less through the paint and in the hands' shadows
+  float cwPass(vec2 p, float blur) {
+    vec4 m = cwMask(p);
+    return (1.0 - m.r) * (1.0 - m.g * 0.9) * (1.0 - cwHands(p, blur) * 0.85) * step(length(p), 0.995);
+  }
+`;
+const CW_DIAL_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const CW_DIAL_FS = /* glsl */ `
+  ${CW_DIAL_COMMON}
+  uniform vec3 uOutTop; uniform vec3 uOutBottom; uniform vec3 uGlow; uniform vec2 uGlowPos; uniform float uGlowSize;
+  uniform vec3 uIron; uniform vec3 uCity; uniform float uNight; uniform float uTime;
+  varying vec2 vUv;
+  float cwHash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;
+    vec4 m = cwMask(p);
+    vec3 light = mix(uOutBottom, uOutTop, smoothstep(-1.0, 1.0, p.y)) + uGlow * exp(-distance(p, uGlowPos) * uGlowSize); // the sky, and the sun or moon behind the glass
+    light *= 0.86 + 0.28 * m.b; // each pane a little different
+    if (uNight > 0.0) { // the town below, its lights soft and round through the frosted glass
+      vec2 g = p * 8.0, cell = floor(g), f = fract(g) - 0.5;
+      float h = cwHash(cell), d = length(f - (vec2(cwHash(cell + 3.1), cwHash(cell + 7.7)) - 0.5) * 0.6);
+      float lit = step(0.42, h) * smoothstep(0.34, 0.08, d) * smoothstep(0.05, -0.5, p.y) * (0.75 + 0.25 * sin(uTime * (0.4 + h * 1.5) + h * 40.0));
+      vec3 lc = mix(vec3(1.0, 0.7, 0.38), vec3(0.72, 0.84, 1.0), step(0.82, cwHash(cell + 1.3)));
+      light += (lc * lit * 0.55 + uCity * smoothstep(0.25, -0.95, p.y)) * uNight;
+    }
+    light *= (1.0 - m.g * 0.9) * (1.0 - cwHands(p, 0.03) * 0.85);
+    gl_FragColor = vec4(mix(light, uIron, m.r), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// god rays: the volume the dial lets light into is traced per pixel (the ray's shadow on the glass is a straight line,
+// so where it enters and leaves is a quadratic), sampling the ironwork, the numerals and the hands on the way
+const CW_WORLD_VS = /* glsl */ `
+  varying vec3 vWorld;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const CW_SHAFT_FS = /* glsl */ `
+  ${CW_DIAL_COMMON}
+  uniform vec3 uL; uniform vec3 uD; uniform float uR; uniform float uGlassZ; uniform float uLen; uniform float uFloorY; uniform vec3 uColor; uniform float uTime;
+  uniform sampler2D uNoise;
+  varying vec3 vWorld;
+  vec2 onGlass(vec3 x) { return (x.xy + uL.xy * (uGlassZ - x.z) / uL.z - uD.xy) / uR; }
+  void main() {
+    vec3 ro = cameraPosition, rd = normalize(vWorld - cameraPosition);
+    vec2 q0 = onGlass(ro), qd = (rd.xy - uL.xy * rd.z / uL.z) / uR;
+    float a = dot(qd, qd), b = 2.0 * dot(q0, qd), c = dot(q0, q0) - 1.0, disc = b * b - 4.0 * a * c;
+    if (disc <= 0.0 || a < 1e-8) discard;
+    float sq = sqrt(disc), t0 = (-b - sq) / (2.0 * a), t1 = (-b + sq) / (2.0 * a);
+    float s0 = (ro.z - uGlassZ) / -uL.z, sd = rd.z / -uL.z; // distance into the room along the light
+    if (abs(sd) > 1e-5) { float ta = -s0 / sd, tb = (uLen - s0) / sd; t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb)); }
+    if (rd.y < 0.0) t1 = min(t1, (uFloorY - ro.y) / rd.y);
+    t0 = max(t0, 0.0);
+    if (t1 <= t0) discard;
+    float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))); // per-pixel jitter instead of banding
+    float dt = (t1 - t0) / float(CW_STEPS), sum = 0.0;
+    for (int i = 0; i < CW_STEPS; i++) {
+      vec3 x = ro + rd * (t0 + dt * (float(i) + j));
+      float s = (x.z - uGlassZ) / -uL.z;
+      float haze = 0.55 + 0.9 * texture2D(uNoise, x.xz * 0.11 + vec2(x.y * 0.05, uTime * 0.004)).r;
+      sum += cwPass(onGlass(x), 0.04) * pow(max(1.0 - s / uLen, 0.0), 1.4) * haze;
+    }
+    gl_FragColor = vec4(uColor * sum * dt, 1.0);
+  }
+`;
+// the dial's light on the floor (and its shadows of ironwork, numerals and hands)
+const CW_PATCH_FS = /* glsl */ `
+  ${CW_DIAL_COMMON}
+  uniform vec3 uL; uniform vec3 uD; uniform float uR; uniform float uGlassZ; uniform vec3 uColor; uniform sampler2D uFloor; uniform vec2 uFloorRep;
+  varying vec3 vWorld;
+  void main() {
+    vec2 q = (vWorld.xy + uL.xy * (uGlassZ - vWorld.z) / uL.z - uD.xy) / uR;
+    float pass = cwPass(q, 0.015 + 0.02 * length(q));
+    gl_FragColor = vec4(uColor * texture2D(uFloor, vWorld.xz * uFloorRep).rgb * pass, 1.0);
+  }
+`;
+// dust drifting in the room, glinting where the light from the dial falls on it
+const CW_DUST_VS = /* glsl */ `
+  ${CW_DIAL_COMMON}
+  uniform vec3 uL; uniform vec3 uD; uniform float uR; uniform float uGlassZ; uniform vec3 uBox; uniform vec3 uBoxC; uniform float uPx; uniform float uTime;
+  attribute vec4 aSeed;
+  varying float vLit; varying float vTw;
+  void main() {
+    vec3 p = aSeed.xyz * uBox + vec3(sin(uTime * 0.07 + aSeed.w * 6.3), sin(uTime * 0.05 + aSeed.w * 12.1) * 0.6 - uTime * 0.015, cos(uTime * 0.06 + aSeed.w * 9.2)) * 0.7;
+    p = uBoxC + mod(p, uBox) - uBox * 0.5;
+    vLit = cwPass((p.xy + uL.xy * (uGlassZ - p.z) / uL.z - uD.xy) / uR, 0.04) * step(uGlassZ, p.z);
+    vTw = 0.55 + 0.45 * sin(uTime * (0.8 + aSeed.w * 2.0) + aSeed.w * 30.0);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = clamp((0.014 + 0.012 * aSeed.w) * uPx / -mv.z, 1.0, 7.0);
+  }
+`;
+const CW_DUST_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uBase;
+  varying float vLit; varying float vTw;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float a = smoothstep(1.0, 0.2, length(p));
+    gl_FragColor = vec4(uColor * (uBase + vLit * vTw) * a, 1.0);
+  }
+`;
+/** A clock wheel or pinion (teeth ≤ 12 get a pinion's rounder leaves), extruded along z and centred on z = 0; `spokes` cuts crossings. */
+function cwWheel(THREE, teeth, m, depth, spokes = 0, detail = 8) {
+  const rp = (m * teeth) / 2, ra = rp + m * 0.95, rr = rp - m * 1.2, p = (2 * Math.PI) / teeth;
+  const prof = teeth <= 12 ? [[rr, 0.3], [rp, 0.26], [rp + 0.5 * (ra - rp), 0.23], [ra - 0.2 * (ra - rp), 0.17], [ra, 0.09]] : [[rr, 0.29], [rp, 0.25], [rp + 0.55 * (ra - rp), 0.2], [ra, 0.12]];
+  const shape = new THREE.Shape();
+  for (let i = 0; i < teeth; i++) {
+    const c = i * p, pts = [[rr, c - p / 2], ...prof.map(([r, w]) => [r, c - w * p]), ...prof.slice().reverse().map(([r, w]) => [r, c + w * p])];
+    pts.forEach(([r, a], k) => (i === 0 && k === 0 ? shape.moveTo(Math.cos(a) * r, Math.sin(a) * r) : shape.lineTo(Math.cos(a) * r, Math.sin(a) * r)));
+  }
+  shape.closePath();
+  if (spokes) cwCrossings(THREE, shape, spokes, rr - Math.max(m * 1.6, rp * 0.1), Math.max(rp * 0.2, 0.09), Math.max(0.035, rp * 0.1));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: Math.min(0.012, depth * 0.15), bevelSize: Math.min(0.01, m * 0.15), bevelSegments: 1, curveSegments: detail });
+  geo.translate(0, 0, -depth / 2);
+  return geo;
+}
+/** Cut the openings between a wheel's crossings (spokes), between the rim (ri) and the hub (rh). */
+function cwCrossings(THREE, shape, spokes, ri, rh, sw) {
+  for (let k = 0; k < spokes; k++) {
+    const a0 = (k / spokes) * Math.PI * 2 + Math.PI / 2, a1 = a0 + (Math.PI * 2) / spokes;
+    const o0 = Math.asin(sw / 2 / ri), o1 = Math.asin(Math.min(0.95, sw / 2 / rh));
+    const hole = new THREE.Path();
+    hole.absarc(0, 0, ri, a0 + o0, a1 - o0, false);
+    hole.absarc(0, 0, rh, a1 - o1, a0 + o1, true);
+    hole.closePath();
+    shape.holes.push(hole);
+  }
+}
+/** The escape wheel: pointed teeth leaning the way it turns (clockwise), four crossings. */
+function cwEscapeWheel(THREE, R, depth, teeth = 15) {
+  const rr = R * 0.78, p = (2 * Math.PI) / teeth, shape = new THREE.Shape();
+  for (let i = 0; i < teeth; i++) {
+    const c = i * p;
+    [[rr, c], [R, c - 0.12 * p], [R * 0.95, c + 0.1 * p], [rr * 1.04, c + 0.45 * p], [rr, c + 0.6 * p]].forEach(([r, a], k) => (i === 0 && k === 0 ? shape.moveTo(Math.cos(a) * r, Math.sin(a) * r) : shape.lineTo(Math.cos(a) * r, Math.sin(a) * r)));
+  }
+  shape.closePath();
+  cwCrossings(THREE, shape, 4, rr - R * 0.1, R * 0.22, R * 0.1);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.005, bevelSegments: 1, curveSegments: 6 });
+  geo.translate(0, 0, -depth / 2);
+  return geo;
+}
+/** Placed boxes and cylinders as one geometry: frames, brackets, the anchor. Bars: [x1, y1, x2, y2, width]; bosses: [x, y, radius]. */
+function cwBars(THREE, bars, bosses, depth) {
+  const parts = [];
+  for (const [x1, y1, x2, y2, w] of bars) {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    parts.push([new THREE.BoxGeometry(len + w * 0.6, w, depth), new THREE.Matrix4().compose(new THREE.Vector3((x1 + x2) / 2, (y1 + y2) / 2, 0), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.atan2(y2 - y1, x2 - x1))), new THREE.Vector3(1, 1, 1))]);
+  }
+  for (const [x, y, r, d = depth * 1.3] of bosses) parts.push([new THREE.CylinderGeometry(r, r, d, 28), new THREE.Matrix4().compose(new THREE.Vector3(x, y, 0), new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), new THREE.Vector3(1, 1, 1))]);
+  return mergeParts(THREE, parts);
+}
+/** The great dial as painted, seen from OUTSIDE: r = ironwork, g = paint (numerals, minute track), b = each pane's tint. */
+function cwDialMask(S) {
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d"), k = S / 2, r = koiRng(4242), TAU = Math.PI * 2;
+  g.fillStyle = "#000"; g.fillRect(0, 0, S, S);
+  g.translate(k, k);
+  g.globalCompositeOperation = "lighter";
+  const sector = (r0, r1, a0, a1) => { g.beginPath(); g.arc(0, 0, r1 * k, a0, a1); g.arc(0, 0, r0 * k, a1, a0, true); g.closePath(); g.fill(); };
+  for (const [r0, r1, n] of [[0.08, 0.41, 12], [0.4, 0.71, 24], [0.7, 0.97, 12]]) {
+    for (let i = 0; i < n; i++) { g.fillStyle = `rgb(0,0,${Math.round(r(70, 255))})`; sector(r0, r1, (i / n) * TAU - 0.01, ((i + 1) / n) * TAU + 0.01); }
+  }
+  // paint: the minute track and the numerals, the tops of the numerals towards the rim
+  g.fillStyle = g.strokeStyle = "rgb(0,255,0)";
+  g.lineWidth = 0.007 * k;
+  for (const rr of [0.878, 0.952]) { g.beginPath(); g.arc(0, 0, rr * k, 0, TAU); g.stroke(); }
+  for (let i = 0; i < 60; i++) {
+    const a = (i / 60) * TAU, big = i % 5 === 0, w = (big ? 0.016 : 0.007) * k;
+    g.save(); g.rotate(a); g.fillRect(-w / 2, -0.95 * k, w, (big ? 0.07 : 0.045) * k); g.restore();
+  }
+  const NUM = ["XII", "I", "II", "III", "IIII", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  g.font = `bold ${Math.round(0.118 * k)}px "Times New Roman", Georgia, serif`;
+  g.textAlign = "center"; g.textBaseline = "middle";
+  NUM.forEach((t, i) => { g.save(); g.rotate((i / 12) * TAU); g.fillText(t, 0, -0.79 * k); g.restore(); });
+  // ironwork: rings, the bars between the panes, the hub
+  g.fillStyle = g.strokeStyle = "rgb(255,0,0)";
+  for (const [rr, w] of [[0.982, 0.036], [0.705, 0.022], [0.405, 0.02], [0.12, 0.03]]) { g.lineWidth = w * k; g.beginPath(); g.arc(0, 0, rr * k, 0, TAU); g.stroke(); }
+  g.beginPath(); g.arc(0, 0, 0.085 * k, 0, TAU); g.fill();
+  const bar = (a, r0, r1, w) => { g.save(); g.rotate(a); g.fillRect(-w * k / 2, -r1 * k, w * k, (r1 - r0) * k); g.restore(); };
+  for (let i = 0; i < 12; i++) { bar((i / 12) * TAU + TAU / 24, 0.7, 0.97, 0.013); bar((i / 12) * TAU, 0.1, 0.41, 0.012); }
+  for (let i = 0; i < 24; i++) bar((i / 24) * TAU, 0.4, 0.71, 0.01);
+  return c;
+}
+/** The setting dial on the movement: white enamel, read from the room the right way round. */
+function cwSettingFace(THREE, S) {
+  return canvasTexture(THREE, S, S, (g) => {
+    const k = S / 2, TAU = Math.PI * 2;
+    g.translate(k, k);
+    const grad = g.createRadialGradient(-0.3 * k, -0.3 * k, 0, 0, 0, k);
+    grad.addColorStop(0, "#fbf8f1"); grad.addColorStop(1, "#e4ddcd");
+    g.fillStyle = grad; g.beginPath(); g.arc(0, 0, k, 0, TAU); g.fill();
+    g.fillStyle = g.strokeStyle = "#1d1c1a";
+    g.lineWidth = 0.012 * k;
+    for (const rr of [0.93, 0.83]) { g.beginPath(); g.arc(0, 0, rr * k, 0, TAU); g.stroke(); }
+    for (let i = 0; i < 60; i++) { const w = (i % 5 ? 0.008 : 0.022) * k; g.save(); g.rotate((i / 60) * TAU); g.fillRect(-w / 2, -0.93 * k, w, 0.1 * k); g.restore(); }
+    g.font = `${Math.round(0.15 * k)}px "Times New Roman", Georgia, serif`;
+    g.textAlign = "center"; g.textBaseline = "middle";
+    for (let i = 1; i <= 12; i++) { const a = (i / 12) * TAU; g.fillText(String(i), Math.sin(a) * 0.68 * k, -Math.cos(a) * 0.68 * k); }
+  });
+}
+/** Old brick in a running bond (a 4 m × 2 m tile). */
+function cwBrick(THREE, W, H) {
+  const r = koiRng(77);
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#2c211c"; g.fillRect(0, 0, W, H);
+    const bw = W / 17.4, bh = H / 26.7, gap = Math.max(1, W / 512);
+    for (let row = 0, y = 0; y < H; row++, y += bh) {
+      for (let x = row % 2 ? -bw / 2 : 0; x < W; x += bw) {
+        const l = r(0.75, 1.15), h = r(-8, 8);
+        g.fillStyle = `hsl(${14 + h}, ${r(30, 45)}%, ${Math.round(24 * l)}%)`;
+        g.fillRect(x + gap, y + gap, bw - gap * 2, bh - gap * 2);
+        for (let s = 0; s < 3; s++) { g.fillStyle = `rgba(${r() < 0.5 ? "0,0,0" : "255,220,190"},${r(0.03, 0.08)})`; g.fillRect(x + r(0, bw * 0.7), y + r(0, bh * 0.6), r(bw * 0.1, bw * 0.4), r(bh * 0.15, bh * 0.4)); }
+      }
+    }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+/** Worn floorboards running away from the viewer (a 4 m × 4 m tile). */
+function cwPlanks(THREE, W, H) {
+  const r = koiRng(515);
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    const pw = W / 20;
+    for (let i = 0; i < 20; i++) {
+      const x0 = i * pw;
+      for (let y = -r(0, H), n = 0; y < H && n < 6; n++) {
+        const len = r(H * 0.4, H * 1.1), l = r(0.8, 1.15);
+        g.fillStyle = `hsl(${26 + r(-4, 4)}, ${r(30, 42)}%, ${Math.round(22 * l)}%)`;
+        g.fillRect(x0, y, pw, len);
+        for (let s = 0; s < 7; s++) { g.strokeStyle = `rgba(${r() < 0.6 ? "20,10,4" : "255,215,170"},${r(0.05, 0.14)})`; g.lineWidth = r(0.6, 2); g.beginPath(); const gx = x0 + r(2, pw - 2); g.moveTo(gx, y); g.bezierCurveTo(gx + r(-3, 3), y + len * 0.3, gx + r(-3, 3), y + len * 0.7, gx + r(-2, 2), y + len); g.stroke(); }
+        g.fillStyle = "rgba(10,6,3,0.7)"; g.fillRect(x0, y + len - 1.5, pw, 1.5);
+        y += len;
+      }
+      g.fillStyle = "rgba(8,5,3,0.8)"; g.fillRect(x0, 0, Math.max(1, W / 700), H);
+    }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+/** What the brass reflects: the tower room with a dial in each of its four walls (and at night the work lamp). */
+function cwEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, dark ? "#06070b" : "#241a13"); grad.addColorStop(0.42, dark ? "#141824" : "#6e4d36");
+    grad.addColorStop(0.58, dark ? "#0f111a" : "#5e412d"); grad.addColorStop(1, dark ? "#060608" : "#35261a");
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    for (const u of [0, 0.25, 0.5, 0.75, 1]) { // equirect: u 0.25 = −z (the dial ahead), 0.75 = +z (behind the viewer)
+      const cx = u * w, cy = h * 0.4, rad = h * (u === 0.25 ? 0.16 : 0.12);
+      const rg = g.createRadialGradient(cx, cy, 0, cx, cy, rad);
+      rg.addColorStop(0, dark ? "rgba(150,170,230,1)" : "rgba(255,248,232,1)"); rg.addColorStop(0.75, dark ? "rgba(80,95,160,0.9)" : "rgba(255,222,172,0.95)"); rg.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = rg; g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+    }
+    // the room behind the viewer (what a wheel's face mirrors): warm light on the far wall, at night from the lamp
+    const cx = w * 0.75, cy = h * 0.5, rad = h * 0.34, rg = g.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    rg.addColorStop(0, dark ? "rgba(255,196,130,0.9)" : "rgba(255,226,180,0.75)"); rg.addColorStop(1, "rgba(255,170,90,0)");
+    g.fillStyle = rg; g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+    if (dark) { const lx = w * 0.62, ly = h * 0.3, lg = g.createRadialGradient(lx, ly, 0, lx, ly, h * 0.12); lg.addColorStop(0, "rgba(255,220,170,1)"); lg.addColorStop(1, "rgba(255,160,80,0)"); g.fillStyle = lg; g.fillRect(lx - h * 0.12, ly - h * 0.12, h * 0.24, h * 0.24); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+/** The light's volume behind a round window: its walls run from the window's rim along −L (an oblique cylinder, outward-facing). */
+function cwShell(THREE, L, R, len, segs = 64, rings = 12) {
+  const pos = new Float32Array((segs + 1) * (rings + 1) * 3), idx = [];
+  for (let j = 0; j <= rings; j++) {
+    const s = (len * j) / rings;
+    for (let i = 0; i <= segs; i++) { const a = (i / segs) * Math.PI * 2; pos.set([Math.cos(a) * R - L.x * s, Math.sin(a) * R - L.y * s, -L.z * s], (j * (segs + 1) + i) * 3); }
+  }
+  for (let j = 0; j < rings; j++) for (let i = 0; i < segs; i++) { const a = j * (segs + 1) + i, b = a + 1, c = a + segs + 1, d = c + 1; idx.push(a, b, c, b, d, c); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+/** A soft ring of light round the window on the wall (on black, gamma-encoded like lhGlow). */
+function cwRimGlow(THREE) {
+  const S = 256, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d"), img = g.createImageData(S, S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const d = Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2) / (S / 2); // 0.625 = the window's rim
+    const v = d < 0.62 || d > 1 ? 0 : Math.exp(-(d - 0.62) * 16) * Math.pow(1 - d, 0.5);
+    const e = Math.round(Math.pow(v, 1 / 2.2) * 255), o = (y * S + x) * 4;
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = e; img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function clockwork(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const TAU = Math.PI * 2;
+  const r = koiRng(1859);
+  const V = new THREE.Vector3();
+  camera.fov = 50; camera.near = 0.1; camera.far = 80;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const D = new THREE.Vector3(3.1, 4.0, 0), R = 3.0, GLASS_Z = -0.3; // the great dial: centre, radius, the glass set back in the wall
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(1, 1, 1));
+  const zAxis = (geo) => { geo.rotateX(Math.PI / 2); return geo; }; // cylinders along z (arbours, bosses)
+
+  /* --- light: the sky and the room, the sun (or the moon) through the dial, the work lamp at night, and what the brass reflects --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.copy(D);
+  const lampLight = new THREE.PointLight(0xffb870, 0, 0, 2);
+  scene.add(hemi, sun, sun.target, lampLight);
+  let envTex = null;
+  const buildEnv = (dark) => { envTex?.dispose(); envTex = cwEnv(THREE, dark); scene.environment = envTex; }; // a new texture: three keeps the old one's PMREM otherwise
+
+  /* --- materials --- */
+  const brass = keep(new THREE.MeshStandardMaterial({ color: 0xd8ac58, metalness: 1, roughness: 0.26 }));
+  const polished = keep(new THREE.MeshStandardMaterial({ color: 0xe6bd6a, metalness: 1, roughness: 0.15 }));
+  const steel = keep(new THREE.MeshStandardMaterial({ color: 0xbcc2ca, metalness: 1, roughness: 0.24 }));
+  const blued = keep(new THREE.MeshStandardMaterial({ color: 0x27314a, metalness: 0.85, roughness: 0.3 }));
+  const paint = keep(new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.6, envMapIntensity: 0.5 })); // the cast-iron frame, painted in the accent colour
+  const iron = keep(new THREE.MeshStandardMaterial({ color: 0x25272b, metalness: 0.6, roughness: 0.55 }));
+  const wood = keep(new THREE.MeshStandardMaterial({ map: keep(globeWood(THREE, 512, 256, "#4a3222", 2121)), roughness: 0.8, envMapIntensity: 0.35 })); // the room's reflection map is for the metal: it would wash out wood, brick and boards
+  const secMat = keep(new THREE.MeshBasicMaterial()), charcoal = new THREE.Color("#23252b");
+
+  /* --- the room: a brick wall with the dial set into it, floorboards, beams --- */
+  const brickTex = keep(cwBrick(THREE, preview ? 512 : 1024, preview ? 256 : 512));
+  brickTex.repeat.set(1 / 4, 1 / 2); // a tile is 4 m × 2 m of wall
+  const wallShape = new THREE.Shape();
+  wallShape.moveTo(-15, -1); wallShape.lineTo(15, -1); wallShape.lineTo(15, 12); wallShape.lineTo(-15, 12); wallShape.closePath();
+  const hole = new THREE.Path();
+  hole.absarc(D.x, D.y, R + 0.02, 0, TAU, true);
+  wallShape.holes.push(hole);
+  const wallMat = keep(new THREE.MeshStandardMaterial({ map: brickTex, roughness: 0.95, envMapIntensity: 0.35 }));
+  scene.add(new THREE.Mesh(keep(new THREE.ShapeGeometry(wallShape, 48)), wallMat));
+  const reveal = new THREE.Mesh(keep(zAxis(new THREE.CylinderGeometry(R + 0.02, R + 0.02, -GLASS_Z + 0.04, 72, 1, true))), keep(new THREE.MeshStandardMaterial({ color: 0x8c7b6a, roughness: 0.9, side: THREE.BackSide, envMapIntensity: 0.35 })));
+  reveal.position.set(D.x, D.y, GLASS_Z / 2);
+  scene.add(reveal);
+  const plankTex = keep(cwPlanks(THREE, preview ? 512 : 1024, preview ? 512 : 1024));
+  const floorGeo = keep(new THREE.PlaneGeometry(30, 18));
+  floorGeo.rotateX(-Math.PI / 2);
+  floorGeo.translate(0, 0, 8);
+  const fp = floorGeo.attributes.position, fuv = floorGeo.attributes.uv;
+  for (let i = 0; i < fp.count; i++) fuv.setXY(i, fp.getX(i) / 4, -fp.getZ(i) / 4); // world-based, so the light patch can sample the same boards
+  const floorMat = keep(new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.78, envMapIntensity: 0.35 }));
+  scene.add(new THREE.Mesh(floorGeo, floorMat));
+  const ceilGeo = keep(new THREE.PlaneGeometry(30, 18));
+  ceilGeo.rotateX(Math.PI / 2);
+  const ceiling = new THREE.Mesh(ceilGeo, keep(new THREE.MeshStandardMaterial({ map: plankTex, color: 0x6b5d52, roughness: 0.9, envMapIntensity: 0.35 })));
+  ceiling.position.set(0, 9.2, 8);
+  scene.add(ceiling);
+  scene.add(new THREE.Mesh(keep(mergeParts(THREE, [
+    [new THREE.BoxGeometry(34, 0.42, 0.38), at(0, 8.95, 1.1)], [new THREE.BoxGeometry(34, 0.42, 0.38), at(0, 8.95, 5.6)],
+    [new THREE.BoxGeometry(0.38, 0.42, 16), at(7.4, 8.5, 6)], [new THREE.BoxGeometry(0.42, 9.2, 0.42), at(7.8, 4.4, 2.2)], [new THREE.BoxGeometry(0.42, 9.2, 0.42), at(-8.6, 4.4, 2.2)],
+  ])), wood));
+
+  /* --- the great dial, seen from behind; the ring of light it throws on the wall --- */
+  const maskTex = keep(new THREE.CanvasTexture(cwDialMask(preview ? 512 : 1024)));
+  maskTex.anisotropy = 4;
+  const dialUni = {
+    uMask: { value: maskTex }, uHour: { value: 0 }, uMinute: { value: 0 }, uOutTop: { value: new THREE.Color() }, uOutBottom: { value: new THREE.Color() },
+    uGlow: { value: new THREE.Color() }, uGlowPos: { value: new THREE.Vector2() }, uGlowSize: { value: 3 }, uIron: { value: new THREE.Color() }, uCity: { value: new THREE.Color() }, uNight: { value: 0 }, uTime: time,
+  };
+  const dial = new THREE.Mesh(keep(new THREE.CircleGeometry(R, 96)), keep(new THREE.ShaderMaterial({ uniforms: dialUni, vertexShader: CW_DIAL_VS, fragmentShader: CW_DIAL_FS })));
+  dial.position.set(D.x, D.y, GLASS_Z);
+  scene.add(dial);
+  const rimMat = keep(new THREE.MeshBasicMaterial({ map: keep(cwRimGlow(THREE)), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }));
+  const rim = new THREE.Mesh(quad, rimMat);
+  rim.position.set(D.x, D.y, 0.02); rim.scale.setScalar((2 * R) / 0.62);
+  scene.add(rim);
+
+  /* --- the light through the dial: god rays (traced per pixel), its patch on the floor, dust glinting in it --- */
+  const common = { uMask: dialUni.uMask, uHour: dialUni.uHour, uMinute: dialUni.uMinute };
+  const shaftUni = { ...common, uL: { value: new THREE.Vector3(0, 0, -1) }, uD: { value: D.clone() }, uR: { value: R }, uGlassZ: { value: GLASS_Z }, uLen: { value: 12 }, uFloorY: { value: 0 }, uColor: { value: new THREE.Color() }, uTime: time, uNoise: { value: noise } };
+  const shaftMat = keep(new THREE.ShaderMaterial({ uniforms: shaftUni, vertexShader: CW_WORLD_VS, fragmentShader: CW_SHAFT_FS, defines: { CW_STEPS: preview ? 8 : 14 }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const patchUni = { ...common, uL: shaftUni.uL, uD: shaftUni.uD, uR: shaftUni.uR, uGlassZ: shaftUni.uGlassZ, uColor: { value: new THREE.Color() }, uFloor: { value: plankTex }, uFloorRep: { value: new THREE.Vector2(0.25, -0.25) } };
+  const patchGeo = keep(new THREE.PlaneGeometry(1, 1));
+  patchGeo.rotateX(-Math.PI / 2);
+  const patch = new THREE.Mesh(patchGeo, keep(new THREE.ShaderMaterial({ uniforms: patchUni, vertexShader: CW_WORLD_VS, fragmentShader: CW_PATCH_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  patch.renderOrder = 4;
+  scene.add(patch);
+  let shaft = null;
+  function buildShaft(L) { // the light's volume and its patch on the floor follow the sun (or the moon)
+    if (shaft) { scene.remove(shaft); shaft.geometry.dispose(); }
+    const len = (D.y + R) / L.y + 0.5;
+    shaftUni.uLen.value = len * 1.25;
+    shaft = new THREE.Mesh(cwShell(THREE, L, R, len, preview ? 40 : 64), shaftMat);
+    shaft.position.set(D.x, D.y, GLASS_Z); shaft.frustumCulled = false; shaft.renderOrder = 5;
+    scene.add(shaft);
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * TAU, qx = D.x + Math.cos(a) * R, qy = D.y + Math.sin(a) * R, s = qy / L.y;
+      const x = qx - L.x * s, z = GLASS_Z - L.z * s;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+    }
+    z0 = Math.max(z0, 0.02);
+    patch.position.set((x0 + x1) / 2, 0.006, (z0 + z1) / 2); patch.scale.set(x1 - x0 + 0.4, 1, Math.max(0.1, z1 - z0 + 0.4));
+  }
+  const ND = preview ? 200 : 900, dustSeed = new Float32Array(ND * 4);
+  for (let i = 0; i < ND; i++) dustSeed.set([r(), r(), r(), r()], i * 4);
+  const dustGeo = keep(new THREE.BufferGeometry());
+  dustGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ND * 3), 3));
+  dustGeo.setAttribute("aSeed", new THREE.BufferAttribute(dustSeed, 4));
+  const dustUni = { ...common, uL: shaftUni.uL, uD: shaftUni.uD, uR: shaftUni.uR, uGlassZ: shaftUni.uGlassZ, uBox: { value: new THREE.Vector3(13, 8.5, 8) }, uBoxC: { value: new THREE.Vector3(0.5, 4.4, 4.2) }, uPx: { value: 600 }, uTime: time, uColor: { value: new THREE.Color() }, uBase: { value: 0.05 } };
+  const dust = new THREE.Points(dustGeo, keep(new THREE.ShaderMaterial({ uniforms: dustUni, vertexShader: CW_DUST_VS, fragmentShader: CW_DUST_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  dust.frustumCulled = false; dust.renderOrder = 6;
+  scene.add(dust);
+  const buf = new THREE.Vector2();
+  dust.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); dustUni.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); };
+
+  /* --- the movement: great wheel → centre wheel (one turn an hour) → third wheel → escape wheel (one turn a minute), anchor and pendulum --- */
+  // the movement stands on a timber bed out in the room, nearer the viewer than the dial; its centre arbour level with the dial's
+  const mv = new THREE.Group(), MS = 0.85, MX = 0.25, MY = D.y * (1 - MS), MZ = 1.3;
+  mv.position.set(MX, MY, MZ); mv.scale.setScalar(MS);
+  scene.add(mv);
+  const M1 = 0.0375, M2 = 0.03, M3 = 0.025, det = preview ? 4 : 8; // tooth sizes of the three meshings
+  const toward = (p, d, deg) => [p[0] + d * Math.cos((deg * Math.PI) / 180), p[1] + d * Math.sin((deg * Math.PI) / 180)];
+  const PC = [-2.7, D.y], PG = toward(PC, (M1 * (96 + 12)) / 2, 230), PT = toward(PC, (M2 * (80 + 8)) / 2, 140), PE = toward(PT, (M3 * (60 + 10)) / 2, 60), PA = [PE[0], PE[1] + 0.72];
+  const FRONT = 3.35, BACK = 0.75;
+  const arbour = (p, parts) => { // one arbour: everything on it turns together, one mesh per material
+    const g = new THREE.Group(), byMat = new Map();
+    g.position.set(p[0], p[1], 0);
+    for (const [geo, mat, z] of parts) { if (!byMat.has(mat)) byMat.set(mat, []); byMat.get(mat).push([geo, at(0, 0, z)]); }
+    for (const [mat, list] of byMat) g.add(new THREE.Mesh(keep(mergeParts(THREE, list)), mat));
+    mv.add(g);
+    return g;
+  };
+  const shaftGeo = (rad, z0, z1) => { const g = zAxis(new THREE.CylinderGeometry(rad, rad, z1 - z0, 12)); g.translate(0, 0, (z0 + z1) / 2); return g; };
+  const collar = (rad, z) => [zAxis(new THREE.CylinderGeometry(rad, rad, 0.06, 20)), brass, z];
+  const gArb = arbour(PG, [[cwWheel(THREE, 96, M1, 0.1, 6, det), brass, 1.55], [shaftGeo(0.05, BACK - 0.08, FRONT + 0.1), steel, 0], collar(0.14, 1.66),
+    [zAxis(new THREE.CylinderGeometry(0.5, 0.5, 0.8, 48)), wood, 2.5], [zAxis(new THREE.CylinderGeometry(0.62, 0.62, 0.05, 48)), brass, 2.08], [zAxis(new THREE.CylinderGeometry(0.62, 0.62, 0.05, 48)), brass, 2.92]]);
+  const cArb = arbour(PC, [[cwWheel(THREE, 12, M1, 0.24, 0, det), steel, 1.55], [cwWheel(THREE, 80, M2, 0.08, 5, det), brass, 2.2], [shaftGeo(0.045, 0.28, FRONT + 0.1), steel, 0], collar(0.12, 2.29)]);
+  const tArb = arbour(PT, [[cwWheel(THREE, 8, M2, 0.2, 0, det), steel, 2.2], [cwWheel(THREE, 60, M3, 0.07, 5, det), brass, 2.85], [shaftGeo(0.035, BACK - 0.08, FRONT + 0.1), steel, 0], collar(0.09, 2.93)]);
+  const eArb = arbour(PE, [[cwWheel(THREE, 10, M3, 0.16, 0, det), steel, 2.85], [cwEscapeWheel(THREE, 0.45, 0.05), brass, 3.1], [shaftGeo(0.03, BACK - 0.08, FRONT + 0.1), steel, 0], collar(0.07, 3.16)]);
+  // the frame: two cast-iron plates of posts and rails, painted, bosses where the arbours run, a cock on top for the pendulum
+  const XL = -5.75, XR = -1.2, YT = 6.6, YB = 0.1, TP = [PA[0], PA[1] + 0.62];
+  const frameGeo = keep(cwBars(THREE, [
+    [XL, YB, XL, YT, 0.11], [XR, YB, XR, YT, 0.11], [XL, YT, XR, YT, 0.1], [XL, YB, XR, YB, 0.12],
+    [XL, PG[1], PG[0], PG[1], 0.07], [PC[0], PC[1], XR, PC[1], 0.07], [...PG, ...PC, 0.06], [...PC, ...PT, 0.06], [...PT, XL, PT[1], 0.06], [PE[0], PE[1], PE[0], YT, 0.06], [...PT, ...PE, 0.05],
+    [PA[0] - 0.42, YT, ...TP, 0.07], [PA[0] + 0.42, YT, ...TP, 0.07],
+    [XL, YT - 0.65, XL + 0.65, YT, 0.05], [XR, YT - 0.65, XR - 0.65, YT, 0.05], [XL, YB + 0.65, XL + 0.65, YB, 0.05], [XR, YB + 0.65, XR - 0.65, YB, 0.05],
+  ], [[...PG, 0.12], [...PC, 0.11], [...PT, 0.09], [...PE, 0.08], [...PA, 0.08], [...TP, 0.09], [XL, YT, 0.09], [XR, YT, 0.09], [XL, YB, 0.09], [XR, YB, 0.09]], 0.08));
+  for (const z of [FRONT, BACK]) { const m = new THREE.Mesh(frameGeo, paint); m.position.z = z; mv.add(m); }
+  mv.add(new THREE.Mesh(keep(mergeParts(THREE, [[XL, YT], [XR, YT], [XL, YB], [XR, YB]].map((p) => [zAxis(new THREE.CylinderGeometry(0.05, 0.05, FRONT - BACK, 12)), at(p[0], p[1], (FRONT + BACK) / 2)]))), paint));
+  const bed = new THREE.Mesh(keep(new THREE.BoxGeometry((XR - XL) * MS + 0.7, MY, (FRONT - BACK) * MS + 0.7)), wood); // the timber bed it stands on
+  bed.position.set(MX + ((XL + XR) / 2) * MS, MY / 2, MZ + ((FRONT + BACK) / 2) * MS);
+  scene.add(bed);
+  // the leading-off work: from the centre arbour back towards the wall, then across to the dial's motion work (turning once an hour: it looks still)
+  const cx = PC[0] * MS + MX, cz = 0.28 * MS + MZ;
+  scene.add(new THREE.Mesh(keep(mergeParts(THREE, [
+    [new THREE.BoxGeometry(0.28, 0.28, 0.26), at(cx, D.y, 0.3)], [new THREE.BoxGeometry(0.28, 0.28, 0.26), at(D.x, D.y, 0.3)],
+    [new THREE.BoxGeometry(0.1, 0.1, 0.32), at(0.9, D.y, 0.14)], [new THREE.BoxGeometry(0.3, 0.3, 0.1), at(0.9, D.y, 0.02)],
+  ])), iron));
+  scene.add(new THREE.Mesh(keep(mergeParts(THREE, [
+    [zAxis(new THREE.CylinderGeometry(0.035, 0.035, cz - 0.3, 10)), at(cx, D.y, (cz + 0.3) / 2)],
+    [new THREE.CylinderGeometry(0.03, 0.03, D.x - cx, 10), at((cx + D.x) / 2, D.y, 0.3, 0, 0, Math.PI / 2)],
+    [zAxis(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 10)), at(D.x, D.y, 0.0)],
+  ])), steel));
+  const motion = new THREE.Group(); // the motion work at the dial's centre: minute wheel and hour wheel, dark against the glass
+  motion.position.set(D.x, D.y, 0);
+  const minWheel = new THREE.Mesh(keep(cwWheel(THREE, 40, 0.0125, 0.03, 4, det)), brass), hourWheel = new THREE.Mesh(keep(cwWheel(THREE, 48, 0.0135, 0.03, 4, det)), brass);
+  minWheel.position.set(0, 0, -0.07); hourWheel.position.set(0, 0, -0.14);
+  motion.add(minWheel, hourWheel);
+  scene.add(motion);
+  // escapement and pendulum: the anchor rocks with the pendulum and lets the escape wheel on half a tooth at every swing
+  const anchor = new THREE.Group();
+  anchor.position.set(PA[0], PA[1], 3.1);
+  anchor.add(new THREE.Mesh(keep(cwBars(THREE, [[0, 0, -0.25, -0.33, 0.07], [0, 0, 0.25, -0.33, 0.07], [-0.25, -0.33, -0.27, -0.43, 0.05], [0.25, -0.33, 0.27, -0.43, 0.05]], [[0, 0, 0.09]], 0.05)), blued));
+  const crutch = new THREE.Mesh(keep(mergeParts(THREE, [[zAxis(new THREE.CylinderGeometry(0.025, 0.025, 0.5, 8)), at(0, 0, 0.25)], [new THREE.CylinderGeometry(0.02, 0.02, 0.92, 8), at(0, -0.46, 0.5)], [new THREE.BoxGeometry(0.02, 0.08, 0.05), at(-0.045, -0.92, 0.52)], [new THREE.BoxGeometry(0.02, 0.08, 0.05), at(0.045, -0.92, 0.52)]])), steel);
+  anchor.add(crutch);
+  mv.add(anchor);
+  const PEND_L = 4.2;
+  const pend = new THREE.Group();
+  pend.position.set(PA[0], PA[1] + 0.22, 3.62);
+  pend.add(new THREE.Mesh(keep(new THREE.CylinderGeometry(0.02, 0.02, PEND_L - 0.2, 8).translate(0, -(PEND_L - 0.2) / 2, 0)), steel));
+  const bob = new THREE.Mesh(keep(new THREE.SphereGeometry(0.42, 40, 24)), polished);
+  bob.position.y = -PEND_L; bob.scale.set(1, 1, 0.3);
+  pend.add(bob);
+  pend.add(new THREE.Mesh(keep(new THREE.CylinderGeometry(0.05, 0.05, 0.16, 12).translate(0, -PEND_L - 0.42, 0)), steel));
+  mv.add(pend);
+  mv.add(new THREE.Mesh(keep(mergeParts(THREE, [[new THREE.BoxGeometry(0.24, 0.26, 0.5), at(PA[0], PA[1] + 0.36, 3.42)], [new THREE.BoxGeometry(0.1, 0.12, 0.06), at(PA[0], PA[1] + 0.24, 3.62)]])), iron)); // the suspension bracket
+  // the setting dial on the frame: the right way round, so the time can be read from the room
+  const setDial = new THREE.Group();
+  setDial.position.set(-1.38, 1.8, FRONT + 0.1);
+  setDial.add(new THREE.Mesh(keep(new THREE.CircleGeometry(0.34, 48)), keep(new THREE.MeshStandardMaterial({ map: keep(cwSettingFace(THREE, preview ? 256 : 512)), roughness: 0.35 }))));
+  setDial.add(new THREE.Mesh(keep(new THREE.TorusGeometry(0.345, 0.026, 8, 48)), polished));
+  const back = new THREE.Mesh(keep(zAxis(new THREE.CylinderGeometry(0.37, 0.37, 0.08, 40))), paint);
+  back.position.z = -0.045;
+  setDial.add(back);
+  const handGeo = (pts) => { const s = new THREE.Shape(); pts.forEach(([x, y], i) => (i ? s.lineTo(x, y) : s.moveTo(x, y))); s.closePath(); return keep(new THREE.ShapeGeometry(s)); };
+  const hHand = new THREE.Mesh(handGeo([[-0.017, -0.04], [0.017, -0.04], [0.012, 0.13], [0, 0.18], [-0.012, 0.13]]), blued);
+  const mHand = new THREE.Mesh(handGeo([[-0.011, -0.05], [0.011, -0.05], [0.007, 0.24], [0, 0.28], [-0.007, 0.24]]), blued);
+  const sHand = new THREE.Mesh(handGeo([[-0.005, -0.08], [0.005, -0.08], [0.0025, 0.3], [-0.0025, 0.3]]), secMat);
+  hHand.position.z = 0.006; mHand.position.z = 0.011; sHand.position.z = 0.016;
+  const cap = new THREE.Mesh(keep(zAxis(new THREE.CylinderGeometry(0.022, 0.022, 0.02, 16))), polished);
+  cap.position.z = 0.02;
+  setDial.add(hHand, mHand, sHand, cap);
+  mv.add(setDial);
+  // the work lamp, lit at night: a caged bulb on a cord
+  const lamp = new THREE.Group();
+  lamp.position.set(-0.45, 5.35, 5.9);
+  const bulbMat = keep(new THREE.MeshBasicMaterial({ color: 0xffe0b0 }));
+  lamp.add(new THREE.Mesh(keep(new THREE.SphereGeometry(0.075, 16, 12)), bulbMat));
+  lamp.add(new THREE.Mesh(keep(mergeParts(THREE, [[new THREE.TorusGeometry(0.12, 0.006, 4, 24), at(0, 0.02, 0, Math.PI / 2)], [new THREE.TorusGeometry(0.12, 0.006, 4, 24), at(0, 0, 0)], [new THREE.TorusGeometry(0.12, 0.006, 4, 24), at(0, 0, 0, 0, Math.PI / 2)], [new THREE.CylinderGeometry(0.05, 0.07, 0.1, 12), at(0, 0.14, 0)], [new THREE.CylinderGeometry(0.008, 0.008, 2.5, 6), at(0, 1.44, 0)]])), iron));
+  const lampGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffc27a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  const lampGlow = new THREE.Sprite(lampGlowMat);
+  lampGlow.scale.setScalar(1.3);
+  lamp.add(lampGlow);
+  scene.add(lamp);
+  lampLight.position.set(-0.45, 5.2, 5.9);
+
+  /* --- the gears' angles from the time: each meshing keeps a tooth of one in a gap of the other --- */
+  const mesh = (beta, pDriven, ratio, driver) => (beta * Math.PI) / 180 + Math.PI - pDriven / 2 - ratio * (driver - (beta * Math.PI) / 180);
+  const backOut = (x) => { const c1 = 1.0, c3 = c1 + 1, u = x - 1; return 1 + c3 * u * u * u + c1 * u * u; };
+  let tz = new Date().getTimezoneOffset(), tzCheck = 0, shown = 0, beat = 0, swing = 0;
+  function tick(now, t) {
+    if (t - tzCheck > 60) { tz = new Date().getTimezoneOffset(); tzCheck = t; } // summer time comes and goes
+    const s = (((now / 1000 - tz * 60) % 86400) + 86400) % 86400; // local seconds since midnight
+    beat = Math.floor(s / 2);
+    const f = s - beat * 2;
+    shown = beat * 2 - 2 + 2 * backOut(Math.min(1, f / 0.16)); // at each tick the train jumps on two seconds, overshooting a little
+    swing = 0.07 * Math.sin((Math.PI * s) / 2); // the pendulum passes the middle as it ticks
+    const thC = -TAU * (shown / 3600);
+    const thT = mesh(140, TAU / 8, 80 / 8, thC), thE = mesh(60, TAU / 10, 60 / 10, thT), thG = mesh(230, TAU / 96, 12 / 96, thC);
+    cArb.rotation.z = thC; tArb.rotation.z = thT; eArb.rotation.z = thE; gArb.rotation.z = thG;
+    anchor.rotation.z = swing; pend.rotation.z = swing;
+    const minuteA = TAU * ((shown % 3600) / 3600), hourA = TAU * (((shown / 3600) % 12) / 12);
+    dialUni.uMinute.value = minuteA; dialUni.uHour.value = hourA;
+    minWheel.rotation.z = -minuteA; hourWheel.rotation.z = -hourA;
+    mHand.rotation.z = -minuteA; hHand.rotation.z = -hourA; sHand.rotation.z = -TAU * ((shown % 60) / 60);
+  }
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    paint.color.set(p.accent).lerp(charcoal, 0.4).multiplyScalar(0.42); secMat.color.set(p.accent); // painted cast iron: the accent, deepened
+    buildEnv(d);
+    dialUni.uOutTop.value.set(d ? "#0b1332" : "#fff4de"); dialUni.uOutBottom.value.set(d ? "#1d1833" : "#ffd29a");
+    dialUni.uGlow.value.set(d ? "#c2cfff" : "#fffaf0").multiplyScalar(d ? 0.45 : 1.0);
+    dialUni.uGlowPos.value.set(d ? -0.45 : 0.42, d ? 0.52 : 0.46); dialUni.uGlowSize.value = d ? 6 : 2.4;
+    dialUni.uIron.value.set(d ? "#141519" : "#2b2622"); dialUni.uCity.value.set("#ff9a50").multiplyScalar(0.35); dialUni.uNight.value = d ? 1 : 0;
+    const L = (d ? V.set(-0.28, 0.52, -0.8) : V.set(0.32, 0.72, -0.62)).normalize(); // towards the moon, or the sun: high on the right behind the dial
+    shaftUni.uL.value.copy(L);
+    buildShaft(L);
+    shaftUni.uColor.value.set(d ? "#8ea4ff" : "#ffd79c").multiplyScalar(d ? 0.09 : 0.32);
+    patchUni.uColor.value.set(d ? "#9fb2ff" : "#ffe0b0").multiplyScalar(d ? 0.35 : 2);
+    // no shadows here, so a strong sun would light the whole room through the wall: the rays and the patch on the floor draw the direct light, this is only its glow
+    sun.color.set(d ? "#9fb2e8" : "#ffe4bf"); sun.intensity = d ? 0.25 : 0.45; sun.position.copy(D).addScaledVector(L, 20);
+    hemi.color.set(d ? "#34405e" : "#ffe6c8"); hemi.groundColor.set(d ? "#0b0a08" : "#4a3322"); hemi.intensity = d ? 0.35 : 0.62;
+    lampLight.intensity = d ? 28 : 0; lamp.visible = d;
+    dustUni.uColor.value.set(d ? "#b9c7ff" : "#fff0d4"); dustUni.uBase.value = d ? 0.03 : 0.06;
+    rimMat.color.set(d ? "#5f70a8" : "#ffcf94"); rimMat.opacity = d ? 0.18 : 0.32;
+    wallMat.color.set(d ? "#a9abbd" : "#ffffff"); floorMat.color.set(d ? "#9ea1b4" : "#ffffff");
+  }
+  applyPalette(pal);
+
+  // wide screens look at the wall with the movement on the left and the dial on the right; a phone held upright looks
+  // diagonally past the movement to the dial behind it
+  const look = new THREE.Vector3(), CAM = { wide: [-0.9, 5.0, 11, 0.3, 3.4, 0, 50], tall: [-6.3, 4.7, 9.4, 1.4, 3.9, 0, 62] };
+  function frame(dt, t) {
+    time.value = t;
+    tick(Date.now(), t);
+    const k = THREE.MathUtils.smoothstep(camera.aspect || 1, 0.6, 1.25), c = CAM.tall.map((v, i) => v + (CAM.wide[i] - v) * k); // 1 = wide, 0 = upright
+    if (Math.abs(camera.fov - c[6]) > 0.01) { camera.fov = c[6]; camera.updateProjectionMatrix(); }
+    const sway = Math.sin(t * 0.05) * 0.45;
+    camera.position.set(c[0] + sway, c[1] + Math.sin(t * 0.037) * 0.12, c[2]);
+    camera.lookAt(look.set(c[3] + sway * 0.3, c[4], c[5]));
+    lampGlowMat.opacity = 0.85 + 0.05 * Math.sin(t * 7.3) * Math.sin(t * 3.1);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(dt, t); },
+    setPalette: applyPalette,
+    stats() { const s = shown % 86400; return { time: `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`, beat, swing: +swing.toFixed(3) }; }, // for checking by hand
+    dispose() { scene.environment = null; envTex?.dispose(); shaft?.geometry.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
