@@ -48,6 +48,7 @@ export const BG_STYLES = [
   { value: "observatory", label: "Observatory", desc: "3D domed observatory: the telescope tracks the sky, the moon in today's real phase, stars turning with the real time", three: true },
   { value: "hotair", label: "Hot-air balloons", desc: "3D sunrise over a fairy-chimney valley: dozens of balloons drift up it, burners flaring, their shadows sliding over the rock; at night they glow like lanterns", three: true },
   { value: "reef", label: "Coral reef", desc: "3D sunlit reef seen from the sand: rays and caustics, corals and sea fans swaying, a turtle gliding past, a school of fish that swirls round the mouse", three: true },
+  { value: "northernlights", label: "Northern lights lake", desc: "3D aurora over a still Lapland lake, mirrored in the water: snowy pines, a lit cabin and a canoe on the shore; low winter sun, mist and snow by day", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

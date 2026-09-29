@@ -10167,7 +10167,363 @@ function reef(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef };
+/* ---------- Northern lights lake: aurora curtains over a still lake in Lapland, mirrored in the water; a lit cabin, pines and a canoe on the snowy shore ---------- */
+// the sky: a night gradient with three aurora curtains (or a low winter sun by day); below the horizon only the mirrored pass looks
+const AURORA_SKY_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uGlow;
+  uniform vec3 uSunDir; uniform vec3 uSunColor; uniform float uSun; uniform float uAurora;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vec3(vDir.x, abs(vDir.y), vDir.z));
+    float el = d.y, az = atan(d.x, -d.z);
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.2, el));
+    col = mix(col, uZenith, smoothstep(0.16, 0.75, el));
+    col += uGlow * exp(-el * 14.0);
+    float sd = distance(d, uSunDir);
+    col += uSunColor * uSun * (smoothstep(0.03, 0.026, sd) + 0.5 * exp(-sd * 9.0) + 0.22 * exp(-sd * 2.5));
+    if (uAurora > 0.0) {
+      vec3 ac = vec3(0.0);
+      for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        float fold = texture2D(uNoise, vec2(az * 0.35 + uTime * 0.012 * (1.0 + 0.3 * fi) + fi * 0.37, 0.2 + fi * 0.3)).r - 0.5
+          + 0.5 * (texture2D(uNoise, vec2(az * 1.1 - uTime * 0.02 + fi * 0.7, 0.5 + fi * 0.2)).g - 0.5); // the curtain's folds, large and small, drifting
+        float lower = 0.17 + 0.12 * fi + fold * 0.22; // where its lower edge hangs
+        float h = el - lower;
+        float body = smoothstep(0.0, 0.02, h) * (exp(-h * (7.0 - fi)) + 0.6 * exp(-h * 30.0)); // a bright foot, fading up into the dark
+        float rays = 0.45 + 0.55 * texture2D(uNoise, vec2(az * 7.0 + fold * 3.0 + uTime * 0.03, fi * 0.5 + h * 0.4)).g; // the vertical striations
+        float bright = texture2D(uNoise, vec2(az * 0.9 + uTime * 0.04 + fi * 0.2, 0.7 + fi * 0.15)).r; // brightness travelling along the curtain
+        float stretch = texture2D(uNoise, vec2(az * 2.3 - uTime * 0.025 + fi * 1.3, 0.35 + fi * 0.25)).r; // and whole stretches that fade away ("patch" is a GLSL reserved word)
+        float k = body * rays * smoothstep(0.25, 0.7, bright) * smoothstep(0.25, 0.55, stretch) * (0.75 + 0.25 * sin(uTime * 0.6 + fi * 2.0));
+        vec3 cc = mix(vec3(0.25, 1.0, 0.5), vec3(0.7, 0.3, 0.95), smoothstep(0.04, 0.4, h)); // green below, violet above
+        cc = mix(cc, vec3(1.0, 0.4, 0.55), 0.5 * smoothstep(-0.01, 0.015, h) * (1.0 - smoothstep(0.015, 0.06, h))); // a pink fringe at the foot
+        ac += cc * k;
+      }
+      col += ac * uAurora * 1.6;
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// snow falling round the viewer: a box of flakes that wraps, each drifting a little on its way down
+const AURORA_SNOW_VS = /* glsl */ `
+  uniform float uTime; uniform vec3 uBox; uniform vec3 uBoxC; uniform float uPx; uniform float uSize;
+  attribute vec4 aSeed;
+  varying float vA;
+  void main() {
+    float sp = 0.45 + 0.6 * fract(aSeed.w * 7.1);
+    vec3 p = aSeed.xyz * uBox + vec3(sin(uTime * 0.6 + aSeed.w * 20.0) * 0.6 + uTime * 0.25, -uTime * sp, cos(uTime * 0.5 + aSeed.w * 13.0) * 0.4);
+    p = uBoxC + mod(p, uBox) - uBox * 0.5;
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float near = -mv.z;
+    vA = smoothstep(0.4, 2.0, near); // a flake right against the eye is gone
+    gl_PointSize = clamp(uSize * (0.6 + 0.8 * fract(aSeed.w * 3.3)) * uPx / near, 1.0, 26.0);
+  }
+`;
+const AURORA_SNOW_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uAlpha;
+  varying float vA;
+  void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+    gl_FragColor = vec4(uColor, (1.0 - r2) * (1.0 - r2) * uAlpha * vA);
+    #include <colorspace_fragment>
+  }
+`;
+/** A ridge line for the painted hills and banks: smooth noise in x. */
+function auroraRidge(seed) {
+  const h1 = (n) => { const s = Math.sin(n * 127.1 + seed * 311.7) * 43758.5453; return s - Math.floor(s); };
+  const n1 = (x) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return h1(i) * (1 - u) + h1(i + 1) * u; };
+  return (x) => { let s = 0, a = 0.5, q = x; for (let o = 0; o < 4; o++) { s += a * n1(q); q = q * 2.1 + 5.3; a *= 0.5; } return s / 0.9375; };
+}
+/** Snowy hills on the far shore, two ridges, the back one paler; transparent above. */
+function auroraHills(THREE, W, H) {
+  return canvasTexture(THREE, W, H, (g) => {
+    for (const [seed, base, amp, top, bottom] of [[3, 0.42, 0.5, "#c9d4e6", "#a6b6d0"], [11, 0.2, 0.42, "#93a6c6", "#6f86ab"]]) {
+      const f = auroraRidge(seed), grad = g.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, top); grad.addColorStop(1, bottom);
+      g.fillStyle = grad; g.beginPath(); g.moveTo(0, H);
+      for (let x = 0; x <= W; x += 3) g.lineTo(x, H - (base + amp * Math.pow(f((x / W) * 7 + seed), 1.4)) * H);
+      g.lineTo(W, H); g.closePath(); g.fill();
+    }
+  });
+}
+/** A treeline of spruces on a snowy bank, dark, some with snow on their tops; transparent above. */
+function auroraTreeline(THREE, W, H) {
+  const r = koiRng(2121);
+  return canvasTexture(THREE, W, H, (g) => {
+    const bank = g.createLinearGradient(0, H * 0.7, 0, H);
+    bank.addColorStop(0, "#c9d6e8"); bank.addColorStop(1, "#8fa2c0");
+    g.fillStyle = bank; g.fillRect(0, H * 0.72, W, H * 0.28);
+    for (let x = -10; x < W + 10; x += r(6, 14) * (W / 2048)) {
+      const th = r(0.35, 0.95) * H, tw = th * r(0.16, 0.24), base = H * r(0.72, 0.8), tiers = 4 + ((r() * 3) | 0);
+      g.fillStyle = r() < 0.5 ? "#101f18" : "#15261d";
+      for (let k = 0; k < tiers; k++) { const y = base - th + (k / tiers) * th * 0.85, w = tw * (0.25 + (k / (tiers - 1)) * 0.75), hh = th / tiers * 1.3; g.beginPath(); g.moveTo(x, y); g.lineTo(x + w, y + hh); g.lineTo(x - w, y + hh); g.closePath(); g.fill(); }
+      if (r() < 0.6) { g.fillStyle = "rgba(225,234,245,0.85)"; for (let k = 0; k < tiers; k++) { const y = base - th + (k / tiers) * th * 0.85, w = tw * (0.25 + (k / (tiers - 1)) * 0.75); g.beginPath(); g.moveTo(x, y); g.lineTo(x + w * 0.5, y + th / tiers * 0.55); g.lineTo(x - w * 0.5, y + th / tiers * 0.55); g.closePath(); g.fill(); } }
+    }
+  });
+}
+/** One spruce close by, boughs heavy with snow; W × H canvas, the trunk at the bottom middle. */
+function auroraPine(THREE, W, H, seed) {
+  const r = koiRng(seed);
+  return canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#3a2a20"; g.fillRect(W * 0.47, H * 0.6, W * 0.06, H * 0.4);
+    const tiers = 9, top = H * 0.04;
+    for (let k = tiers - 1; k >= 0; k--) { // from the bottom up, so the upper boughs lie over the lower
+      const y = top + (k / tiers) * H * 0.88, hw = W * (0.08 + 0.42 * Math.pow(k / (tiers - 1), 1.1)), hh = H * 0.13;
+      const grad = g.createLinearGradient(-hw, 0, hw, 0);
+      grad.addColorStop(0, "#243f2e"); grad.addColorStop(0.45, "#35593d"); grad.addColorStop(1, "#182e22");
+      g.fillStyle = grad; g.beginPath(); g.moveTo(W / 2, y);
+      for (let i = 0; i <= 10; i++) { const u = i / 10, x = W / 2 + hw * u, yy = y + hh * (0.55 + 0.45 * u) + (i % 2 ? r(0, 8) : -r(0, 8)) * (H / 768); g.lineTo(x, yy); }
+      g.lineTo(W / 2, y + hh * 0.98);
+      for (let i = 10; i >= 0; i--) { const u = i / 10, x = W / 2 - hw * u, yy = y + hh * (0.55 + 0.45 * u) + (i % 2 ? r(0, 8) : -r(0, 8)) * (H / 768); g.lineTo(x, yy); }
+      g.closePath(); g.fill();
+      const snow = g.createLinearGradient(0, y, 0, y + hh * 0.5); // snow lying along the top of the bough
+      snow.addColorStop(0, "#f4f7fb"); snow.addColorStop(1, "rgba(200,214,232,0)");
+      g.fillStyle = snow; g.beginPath(); g.moveTo(W / 2, y);
+      for (let i = 0; i <= 8; i++) { const u = i / 8; g.lineTo(W / 2 + hw * u * 0.95, y + hh * (0.5 + 0.4 * u) * 0.85 + (i % 2 ? 4 : -4) * (H / 768)); }
+      g.lineTo(W / 2, y + hh * 0.7);
+      for (let i = 8; i >= 0; i--) { const u = i / 8; g.lineTo(W / 2 - hw * u * 0.95, y + hh * (0.5 + 0.4 * u) * 0.85 + (i % 2 ? 4 : -4) * (H / 768)); }
+      g.closePath(); g.fill();
+    }
+  });
+}
+/** The log cabin: log walls, a snowy roof, a stone chimney, a door in the accent colour, windows lit at night. Redrawn when the palette changes. */
+function auroraCabinDraw(g, W, H, accent, lit) {
+  g.clearRect(0, 0, W, H);
+  const k = W / 512, wallTop = H * 0.42, wallBot = H * 0.94, left = W * 0.12, right = W * 0.88;
+  g.fillStyle = "#e9eef6"; g.fillRect(left - 6 * k, wallBot - 8 * k, right - left + 12 * k, H - wallBot + 8 * k); // snow at the foot
+  for (let y = wallTop; y < wallBot; y += 18 * k) { // the logs
+    const grad = g.createLinearGradient(0, y, 0, y + 18 * k);
+    grad.addColorStop(0, "#8a5f3a"); grad.addColorStop(0.5, "#6a4528"); grad.addColorStop(1, "#4a2f1a");
+    g.fillStyle = grad; g.beginPath(); g.roundRect(left, y, right - left, 17 * k, 8 * k); g.fill();
+    g.fillStyle = "#5a3a22"; g.beginPath(); g.arc(left + 4 * k, y + 9 * k, 7 * k, 0, Math.PI * 2); g.arc(right - 4 * k, y + 9 * k, 7 * k, 0, Math.PI * 2); g.fill();
+  }
+  g.fillStyle = accent; g.beginPath(); g.roundRect(W * 0.44, H * 0.62, W * 0.12, wallBot - H * 0.62, [6 * k, 6 * k, 0, 0]); g.fill(); // the door
+  g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(W * 0.44, H * 0.62, W * 0.12, 4 * k); g.fillStyle = "#e8d29a"; g.beginPath(); g.arc(W * 0.545, H * 0.8, 2.5 * k, 0, Math.PI * 2); g.fill();
+  for (const wx of [W * 0.2, W * 0.66]) { // the windows
+    g.fillStyle = "#3a2a1a"; g.fillRect(wx - 3 * k, H * 0.5 - 3 * k, W * 0.14 + 6 * k, H * 0.16 + 6 * k);
+    g.fillStyle = lit ? "#ffd27a" : "#2b3a52"; g.fillRect(wx, H * 0.5, W * 0.14, H * 0.16);
+    if (lit) { const gl = g.createRadialGradient(wx + W * 0.07, H * 0.58, 0, wx + W * 0.07, H * 0.58, W * 0.09); gl.addColorStop(0, "rgba(255,255,220,0.9)"); gl.addColorStop(1, "rgba(255,200,100,0)"); g.fillStyle = gl; g.fillRect(wx, H * 0.5, W * 0.14, H * 0.16); }
+    g.fillStyle = "#3a2a1a"; g.fillRect(wx + W * 0.07 - 1.5 * k, H * 0.5, 3 * k, H * 0.16); g.fillRect(wx, H * 0.58 - 1.5 * k, W * 0.14, 3 * k);
+  }
+  g.fillStyle = "#5b6470"; g.fillRect(W * 0.68, H * 0.08, W * 0.08, H * 0.24); // the chimney
+  g.fillStyle = "#eef2f8"; g.fillRect(W * 0.67, H * 0.07, W * 0.1, 5 * k);
+  const roof = g.createLinearGradient(0, H * 0.12, 0, wallTop); // the roof, deep in snow
+  roof.addColorStop(0, "#f7f9fc"); roof.addColorStop(1, "#c5d1e2");
+  g.fillStyle = roof; g.beginPath(); g.moveTo(W * 0.04, wallTop + 4 * k); g.lineTo(W * 0.5, H * 0.1); g.lineTo(W * 0.96, wallTop + 4 * k); g.lineTo(W * 0.96, wallTop + 14 * k); g.lineTo(W * 0.5, H * 0.2); g.lineTo(W * 0.04, wallTop + 14 * k); g.closePath(); g.fill();
+  g.fillStyle = "#3d2b1c"; g.beginPath(); g.moveTo(W * 0.04, wallTop + 14 * k); g.lineTo(W * 0.5, H * 0.2); g.lineTo(W * 0.96, wallTop + 14 * k); g.lineTo(W * 0.96, wallTop + 20 * k); g.lineTo(W * 0.5, H * 0.2 + 6 * k); g.lineTo(W * 0.04, wallTop + 20 * k); g.closePath(); g.fill(); // the eaves' dark edge
+  for (let i = 0; i < 9; i++) { g.fillStyle = "#dfe8f4"; g.beginPath(); g.moveTo(W * (0.06 + i * 0.1), wallTop + 20 * k); g.lineTo(W * (0.1 + i * 0.1), wallTop + 20 * k); g.lineTo(W * (0.08 + i * 0.1), wallTop + (30 + (i % 3) * 5) * k); g.closePath(); g.fill(); } // icicles
+}
+/** The canoe pulled up on the snow, in the accent colour, a paddle across it. */
+function auroraCanoeDraw(g, W, H, accent) {
+  g.clearRect(0, 0, W, H);
+  const k = W / 256;
+  g.fillStyle = "rgba(90,110,140,0.35)"; g.beginPath(); g.ellipse(W * 0.5, H * 0.84, W * 0.42, H * 0.1, 0, 0, Math.PI * 2); g.fill(); // its shadow on the snow
+  const hull = g.createLinearGradient(0, H * 0.3, 0, H * 0.8);
+  hull.addColorStop(0, accent); hull.addColorStop(1, "rgba(0,0,0,0.55)");
+  g.fillStyle = accent; g.beginPath(); g.moveTo(W * 0.04, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.95, W * 0.96, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.55, W * 0.04, H * 0.3); g.closePath(); g.fill();
+  g.fillStyle = hull; g.beginPath(); g.moveTo(W * 0.04, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.95, W * 0.96, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.55, W * 0.04, H * 0.3); g.closePath(); g.fill();
+  g.fillStyle = "#3a2a1c"; g.beginPath(); g.moveTo(W * 0.06, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.52, W * 0.94, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.42, W * 0.06, H * 0.3); g.closePath(); g.fill(); // the inside
+  g.strokeStyle = "rgba(255,255,255,0.55)"; g.lineWidth = 2.5 * k; g.beginPath(); g.moveTo(W * 0.05, H * 0.31); g.quadraticCurveTo(W * 0.5, H * 0.54, W * 0.95, H * 0.31); g.stroke(); // the gunwale
+  g.strokeStyle = "#c9a26a"; g.lineWidth = 3 * k; g.beginPath(); g.moveTo(W * 0.3, H * 0.12); g.lineTo(W * 0.62, H * 0.42); g.stroke(); // the paddle
+  g.fillStyle = "#c9a26a"; g.beginPath(); g.ellipse(W * 0.66, H * 0.46, 8 * k, 4.5 * k, 0.75, 0, Math.PI * 2); g.fill();
+}
+/** The snowy shore under the viewer's feet: a flat quad, the water side (u → 1) fading out along an uneven edge with a rim of ice. */
+function auroraShore(THREE, W, H) {
+  const r = koiRng(4242), f = auroraRidge(9);
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    const grad = g.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0, "#f0f4fa"); grad.addColorStop(1, "#d9e2ef");
+    g.fillStyle = grad; g.fillRect(0, 0, W, H);
+    for (let i = 0; i < 60; i++) { const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); g.save(); g.translate(r(0, W), r(0, H)); g.scale(r(30, 90) * (W / 1024), r(12, 30) * (W / 1024)); gr.addColorStop(0, "rgba(150,170,200,0.28)"); gr.addColorStop(1, "rgba(150,170,200,0)"); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); } // drifts and hollows
+    for (let i = 0; i < 9; i++) { const x = r(0, W * 0.7), y = r(0, H), rad = r(8, 22) * (W / 1024); g.fillStyle = "#5a6272"; g.beginPath(); g.ellipse(x, y, rad, rad * 0.6, r(0, 3), 0, Math.PI * 2); g.fill(); g.fillStyle = "#eef2f8"; g.beginPath(); g.ellipse(x, y - rad * 0.3, rad * 0.9, rad * 0.32, 0, 0, Math.PI * 2); g.fill(); } // rocks capped with snow
+    g.globalCompositeOperation = "destination-out"; // the water's edge, uneven
+    g.beginPath(); g.moveTo(W, 0);
+    for (let y = 0; y <= H; y += 4) g.lineTo(W * (0.78 + 0.14 * f((y / H) * 6)), y);
+    g.lineTo(W, H); g.closePath(); g.fill();
+    g.globalCompositeOperation = "source-over";
+    g.strokeStyle = "rgba(210,228,245,0.9)"; g.lineWidth = 6 * (W / 1024); g.beginPath(); // a rim of ice along the edge
+    for (let y = 0; y <= H; y += 4) g.lineTo(W * (0.78 + 0.14 * f((y / H) * 6)) - 2, y);
+    g.stroke();
+  });
+  return tex;
+}
+function northernlights(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(6301);
+  const EYE = 1.6, PITCH = 0.14; // standing on the shore, looking up at the sky
+  camera.fov = 52; camera.near = 0.1; camera.far = 6000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  let TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const halfW = (dist) => dist * TAN * camera.aspect;
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(glowTexture(THREE)), mist = keep(inkMist(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color();
+  // everything above the water is in `world`: drawn twice, the second time mirrored into the lake. Double-sided (the mirror turns faces round), one pass each.
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, ...extra }));
+  const plain = (opts) => keep(new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, fog: false, ...opts }));
+  const world = new THREE.Group();
+  scene.add(world);
+  const layer = (mat, x, y, z, w, h, order, parent = world) => { const m = new THREE.Mesh(quad, mat); m.position.set(x, y, z); m.scale.set(w, h, 1); m.renderOrder = order; m.frustumCulled = false; parent.add(m); return m; };
+
+  /* --- the sky with the aurora, and the stars --- */
+  const skyUni = {
+    uNoise: { value: noise }, uTime: time, uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(-0.5, 0.07, -0.86).normalize() }, uSunColor: { value: new THREE.Color("#ffe2b0") }, uSun: { value: 0 }, uAurora: { value: 1 },
+  };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(4200, 40, 24)), shader(LANTERN_SKY_VS, AURORA_SKY_FS, skyUni, { transparent: false, depthTest: false }));
+  sky.position.set(0, EYE, 0); sky.renderOrder = -10; sky.frustumCulled = false;
+  world.add(sky);
+  const NSTAR = preview ? 400 : 1300, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 3900, EYE + Math.sin(e) * 3900, Math.sin(a) * Math.cos(e) * 3900], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.6, sizeAttenuation: false, transparent: true, depthWrite: false, depthTest: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -9; stars.frustumCulled = false;
+  world.add(stars);
+
+  /* --- the far shore: snowy hills, a treeline, mist on the water by day --- */
+  const hillMat = plain({ map: keep(auroraHills(THREE, preview ? 1024 : 2048, preview ? 128 : 256)) });
+  layer(hillMat, 0, 150, -1600, 5200, 300, 1);
+  const treeMat = plain({ map: keep(auroraTreeline(THREE, preview ? 1024 : 2048, preview ? 96 : 192)) });
+  layer(treeMat, 0, 45, -900, 3000, 90, 2);
+  const mistMat = plain({ map: mist });
+  const mists = [[-700, 3, 2600, 20], [-420, 2, 1600, 12], [-220, 1.2, 900, 7]].map(([z, y, w, h], i) => ({ m: layer(mistMat, r(-100, 100), y, z, w, h, 3), speed: [1.0, 0.6, 0.4][i] }));
+
+  /* --- the near shore on the left: snow underfoot, the cabin with its lit windows and smoking chimney, pines, the canoe --- */
+  const shoreGeo = keep(new THREE.PlaneGeometry(1, 1));
+  shoreGeo.rotateX(-Math.PI / 2); // lying flat: local x → world x, local y → towards −z
+  const shoreMat = plain({ map: keep(auroraShore(THREE, preview ? 512 : 1024, preview ? 256 : 512)) });
+  const shore = new THREE.Mesh(shoreGeo, shoreMat);
+  shore.renderOrder = 4; shore.frustumCulled = false;
+  world.add(shore);
+  const CW = 512, CH = 320, cabinCanvas = document.createElement("canvas");
+  cabinCanvas.width = CW; cabinCanvas.height = CH;
+  const cabinTex = keep(new THREE.CanvasTexture(cabinCanvas));
+  cabinTex.colorSpace = THREE.SRGBColorSpace;
+  const cabinMat = plain({ map: cabinTex });
+  const cabin = layer(cabinMat, 0, 5, -60, 16, 10, 6);
+  const KW = 256, KH = 96, canoeCanvas = document.createElement("canvas");
+  canoeCanvas.width = KW; canoeCanvas.height = KH;
+  const canoeTex = keep(new THREE.CanvasTexture(canoeCanvas));
+  canoeTex.colorSpace = THREE.SRGBColorSpace;
+  const canoeMat = plain({ map: canoeTex });
+  const canoe = layer(canoeMat, 0, 0.8, -30, 4.6, 1.72, 8);
+  const pineMats = [1, 2, 3].map((seed) => plain({ map: keep(auroraPine(THREE, preview ? 256 : 512, preview ? 384 : 768, seed * 77)) }));
+  const PINES = [[-0.84, 46, 15, 0], [-0.56, 78, 19, 1], [-0.72, 118, 22, 2], [-0.36, 150, 17, 0], [-0.98, 92, 20, 1]]; // fraction of the half-width, distance, height, which painting
+  const pines = PINES.map(([fx, z, h, k]) => ({ m: layer(pineMats[k], 0, h / 2, -z, h * 0.62, h, 5), fx, z }));
+  const windowGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffb060, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, fog: false }));
+  const windowGlows = [0.2, 0.66].map((u) => { const s = new THREE.Sprite(windowGlowMat); s.renderOrder = 7; world.add(s); return { s, u }; });
+  const smokeMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xc8d0dc, depthWrite: false, depthTest: false, transparent: true, fog: false, opacity: 0.3 }));
+  const puffs = Array.from({ length: 5 }, () => { const s = new THREE.Sprite(smokeMat); s.renderOrder = 7; world.add(s); return { s, age: 9, life: 5 }; });
+  let puffT = 0;
+
+  /* --- the lake: the mirrored world, broken by ripples --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 }));
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const lakeUni = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: time, uDeep: { value: new THREE.Color() }, uSheen: { value: new THREE.Color() } };
+  const lakeGeo = keep(new THREE.PlaneGeometry(8000, 8000));
+  lakeGeo.rotateX(-Math.PI / 2);
+  const lake = new THREE.Mesh(lakeGeo, keep(new THREE.ShaderMaterial({ uniforms: lakeUni, vertexShader: LANTERN_LAKE_VS, fragmentShader: LANTERN_LAKE_FS })));
+  lake.position.z = -3900; lake.renderOrder = -5; lake.frustumCulled = false;
+  scene.add(lake);
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  sky.onBeforeRender = (renderer, sc, cam) => {
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf);
+    lakeUni.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    world.scale.y = -1; lake.visible = false; snow.visible = false;
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT);
+    renderer.render(sc, cam);
+    renderer.setRenderTarget(before);
+    world.scale.y = 1; lake.visible = true; snow.visible = snowOn;
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  /* --- snow falling round the viewer (not in the reflection) --- */
+  const NSNOW = preview ? 500 : 1600, snowGeo = keep(new THREE.BufferGeometry());
+  snowGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(NSNOW * 3), 3));
+  snowGeo.setAttribute("aSeed", new THREE.BufferAttribute(Float32Array.from({ length: NSNOW * 4 }, () => r()), 4));
+  const snowUni = { uTime: time, uBox: { value: new THREE.Vector3(70, 16, 46) }, uBoxC: { value: new THREE.Vector3(0, 6, -20) }, uPx: { value: 600 }, uSize: { value: 0.09 }, uColor: { value: new THREE.Color("#ffffff") }, uAlpha: { value: 0.8 } };
+  const snow = new THREE.Points(snowGeo, keep(new THREE.ShaderMaterial({ uniforms: snowUni, vertexShader: AURORA_SNOW_VS, fragmentShader: AURORA_SNOW_FS, transparent: true, depthWrite: false })));
+  snow.frustumCulled = false; snow.renderOrder = 20;
+  scene.add(snow);
+  let snowOn = true;
+  snow.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); snowUni.uPx.value = buf.y / (2 * TAN); };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    auroraCabinDraw(cabinCanvas.getContext("2d"), CW, CH, p.accent, d); cabinTex.needsUpdate = true;
+    auroraCanoeDraw(canoeCanvas.getContext("2d"), KW, KH, p.accent); canoeTex.needsUpdate = true;
+    skyUni.uZenith.value.set(d ? "#02051a" : "#6f9ed8"); skyUni.uMid.value.set(d ? "#071033" : "#c6d6ea"); skyUni.uHorizon.value.set(d ? "#142446" : "#f6dcb8");
+    skyUni.uGlow.value.set(d ? "#1e2c52" : "#ffd9a0").multiplyScalar(d ? 0.4 : 0.5); skyUni.uSun.value = d ? 0 : 1; skyUni.uAurora.value = d ? 1 : 0;
+    starMat.opacity = d ? 0.9 : 0;
+    hillMat.color.set(d ? "#5c6d94" : "#ffffff"); treeMat.color.set(d ? "#7d8fb4" : "#ffffff");
+    mistMat.color.set(d ? "#2a3860" : "#ffffff"); mistMat.opacity = d ? 0.18 : 0.6;
+    shoreMat.color.set(d ? "#8593b8" : "#ffffff"); cabinMat.color.set(d ? "#aab4cc" : "#ffffff"); canoeMat.color.set(d ? "#aab4cc" : "#ffffff");
+    for (const m of pineMats) m.color.set(d ? "#8e9dc0" : "#ffffff");
+    windowGlowMat.opacity = d ? 0.75 : 0; smokeMat.color.set(d ? "#8e98b0" : "#e8ecf2"); smokeMat.opacity = d ? 0.22 : 0.3;
+    lakeUni.uDeep.value.set(d ? "#02040c" : "#4f6f8c"); lakeUni.uSheen.value.set(d ? "#9fe8c0" : "#ffffff").multiplyScalar(d ? 0.22 : 0.5);
+    snowUni.uAlpha.value = d ? 0.35 : 0.85; snowOn = true; snow.visible = true;
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function layout() {
+    const A = camera.aspect || 1, fov = A >= 1 ? 52 : 52 + (1 - A) * 24; // a phone held upright sees more of the sky
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); TAN = Math.tan((fov * Math.PI) / 360); }
+    const hw60 = halfW(60);
+    shore.position.set(-hw60 * 0.62 - 1, 0.03, -56); shore.scale.set(hw60 * 1.5 + 4, 1, 126); // the snow underfoot, from the left edge to the water
+    cabin.position.set(-hw60 * (A >= 1 ? 0.62 : 0.5), 5, -60);
+    windowGlows.forEach(({ s, u }) => { s.position.set(cabin.position.x + (u + 0.07 - 0.5) * 16, 5 + (0.5 - 0.58) * 10, -59.9); s.scale.set(4.5, 4.5, 1); });
+    canoe.position.set(-halfW(30) * (A >= 1 ? 0.3 : 0.22), 0.8, -30);
+    for (const p of pines) p.m.position.x = p.fx * halfW(p.z) * (A >= 1 ? 1 : 0.8);
+  }
+  function frame(dt, t) {
+    time.value = t;
+    layout();
+    const cx = Math.sin(t * 0.02) * 0.4;
+    camera.position.set(cx, EYE + Math.sin(t * 0.045) * 0.04, 0);
+    camera.lookAt(look.set(cx * 0.3, EYE + Math.tan(PITCH) * 100, -100));
+    for (const m of mists) { m.m.position.x += m.speed * dt; if (m.m.position.x > 400) m.m.position.x = -400; }
+    if ((puffT += dt) > 0.75) { // smoke from the chimney
+      puffT = 0;
+      const p = puffs.find((q) => q.age >= q.life) || puffs[0];
+      p.age = 0; p.life = r(4, 6); p.s.position.set(cabin.position.x + (0.72 - 0.5) * 16, 5 + (0.5 - 0.08) * 10, -59.8);
+    }
+    for (const p of puffs) {
+      if (p.age >= p.life) { p.s.scale.setScalar(0.001); continue; }
+      p.age += dt; p.s.position.y += dt * 0.9; p.s.position.x += dt * 0.6;
+      const f = p.age / p.life;
+      p.s.scale.setScalar(1.2 + f * 4.5);
+      p.s.material.opacity = Math.sin(Math.PI * f) * (pal.dark ? 0.22 : 0.3);
+    }
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { return { aurora: skyUni.uAurora.value, snow: NSNOW, snowAlpha: snowUni.uAlpha.value, puffs: puffs.filter((p) => p.age < p.life).length }; }, // for checking by hand
+    dispose() { disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
