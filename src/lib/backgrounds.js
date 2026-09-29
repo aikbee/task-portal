@@ -50,6 +50,7 @@ export const BG_STYLES = [
   { value: "reef", label: "Coral reef", desc: "3D sunlit reef seen from the sand: rays and caustics, corals and sea fans swaying, a turtle gliding past, a school of fish that swirls round the mouse", three: true },
   { value: "northernlights", label: "Northern lights lake", desc: "3D aurora over a still Lapland lake, mirrored in the water: snowy pines, a lit cabin and a canoe on the shore; low winter sun, mist and snow by day", three: true },
   { value: "venice", label: "Venice canal", desc: "3D Venetian canal: palazzi mirrored in the water, gondolas gliding under a stone bridge; golden hour by day, lamplit at night", three: true },
+  { value: "santorini", label: "Santorini sunset", desc: "3D Santorini at sunset: whitewashed houses and blue domes cascading down the caldera cliff, windmills turning, sailboats on a glittering sea; the village lights up at night", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

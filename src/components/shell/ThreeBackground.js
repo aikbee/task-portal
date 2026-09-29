@@ -11690,7 +11690,711 @@ function venice(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice };
+/* ---------- Santorini sunset: a Cycladic village cascading down the caldera rim above the sea at sunset; lit up at night ---------- */
+// The houses are solid rounded blocks (the Venice lesson: painted cards read as cardboard), lit by a low sun that casts real shadows.
+// The sea needs no mirror pass: from a hundred metres up it only has to mirror the sky. Its slopes come from three drifting noise
+// scales; the sun's (or the moon's) glitter path, the boats' wakes and the haze at the horizon are added on top.
+const SANTORINI_SEA_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uGlint;
+  uniform vec3 uDeep; uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uHaze; uniform vec3 uFoam; uniform vec4 uBoats[3];
+  varying vec3 vWorld;
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz;
+    // three noise scales, each turned a different way so their lattices never line up (value noise shows its grid when they do)
+    vec2 p1 = mat2(0.8, -0.6, 0.6, 0.8) * p, p2 = mat2(0.36, 0.93, -0.93, 0.36) * p, p3 = mat2(-0.5, 0.87, -0.87, -0.5) * p;
+    float nearby = 1.0 - smoothstep(250.0, 900.0, dist);
+    vec2 s = (texture2D(uNoise, p1 * 0.0031 + uTime * vec2(0.0011, 0.0016)).rg - 0.5) * 0.55
+           + (texture2D(uNoise, p2 * 0.0137 - uTime * vec2(0.0042, 0.0031)).rg - 0.5) * 0.8
+           + (texture2D(uNoise, p3 * 0.0593 + uTime * vec2(0.009, -0.011)).rg - 0.5) * 0.7 * nearby;
+    float calm = 1.0 / (1.0 + dist * 0.0011); // far off the slopes average out
+    vec3 N = normalize(vec3(s.x * 0.45 * calm, 1.0, s.y * 0.45 * calm));
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 col = mix(uDeep, mix(uHorizon, uZenith, smoothstep(0.0, 0.45, R.y)), fres);
+    float sd = max(dot(R, uSunDir), 0.0);
+    col += uSunCol * (pow(sd, 1400.0) * 12.0 * uGlint + pow(sd, 90.0) * 0.45 + pow(sd, 10.0) * 0.05);
+    for (int i = 0; i < 3; i++) { // wakes: a V of two arms at the Kelvin angle and a churned trail
+      vec2 q = p - uBoats[i].xy; float c = cos(uBoats[i].z), sn = sin(uBoats[i].z);
+      float behind = -(c * q.x + sn * q.y), across = -sn * q.x + c * q.y;
+      if (behind > -3.0 && behind < 300.0) {
+        float fade = 1.0 - clamp(behind / 300.0, 0.0, 1.0), b = max(behind, 0.0);
+        float arms = exp(-abs(abs(across) - b * 0.34) * 0.8) * fade * fade * smoothstep(0.0, 6.0, b);
+        float trail = exp(-abs(across) * 0.5) * exp(-b * 0.014);
+        col = mix(col, uFoam, clamp((arms * 0.5 + trail * 0.75) * uBoats[i].w, 0.0, 0.85));
+      }
+    }
+    col = mix(col, uHaze, smoothstep(1800.0, 16000.0, dist));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// a deck of altocumulus far overhead: thin edges glow in the sunset, thick middles shade lilac; fades out towards the horizon
+const SANTORINI_CLOUD_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uSunDir; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uGlow; uniform vec3 uHaze;
+  varying vec3 vWorld;
+  void main() {
+    vec2 p = vWorld.xz;
+    float n = texture2D(uNoise, p * vec2(0.00008, 0.0002) + vec2(uTime * 0.0003, 0.0)).r * 0.62
+            + texture2D(uNoise, p * vec2(0.00029, 0.00075) - vec2(uTime * 0.0006, 0.0)).g * 0.38;
+    float cover = smoothstep(0.5, 0.64, n);
+    if (cover < 0.01) discard;
+    vec3 d = normalize(vWorld - cameraPosition);
+    float dist = length(vWorld.xz - cameraPosition.xz);
+    float towards = pow(max(dot(normalize(d.xz), normalize(uSunDir.xz)), 0.0), 4.0);
+    float thin = 1.0 - smoothstep(0.56, 0.8, n);
+    vec3 col = mix(uShade, uLit, 0.3 + 0.7 * thin) + uGlow * towards * (0.35 + 0.65 * thin);
+    col = mix(col, uHaze, smoothstep(5000.0, 26000.0, dist) * 0.75);
+    gl_FragColor = vec4(col, cover * (1.0 - smoothstep(12000.0, 32000.0, dist)));
+    #include <colorspace_fragment>
+  }
+`;
+// the caldera wall across the bay: strata, gullies, the sunset on its face; the villages along its top, their lights at night
+const SANTORINI_RIM_VS = /* glsl */ `
+  attribute vec3 aRim; // metres above the sea, metres along the rim, how far up the face (0 foot, 1 top)
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vRim;
+  void main() { vRim = aRim; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const SANTORINI_RIM_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uHaze; uniform vec3 uWarm; uniform float uNight; uniform float uTime;
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vRim;
+  void main() {
+    float y = vRim.x, s = vRim.y, up = vRim.z;
+    float gully = texture2D(uNoise, vec2(s * 0.004, y * 0.0016)).r, band = texture2D(uNoise, vec2(s * 0.0006, y * 0.011)).g;
+    vec3 rock = mix(vec3(0.15, 0.1, 0.09), vec3(0.45, 0.22, 0.14), smoothstep(0.2, 0.45, up));
+    rock = mix(rock, vec3(0.7, 0.62, 0.52), smoothstep(0.55, 0.6, band) * smoothstep(0.45, 0.75, up)); // a pale pumice band
+    rock = mix(rock, vec3(0.32, 0.13, 0.09), smoothstep(0.62, 0.68, band + up * 0.2) * (1.0 - smoothstep(0.86, 0.94, up)));
+    rock *= 0.72 + 0.56 * gully;
+    float town = smoothstep(0.89, 0.92, up) * smoothstep(0.38, 0.52, texture2D(uNoise, vec2(s * 0.011, 0.31)).r);
+    vec3 col = mix(rock, vec3(0.93, 0.91, 0.87), town) * (uAmb + uSunCol * max(dot(normalize(vN), uSunDir), 0.0));
+    col += uWarm * town * smoothstep(0.58, 0.66, texture2D(uNoise, vec2(s * 0.05, y * 0.12)).g) * (0.8 + 0.2 * sin(uTime * 2.0 + s)) * uNight * 3.0;
+    col = mix(col, uHaze, smoothstep(500.0, 9000.0, distance(vWorld, cameraPosition)) * 0.72);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the islands in the caldera as masks: r silhouette, g the sunlit rim along the top, b village lights at night
+const SANTORINI_ISLE_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uBody; uniform vec3 uRim; uniform vec3 uLights; uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    if (m.r < 0.02) discard;
+    vec3 col = uBody * (0.86 + 0.14 * vUv.y) + uRim * m.g + uLights * m.b * (0.8 + 0.2 * sin(uTime * 1.6 + vUv.x * 230.0));
+    gl_FragColor = vec4(col, m.r);
+    #include <colorspace_fragment>
+  }
+`;
+// bougainvillea hanging over the walls: camera-facing cascades that stir a little
+const SANTORINI_FLOWER_VS = /* glsl */ `
+  uniform float uTime;
+  attribute vec4 aFlower; // where it hangs from, its size
+  attribute vec2 aFlower2; // atlas cell, phase
+  varying vec2 vUv;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(aFlower.xyz, 1.0);
+    vec2 q = position.xy; // from (-0.5, -1) to (0.5, 0): it hangs from its top
+    q.x += sin(uTime * 0.9 + aFlower2.y) * 0.035 * -q.y;
+    mv.xy += q * aFlower.w;
+    vUv = vec2((uv.x + aFlower2.x) / 3.0, uv.y);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const SANTORINI_FLOWER_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uLight;
+  varying vec2 vUv;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.04) discard;
+    gl_FragColor = vec4(t.rgb * uLight, t.a);
+    #include <colorspace_fragment>
+  }
+`;
+/** The land: a crest falling away ahead of us, the west slope stepping down to the caldera edge, the edge curving round in front to the
+ *  promontory's tip, the cliff below it; the east slope down to the Aegean on the left. */
+function santoriniRidge(z) { return 96 - Math.max(0, -z) * 0.1 + 2.5 * Math.sin(z * 0.013); }
+function santoriniEdge(z) { return 70 + 8 * Math.sin(z * 0.011 + 1) - (z < -140 ? Math.pow((-140 - z) / 170, 1.6) * 115 : 0); }
+function santoriniGround(x, z) {
+  const R = santoriniRidge(z), edge = santoriniEdge(z), RX = -46;
+  let h;
+  if (x <= RX) h = R - Math.pow(Math.min(1, (RX - x) / 280), 1.25) * (R + 8);
+  else if (x <= edge) h = R - 30 * Math.pow((x - RX) / Math.max(20, edge - RX), 1.3);
+  else h = R - 30 - (x - edge) * 2.6;
+  if (z < -330) h -= (-330 - z) * 1.2;
+  if (z > 40) h -= (z - 40) * 1.2;
+  return Math.max(h, -8);
+}
+/** A whitewashed block with softly rounded edges (the RoundedBoxGeometry recipe; seg 0 = a plain box), no floor face, non-indexed. */
+function santoriniBlockGeo(THREE, w, h, d, rad, seg) {
+  const n = 2 * seg + 1, hs = 0.5 / n, R = seg ? Math.min(rad, w / 2, h / 2, d / 2) * 0.999 : 0, B = [w / 2 - R, h / 2 - R, d / 2 - R], S = [w, h, d];
+  const pos = [], nrm = [], p = [0, 0, 0], q = [0, 0, 0];
+  const faces = [[0, 1, 2, 1], [0, 1, 2, -1], [1, 2, 0, 1], [2, 0, 1, 1], [2, 0, 1, -1]]; // +x, −x, +y, +z, −z
+  for (const [ax, ua, va, sg] of faces) for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const u0 = -0.5 + i / n, u1 = u0 + 1 / n, v0 = -0.5 + j / n, v1 = v0 + 1 / n;
+    const tri = sg > 0 ? [[u0, v0], [u1, v0], [u1, v1], [u0, v0], [u1, v1], [u0, v1]] : [[u0, v0], [u1, v1], [u1, v0], [u0, v0], [u0, v1], [u1, v1]];
+    for (const [u, v] of tri) {
+      p[ax] = 0.5 * sg; p[ua] = u; p[va] = v;
+      if (!seg) { for (let k = 0; k < 3; k++) { pos.push(p[k] * S[k]); nrm.push(k === ax ? sg : 0); } continue; }
+      for (let k = 0; k < 3; k++) q[k] = p[k] - Math.sign(p[k]) * hs;
+      const l = Math.hypot(q[0], q[1], q[2]);
+      for (let k = 0; k < 3; k++) { q[k] /= l; pos.push(B[k] * Math.sign(p[k]) + q[k] * R); nrm.push(q[k]); }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  return g;
+}
+/** A barrel vault (the cave houses' roofs): a half cylinder along z, its ends closed, non-indexed. */
+function santoriniVaultGeo(THREE, rad, len, seg) {
+  const pos = [], nrm = [], P = (a, z) => [Math.cos(a) * rad, Math.sin(a) * rad, z];
+  for (let i = 0; i < seg; i++) {
+    const a0 = (Math.PI * i) / seg, a1 = (Math.PI * (i + 1)) / seg, zf = len / 2, zb = -len / 2;
+    const A = P(a0, zf), B = P(a1, zf), C = P(a1, zb), D = P(a0, zb);
+    for (const [pt, a] of [[A, a0], [D, a0], [C, a1], [A, a0], [C, a1], [B, a1]]) { pos.push(...pt); nrm.push(Math.cos(a), Math.sin(a), 0); }
+    for (const [pt, s] of [[[0, 0, zf], 1], [P(a0, zf), 1], [P(a1, zf), 1], [[0, 0, zb], -1], [P(a1, zb), -1], [P(a0, zb), -1]]) { pos.push(...pt); nrm.push(0, 0, s); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  return g;
+}
+/** Doors, windows and a lantern for the walls, 4 × 2 cells: 0 arched door, 1 panelled door, 2 shutters shut, 3 shutters open, 4 small
+ *  window, 5 arched window, 6 round window, 7 wall lantern. Mask: r = glass lit at night, g = painted in the accent colour. */
+function santoriniDecals(THREE) {
+  const W = 1024, H = 512, c = document.createElement("canvas"), mc = document.createElement("canvas");
+  c.width = mc.width = W; c.height = mc.height = H;
+  const g = c.getContext("2d"), mk = mc.getContext("2d");
+  mk.fillStyle = "#000"; mk.fillRect(0, 0, W, H);
+  const cell = (i, draw) => { for (const k of [g, mk]) { k.save(); k.translate((i % 4) * 256, Math.floor(i / 4) * 256); k.beginPath(); k.rect(0, 0, 256, 256); k.clip(); } draw(); g.restore(); mk.restore(); };
+  const glass = (path) => { const gr = g.createLinearGradient(0, 0, 256, 256); gr.addColorStop(0, "#3b4a5c"); gr.addColorStop(0.55, "#222c38"); gr.addColorStop(1, "#171d25"); g.fillStyle = gr; path(g); g.fill(); mk.fillStyle = "rgb(255,0,0)"; path(mk); mk.fill(); };
+  const paint = (path, base) => { g.fillStyle = base; path(g); g.fill(); mk.fillStyle = "rgb(0,255,0)"; path(mk); mk.fill(); };
+  const arch = (k, x0, x1, y0, y1, ry) => { k.beginPath(); k.moveTo(x0, y1); k.lineTo(x0, y0 + ry); k.ellipse((x0 + x1) / 2, y0 + ry, (x1 - x0) / 2, ry, 0, Math.PI, 0); k.lineTo(x1, y1); k.closePath(); };
+  const planks = (x0, x1, y0, y1, n) => { g.strokeStyle = "rgba(0,0,0,0.28)"; g.lineWidth = 3; for (let i = 1; i < n; i++) { const x = x0 + ((x1 - x0) * i) / n; g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y1); g.stroke(); } };
+  const louvres = (x0, x1, y0, y1) => { g.strokeStyle = "rgba(0,0,0,0.3)"; g.lineWidth = 3; for (let y = y0 + 10; y < y1 - 6; y += 13) { g.beginPath(); g.moveTo(x0 + 8, y); g.lineTo(x1 - 8, y); g.stroke(); } g.strokeStyle = "rgba(0,0,0,0.35)"; g.lineWidth = 5; g.strokeRect(x0 + 2, y0 + 2, x1 - x0 - 4, y1 - y0 - 4); };
+  const frame = "#d8d2c8";
+  cell(0, () => { // arched door, 1.2 × 2.3 m: the arch's rise is 0.6 m = 67 px
+    g.fillStyle = frame; arch(g, 0, 256, 0, 256, 67); g.fill();
+    glass((k) => arch(k, 16, 240, 14, 70, 55));
+    g.strokeStyle = frame; g.lineWidth = 6; g.beginPath(); for (const a of [0.25, 0.5, 0.75]) { g.moveTo(128, 70); g.lineTo(128 - Math.cos(Math.PI * a) * 112, 70 - Math.sin(Math.PI * a) * 55); } g.stroke();
+    paint((k) => { k.beginPath(); k.rect(16, 74, 224, 170); }, "#9d9d9d"); planks(16, 240, 74, 244, 6);
+    g.fillStyle = "#3a3a3a"; g.beginPath(); g.arc(200, 168, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#cfc8bc"; g.fillRect(0, 244, 256, 12);
+  });
+  cell(1, () => { // panelled door with a small pane, 1.0 × 2.1 m
+    g.fillStyle = frame; g.fillRect(0, 0, 256, 256);
+    paint((k) => { k.beginPath(); k.rect(18, 14, 220, 230); }, "#a2a2a2");
+    g.strokeStyle = "rgba(0,0,0,0.3)"; g.lineWidth = 5; for (const [x, y, w, h] of [[38, 110, 76, 58], [142, 110, 76, 58], [38, 180, 76, 56], [142, 180, 76, 56]]) g.strokeRect(x, y, w, h);
+    glass((k) => { k.beginPath(); k.rect(52, 30, 152, 62); });
+    g.fillStyle = frame; g.fillRect(126, 30, 6, 62);
+    g.fillStyle = "#cfc8bc"; g.fillRect(0, 244, 256, 12);
+  });
+  cell(2, () => { // shutters shut, 0.95 × 1.2 m
+    g.fillStyle = frame; g.fillRect(0, 0, 256, 256);
+    paint((k) => { k.beginPath(); k.rect(14, 14, 228, 228); }, "#a6a6a6");
+    louvres(14, 128, 14, 242); louvres(128, 242, 14, 242);
+  });
+  cell(3, () => { // shutters open either side of the glass, 1.7 × 1.2 m
+    paint((k) => { k.beginPath(); k.rect(0, 10, 60, 236); k.rect(196, 10, 60, 236); }, "#a6a6a6");
+    louvres(0, 60, 10, 246); louvres(196, 256, 10, 246);
+    g.fillStyle = frame; g.fillRect(62, 0, 132, 256);
+    glass((k) => { k.beginPath(); k.rect(74, 14, 108, 226); });
+    g.fillStyle = frame; g.fillRect(124, 14, 8, 226); g.fillRect(74, 108, 108, 7);
+  });
+  cell(4, () => { // small window, 0.7 × 0.7 m
+    g.fillStyle = frame; g.fillRect(0, 0, 256, 256);
+    glass((k) => { k.beginPath(); k.rect(26, 26, 204, 204); });
+    g.fillStyle = frame; g.fillRect(122, 26, 12, 204); g.fillRect(26, 122, 204, 12);
+  });
+  cell(5, () => { // arched window, 0.9 × 1.35 m: the arch's rise 0.45 m = 85 px
+    g.fillStyle = frame; arch(g, 0, 256, 0, 256, 85); g.fill();
+    glass((k) => arch(k, 22, 234, 20, 240, 68));
+    g.fillStyle = frame; g.fillRect(122, 20, 12, 220); g.fillRect(22, 140, 212, 10);
+  });
+  cell(6, () => { // round window, 0.75 m
+    g.fillStyle = frame; g.beginPath(); g.arc(128, 128, 126, 0, Math.PI * 2); g.fill();
+    glass((k) => { k.beginPath(); k.arc(128, 128, 98, 0, Math.PI * 2); });
+    g.fillStyle = frame; g.fillRect(122, 30, 12, 196); g.fillRect(30, 122, 196, 12);
+  });
+  cell(7, () => { // wall lantern, 0.35 × 0.55 m
+    g.fillStyle = "#1e1e20"; g.fillRect(118, 0, 20, 60); g.fillRect(40, 52, 176, 22); g.beginPath(); g.moveTo(40, 74); g.lineTo(216, 74); g.lineTo(128, 30); g.closePath(); g.fill();
+    glass((k) => { k.beginPath(); k.rect(62, 74, 132, 132); });
+    g.fillStyle = "rgba(255,240,210,0.35)"; g.fillRect(62, 74, 132, 132);
+    g.strokeStyle = "#1e1e20"; g.lineWidth = 10; g.strokeRect(62, 74, 132, 132); g.fillStyle = "#1e1e20"; g.fillRect(52, 206, 152, 18); g.fillRect(118, 224, 20, 32);
+  });
+  const map = new THREE.CanvasTexture(c), mask = new THREE.CanvasTexture(mc);
+  map.colorSpace = THREE.SRGBColorSpace; mask.colorSpace = THREE.NoColorSpace;
+  map.anisotropy = mask.anisotropy = 4;
+  return { map, mask };
+}
+/** Bougainvillea spilling over a wall, three cascades: dense at the top, trailing below; leaves and magenta bracts. */
+function santoriniFlowers(THREE) {
+  const r = koiRng(808);
+  return canvasTexture(THREE, 768, 256, (g) => {
+    for (let k = 0; k < 3; k++) {
+      const ox = k * 256, trails = [r(40, 90), r(110, 150), r(170, 220)].slice(0, 2 + (k % 2));
+      const spot = () => { if (r() < 0.62) { const y = Math.pow(r(), 1.6) * 120, half = 118 - y * 0.35; return [ox + 128 + r(-half, half), y + 8]; } const t = trails[(r() * trails.length) | 0], y = r(60, 240); return [ox + t + r(-18, 18) * (1 - y / 300), y]; };
+      for (let i = 0; i < 520; i++) { const [x, y] = spot(); g.fillStyle = r() < 0.5 ? "#2c5427" : "#3f6c33"; g.beginPath(); g.ellipse(x, y, r(5, 10), r(3.5, 6.5), r(0, 3), 0, Math.PI * 2); g.fill(); }
+      for (let i = 0; i < 150; i++) {
+        const [x, y] = spot(), col = ["#c81e72", "#dd3a92", "#b0165f", "#ef66a6", "#d92c80"][(r() * 5) | 0];
+        for (let j = 0; j < 5; j++) { g.fillStyle = col; g.beginPath(); g.ellipse(x + r(-7, 7), y + r(-6, 6), r(3.5, 6), r(3, 5), r(0, 3), 0, Math.PI * 2); g.fill(); }
+        g.fillStyle = "rgba(255,210,235,0.5)"; g.beginPath(); g.arc(x + r(-3, 3), y + r(-3, 3), 1.8, 0, Math.PI * 2); g.fill();
+      }
+    }
+  });
+}
+/** A kampanario: the whitewashed bell gable with two arches and a small one above, bronze bells, a cross on the curved top. 3.6 × 5.4 m. */
+function santoriniBelfry(THREE) {
+  return canvasTexture(THREE, 256, 384, (g) => {
+    const s = 256 / 3.6, Y = (m) => 384 - m * s, X = (m) => 128 + m * s;
+    g.fillStyle = "#f3efe8";
+    g.beginPath(); g.moveTo(X(-1.8), Y(0)); g.lineTo(X(-1.8), Y(3.3)); g.quadraticCurveTo(X(-1.8), Y(4.1), X(-1.0), Y(4.2)); g.quadraticCurveTo(X(-0.6), Y(4.75), X(0), Y(4.8)); g.quadraticCurveTo(X(0.6), Y(4.75), X(1.0), Y(4.2)); g.quadraticCurveTo(X(1.8), Y(4.1), X(1.8), Y(3.3)); g.lineTo(X(1.8), Y(0)); g.closePath(); g.fill();
+    g.fillRect(X(-0.07), Y(5.35), 0.14 * s, 0.6 * s); g.fillRect(X(-0.25), Y(5.15), 0.5 * s, 0.13 * s); // the cross
+    g.fillStyle = "rgba(0,0,0,0.06)"; g.fillRect(X(-1.8), Y(1.5), 3.6 * s, 0.08 * s);
+    g.save(); g.globalCompositeOperation = "destination-out";
+    const opening = (cx, y0, w, h) => { g.beginPath(); g.moveTo(X(cx - w / 2), Y(y0)); g.lineTo(X(cx - w / 2), Y(y0 + h - w / 2)); g.arc(X(cx), Y(y0 + h - w / 2), (w / 2) * s, Math.PI, 0); g.lineTo(X(cx + w / 2), Y(y0)); g.closePath(); g.fill(); };
+    opening(-0.8, 1.9, 0.95, 1.55); opening(0.8, 1.9, 0.95, 1.55); opening(0, 3.65, 0.6, 0.8);
+    g.restore();
+    const bell = (cx, top, w) => { g.fillStyle = "#1c1c1c"; g.fillRect(X(cx - 0.02), Y(top + 0.12), 0.04 * s, 0.14 * s); const gr = g.createLinearGradient(X(cx - w / 2), 0, X(cx + w / 2), 0); gr.addColorStop(0, "#5a4220"); gr.addColorStop(0.4, "#b48a44"); gr.addColorStop(1, "#4a3418"); g.fillStyle = gr; g.beginPath(); g.moveTo(X(cx - w * 0.28), Y(top)); g.quadraticCurveTo(X(cx - w * 0.34), Y(top - w * 0.55), X(cx - w / 2), Y(top - w * 0.8)); g.lineTo(X(cx + w / 2), Y(top - w * 0.8)); g.quadraticCurveTo(X(cx + w * 0.34), Y(top - w * 0.55), X(cx + w * 0.28), Y(top)); g.closePath(); g.fill(); };
+    bell(-0.8, 3.0, 0.62); bell(0.8, 3.0, 0.56); bell(0, 4.2, 0.36);
+    g.fillStyle = "#1c1c1c"; for (const [x, y] of [[-0.8, 3.2], [0.8, 3.2], [0, 4.33]]) g.fillRect(X(x - 0.5), Y(y), 1.0 * s, 0.05 * s);
+  });
+}
+/** An island seen across the caldera, as masks: r body, g the sunlit rim along its crest, b village lights. prof(u) = height 0…1. */
+function santoriniIsle(THREE, W, H, prof, lights, seed) {
+  const r = koiRng(seed), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const top = (x) => H - 2 - prof(x / W) * (H - 6);
+  g.fillStyle = "rgb(255,0,0)"; g.beginPath(); g.moveTo(0, H); for (let x = 0; x <= W; x += 2) g.lineTo(x, top(x)); g.lineTo(W, H); g.closePath(); g.fill();
+  g.strokeStyle = "rgb(0,160,0)"; g.lineWidth = 2; g.beginPath(); for (let x = 0; x <= W; x += 2) { const y = top(x) + 1; x ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke();
+  for (let i = 0; i < lights; i++) { const x = r(0.1, 0.9) * W, y = top(x) + r(2, 7); g.fillStyle = "rgb(0,0,255)"; g.fillRect(x, y, 2, 2); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** The caldera wall across the bay (Imerovigli to Fira): a leaning face along a curve, its top uneven; aRim for the shader. */
+function santoriniRimGeo(THREE) {
+  const P0 = [-1500, -1100], P1 = [-1350, -3500], P2 = [-760, -6500], NU = 110, NV = 9, pos = [], rim = [], idx = [];
+  const at = (u) => [(1 - u) * (1 - u) * P0[0] + 2 * (1 - u) * u * P1[0] + u * u * P2[0], (1 - u) * (1 - u) * P0[1] + 2 * (1 - u) * u * P1[1] + u * u * P2[1]];
+  let s = 0, prev = at(0);
+  for (let i = 0; i <= NU; i++) {
+    const u = i / NU, [x, z] = at(u), [x2, z2] = at(Math.min(1, u + 0.001)), [x1, z1] = at(Math.max(0, u - 0.001));
+    s += Math.hypot(x - prev[0], z - prev[1]); prev = [x, z];
+    let nx = z2 - z1, nz = -(x2 - x1); const l = Math.hypot(nx, nz); nx /= l; nz /= l; // the caldera side
+    if (nx < 0) { nx = -nx; nz = -nz; }
+    const Hh = (215 + 70 * Math.sin(u * 2.6 + 0.4) + 22 * Math.sin(u * 19) + 11 * Math.sin(u * 47) + 5 * Math.sin(u * 131)) * (1 - Math.pow(Math.max(0, (u - 0.72) / 0.28), 1.6) * 0.96); // sinks into the sea at its far end
+    for (let j = 0; j <= NV; j++) {
+      const v = j / NV, y = -6 + (Hh + 6) * v, back = Hh * 0.32 * Math.pow(v, 1.4) + 6 * Math.sin(u * 60 + v * 4) * v;
+      pos.push(x - nx * back, y, z - nz * back);
+      rim.push(y, s, v);
+    }
+  }
+  for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) { const a = i * (NV + 1) + j, b = a + NV + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aRim", new THREE.Float32BufferAttribute(rim, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const n = g.attributes.normal; // face the caldera whatever the winding came out as
+  if (n.getX(Math.floor(n.count / 2)) < 0) { for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i)); }
+  return g;
+}
+/** The ground under and around the village: whitewashed lanes among the houses, volcanic soil and scrub beyond, the strata of the cliff. */
+function santoriniTerrainGeo(THREE, nx, nz) {
+  const X0 = -330, X1 = 140, Z0 = 70, Z1 = -540, g = new THREE.PlaneGeometry(X1 - X0, Z0 - Z1, nx, nz);
+  g.rotateX(-Math.PI / 2); g.translate((X0 + X1) / 2, 0, (Z0 + Z1) / 2);
+  const pos = g.attributes.position, col = new Float32Array(pos.count * 3), c = new THREE.Color(), r = koiRng(31);
+  const lane = new THREE.Color("#e7e0d5"), lane2 = new THREE.Color("#cfc7ba"), soil = new THREE.Color("#8d6a55"), soil2 = new THREE.Color("#9b5d45"), scrub = new THREE.Color("#5c5e3b");
+  const strata = [new THREE.Color("#2e2522"), new THREE.Color("#7c4431"), new THREE.Color("#c7b59b"), new THREE.Color("#5b3a2f"), new THREE.Color("#a0654a")];
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i), y = santoriniGround(x, z), edge = santoriniEdge(z);
+    pos.setY(i, y);
+    if (x > edge + 1.5) c.copy(strata[Math.floor((y + 30 + 8 * Math.sin(x * 0.05 + z * 0.02)) / 14) % strata.length]).multiplyScalar(r(0.85, 1.1));
+    else if (x > Math.max(-150, edge - 128) && z < 26 && z > -385) c.copy(r() < 0.3 ? lane2 : lane).multiplyScalar(r(0.94, 1.03));
+    else c.copy(r() < 0.18 ? scrub : r() < 0.5 ? soil : soil2).multiplyScalar(r(0.85, 1.08));
+    col.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+/** Lay out the village: houses stepping down the slope to the caldera edge (flat roofs, some barrel vaults, chimneys, a few pools),
+ *  three churches with domes (and bell gables), two windmills on the crest; and where the doors, windows, lanterns and bougainvillea go. */
+function santoriniVillage(THREE, preview) {
+  const r = koiRng(2718), G = santoriniGround, T = (x, y, z) => new THREE.Matrix4().makeTranslation(x, y, z);
+  const white = [], domes = [], decals = [], flowers = [], lamps = [], pools = [], belfries = [], mills = [], taken = [];
+  const WHITE = ["#f5f1ea", "#f2ede4", "#f7f4ef", "#efe9df", "#f3eee6"], PASTEL = ["#e6c48c", "#dc9d80", "#ead9b2", "#c3d3e0", "#e9bca6", "#d9b48a"];
+  const SIZE = [[1.2, 2.3], [1.0, 2.1], [0.95, 1.2], [1.7, 1.2], [0.7, 0.7], [0.9, 1.35], [0.75, 0.75], [0.35, 0.55]];
+  const segAt = (x, z) => { const d = Math.hypot(x, z - 20); return preview ? (d < 110 ? 1 : 0) : d < 80 ? 2 : d < 220 ? 1 : 0; };
+  const free = (x, z, rad) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + rad);
+  // doors and windows on a face: (cx, cz) its middle, (nx, nz) its normal, span its width, top the roof
+  const dress = (cx, cz, nx, nz, span, top, doorOk) => {
+    const tx = -nz, tz = nx, slots = span > 5.2 ? 3 : span > 3.4 ? 2 : 1, rot = Math.atan2(nx, nz);
+    for (let k = 0; k < slots; k++) {
+      const t = slots === 1 ? 0 : (k / (slots - 1) - 0.5) * (span - 1.9), px = cx + tx * t, pz = cz + tz * t;
+      const gy = G(px + nx * 0.8, pz + nz * 0.8), room = top - gy;
+      if (room < 1.7) continue;
+      const out = (cell, y, lit) => { const [w, h] = SIZE[cell]; decals.push({ x: px + nx * 0.05, y, z: pz + nz * 0.05, w, h, rot, cell, lit }); };
+      if (doorOk && k === (slots >> 1) && room > 2.7 && r() < 0.6) {
+        const cell = r() < 0.55 ? 0 : 1, h = SIZE[cell][1];
+        out(cell, gy + h / 2 - 0.05, 0);
+        if (r() < 0.8) { const lx = px + tx * 1.0, lz = pz + tz * 1.0; decals.push({ x: lx + nx * 0.06, y: gy + 2.45, z: lz + nz * 0.06, w: 0.35, h: 0.55, rot, cell: 7, lit: 1 }); lamps.push([lx + nx * 0.35, gy + 2.4, lz + nz * 0.35]); }
+      } else {
+        const q = r(), cell = q < 0.26 ? 2 : q < 0.46 ? 3 : q < 0.7 ? 4 : q < 0.9 ? 5 : 6, h = SIZE[cell][1];
+        if (room > 2.4) out(cell, gy + 1.15 + h / 2, r() < 0.7 ? r(0.55, 1) : 0);
+        if (room > 5.6) { const c2 = r() < 0.5 ? 4 : 2; out(c2, gy + 3.9 + SIZE[c2][1] / 2, r() < 0.65 ? r(0.55, 1) : 0); }
+      }
+    }
+  };
+  // the churches, their domes, a bell gable beside two of them
+  for (const [x, z, s, gable] of [[20, -58, 1.2, true], [-22, -118, 0.95, true], [42, -128, 0.85, false], [-64, -34, 0.8, false], [4, -196, 0.85, false], [-30, -232, 0.8, true]]) {
+    const w = 6.2 * s, h = 5.2 * s, y0 = Math.min(G(x - w / 2, z), G(x + w / 2, z), G(x, z - w / 2), G(x, z + w / 2)) - 0.6, top = Math.max(G(x - w / 2, z), G(x + w / 2, z)) + h;
+    white.push([santoriniBlockGeo(THREE, w, top - y0, w, 0.3, 2), T(x, (y0 + top) / 2, z), "#f6f3ee"]);
+    white.push([new THREE.CylinderGeometry(2.1 * s, 2.1 * s, 1.3 * s, 22, 1, true), T(x, top + 0.6 * s, z), "#f6f3ee"]);
+    domes.push([new THREE.SphereGeometry(2.4 * s, 26, 10, 0, Math.PI * 2, 0, Math.PI / 2), T(x, top + 1.2 * s, z)]);
+    white.push([new THREE.CylinderGeometry(0.3 * s, 0.34 * s, 0.7 * s, 10), T(x, top + 3.85 * s, z), "#f6f3ee"]);
+    white.push([new THREE.BoxGeometry(0.13 * s, 1.1 * s, 0.13 * s), T(x, top + 4.7 * s, z), "#f6f3ee"], [new THREE.BoxGeometry(0.62 * s, 0.13 * s, 0.13 * s), T(x, top + 4.95 * s, z), "#f6f3ee"]);
+    dress(x, z + w / 2, 0, 1, w, top, true); dress(x + (x < 0 ? w / 2 : -w / 2), z, x < 0 ? 1 : -1, 0, w, top, false);
+    if (gable) belfries.push([x + (x < 0 ? -1 : 1) * (w / 2 + 1.9 * s), G(x + (x < 0 ? -1 : 1) * (w / 2 + 1.9 * s), z + 1) - 0.3, z + 1.2, s]);
+    taken.push([x, z, 7.5 * s]);
+  }
+  // two windmills on the crest: a round tower, a thatched cone (their sails are animated by the builder)
+  for (const [x, z, s] of [[-60, -98, 1.3], [-72, -168, 1.15]]) { // on open ground along the crest, each on a low whitewashed terrace
+    const y0 = G(x, z) + 1.6;
+    white.push([santoriniBlockGeo(THREE, 9.5 * s, 3.4, 9.5 * s, 0.3, 1), T(x, y0 - 1.7, z), "#f1ece3"]);
+    white.push([new THREE.CylinderGeometry(3.15 * s, 3.55 * s, 8.6 * s, 26, 1), T(x, y0 + 4.3 * s, z), "#f5f1ea"]);
+    white.push([new THREE.ConeGeometry(3.75 * s, 3.3 * s, 24), T(x, y0 + 8.6 * s + 1.6 * s, z), "#8e7a62"]);
+    decals.push({ x, y: y0 + 1.7 * s, z: z + 3.52 * s + 0.05, w: 1.1 * s, h: 2.1 * s, rot: 0, cell: 1, lit: 0 }, { x: x + 2.3 * s, y: y0 + 5.2 * s, z: z + 2.6 * s, w: 0.7 * s, h: 0.7 * s, rot: 0.72, cell: 4, lit: 0.8 }); // on the tapering tower's face
+    mills.push([x, y0 + 8.9 * s, z, s]);
+    taken.push([x, z, 11 * s]);
+  }
+  // the houses, lot by lot down the slope
+  for (let z = 12; z > -376; z -= 8.4) for (let x = -150; x < 80; x += 8.4) {
+    const hx = x + r(-1.8, 1.8), hz = z + r(-1.8, 1.8), edge = santoriniEdge(hz);
+    if (hx > edge - 4.5 || (hz > 8 && Math.abs(hx) < 8)) continue; // not over the cliff, not under our feet
+    const east = Math.max(0, (-44 - hx) / 90);
+    if (r() < 0.2 + east * 0.55 || !free(hx, hz, 4)) continue; // lanes and gardens; the far side of the crest thins out
+    const w = r(4.6, 7.6), d = r(4.6, 7.4), h = r() < 0.18 ? r(5.4, 7.2) : r(3.3, 5.0), seg = segAt(hx, hz);
+    const g4 = [G(hx - w / 2, hz - d / 2), G(hx + w / 2, hz - d / 2), G(hx - w / 2, hz + d / 2), G(hx + w / 2, hz + d / 2)];
+    const y0 = Math.min(...g4) - 0.8, top = Math.max(...g4) + h, pool = hx > edge - 30 && r() < 0.26;
+    const col = r() < 0.82 ? WHITE[(r() * WHITE.length) | 0] : PASTEL[(r() * PASTEL.length) | 0];
+    const Top = top;
+    white.push([santoriniBlockGeo(THREE, w, Top - y0, d, 0.34, seg), T(hx, (y0 + Top) / 2, hz), col]);
+    taken.push([hx, hz, 3.2]);
+    if (pool) { // a roof terrace with a pool looking over the caldera, its water glowing at night
+      pools.push([hx, Top + 0.04, hz, w - 1.2, d - 1.2]);
+      const t = 0.3, ph = 0.55;
+      white.push([new THREE.BoxGeometry(w, ph, t), T(hx, Top + ph / 2 - 0.05, hz + d / 2 - t / 2), col], [new THREE.BoxGeometry(w, ph, t), T(hx, Top + ph / 2 - 0.05, hz - d / 2 + t / 2), col],
+        [new THREE.BoxGeometry(t, ph, d - 2 * t), T(hx + w / 2 - t / 2, Top + ph / 2 - 0.05, hz), col], [new THREE.BoxGeometry(t, ph, d - 2 * t), T(hx - w / 2 + t / 2, Top + ph / 2 - 0.05, hz), col]);
+      if (seg) dress(hx, hz + d / 2, 0, 1, w, Top, true);
+      continue;
+    }
+    const q = r();
+    if (q < 0.14) { // a cave house: a barrel vault along its longer side
+      const along = w > d, rad = (along ? d : w) / 2 - 0.05, len = (along ? w : d) - 0.1, m = T(hx, Top - 0.2, hz);
+      if (along) m.multiply(new THREE.Matrix4().makeRotationY(Math.PI / 2));
+      white.push([santoriniVaultGeo(THREE, rad, len, seg ? 12 : 6), m, col]);
+    } else if (q < 0.3) { // a room on the roof, set back uphill
+      const w2 = w * r(0.45, 0.6), d2 = d * r(0.45, 0.65), h2 = r(2.4, 3.0), x2 = hx - (w - w2) / 2 + 0.2, z2 = hz - (d - d2) / 2 + 0.2;
+      white.push([santoriniBlockGeo(THREE, w2, h2, d2, 0.28, Math.min(seg, 1)), T(x2, Top + h2 / 2 - 0.05, z2), col]);
+      if (seg) dress(x2, z2 + d2 / 2, 0, 1, w2, Top + h2, false);
+    } else {
+      if (q < 0.55) { // a chimney
+        const cx = hx + (r() < 0.5 ? -1 : 1) * (w / 2 - 0.7), cz = hz - d / 2 + 0.7;
+        white.push([new THREE.BoxGeometry(0.6, 1.2, 0.6), T(cx, Top + 0.5, cz), col], [new THREE.BoxGeometry(0.9, 0.16, 0.9), T(cx, Top + 1.15, cz), col]);
+      }
+      if (seg && r() < 0.55) { // a low parapet round the roof terrace
+        const t = 0.26, ph = 0.5;
+        white.push([new THREE.BoxGeometry(w, ph, t), T(hx, Top + ph / 2 - 0.05, hz + d / 2 - t / 2), col], [new THREE.BoxGeometry(w, ph, t), T(hx, Top + ph / 2 - 0.05, hz - d / 2 + t / 2), col],
+          [new THREE.BoxGeometry(t, ph, d - 2 * t), T(hx + w / 2 - t / 2, Top + ph / 2 - 0.05, hz), col], [new THREE.BoxGeometry(t, ph, d - 2 * t), T(hx - w / 2 + t / 2, Top + ph / 2 - 0.05, hz), col]);
+        const near = Math.hypot(hx, hz - 20) < 110, k = r();
+        if (near && k < 0.42) { // a café table under an umbrella in the accent colour, two chairs
+          const tx = hx + r(-0.25, 0.25) * w, tz = hz + r(-0.2, 0.2) * d;
+          white.push([new THREE.CylinderGeometry(0.4, 0.4, 0.05, 12), T(tx, Top + 0.75, tz), "#f4f0e8"], [new THREE.CylinderGeometry(0.04, 0.04, 2.3, 6), T(tx, Top + 1.15, tz), "#8a7a66"],
+            [new THREE.BoxGeometry(0.42, 0.45, 0.42), T(tx - 0.75, Top + 0.22, tz), "#6f5a44"], [new THREE.BoxGeometry(0.42, 0.45, 0.42), T(tx + 0.75, Top + 0.22, tz), "#6f5a44"]);
+          domes.push([new THREE.ConeGeometry(1.35, 0.45, 14, 1, true), T(tx, Top + 2.18, tz)]);
+        } else if (near && k < 0.75) { // potted plants
+          for (let n = 0; n < 2; n++) { const px = hx + r(-0.35, 0.35) * w, pz = hz + r(-0.35, 0.35) * d, ps = r(0.7, 1.1); white.push([new THREE.CylinderGeometry(0.28 * ps, 0.2 * ps, 0.45 * ps, 10), T(px, Top + 0.22 * ps, pz), "#b8603c"], [new THREE.IcosahedronGeometry(0.42 * ps, 1), T(px, Top + 0.62 * ps, pz), "#4f7a3a"]); }
+        }
+      }
+    }
+    if (!seg && Math.hypot(hx, hz - 20) > 300) continue; // too far off for doors and windows to show
+    dress(hx, hz + d / 2, 0, 1, w, Top, true);
+    if (hx < -4) dress(hx + w / 2, hz, 1, 0, d, Top, true); else if (hx > 4) dress(hx - w / 2, hz, -1, 0, d, Top, false);
+    if (r() < 0.14) { const sx = hx + (r() < 0.5 ? -1 : 1) * (w / 2 - 0.9); flowers.push([sx, Top + 0.25, hz + d / 2 + 0.45, r(2.6, 4.2), (r() * 3) | 0]); } // bougainvillea over the wall
+  }
+  return { white, domes, decals, flowers, lamps, pools, belfries, mills };
+}
+function santorini(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4747);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S3 = new THREE.Vector3(), E = new THREE.Euler(0, 0, 0, "YXZ");
+  const EYE = santoriniGround(0, 20) + 21, CZ = 20, PITCH = -0.17; // on a roof terrace high in the village, looking down over it towards the sunset
+  camera.fov = 50; camera.near = 0.5; camera.far = 45000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, nightU = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE)), quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color();
+  const SUN = new THREE.Vector3(0.5, 0.14, -0.86).normalize(), MOON = new THREE.Vector3(0.36, 0.14, -0.92).normalize();
+  // alpha-to-coverage cut-outs keep the alpha the sky wrote (1): otherwise the page behind the canvas shows through their soft edges
+  const KEEP_ALPHA = { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+
+  /* --- light: the sky and the warm ground, the low sun (the moon at night) casting real shadows through the village --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  const TARGET = new THREE.Vector3(-10, 70, -140);
+  sun.target.position.copy(TARGET);
+  if (!preview) {
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -230, right: 230, top: 110, bottom: -110, near: 400, far: 1700 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.5;
+  }
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 700, 16000);
+
+  /* --- the sky: sunset gradient and the sun; night with stars and the moon; a deck of cloud overhead --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#fff0c8") }, uSun: { value: 1 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 40, 20)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false;
+  scene.add(sky);
+  const NSTAR = preview ? 300 : 1000, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -9; stars.frustumCulled = false;
+  scene.add(stars);
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false })));
+  moon.position.copy(MOON).multiplyScalar(30000); moon.position.y += EYE; moon.scale.setScalar(780); moon.lookAt(0, EYE, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.55 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(5200); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const cloudGeo = keep(new THREE.PlaneGeometry(80000, 80000));
+  cloudGeo.rotateX(Math.PI / 2); // facing down
+  const clouds = new THREE.Mesh(cloudGeo, shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudUni, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2400, -20000); clouds.renderOrder = -6; clouds.frustumCulled = false;
+  scene.add(clouds);
+
+  /* --- across the caldera: the wall with its villages on the left, Nea Kameni in the bay, Thirasia under the sun --- */
+  const rimUni = { uNoise: { value: noise }, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uWarm: { value: new THREE.Color("#ffb46a") }, uNight: nightU, uTime: time };
+  const rim = new THREE.Mesh(keep(santoriniRimGeo(THREE)), shader(SANTORINI_RIM_VS, SANTORINI_RIM_FS, rimUni));
+  rim.frustumCulled = false;
+  scene.add(rim);
+  const isleUni = (tex) => ({ uMask: { value: tex }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uLights: { value: new THREE.Color() }, uTime: time });
+  const isles = [
+    [santoriniIsle(THREE, preview ? 1024 : 2048, 128, (u) => Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.08)), 0.55) * (0.82 + 0.12 * Math.sin(u * 17) + 0.06 * Math.sin(u * 53)), 26, 9), 2950, -5700, 4200, 330], // Thirasia
+    [santoriniIsle(THREE, 512, 64, (u) => Math.pow(Math.max(0, 1 - (2 * u - 1) ** 2), 0.7) * (0.75 + 0.2 * Math.sin(u * 23) + 0.1 * Math.sin(u * 61)), 0, 3), 760, -2500, 1100, 105], // Nea Kameni
+  ].map(([tex, x, z, w, h]) => {
+    keep(tex);
+    const uni = isleUni(tex), m = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, SANTORINI_ISLE_FS, uni, { transparent: true, depthWrite: false }));
+    m.position.set(x, h / 2 - 4, z); m.scale.set(w, h, 1); m.lookAt(0, h / 2 - 4, CZ); m.renderOrder = 2; m.frustumCulled = false;
+    scene.add(m);
+    return uni;
+  });
+
+  /* --- the sea --- */
+  const seaUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uGlint: { value: 1 }, uDeep: { value: new THREE.Color() }, uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uBoats: { value: [0, 1, 2].map(() => new THREE.Vector4()) } };
+  const seaGeo = keep(new THREE.PlaneGeometry(60000, 60000));
+  seaGeo.rotateX(-Math.PI / 2);
+  const sea = new THREE.Mesh(seaGeo, shader(LANTERN_LAKE_VS, SANTORINI_SEA_FS, seaUni));
+  sea.position.set(0, 0, -20000); sea.frustumCulled = false;
+  scene.add(sea);
+
+  /* --- the village --- */
+  const V_ = santoriniVillage(THREE, preview);
+  const shadowMats = [];
+  const std = (opts) => { const m = keep(new THREE.MeshStandardMaterial(opts)); shadowMats.push(m); return m; };
+  const groundMat = std({ vertexColors: true, roughness: 1, envMapIntensity: 0 });
+  const ground = new THREE.Mesh(keep(santoriniTerrainGeo(THREE, preview ? 80 : 118, preview ? 100 : 150)), groundMat);
+  const houseMat = std({ vertexColors: true, roughness: 0.92 });
+  const houses = new THREE.Mesh(keep(mergeColored(THREE, V_.white)), houseMat);
+  const domeMat = std({ color: 0x2a55b0, roughness: 0.5, emissive: 0x000000, side: THREE.DoubleSide }); // domes, and the café umbrellas
+  const domes = new THREE.Mesh(keep(mergeParts(THREE, V_.domes.map(([geo, m]) => [geo, m]))), domeMat);
+  for (const m of [ground, houses, domes]) { m.castShadow = m.receiveShadow = !preview; m.frustumCulled = false; scene.add(m); }
+  // doors, windows and lanterns: one instanced draw on an atlas; shutters and doors in the accent colour, windows lit at night
+  const atlas = santoriniDecals(THREE);
+  keep(atlas.map); keep(atlas.mask);
+  const decalGeo = keep(new THREE.PlaneGeometry(1, 1)), aDecal = new THREE.InstancedBufferAttribute(new Float32Array(V_.decals.length * 2), 2);
+  decalGeo.setAttribute("aDecal", aDecal);
+  const decalMat = std({ map: atlas.map, roughness: 0.8, alphaToCoverage: true, ...KEEP_ALPHA, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+  decalMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uMask: { value: atlas.mask }, uAccent: { value: accent }, uNight: nightU, uWarm: { value: new THREE.Color("#ffb45e") } });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute vec2 aDecal; varying vec2 vDecal;")
+      .replace("#include <uv_vertex>", "#include <uv_vertex>\n  vMapUv = (uv + vec2(mod(aDecal.x, 4.0), 1.0 - floor(aDecal.x / 4.0))) * vec2(0.25, 0.5); vDecal = aDecal;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uMask; uniform vec3 uAccent; uniform float uNight; uniform vec3 uWarm; varying vec2 vDecal;")
+      .replace("#include <map_fragment>", "#include <map_fragment>\n  vec3 dm = texture2D(uMask, vMapUv).rgb;\n  diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * (0.4 + 0.8 * dot(diffuseColor.rgb, vec3(0.3333))), dm.g);")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += uWarm * dm.r * uNight * vDecal.y * 1.6;");
+  };
+  const decals = new THREE.InstancedMesh(decalGeo, decalMat, V_.decals.length);
+  V_.decals.forEach((dc, i) => {
+    E.set(0, dc.rot, 0, "YXZ");
+    decals.setMatrixAt(i, M4.compose(V.set(dc.x, dc.y, dc.z), Q.setFromEuler(E), S3.set(dc.w, dc.h, 1)));
+    aDecal.setXY(i, dc.cell, dc.lit);
+  });
+  decals.receiveShadow = !preview; decals.frustumCulled = false;
+  scene.add(decals);
+  // pools on the terraces near the edge
+  const poolMat = std({ color: 0x3cc3d2, roughness: 0.12, metalness: 0, emissive: 0x000000 });
+  const poolParts = V_.pools.map(([x, y, z, w, d]) => [new THREE.PlaneGeometry(w, d).rotateX(-Math.PI / 2), new THREE.Matrix4().makeTranslation(x, y, z)]);
+  if (poolParts.length) { const pm = new THREE.Mesh(keep(mergeParts(THREE, poolParts)), poolMat); pm.receiveShadow = !preview; pm.frustumCulled = false; scene.add(pm); }
+  // bell gables beside two churches
+  const belfryMat = std({ map: keep(santoriniBelfry(THREE)), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9 });
+  for (const [x, y, z, s] of V_.belfries) { const b = new THREE.Mesh(quad, belfryMat); b.position.set(x, y + 2.7 * s, z); b.scale.set(3.6 * s, 5.4 * s, 1); b.rotation.y = x < 0 ? 0.35 : -0.35; b.castShadow = b.receiveShadow = !preview; scene.add(b); }
+  // windmill sails: eight spokes with triangular canvas, turning slowly
+  const spokeGeo = keep(new THREE.BoxGeometry(0.16, 7.4, 0.16).translate(0, 3.7, 0));
+  const sailGeo = keep(new THREE.BufferGeometry());
+  sailGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 1.3, 0, 0, 7.0, 0, -2.1, 6.2, -0.25], 3)); sailGeo.computeVertexNormals();
+  const spokeMat = std({ color: 0x8a7058, roughness: 0.9 }), sailMat = std({ color: 0xf6efe4, roughness: 1, side: THREE.DoubleSide, emissive: 0x000000 }); // canvas: glows when the sun is behind it
+  const sails = V_.mills.map(([x, y, z, s], k) => {
+    const hub = new THREE.Group(), head = new THREE.Group();
+    head.position.set(x, y, z); head.rotation.y = 0.35 - k * 0.15; head.scale.setScalar(s); // the cap turned to the wind, the sails facing us
+    hub.position.set(0, 0, 3.9);
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2, sp = new THREE.Mesh(spokeGeo, spokeMat), sl = new THREE.Mesh(sailGeo, sailMat); sp.rotation.z = a; sl.rotation.z = a; hub.add(sp, sl); }
+    const axle = new THREE.Mesh(keep(new THREE.CylinderGeometry(0.28, 0.28, 4.2, 8).rotateX(Math.PI / 2).translate(0, 0, 2.0)), spokeMat);
+    head.add(axle, hub);
+    scene.add(head);
+    return { hub, speed: 0.22 + k * 0.05 };
+  });
+  // bougainvillea
+  const NF = V_.flowers.length, flowerGeo = keep(new THREE.InstancedBufferGeometry()), fq = keep(new THREE.PlaneGeometry(1, 1).translate(0, -0.5, 0));
+  flowerGeo.setIndex(fq.index); flowerGeo.setAttribute("position", fq.attributes.position); flowerGeo.setAttribute("uv", fq.attributes.uv);
+  flowerGeo.setAttribute("aFlower", new THREE.InstancedBufferAttribute(new Float32Array(V_.flowers.flatMap(([x, y, z, s]) => [x, y, z, s])), 4));
+  flowerGeo.setAttribute("aFlower2", new THREE.InstancedBufferAttribute(new Float32Array(V_.flowers.flatMap(([, , , , c]) => [c, r(0, 6.28)])), 2));
+  flowerGeo.instanceCount = NF;
+  const flowerUni = { uMap: { value: keep(santoriniFlowers(THREE)) }, uLight: { value: new THREE.Color() }, uTime: time };
+  const flowerMesh = new THREE.Mesh(flowerGeo, shader(SANTORINI_FLOWER_VS, SANTORINI_FLOWER_FS, flowerUni, { alphaToCoverage: true, ...KEEP_ALPHA }));
+  flowerMesh.frustumCulled = false;
+  scene.add(flowerMesh);
+  // lantern halos at night, all in one draw
+  const glowQuad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(glowQuad.index); glowGeo.setAttribute("position", glowQuad.attributes.position); glowGeo.setAttribute("uv", glowQuad.attributes.uv);
+  glowGeo.setAttribute("aGlow", new THREE.InstancedBufferAttribute(new Float32Array(V_.lamps.flatMap(([x, y, z]) => [x, y, z, 2.1])), 4));
+  glowGeo.instanceCount = V_.lamps.length;
+  const glowMesh = new THREE.Mesh(glowGeo, shader(VENICE_GLOW_VS, VENICE_GLOW_FS, { uMap: { value: glow }, uColor: { value: new THREE.Color("#ffbf78") }, uTime: time }, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glowMesh.frustumCulled = false; glowMesh.renderOrder = 20;
+  scene.add(glowMesh);
+
+  /* --- boats on the caldera: a yacht, a catamaran, a small launch --- */
+  const hullMat = std({ color: 0xf4f2ee, roughness: 0.4 }), boatSail = std({ color: 0xfbf6ee, roughness: 1, side: THREE.DoubleSide });
+  const hullGeo = keep(new THREE.CylinderGeometry(0.8, 0.5, 9, 10, 1).rotateZ(Math.PI / 2).scale(1, 0.6, 1.4));
+  const sailTri = keep(new THREE.BufferGeometry());
+  sailTri.setAttribute("position", new THREE.Float32BufferAttribute([0, 0.8, 0, 0, 12, 0, -4.6, 0.8, 0], 3)); sailTri.computeVertexNormals();
+  const boatLamp = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffe2b0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+  const boats = [[420, -1100, 2.6, 2.4, 1.0, true], [1150, -2100, -0.35, 3.0, 1.3, true], [260, -620, 3.35, 5.5, 0.8, false]].map(([x, z, head, speed, sc, sailing]) => {
+    const g = new THREE.Group(), hull = new THREE.Mesh(hullGeo, hullMat);
+    g.add(hull);
+    if (sailing) { const s = new THREE.Mesh(sailTri, boatSail); s.position.x = 1.2; g.add(s); }
+    const lamp = new THREE.Sprite(boatLamp); lamp.position.set(0, 3, 0); lamp.scale.setScalar(9); g.add(lamp);
+    g.scale.setScalar(sc * 2.2);
+    scene.add(g);
+    return { g, lamp, x, z, head, speed };
+  });
+  function stepBoats(dt) {
+    boats.forEach((b, i) => {
+      b.x += Math.cos(b.head) * b.speed * dt; b.z += Math.sin(b.head) * b.speed * dt;
+      if (Math.hypot(b.x - 900, b.z + 1800) > 2600) { b.head += Math.PI; } // turn back before sailing out of the bay
+      b.g.position.set(b.x, 0.4, b.z); b.g.rotation.set(0, -b.head, 0);
+      seaUni.uBoats.value[i].set(b.x, b.z, b.head, 1);
+    });
+  }
+
+  /* --- gulls over the edge by day --- */
+  const NGULL = preview ? 2 : 4, gullGeo = keep(lhGull(THREE)), aGull = new THREE.InstancedBufferAttribute(new Float32Array(NGULL * 2), 2);
+  aGull.setUsage(THREE.DynamicDrawUsage);
+  gullGeo.setAttribute("aGull", aGull);
+  const gullMesh = new THREE.InstancedMesh(gullGeo, shader(LH_GULL_VS, LH_GULL_FS, { uBody: { value: new THREE.Color("#f7f2ee") }, uWing: { value: new THREE.Color("#c9c4c8") }, uTip: { value: new THREE.Color("#1c2025") } }), NGULL);
+  gullMesh.frustumCulled = false; gullMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(gullMesh);
+  const gulls = Array.from({ length: NGULL }, () => ({ a: r(0, 6.28), R: r(18, 34), w: (r() < 0.5 ? -1 : 1) * r(0.08, 0.14), h: r(98, 118), cx: r(40, 110), cz: r(-190, -90), beat: r(0, 6.28), amp: 0.3, flap: r() < 0.5, timer: r(1, 4) }));
+  function stepGulls(dt) {
+    gulls.forEach((g, i) => {
+      if ((g.timer -= dt) <= 0) { g.flap = !g.flap; g.timer = g.flap ? r(1.2, 2.5) : r(3, 7); }
+      g.amp += ((g.flap ? 0.5 : 0.05) - g.amp) * Math.min(1, dt * 3);
+      g.beat += dt * (g.flap ? 8 : 2); g.a += g.w * dt;
+      V.set(g.cx + Math.cos(g.a) * g.R, g.h + Math.sin(g.a * 0.6) * 3, g.cz + Math.sin(g.a) * g.R);
+      const vx = -Math.sin(g.a) * g.R * g.w, vz = Math.cos(g.a) * g.R * g.w;
+      E.set(0, Math.atan2(-vx, -vz), g.w > 0 ? 0.3 : -0.3, "YXZ");
+      gullMesh.setMatrixAt(i, M4.compose(V, Q.setFromEuler(E), S3.setScalar(1.6)));
+      aGull.setXY(i, g.beat, g.amp);
+    });
+    gullMesh.instanceMatrix.needsUpdate = aGull.needsUpdate = true;
+  }
+
+  // real shadows from the first draw (the renderer is only reachable there); the village stands still, so the map is drawn once
+  // (and again when night swaps the sun for the moon), never every frame
+  let shadowsOn = false, gone = false, rend = null;
+  sky.onBeforeRender = (renderer) => {
+    rend = renderer;
+    if (preview || shadowsOn) return;
+    shadowsOn = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accent.set(p.accent);
+    nightU.value = d ? 1 : 0;
+    skyUni.uZenith.value.set(d ? "#050a1e" : "#4b5c98"); skyUni.uMid.value.set(d ? "#0e1a3c" : "#e39aa8"); skyUni.uHorizon.value.set(d ? "#223358" : "#ffc28a");
+    skyUni.uGlow.value.set(d ? "#34304e" : "#ff9c58").multiplyScalar(0.5); skyUni.uSun.value = d ? 0 : 1.6;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudUni.uSunDir.value.copy(L);
+    cloudUni.uLit.value.set(d ? "#3a4668" : "#ffcaa8"); cloudUni.uShade.value.set(d ? "#1a2036" : "#9c84ae"); cloudUni.uGlow.value.set(d ? "#46557e" : "#ffb070").multiplyScalar(d ? 0.35 : 0.7); cloudUni.uHaze.value.set(d ? "#1c2848" : "#f6c0a4");
+    sun.position.copy(L).multiplyScalar(1000).add(TARGET);
+    sun.color.set(d ? "#9fb4e8" : "#ffa25c"); sun.intensity = d ? 0.5 : 4.2;
+    hemi.color.set(d ? "#27335e" : "#d9c6d6"); hemi.groundColor.set(d ? "#1a140f" : "#c49a7c"); hemi.intensity = d ? 0.55 : 1.15; // the sunset sky's pink on the roofs
+    scene.fog.color.set(d ? "#131c36" : "#f2bca4");
+    seaUni.uSunDir.value.copy(L); seaUni.uSunCol.value.set(d ? "#c9d6ff" : "#ffd79a").multiplyScalar(d ? 0.7 : 1.3); seaUni.uGlint.value = d ? 0.6 : 1;
+    seaUni.uDeep.value.set(d ? "#030a16" : "#1c3c66"); seaUni.uZenith.value.set(d ? "#0a1430" : "#5d6fab"); seaUni.uHorizon.value.set(d ? "#1c2a50" : "#ffc39c"); seaUni.uHaze.value.set(d ? "#16203c" : "#f3bea6"); seaUni.uFoam.value.set(d ? "#4a5a78" : "#fff0e0");
+    rimUni.uSunDir.value.copy(L); rimUni.uSunCol.value.set(d ? "#6a7cb0" : "#ffac68").multiplyScalar(d ? 0.25 : 1.35); rimUni.uAmb.value.set(d ? "#141a30" : "#6a6f9c").multiplyScalar(d ? 0.7 : 0.75); rimUni.uHaze.value.set(d ? "#141c38" : "#eab4a6");
+    for (const u of isles) { u.uBody.value.set(d ? "#171b31" : "#8d7aa2"); u.uRim.value.set("#ffd29a").multiplyScalar(d ? 0 : 0.3); u.uLights.value.set(d ? "#ffbe6a" : "#000000"); }
+    domeMat.color.copy(accent).multiplyScalar(0.85); domeMat.emissive.copy(accent).multiplyScalar(d ? 0.12 : 0);
+    poolMat.emissive.set(d ? "#1fb8d0" : "#000000"); poolMat.emissiveIntensity = d ? 0.55 : 0;
+    sailMat.emissive.set(d ? "#0c1020" : "#8f6a4c");
+    flowerUni.uLight.value.set(d ? "#3c4264" : "#ffe6d8");
+    glowMesh.visible = d; for (const b of boats) b.lamp.visible = d;
+    gullMesh.visible = !d;
+    if (rend && shadowsOn) rend.shadowMap.needsUpdate = true; // the moon throws its shadows from elsewhere
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  let sway = 0;
+  function layout() { // on every render, before the frustum is taken: a still frame gets no update() call
+    const A = camera.aspect || 1, fov = A >= 1 ? 50 : 50 + (1 - A) * 22, yaw = A >= 1 ? 0 : (1 - A) * 0.63; // a phone turns towards the sun
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.set(Math.sin(sway) * 0.6, EYE + Math.sin(sway * 1.7) * 0.08, CZ);
+    camera.lookAt(look.set(camera.position.x + Math.sin(yaw) * 1000, EYE + Math.tan(PITCH) * 1000, CZ - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt, t) {
+    time.value = t;
+    sway = t * 0.03;
+    for (const s of sails) s.hub.rotation.z = -t * s.speed;
+    stepBoats(dt);
+    if (!pal.dark) stepGulls(dt);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { return { houses: V_.white.length, decals: V_.decals.length, lamps: V_.lamps.length, flowers: NF, pools: V_.pools.length, boats: boats.map((b) => [Math.round(b.x), Math.round(b.z)]), shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
