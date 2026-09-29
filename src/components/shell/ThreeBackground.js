@@ -10555,7 +10555,1080 @@ function northernlights(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights };
+/* ---------- Venice canal: palazzi on both banks mirrored in the canal, gondolas gliding under a stone bridge; golden hour, or a lamplit night ---------- */
+// The facades are paintings on quads down each bank (a fine canvas for the near stretch, a coarser one further on). Their mask holds the
+// window glass (g), which windows are lit at night (r) and the shutters painted in the accent colour (b). By day the sun is low over the
+// rooftops ahead on the left: the right bank's upper floors catch it above the shadow of the roofs across the canal (read from uRoof).
+const VENICE_FACADE_VS = /* glsl */ `
+  varying vec2 vUv; varying vec3 vWorld; varying vec3 vN;
+  void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const VENICE_FACADE_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform sampler2D uMask; uniform sampler2D uRoof;
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uBounce; uniform vec3 uSkyRefl; uniform vec3 uAccent; uniform vec3 uWarm;
+  uniform float uNight; uniform float uFlip; uniform float uHW; uniform float uRoofZ;
+  uniform vec4 uLamps[VENICE_LAMPS];
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec2 vUv; varying vec3 vWorld; varying vec3 vN;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.04) discard;
+    vec3 m = texture2D(uMask, vUv).rgb;
+    vec3 base = mix(t.rgb, t.rgb * uAccent * 1.35, m.b);
+    vec3 P = vec3(vWorld.x, vWorld.y * uFlip, vWorld.z), N = normalize(vN); // lit as the real facade, also in the mirrored pass
+    float ndl = max(dot(N, uSunDir), 0.0), lit = 0.0;
+    if (ndl > 0.0) { // the ray to the sun crosses the canal: lit only above the roofs on the other bank
+      vec3 Q = P + uSunDir * (2.0 * uHW / max(abs(uSunDir.x), 1e-3));
+      float roof = -Q.z < uRoofZ ? texture2D(uRoof, vec2(clamp(-Q.z / uRoofZ, 0.0, 1.0), 0.5)).r * 30.0 : 0.0;
+      lit = smoothstep(roof - 0.5, roof + 0.5, Q.y);
+    }
+    vec3 col = base * (uAmb + uBounce * clamp(P.y / 18.0, 0.2, 1.0) + uSunCol * ndl * lit);
+    col = mix(col, uSkyRefl * (0.55 + 0.45 * lit), m.g * 0.26 * (1.0 - uNight)); // window glass mirrors a little of the sky by day
+    if (uNight > 0.0) {
+      float pool = 0.0;
+      for (int i = 0; i < VENICE_LAMPS; i++) { vec3 d = P - uLamps[i].xyz; pool += uLamps[i].w / (1.0 + dot(d, d) * 0.45); }
+      col += (base * pool * 1.3 + m.r * 1.6) * uWarm * uNight;
+    }
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, t.a);
+    #include <colorspace_fragment>
+  }
+`;
+// the canal: the mirrored world broken by wavelets that run across it and stretch the lights into streaks; jade green where you look down into it
+const VENICE_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform sampler2D uNoise; uniform vec2 uRes; uniform float uTime; uniform vec3 uDeep; uniform vec3 uSheen;
+  varying vec3 vWorld;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec3 toCam = cameraPosition - vWorld;
+    float dist = length(toCam.xz);
+    float near = clamp(20.0 / (dist + 20.0), 0.05, 1.0);
+    vec2 w = vWorld.xz;
+    float a = texture2D(uNoise, w * vec2(0.05, 0.17) + vec2(uTime * 0.01, uTime * 0.05)).r;
+    float b = texture2D(uNoise, w * vec2(0.13, 0.36) - vec2(uTime * 0.02, -uTime * 0.07)).g;
+    vec2 off = vec2((b - 0.5) * 0.012, (a - 0.5) * 0.07 + (b - 0.5) * 0.04) * near;
+    vec3 refl = texture2D(tReflect, clamp(uv + off, 0.001, 0.999)).rgb;
+    float grazing = 1.0 - clamp(normalize(toCam).y, 0.0, 1.0);
+    vec3 col = mix(uDeep, refl, 0.2 + 0.8 * pow(grazing, 4.0));
+    col += uSheen * pow(a, 6.0) * near * 0.35;
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the far shore at the canal's end, as masks: r = silhouette, g = windows lit at night, b = the rim the low sun lights
+const VENICE_FAR_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uBody; uniform vec3 uRim; uniform vec3 uWin; uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    if (m.r < 0.02) discard;
+    vec3 col = uBody * (0.9 + 0.1 * vUv.y) + uRim * m.b + uWin * m.g * (0.85 + 0.15 * sin(uTime * 1.7 + vUv.x * 310.0));
+    gl_FragColor = vec4(col, m.r);
+    #include <colorspace_fragment>
+  }
+`;
+// mooring poles: white with a spiral stripe in the instance colour, dark and slimy where the water reaches
+const VENICE_POLE_VS = /* glsl */ `
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vN; varying vec3 vCol;
+  void main() {
+    vLocal = position;
+    vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    vWorld = w.xyz; vN = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+    #ifdef USE_INSTANCING_COLOR
+      vCol = instanceColor;
+    #else
+      vCol = vec3(1.0);
+    #endif
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const VENICE_POLE_FS = /* glsl */ `
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform float uFlip; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vN; varying vec3 vCol;
+  void main() {
+    float y = vWorld.y * uFlip, ang = atan(vLocal.z, vLocal.x) / 6.2831853;
+    float stripe = step(0.5, fract(y * 1.25 + ang));
+    vec3 base = mix(vec3(0.9, 0.88, 0.84), vCol, stripe);
+    base = mix(vec3(0.1, 0.14, 0.11), base, smoothstep(0.3, 0.95, y));
+    vec3 N = normalize(vN);
+    vec3 col = base * (uAmb + uSunCol * max(dot(N, uSunDir), 0.0) * 0.8);
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// laundry on the lines across the canal: each garment hangs from its top edge and sways
+const VENICE_CLOTH_VS = /* glsl */ `
+  uniform float uTime;
+  attribute vec2 aCloth; // atlas cell, sway phase
+  varying vec2 vUv; varying vec3 vCol; varying vec3 vWorld;
+  void main() {
+    vec3 p = position; // y from -1 (hem) to 0 (the line)
+    float sw = (0.16 * sin(uTime * 1.3 + aCloth.y) + 0.07 * sin(uTime * 2.9 + aCloth.y * 1.7)) * -p.y;
+    p.z += sw; p.x += 0.035 * sin(uTime * 2.1 + aCloth.y + p.y * 3.0) * -p.y;
+    vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+    vWorld = w.xyz;
+    vUv = (uv + vec2(mod(aCloth.x, 4.0), 1.0 - floor(aCloth.x / 4.0))) * vec2(0.25, 0.5);
+    #ifdef USE_INSTANCING_COLOR
+      vCol = instanceColor;
+    #else
+      vCol = vec3(1.0);
+    #endif
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const VENICE_CLOTH_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uLight; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec2 vUv; varying vec3 vCol; varying vec3 vWorld;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.5) discard;
+    vec3 col = t.rgb * vCol * uLight;
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the café's awning: stripes in the accent colour, a scalloped valance
+const VENICE_AWNING_VS = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const VENICE_AWNING_FS = /* glsl */ `
+  uniform vec3 uAccent; uniform vec3 uLight; uniform vec3 uUnder; uniform float uStripes;
+  varying vec2 vUv;
+  void main() {
+    float f = fract(vUv.x * uStripes), s = step(0.5, f);
+    if (vUv.y < 0.2) { float sc = abs(f - 0.5) * 2.0; if (vUv.y < 0.11 * (1.0 - sqrt(max(0.0, 1.0 - sc * sc)))) discard; } // the scallops along the valance: lowest in the middle of each
+    vec3 base = mix(vec3(0.95, 0.92, 0.85), uAccent, s);
+    gl_FragColor = vec4(base * (gl_FrontFacing ? uLight : uUnder), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the lanterns' halos at night, all in one draw: camera-facing quads, each breathing a little
+const VENICE_GLOW_VS = /* glsl */ `
+  uniform float uTime;
+  attribute vec4 aGlow; // position, size
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec4 mv = modelViewMatrix * vec4(aGlow.xyz, 1.0);
+    mv.xy += position.xy * aGlow.w * (0.94 + 0.06 * sin(uTime * 6.1 + aGlow.x * 3.7 + aGlow.z) * sin(uTime * 2.3 + aGlow.z * 1.3));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const VENICE_GLOW_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uColor;
+  varying vec2 vUv;
+  void main() {
+    gl_FragColor = vec4(texture2D(uMap, vUv).rgb * uColor, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+const VENICE_WALLS = ["#d9a066", "#c8694e", "#e3a58a", "#d98f8f", "#e9d7b3", "#b8563f", "#d88a4a", "#e8c67e", "#c98d8d", "#d6b9a0", "#a9564a", "#dcae84"];
+const VENICE_SHUTTERS = ["#3d6a4d", "#2f5a44", "#56704f", "#6b4a33", "#7d8a70", "#3d6a4d"];
+/** A row of palazzi along one bank, near to far (z decreasing): width, height, wall colour, how far it stands forward. */
+function veniceRow(r, zNear, zFar) {
+  const out = [];
+  for (let z = zNear; z > zFar + 3; ) {
+    const w = Math.min(z - zFar, r(7.5, 15));
+    out.push({ z0: z, z1: z - w, h: r(12.5, 21.5), color: VENICE_WALLS[(r() * VENICE_WALLS.length) | 0], off: r() < 0.3 ? r(0.3, 0.9) : 0, seed: (r() * 1e6) | 0 });
+    z -= w;
+  }
+  return out;
+}
+/** Two small tiles: mottled plaster (an overlay, wraps) and brick. */
+function veniceTiles() {
+  const plaster = document.createElement("canvas");
+  plaster.width = plaster.height = 256;
+  const pg = plaster.getContext("2d"), r = koiRng(55);
+  for (let i = 0; i < 150; i++) { // soft blotches, lighter and darker, drawn wrapped so the tile joins
+    const x = r(0, 256), y = r(0, 256), rad = r(8, 46), dark = r() < 0.55, a = r(0.04, 0.15);
+    for (const ox of [-256, 0, 256]) for (const oy of [-256, 0, 256]) {
+      if (x + ox < -rad || x + ox > 256 + rad || y + oy < -rad || y + oy > 256 + rad) continue;
+      const gr = pg.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+      gr.addColorStop(0, dark ? `rgba(60,40,30,${a})` : `rgba(255,245,230,${a})`); gr.addColorStop(1, "rgba(0,0,0,0)");
+      pg.fillStyle = gr; pg.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
+    }
+  }
+  for (let i = 0; i < 1400; i++) { pg.fillStyle = `rgba(${r() < 0.5 ? "70,50,40" : "255,250,240"},${r(0.05, 0.14)})`; pg.fillRect(r(0, 256), r(0, 256), r(1, 2.5), r(1, 2.5)); } // grain
+  const brick = document.createElement("canvas");
+  brick.width = 64; brick.height = 32;
+  const bg = brick.getContext("2d");
+  bg.fillStyle = "#8a5646"; bg.fillRect(0, 0, 64, 32);
+  for (let row = 0; row < 4; row++) for (let k = -1; k < 3; k++) { bg.fillStyle = ["#a45a42", "#b06548", "#96503c", "#b8704f"][(row + k + 4) % 4]; bg.fillRect(k * 32 + (row % 2 ? 16 : 0) + 1, row * 8 + 1, 30, 6); }
+  return { plaster, brick };
+}
+/** A window's outline: 0 square-headed, 1 round-arched, 2 pointed, 3 ogee (the Venetian Gothic "inflected" arch). yTop is the top of the arch. */
+function veniceWinPath(g, x, yTop, w, h, style) {
+  g.beginPath();
+  if (!style) { g.rect(x, yTop, w, h); return; }
+  const a = style === 1 ? w / 2 : style === 2 ? w * 0.75 : w * 0.95, yA = yTop + a, cx = x + w / 2;
+  g.moveTo(x, yTop + h); g.lineTo(x, yA);
+  if (style === 1) g.arc(cx, yA, w / 2, Math.PI, 0);
+  else if (style === 2) { g.quadraticCurveTo(x, yTop + a * 0.35, cx, yTop); g.quadraticCurveTo(x + w, yTop + a * 0.35, x + w, yA); }
+  else { g.bezierCurveTo(x, yTop + a * 0.4, cx - w * 0.06, yTop + a * 0.52, cx, yTop); g.bezierCurveTo(cx + w * 0.06, yTop + a * 0.52, x + w, yTop + a * 0.4, x + w, yA); }
+  g.lineTo(x + w, yTop + h); g.closePath();
+}
+/** A slatted shutter; in the accent colour it is painted grey here and tinted in the shader (mask b). */
+function venicePanel(g, mk, x, y, w, h, o) {
+  g.fillStyle = o.accent ? "#d6d6d6" : o.col; g.fillRect(x, y, w, h);
+  g.strokeStyle = "rgba(0,0,0,0.3)"; g.lineWidth = Math.max(1, h * 0.012);
+  for (let yy = y + h * 0.07; yy < y + h * 0.97; yy += Math.max(2, h * 0.065)) { g.beginPath(); g.moveTo(x + w * 0.12, yy); g.lineTo(x + w * 0.88, yy); g.stroke(); }
+  g.strokeStyle = "rgba(0,0,0,0.38)"; g.lineWidth = Math.max(1, w * 0.07); g.strokeRect(x, y, w, h);
+  mk.fillStyle = o.accent ? "rgb(0,0,255)" : "rgb(0,0,0)"; mk.fillRect(x, y, w, h);
+}
+/** A window box of geraniums, some stems trailing. */
+function veniceFlowers(g, x, y, w, r) {
+  g.fillStyle = "#7a4a30"; g.fillRect(x, y - w * 0.06, w, w * 0.1);
+  for (let i = 0; i < 24; i++) { g.fillStyle = r() < 0.5 ? "#3f6b34" : "#557f3e"; g.beginPath(); g.arc(x + r(0, w), y - w * 0.07 - r(0, w * 0.16), w * r(0.03, 0.06), 0, Math.PI * 2); g.fill(); }
+  const pink = r() < 0.45;
+  for (let i = 0; i < 16; i++) { g.fillStyle = pink ? (r() < 0.5 ? "#e85a8a" : "#f07aa0") : (r() < 0.5 ? "#d8283a" : "#ea4a4a"); g.beginPath(); g.arc(x + r(0.05, 0.95) * w, y - w * 0.09 - r(0, w * 0.18), w * r(0.02, 0.04), 0, Math.PI * 2); g.fill(); }
+  g.strokeStyle = "#4a7a3a"; g.lineWidth = Math.max(1, w * 0.02);
+  for (let i = 0; i < 4; i++) { const fx = x + r(0, w); g.beginPath(); g.moveTo(fx, y); g.quadraticCurveTo(fx + r(-3, 3), y + w * 0.25, fx + r(-4, 4), y + w * r(0.25, 0.55)); g.stroke(); }
+}
+/** A window: stone surround and sill, glass with the sky in it, glazing bars, shutters open or shut, a rain streak below, perhaps flowers. */
+function veniceWindow(g, mk, x, yTop, w, h, style, o) {
+  const f = Math.max(1, w * 0.13);
+  g.fillStyle = "#ece6d8"; veniceWinPath(g, x - f, yTop - f, w + 2 * f, h + f * 1.4, style); g.fill();
+  const streak = g.createLinearGradient(0, yTop + h + f, 0, yTop + h + f + h * 0.9);
+  streak.addColorStop(0, "rgba(40,30,25,0.14)"); streak.addColorStop(1, "rgba(40,30,25,0)");
+  g.fillStyle = streak; g.fillRect(x, yTop + h + f, w, h * 0.9);
+  g.fillStyle = "#e2dbcb"; g.fillRect(x - f * 1.6, yTop + h + f * 0.35, w + f * 3.2, f * 0.85);
+  g.fillStyle = "rgba(0,0,0,0.24)"; g.fillRect(x - f * 1.6, yTop + h + f * 1.2, w + f * 3.2, f * 0.35);
+  const gl = g.createLinearGradient(x, yTop, x + w, yTop + h);
+  gl.addColorStop(0, "#44505f"); gl.addColorStop(0.5, "#29323d"); gl.addColorStop(1, "#1b222b");
+  g.fillStyle = gl; veniceWinPath(g, x, yTop, w, h, style); g.fill();
+  g.strokeStyle = "rgba(225,232,240,0.16)"; g.lineWidth = Math.max(1, w * 0.12); g.beginPath(); g.moveTo(x + w * 0.2, yTop + h); g.lineTo(x + w * 0.85, yTop + h * 0.35); g.stroke();
+  g.strokeStyle = "#e6e0d2"; g.lineWidth = Math.max(1, w * 0.05);
+  g.beginPath(); g.moveTo(x + w / 2, yTop + (style ? w * 0.35 : 0)); g.lineTo(x + w / 2, yTop + h); g.moveTo(x, yTop + h * 0.55); g.lineTo(x + w, yTop + h * 0.55); g.stroke();
+  mk.fillStyle = `rgb(${Math.round(o.lit * 255)},255,0)`; veniceWinPath(mk, x, yTop, w, h, style); mk.fill();
+  if (o.shutter === "open") { for (const sx of [x - f - w * 0.5, x + w + f]) venicePanel(g, mk, sx, yTop + (style ? w * 0.35 : 0), w * 0.5, h - (style ? w * 0.35 : 0), o); }
+  else if (o.shutter === "closed") venicePanel(g, mk, x, yTop + (style ? w * 0.35 : 0), w, h - (style ? w * 0.35 : 0), o);
+  if (o.box) veniceFlowers(g, x - f, yTop + h + f * 0.35, w + 2 * f, o.r);
+}
+/** A barred window on the ground floor. */
+function veniceGrille(g, mk, x, y, w, h, lit) {
+  g.fillStyle = "#e6dfcf"; g.fillRect(x - 0.1 * w, y - 0.1 * w, w * 1.2, h + 0.2 * w);
+  g.fillStyle = "#1e2229"; g.fillRect(x, y, w, h);
+  g.strokeStyle = "#101010"; g.lineWidth = Math.max(1, w * 0.05);
+  for (let k = 1; k < 5; k++) { g.beginPath(); g.moveTo(x + (w * k) / 5, y); g.lineTo(x + (w * k) / 5, y + h); g.stroke(); }
+  g.beginPath(); g.moveTo(x, y + h / 2); g.lineTo(x + w, y + h / 2); g.stroke();
+  mk.fillStyle = `rgb(${Math.round(lit * 170)},255,0)`; mk.fillRect(x, y, w, h);
+}
+/** A stone balcony across the piano nobile: slab, balusters, rail, its shadow on the wall below. */
+function veniceBalcony(g, x, y, w, s) {
+  const h = 0.95 * s;
+  g.fillStyle = "rgba(0,0,0,0.3)"; g.fillRect(x + 0.1 * s, y + 0.16 * s, w - 0.2 * s, 0.45 * s);
+  g.fillStyle = "#e6dfcf"; g.fillRect(x, y, w, 0.16 * s); g.fillRect(x, y - h, w, 0.12 * s);
+  for (let bx = x + 0.12 * s; bx < x + w - 0.1 * s; bx += 0.24 * s) {
+    g.beginPath(); g.ellipse(bx + 0.06 * s, y - h * 0.32, 0.065 * s, h * 0.26, 0, 0, Math.PI * 2); g.fill();
+    g.fillRect(bx + 0.035 * s, y - h * 0.92, 0.05 * s, h * 0.92);
+  }
+  g.fillStyle = "rgba(0,0,0,0.2)"; g.fillRect(x, y - h + 0.12 * s, w, 0.04 * s);
+}
+/** A water door: a round-arched opening with steps down into the canal and a wooden gate half open. Returns its size in metres. */
+function veniceWaterDoor(g, mk, cx, base, s, r) {
+  const w = r(1.9, 2.5) * s, h = r(2.9, 3.4) * s, x = cx - w / 2, yTop = base - h;
+  g.fillStyle = "#e4ddcf"; veniceWinPath(g, x - 0.24 * s, yTop - 0.24 * s, w + 0.48 * s, h + 0.24 * s, 1); g.fill();
+  g.fillStyle = "#16120f"; veniceWinPath(g, x, yTop, w, h, 1); g.fill();
+  for (let k = 0; k < 3; k++) { g.fillStyle = `rgba(210,205,190,${0.55 - k * 0.15})`; g.fillRect(x, base - (0.95 - k * 0.3) * s, w, 0.09 * s); }
+  g.fillStyle = "#3a2a1c"; g.fillRect(x + w * 0.62, yTop + w * 0.5, w * 0.38, h - w * 0.5);
+  g.strokeStyle = "rgba(0,0,0,0.45)"; g.lineWidth = Math.max(1, 0.03 * s);
+  for (let k = 1; k < 5; k++) { g.beginPath(); g.moveTo(x + w * 0.62 + (w * 0.38 * k) / 5, yTop + w * 0.5); g.lineTo(x + w * 0.62 + (w * 0.38 * k) / 5, base); g.stroke(); }
+  if (r() < 0.35) { mk.fillStyle = "rgb(90,0,0)"; veniceWinPath(mk, x, yTop, w * 0.62, h, 1); mk.fill(); } // a light somewhere inside
+  return { w: w / s, h: h / s };
+}
+/** An iron wall lantern on its bracket; lit at night through the mask. */
+function veniceLantern(g, mk, x, y, s) {
+  g.strokeStyle = "#1c1c1e"; g.fillStyle = "#1c1c1e"; g.lineWidth = Math.max(1, 0.05 * s);
+  g.fillRect(x - 0.1 * s, y - 0.75 * s, 0.2 * s, 0.1 * s);
+  g.beginPath(); g.moveTo(x, y - 0.65 * s); g.lineTo(x, y - 0.36 * s); g.stroke();
+  g.beginPath(); g.arc(x + 0.1 * s, y - 0.55 * s, 0.1 * s, Math.PI * 0.5, Math.PI * 1.5); g.stroke();
+  g.beginPath(); g.moveTo(x - 0.17 * s, y - 0.24 * s); g.lineTo(x + 0.17 * s, y - 0.24 * s); g.lineTo(x, y - 0.38 * s); g.closePath(); g.fill();
+  g.fillStyle = "#efe4c4"; g.fillRect(x - 0.12 * s, y - 0.24 * s, 0.24 * s, 0.36 * s);
+  g.strokeRect(x - 0.12 * s, y - 0.24 * s, 0.24 * s, 0.36 * s);
+  g.fillStyle = "#1c1c1e"; g.fillRect(x - 0.14 * s, y + 0.12 * s, 0.28 * s, 0.05 * s);
+  mk.fillStyle = "rgb(255,0,0)"; mk.fillRect(x - 0.12 * s, y - 0.24 * s, 0.24 * s, 0.36 * s);
+}
+/** The cornice, the band of roof tiles above it, Venetian funnel chimneys, now and then an altana (a wooden roof terrace on posts). */
+function veniceRoof(g, X0, X1, top, s, r) {
+  g.fillStyle = "rgba(0,0,0,0.34)"; g.fillRect(X0, top + 0.36 * s, X1 - X0, 0.2 * s);
+  g.fillStyle = "#e8e0cf"; g.fillRect(X0 - 0.15 * s, top, X1 - X0 + 0.3 * s, 0.4 * s);
+  g.fillStyle = "rgba(0,0,0,0.18)"; for (let x = X0; x < X1; x += 0.3 * s) g.fillRect(x, top + 0.26 * s, 0.14 * s, 0.1 * s);
+  g.fillStyle = "#a9543a"; g.fillRect(X0 - 0.2 * s, top - 0.45 * s, X1 - X0 + 0.4 * s, 0.45 * s);
+  g.fillStyle = "rgba(255,205,165,0.22)"; for (let x = X0 - 0.2 * s; x < X1 + 0.2 * s; x += 0.22 * s) g.fillRect(x, top - 0.45 * s, 0.08 * s, 0.45 * s);
+  for (let k = 0, n = (r() * 2.6) | 0; k < n; k++) { // Venetian chimneys: a stout stack, a funnel pot on top
+    const cx = X0 + r(0.15, 0.85) * (X1 - X0), hc = r(1.1, 1.9) * s, wc = r(0.75, 0.95) * s, y0 = top - 0.45 * s, brickCol = r() < 0.45;
+    g.fillStyle = brickCol ? "#b8674a" : "#dccfbd";
+    g.fillRect(cx - wc / 2, y0 - hc, wc, hc);
+    g.fillStyle = "rgba(0,0,0,0.22)"; g.fillRect(cx + wc * 0.18, y0 - hc, wc * 0.32, hc); // its shaded side
+    g.fillStyle = brickCol ? "#a95a40" : "#d2c4b0"; g.fillRect(cx - wc * 0.62, y0 - hc - 0.12 * s, wc * 1.24, 0.14 * s); // a cornice
+    const ft = y0 - hc - 0.12 * s, fh = r(0.7, 1.0) * s; // the funnel
+    g.beginPath(); g.moveTo(cx - wc * 0.4, ft); g.lineTo(cx - wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.4, ft); g.closePath(); g.fill();
+    g.fillStyle = "rgba(0,0,0,0.25)"; g.beginPath(); g.moveTo(cx + wc * 0.1, ft); g.lineTo(cx + wc * 0.35, ft - fh); g.lineTo(cx + wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.4, ft); g.closePath(); g.fill();
+    g.fillStyle = "#3a2e28"; g.fillRect(cx - wc, ft - fh - 0.08 * s, wc * 2, 0.1 * s);
+  }
+}
+/** The café's ground floor behind the walkway: arched glazed fronts (lit at night) and a signboard, lettered to read from the canal. */
+function veniceShopFront(g, mk, X0, X1, base, s, mirrorText, addLamp) {
+  const Y = (m) => base - m * s, W = X1 - X0, n = Math.max(1, Math.floor(W / s / 3.6)), sp = W / n;
+  g.fillStyle = "#d9d2c3"; g.fillRect(X0, Y(0.9), W, 0.9 * s);
+  for (let i = 0; i < n; i++) {
+    const cx = X0 + sp * (i + 0.5), w = 2.3 * s, h = 2.75 * s, x = cx - w / 2, yTop = Y(0.55) - h;
+    g.fillStyle = "#e6dfcf"; veniceWinPath(g, x - 0.22 * s, yTop - 0.22 * s, w + 0.44 * s, h + 0.22 * s, 1); g.fill();
+    const gl = g.createLinearGradient(0, yTop, 0, yTop + h); gl.addColorStop(0, "#3d3631"); gl.addColorStop(1, "#1f1a17");
+    g.fillStyle = gl; veniceWinPath(g, x, yTop, w, h, 1); g.fill();
+    g.strokeStyle = "#2c1d12"; g.lineWidth = Math.max(1, 0.07 * s);
+    g.beginPath(); g.moveTo(x + w / 3, yTop + w * 0.4); g.lineTo(x + w / 3, yTop + h); g.moveTo(x + (2 * w) / 3, yTop + w * 0.4); g.lineTo(x + (2 * w) / 3, yTop + h); g.moveTo(x, yTop + h * 0.42); g.lineTo(x + w, yTop + h * 0.42); g.stroke();
+    mk.fillStyle = "rgb(255,160,0)"; veniceWinPath(mk, x, yTop, w, h, 1); mk.fill();
+    if (i < n - 1) { const lx = X0 + sp * (i + 1); veniceLantern(g, mk, lx, Y(3.3), s); addLamp(lx, 3.25); }
+  }
+  const bx = X0 + sp * 0.5, bw = 2.6 * s, bh = 0.5 * s, by = Y(3.85);
+  g.fillStyle = "#1f4a36"; g.fillRect(bx - bw / 2, by, bw, bh);
+  g.strokeStyle = "#caa24a"; g.lineWidth = Math.max(1, 0.04 * s); g.strokeRect(bx - bw / 2 + 0.06 * s, by + 0.06 * s, bw - 0.12 * s, bh - 0.12 * s);
+  g.save(); g.translate(bx, by + bh / 2); if (mirrorText) g.scale(-1, 1);
+  g.fillStyle = "#ecc96a"; g.font = `italic ${Math.max(6, Math.round(0.33 * s))}px Georgia, "Times New Roman", serif`; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("Caffè", 0, 0);
+  g.restore();
+}
+/** One palazzo's facade, from the waterline to the chimneys. */
+function veniceFacade(g, mk, X0, X1, base, s, b, pats, addLamp, addDoor, mirrorText) {
+  const r = koiRng(b.seed), W = X1 - X0, wm = W / s, top = base - b.h * s, Y = (m) => base - m * s;
+  const lit = () => (r() < 0.42 ? r(0.55, 1) : 0), col = VENICE_SHUTTERS[(r() * VENICE_SHUTTERS.length) | 0];
+  const opts = () => { const q = r(); return { lit: lit(), shutter: q < 0.55 ? "open" : q < 0.75 ? "closed" : null, col, accent: r() < 0.16, box: r() < 0.3, r }; };
+  g.save(); g.beginPath(); g.rect(X0, top, W, base - top); g.clip();
+  g.fillStyle = b.color; g.fillRect(X0, top, W, base - top);
+  g.fillStyle = pats.plaster; g.fillRect(X0, top, W, base - top);
+  for (let k = 0, n = 1 + ((r() * 3.5) | 0); k < n; k++) { // plaster fallen away, the brick showing
+    const cx = X0 + r(0.08, 0.92) * W, cy = Y(r(1.8, b.h - 1.5)), rx = r(0.5, 1.8) * s, ry = r(0.35, 1.2) * s, ph = r(0, 6.28), n = 22;
+    const blob = () => { g.beginPath(); for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2, k = 0.72 + 0.2 * Math.sin(a * 3 + ph) + 0.12 * Math.sin(a * 7 + ph * 2) + r(-0.06, 0.06); g.lineTo(cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k); } g.closePath(); }; // a ragged edge, not an ellipse
+    g.save(); blob(); g.clip(); g.fillStyle = pats.brick; g.fillRect(cx - rx, cy - ry, rx * 2, ry * 2); g.restore();
+    g.strokeStyle = "rgba(90,60,45,0.3)"; g.lineWidth = Math.max(1, s * 0.04); blob(); g.stroke();
+  }
+  for (const hh of [4.4, 8.0]) if (hh < b.h - 1) { g.fillStyle = "rgba(236,230,216,0.9)"; g.fillRect(X0, Y(hh), W, 0.16 * s); g.fillStyle = "rgba(0,0,0,0.16)"; g.fillRect(X0, Y(hh) + 0.16 * s, W, 0.06 * s); } // string courses
+  if (!b.shop) { // damp rising from the water, the Istrian stone plinth, algae at the waterline
+    const damp = g.createLinearGradient(0, Y(2.6), 0, base); damp.addColorStop(0, "rgba(50,60,48,0)"); damp.addColorStop(0.55, "rgba(50,60,48,0.3)"); damp.addColorStop(1, "rgba(28,38,30,0.75)");
+    g.fillStyle = damp; g.fillRect(X0, Y(2.6), W, 2.6 * s);
+    g.fillStyle = "#dcd6c8"; g.fillRect(X0, Y(1.35), W, 0.42 * s);
+    g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(X0, Y(0.93), W, 0.05 * s);
+    const tide = g.createLinearGradient(0, Y(1.0), 0, Y(0.45)); tide.addColorStop(0, "rgba(58,76,50,0)"); tide.addColorStop(1, "rgba(48,66,44,0.5)"); // the green tide line
+    g.fillStyle = tide; g.fillRect(X0, Y(1.0), W, 0.55 * s);
+    g.fillStyle = "#1f2b24"; g.beginPath(); g.moveTo(X0, base); // algae at the waterline: a level band, its top edge only a little ragged
+    for (let x = X0; x <= X1 + s * 0.2; x += s * 0.2) g.lineTo(x, Y(0.46 + 0.04 * Math.sin((x / s) * 2.3) + r(-0.025, 0.025)));
+    g.lineTo(X1, base); g.closePath(); g.fill();
+  }
+  g.restore();
+  if (b.shop) veniceShopFront(g, mk, X0, X1, base, s, mirrorText, addLamp);
+  else {
+    const dx = X0 + W * r(0.3, 0.7), door = veniceWaterDoor(g, mk, dx, base, s, r);
+    addDoor(dx);
+    const lx = dx + (door.w / 2 + 0.75) * s * (r() < 0.5 ? -1 : 1);
+    veniceLantern(g, mk, lx, Y(door.h + 0.3), s); addLamp(lx, door.h + 0.25);
+    for (const gx of [X0 + W * 0.14, X1 - W * 0.14]) if (Math.abs(gx - dx) > (door.w / 2 + 1.2) * s) veniceGrille(g, mk, gx - 0.4 * s, Y(3.0), 0.8 * s, 1.1 * s, lit());
+  }
+  const sill = 5.1;
+  if (wm > 8.5 && r() < 0.8) { // the piano nobile: a group of arched lights with a balcony, single windows either side
+    const n = wm > 12 ? 4 + (r() < 0.4 ? 1 : 0) : 3, ww = 0.95 * s, gap = 0.3 * s, gw = n * ww + (n - 1) * gap, gx = X0 + (W - gw) / 2, st = r() < 0.55 ? 3 : 2, hh = 2.8 * s, yTop = Y(sill) - hh, L = lit();
+    for (let i = 0; i < n; i++) veniceWindow(g, mk, gx + i * (ww + gap), yTop, ww, hh, st, { lit: L * r(0.8, 1), shutter: null, box: false, r });
+    g.fillStyle = "#ebe5d6"; for (let i = 1; i < n; i++) g.fillRect(gx + i * (ww + gap) - gap * 0.72, yTop + ww * 0.6, gap * 0.44, hh - ww * 0.6);
+    veniceBalcony(g, gx - 0.45 * s, Y(sill), gw + 0.9 * s, s);
+    for (const sx of [gx - 2.0 * s, gx + gw + 1.05 * s]) if (sx > X0 + 0.6 * s && sx + ww < X1 - 0.6 * s) veniceWindow(g, mk, sx, Y(sill) - 2.2 * s, ww, 2.2 * s, st === 3 ? 1 : 2, opts());
+  } else {
+    const n = Math.max(2, Math.floor(wm / 2.7)), sp = W / n;
+    for (let i = 0; i < n; i++) veniceWindow(g, mk, X0 + sp * (i + 0.5) - 0.5 * s, Y(sill) - 2.2 * s, 1.0 * s, 2.2 * s, r() < 0.4 ? 1 : 0, opts());
+  }
+  for (let fs = 8.5; fs + 2.1 < b.h - 0.7; fs += 3.2) { // the upper floors
+    const n = Math.max(2, Math.floor(wm / 2.6)), sp = W / n, ww = 0.95 * s, hh = 1.8 * s, st = r() < 0.3 ? 1 : 0;
+    for (let i = 0; i < n; i++) veniceWindow(g, mk, X0 + sp * (i + 0.5) - ww / 2, Y(fs) - hh, ww, hh, st, opts());
+  }
+  veniceRoof(g, X0, X1, top, s, r);
+}
+/** Paint a stretch of one bank: the facades (colour + alpha above the roofs) and their mask at half size. */
+function venicePaintRow(list, zA, zB, s, HMAX, tiles, mirrorText) {
+  const W = Math.ceil((zA - zB) * s), H = Math.ceil(HMAX * s);
+  const c = document.createElement("canvas"), mc = document.createElement("canvas");
+  c.width = W; c.height = H; mc.width = Math.ceil(W / 2); mc.height = Math.ceil(H / 2);
+  const g = c.getContext("2d"), mk = mc.getContext("2d");
+  mk.fillStyle = "#000"; mk.fillRect(0, 0, mc.width, mc.height); mk.scale(0.5, 0.5);
+  const pats = { plaster: g.createPattern(tiles.plaster, "repeat"), brick: g.createPattern(tiles.brick, "repeat") };
+  pats.plaster.setTransform(new DOMMatrix().scale(s / 32)); pats.brick.setTransform(new DOMMatrix().scale(Math.max(0.15, s / 115)));
+  const lamps = [], doors = [];
+  for (const b of list) veniceFacade(g, mk, Math.round((zA - b.z0) * s), Math.round((zA - b.z1) * s), H, s, b, pats, (x, h) => lamps.push({ z: zA - x / s, h, b }), (x) => doors.push({ z: zA - x / s, b }), mirrorText);
+  return { c, mc, lamps, doors };
+}
+/** The walkway's height across the bridge: from the quays at its ends up to the crown. */
+const VENICE_DECK = (x) => 1.25 + 2.25 * Math.pow(Math.cos((Math.min(1, Math.abs(x) / 10.8) * Math.PI) / 2), 1.4);
+/** The stone bridge as seen along the canal: brick spandrels, a ring of white voussoirs, the opening cut out, a balustrade, two lanterns. 21.6 × 5.6 m. */
+function veniceBridge(THREE, S, tiles) {
+  const W = Math.round(21.6 * S), H = Math.round(5.6 * S), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => (m + 10.8) * S, Y = (m) => H - m * S;
+  const brick = g.createPattern(tiles.brick, "repeat");
+  brick.setTransform(new DOMMatrix().scale(Math.max(0.15, S / 115)));
+  g.beginPath(); g.moveTo(X(-10.8), Y(0)); for (let x = -10.8; x <= 10.81; x += 0.2) g.lineTo(X(x), Y(VENICE_DECK(x))); g.lineTo(X(10.8), Y(0)); g.closePath();
+  g.fillStyle = "#9a5b45"; g.fill();
+  g.save(); g.clip(); g.fillStyle = brick; g.fillRect(0, 0, W, H);
+  const damp = g.createLinearGradient(0, Y(1.7), 0, Y(0)); damp.addColorStop(0, "rgba(30,40,32,0)"); damp.addColorStop(1, "rgba(30,40,32,0.75)");
+  g.fillStyle = damp; g.fillRect(0, Y(1.7), W, 1.7 * S);
+  g.restore();
+  const R = 8.69, cy = -5.79, R2 = R + 0.62, dy = 0.3 - cy, Cx = X(0), Cy = Y(cy);
+  const aL = Math.atan2(-dy, -6.2), aR = Math.atan2(-dy, 6.2), o = Math.sqrt(R2 * R2 - dy * dy), aL2 = Math.atan2(-dy, -o), aR2 = Math.atan2(-dy, o);
+  g.fillStyle = "#e5dfd2"; g.beginPath(); g.arc(Cx, Cy, R2 * S, aL2, aR2); g.lineTo(X(6.2), Y(0.3)); g.arc(Cx, Cy, R * S, aR, aL, true); g.closePath(); g.fill();
+  g.strokeStyle = "rgba(0,0,0,0.22)"; g.lineWidth = Math.max(1, 0.03 * S);
+  for (let a = aL; a < aR; a += 0.06) { g.beginPath(); g.moveTo(Cx + Math.cos(a) * R * S, Cy + Math.sin(a) * R * S); g.lineTo(Cx + Math.cos(a) * R2 * S, Cy + Math.sin(a) * R2 * S); g.stroke(); }
+  g.fillStyle = "#ece6da"; g.beginPath(); g.moveTo(Cx - 0.28 * S, Cy - R * S); g.lineTo(Cx - 0.38 * S, Cy - (R2 + 0.12) * S); g.lineTo(Cx + 0.38 * S, Cy - (R2 + 0.12) * S); g.lineTo(Cx + 0.28 * S, Cy - R * S); g.closePath(); g.fill(); // the keystone
+  g.save(); g.globalCompositeOperation = "destination-out"; // the opening
+  g.beginPath(); g.moveTo(X(-6.2), Y(0) + 2); g.lineTo(X(-6.2), Y(0.3)); g.arc(Cx, Cy, R * S, aL, aR); g.lineTo(X(6.2), Y(0) + 2); g.closePath(); g.fill();
+  g.restore();
+  const along = (off, width, color) => { g.strokeStyle = color; g.lineWidth = width * S; g.lineCap = "round"; g.beginPath(); for (let x = -10.8; x <= 10.81; x += 0.2) { const y = Y(VENICE_DECK(x) + off); x === -10.8 ? g.moveTo(X(x), y) : g.lineTo(X(x), y); } g.stroke(); };
+  along(-0.08, 0.22, "#e6e0d2"); along(-0.24, 0.08, "rgba(0,0,0,0.22)"); along(0.12, 0.14, "#e2dccf");
+  g.fillStyle = "#ddd7ca";
+  for (let x = -10.5; x <= 10.5; x += 0.34) { const y0 = VENICE_DECK(x); g.beginPath(); g.ellipse(X(x), Y(y0 + 0.4), 0.075 * S, 0.2 * S, 0, 0, Math.PI * 2); g.fill(); g.fillRect(X(x) - 0.035 * S, Y(y0 + 0.9), 0.07 * S, 0.75 * S); }
+  along(0.95, 0.2, "#efe9dd"); along(0.84, 0.05, "rgba(0,0,0,0.2)");
+  const lamps = [];
+  for (const lx of [-6.8, 6.8]) { // iron lanterns on posts at the ends of the crown
+    const y0 = VENICE_DECK(lx) + 1.05;
+    g.fillStyle = "#1c1c1e"; g.fillRect(X(lx) - 0.05 * S, Y(y0 + 1.2), 0.1 * S, 1.2 * S); g.fillRect(X(lx) - 0.14 * S, Y(y0 + 0.05), 0.28 * S, 0.08 * S);
+    g.beginPath(); g.moveTo(X(lx) - 0.2 * S, Y(y0 + 1.55)); g.lineTo(X(lx) + 0.2 * S, Y(y0 + 1.55)); g.lineTo(X(lx), Y(y0 + 1.72)); g.closePath(); g.fill();
+    g.fillStyle = "#efe4c4"; g.fillRect(X(lx) - 0.14 * S, Y(y0 + 1.55), 0.28 * S, 0.35 * S);
+    lamps.push([lx, y0 + 1.38]);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  tex.userData.lamps = lamps;
+  return tex;
+}
+/** The far shore where the canal opens: a domed basilica with its smaller dome and bell towers, a campanile, low houses. Masks: r body, g windows, b sunlit rim. 160 × 80 m. */
+function veniceFarShore(THREE, W) {
+  const s = W / 160, H = Math.round(80 * s), r = koiRng(4545), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => (m + 80) * s, Y = (m) => H - m * s;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  g.globalCompositeOperation = "lighter";
+  const body = "rgb(255,0,0)", win = "rgb(0,255,0)", rim = "rgb(0,0,255)";
+  const box = (x0, x1, y0, y1, col = body) => { g.fillStyle = col; g.fillRect(X(x0), Y(y1), (x1 - x0) * s, (y1 - y0) * s); };
+  for (let x = -80; x < 80; ) { // the houses along the water
+    const w = r(6, 13), h = r(8, 15);
+    box(x, x + w, 0, h); box(x, x + 0.7, 2, h, rim);
+    for (let fy = 3; fy < h - 1.5; fy += 3) for (let fx = x + 1.2; fx < x + w - 1; fx += 2.2) if (r() < 0.4) box(fx, fx + 0.8, fy, fy + 1.2, win);
+    x += w;
+  }
+  box(-14, 26, 0, 22); box(-14, -12.8, 4, 22, rim); // the basilica's octagon
+  g.fillStyle = body; for (const vx of [-9.5, 21.5]) { g.beginPath(); g.arc(X(vx), Y(23.5), 3.4 * s, 0, Math.PI * 2); g.fill(); } // its great volutes
+  box(-8, 20, 22, 36); box(-8, -7, 22, 36, rim); // the drum
+  for (let k = 0; k < 5; k++) box(-5 + k * 5.2, -3.6 + k * 5.2, 26, 32, win);
+  g.fillStyle = body; g.beginPath(); g.ellipse(X(6), Y(36), 15 * s, 17 * s, 0, Math.PI, Math.PI * 2); g.fill(); // the dome
+  g.strokeStyle = rim; g.lineWidth = 1.6 * s; g.beginPath(); g.ellipse(X(6), Y(36), 14.2 * s, 16.2 * s, 0, Math.PI, Math.PI * 1.45); g.stroke();
+  box(3, 9, 52, 58); g.fillStyle = body; g.beginPath(); g.ellipse(X(6), Y(58), 3.6 * s, 3.4 * s, 0, Math.PI, Math.PI * 2); g.fill(); box(5.7, 6.3, 60, 67); box(4.6, 7.4, 64.5, 65.2); // the lantern, its cross
+  box(25, 39, 18, 28); g.fillStyle = body; g.beginPath(); g.ellipse(X(32), Y(28), 7 * s, 8 * s, 0, Math.PI, Math.PI * 2); g.fill(); box(31, 33, 35, 40); // the smaller dome
+  for (const tx of [41, 47]) { box(tx, tx + 3, 16, 44); g.fillStyle = body; g.beginPath(); g.moveTo(X(tx - 0.3), Y(44)); g.lineTo(X(tx + 1.5), Y(51)); g.lineTo(X(tx + 3.3), Y(44)); g.closePath(); g.fill(); box(tx, tx + 0.5, 16, 44, rim); }
+  box(-56, -49, 0, 52); box(-56, -55.2, 2, 52, rim); box(-57, -48, 44, 46); // a campanile, its belfry
+  for (const bx of [-55, -53, -51]) box(bx, bx + 1.2, 46.5, 50.5, win);
+  g.fillStyle = body; g.beginPath(); g.moveTo(X(-56.5), Y(52)); g.lineTo(X(-52.5), Y(66)); g.lineTo(X(-48.5), Y(52)); g.closePath(); g.fill(); box(-52.8, -52.2, 66, 69);
+  box(-36, -24, 0, 17); g.fillStyle = body; g.beginPath(); g.ellipse(X(-30), Y(17), 6 * s, 7 * s, 0, Math.PI, Math.PI * 2); g.fill(); box(-30.4, -29.6, 23, 27); // a smaller domed church
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** Istrian stone for the coping of the bridge the viewer stands on: pale, weathered, two joints. Repeats twice along it. */
+function veniceCoping(THREE) {
+  const r = koiRng(606);
+  const tex = canvasTexture(THREE, 1024, 128, (g, w, h) => {
+    g.fillStyle = "#dcd6c9"; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(${r() < 0.7 ? "96,88,76" : "84,104,64"},${r(0.04, 0.12)})`; g.beginPath(); g.ellipse(r(0, w), r(0, h), r(10, 70), r(3, 16), 0, 0, Math.PI * 2); g.fill(); }
+    for (let i = 0; i < 2600; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "70,64,58" : "255,255,250"},${r(0.05, 0.2)})`; g.fillRect(r(0, w), r(0, h), r(1, 2.2), r(1, 2.2)); }
+    g.fillStyle = "rgba(60,54,46,0.4)"; for (const x of [r(0.22, 0.3) * w, r(0.66, 0.74) * w]) g.fillRect(x, 0, 2, h);
+  });
+  tex.wrapS = THREE.RepeatWrapping; tex.repeat.set(2, 1); tex.anisotropy = 8;
+  return tex;
+}
+/** A covered gondola's tarpaulin: stretched over the gunwales from the seat forward and aft, following the hull (same formulas as veniceHull). */
+function veniceCover(THREE) {
+  const NX = 30, NS = 8, L = 5.5, pos = [], idx = [];
+  for (let i = 0; i <= NX; i++) {
+    const u = -0.74 + (1.48 * i) / NX, e = Math.abs(u), x = u * L;
+    const hw = (0.7 * Math.pow(Math.max(0, 1 - e * e), 0.6) + 0.02) * 1.03, top = 0.3 + 0.65 * Math.pow(e, 3);
+    for (let j = 0; j <= NS; j++) { const f = (j / NS - 0.5) * Math.PI; pos.push(x, top + 0.02 + 0.13 * Math.cos(f) * Math.min(1, (0.74 - e) * 6), hw * Math.sin(f)); }
+  }
+  for (let i = 0; i < NX; i++) for (let j = 0; j < NS; j++) { const a = i * (NS + 1) + j, b = a + NS + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+/** A gondolier from behind, rowing on his right: a straw boater with a ribbon, a striped shirt, the long oar down into the water. 1.3 × 2.6 m, the stern deck at 0.62 m. */
+function veniceGondolier(THREE) {
+  return canvasTexture(THREE, 256, 512, (g) => {
+    const s = 512 / 2.6, Y = (m) => 512 - m * s, cx = 118;
+    g.strokeStyle = "#c8a26a"; g.lineCap = "round"; g.lineWidth = 7; // the oar: from above the hands down into the water on the right
+    g.beginPath(); g.moveTo(cx - 20, Y(1.95)); g.lineTo(250, Y(-0.05)); g.stroke();
+    g.fillStyle = "#b8925a"; g.beginPath(); g.ellipse(246, Y(0.12), 7, 26, -0.55, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#1c2236"; g.fillRect(cx - 17, Y(1.25), 15, 0.63 * s); g.fillRect(cx + 3, Y(1.25), 15, 0.63 * s); // legs
+    g.fillStyle = "#101010"; g.fillRect(cx - 19, Y(0.66), 18, 8); g.fillRect(cx + 2, Y(0.66), 18, 8);
+    g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(cx - 26, Y(1.25)); g.lineTo(cx - 29, Y(1.9)); g.lineTo(cx + 29, Y(1.9)); g.lineTo(cx + 26, Y(1.25)); g.closePath(); g.fill(); // the shirt
+    g.save(); g.clip(); g.fillStyle = "#1d2a52"; for (let y = Y(1.9); y < Y(1.25); y += 12) g.fillRect(cx - 32, y, 64, 6); g.restore();
+    g.strokeStyle = "#f4f2ec"; g.lineWidth = 11; // arms, reaching to the oar on the right
+    g.beginPath(); g.moveTo(cx + 24, Y(1.85)); g.quadraticCurveTo(cx + 40, Y(1.7), cx + 50, Y(1.62)); g.moveTo(cx - 24, Y(1.85)); g.quadraticCurveTo(cx + 5, Y(1.66), cx + 28, Y(1.72)); g.stroke();
+    g.fillStyle = "#d9a883"; g.beginPath(); g.arc(cx + 52, Y(1.62), 6, 0, Math.PI * 2); g.arc(cx + 30, Y(1.72), 6, 0, Math.PI * 2); g.fill(); // hands
+    g.fillStyle = "#c99a78"; g.fillRect(cx - 7, Y(2.0), 14, 14); // neck
+    g.fillStyle = "#3a2a1e"; g.beginPath(); g.ellipse(cx, Y(2.12), 20, 23, 0, 0, Math.PI * 2); g.fill(); // the back of his head
+    g.fillStyle = "#ecd394"; g.beginPath(); g.ellipse(cx, Y(2.28), 44, 9, 0, 0, Math.PI * 2); g.fill(); g.fillRect(cx - 23, Y(2.46), 46, 0.18 * s); // the boater
+    g.fillStyle = "#b8202c"; g.fillRect(cx - 23, Y(2.34), 46, 7);
+  });
+}
+/** Three walkers in profile, facing right: a woman in a coat with a bag, a man in a cap, a tourist with a rucksack. 3 cells of 0.85 × 1.7 m. */
+function venicePeople(THREE) {
+  return canvasTexture(THREE, 768, 512, (g) => {
+    const s = 512 / 1.7, Y = (m) => 512 - m * s;
+    const walker = (ox, coat, legs, head, extra) => {
+      const cx = ox + 128;
+      g.strokeStyle = legs; g.lineCap = "round"; g.lineWidth = 22;
+      g.beginPath(); g.moveTo(cx, Y(0.9)); g.lineTo(cx - 34, Y(0.05)); g.moveTo(cx, Y(0.9)); g.lineTo(cx + 38, Y(0.06)); g.stroke();
+      g.fillStyle = "#1a1a1a"; g.fillRect(cx - 50, Y(0.06), 30, 12); g.fillRect(cx + 30, Y(0.07), 30, 12);
+      g.fillStyle = coat; g.beginPath(); g.moveTo(cx - 34, Y(0.72)); g.lineTo(cx - 30, Y(1.42)); g.quadraticCurveTo(cx, Y(1.5), cx + 30, Y(1.42)); g.lineTo(cx + 38, Y(0.72)); g.closePath(); g.fill();
+      g.strokeStyle = coat; g.lineWidth = 18; g.beginPath(); g.moveTo(cx + 10, Y(1.36)); g.quadraticCurveTo(cx + 40, Y(1.1), cx + 52, Y(0.9)); g.stroke();
+      g.fillStyle = "#d9a883"; g.beginPath(); g.arc(cx + 4, Y(1.58), 26, 0, Math.PI * 2); g.fill();
+      g.fillStyle = head; g.beginPath(); g.arc(cx - 4, Y(1.62), 26, Math.PI * 0.85, Math.PI * 2.05); g.fill();
+      extra(cx);
+    };
+    walker(0, "#7a3438", "#2a2a36", "#4a2e1e", (cx) => { g.fillStyle = "#c8a05a"; g.fillRect(cx - 62, Y(1.0), 30, 34); g.strokeStyle = "#c8a05a"; g.lineWidth = 4; g.beginPath(); g.moveTo(cx - 47, Y(1.0)); g.lineTo(cx - 20, Y(1.38)); g.stroke(); g.fillStyle = "#e0c070"; g.fillRect(cx - 24, Y(1.46), 52, 14); });
+    walker(256, "#2e3a4e", "#3a3530", "#2a2320", (cx) => { g.fillStyle = "#4a4038"; g.beginPath(); g.ellipse(cx + 2, Y(1.76), 32, 10, 0, 0, Math.PI * 2); g.fill(); g.fillRect(cx - 26, Y(1.84), 50, 16); });
+    walker(512, "#8fb8d8", "#c8b08a", "#6a4a2a", (cx) => { g.fillStyle = "#c86a3a"; g.fillRect(cx - 64, Y(1.42), 34, 52); g.fillStyle = "#1a1a1a"; g.fillRect(cx + 16, Y(1.3), 20, 14); });
+  });
+}
+/** Café tables on the walkway, seen from the canal: 0 a table for two with a candle, 1 a couple sitting at one. 2 cells of 2.2 × 1.65 m. */
+function veniceCafeTables(THREE) {
+  return canvasTexture(THREE, 1024, 384, (g) => {
+    const s = 384 / 1.65, Y = (m) => 384 - m * s;
+    const table = (ox, people) => {
+      const cx = ox + 256;
+      const chair = (x, dir) => { // a bentwood chair, its back away from the table
+        g.strokeStyle = "#3a2618"; g.lineWidth = 6; g.lineCap = "round";
+        g.beginPath(); g.moveTo(x - 30, Y(0.46)); g.lineTo(x - 34, Y(0)); g.moveTo(x + 30, Y(0.46)); g.lineTo(x + 34, Y(0)); g.stroke();
+        g.fillStyle = "#4a3020"; g.beginPath(); g.ellipse(x, Y(0.46), 40, 9, 0, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.moveTo(x - dir * 28, Y(0.46)); g.bezierCurveTo(x - dir * 44, Y(0.8), x - dir * 30, Y(0.98), x - dir * 12, Y(0.95)); g.stroke();
+      };
+      chair(cx - 120, -1); chair(cx + 120, 1);
+      if (people) { // two figures leaning towards each other
+        for (const [dx, coat, hair] of [[-110, "#3a4a6a", "#2a1e16"], [110, "#e8c8a0", "#6a3a22"]]) {
+          const x = cx + dx;
+          g.fillStyle = coat; g.beginPath(); g.moveTo(x - 30, Y(0.5)); g.quadraticCurveTo(x - 34, Y(1.05), x, Y(1.12)); g.quadraticCurveTo(x + 34, Y(1.05), x + 30, Y(0.5)); g.closePath(); g.fill();
+          g.strokeStyle = coat; g.lineWidth = 16; g.beginPath(); g.moveTo(x - Math.sign(dx) * 12, Y(0.98)); g.lineTo(x - Math.sign(dx) * 60, Y(0.8)); g.stroke();
+          g.fillStyle = "#d9a883"; g.beginPath(); g.arc(x - Math.sign(dx) * 6, Y(1.28), 22, 0, Math.PI * 2); g.fill();
+          g.fillStyle = hair; g.beginPath(); g.arc(x, Y(1.32), 22, Math.PI, Math.PI * 2); g.fill();
+        }
+      }
+      g.fillStyle = "#262626"; g.fillRect(cx - 4, Y(0.74), 8, 0.72 * s); g.beginPath(); g.ellipse(cx, Y(0.03), 36, 7, 0, 0, Math.PI * 2); g.fill(); // the table's pedestal
+      g.fillStyle = "#efebe2"; g.beginPath(); g.ellipse(cx, Y(0.76), 88, 15, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = "#c8c2b6"; g.fillRect(cx - 88, Y(0.76), 176, 6);
+      g.fillStyle = "rgba(255,240,200,0.9)"; g.fillRect(cx - 5, Y(0.86), 10, 14); g.fillStyle = "#ffcc66"; g.beginPath(); g.ellipse(cx, Y(0.9), 3, 6, 0, 0, Math.PI * 2); g.fill(); // the candle in its glass
+      g.strokeStyle = "rgba(255,255,255,0.7)"; g.lineWidth = 2; g.beginPath(); g.moveTo(cx + 30, Y(0.77)); g.lineTo(cx + 30, Y(0.86)); g.stroke(); g.fillStyle = "rgba(140,30,40,0.8)"; g.beginPath(); g.arc(cx + 30, Y(0.9), 7, 0, Math.PI); g.fill(); // a glass of wine
+    };
+    table(0, false); table(512, true);
+  });
+}
+/** Laundry: shirt, trousers, striped towel, sheet, dress, socks, T-shirt, pillowcase; pale, tinted per garment. 4 × 2 cells, each hanging from its top edge. */
+function veniceLaundry(THREE) {
+  const r = koiRng(12);
+  return canvasTexture(THREE, 1024, 512, (g) => {
+    const cell = (i, draw) => { g.save(); g.translate((i % 4) * 256, Math.floor(i / 4) * 256); draw(); g.restore(); };
+    const peg = (x) => { g.fillStyle = "#b08a5a"; g.fillRect(x - 3, 0, 6, 16); };
+    const shade = (x0, x1) => { const gr = g.createLinearGradient(x0, 0, x1, 0); gr.addColorStop(0, "rgba(0,0,0,0.12)"); gr.addColorStop(0.5, "rgba(0,0,0,0)"); gr.addColorStop(1, "rgba(0,0,0,0.14)"); g.fillStyle = gr; g.fillRect(x0, 0, x1 - x0, 256); };
+    g.fillStyle = "#f4f2ec";
+    cell(0, () => { g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(70, 8); g.lineTo(186, 8); g.lineTo(240, 60); g.lineTo(210, 90); g.lineTo(186, 70); g.lineTo(186, 250); g.lineTo(70, 250); g.lineTo(70, 70); g.lineTo(46, 90); g.lineTo(16, 60); g.closePath(); g.fill(); shade(70, 186); g.fillStyle = "rgba(0,0,0,0.15)"; for (let y = 40; y < 240; y += 36) g.fillRect(126, y, 4, 4); peg(80); peg(176); });
+    cell(1, () => { g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(60, 6); g.lineTo(196, 6); g.lineTo(206, 252); g.lineTo(140, 252); g.lineTo(128, 90); g.lineTo(116, 252); g.lineTo(50, 252); g.closePath(); g.fill(); shade(50, 206); peg(70); peg(186); });
+    cell(2, () => { g.fillStyle = "#f4f2ec"; g.fillRect(56, 6, 144, 230); g.fillStyle = "rgba(60,80,140,0.45)"; for (let y = 30; y < 220; y += 40) g.fillRect(56, y, 144, 12); shade(56, 200); peg(66); peg(190); });
+    cell(3, () => { g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(8, 6); g.lineTo(248, 6); g.lineTo(244, 240); g.quadraticCurveTo(128, 256, 12, 240); g.closePath(); g.fill(); shade(8, 248); g.strokeStyle = "rgba(0,0,0,0.08)"; g.lineWidth = 3; for (const x of [70, 128, 190]) { g.beginPath(); g.moveTo(x, 8); g.lineTo(x + 6, 240); g.stroke(); } peg(30); peg(128); peg(226); });
+    cell(4, () => { g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(96, 6); g.lineTo(160, 6); g.lineTo(170, 70); g.lineTo(226, 250); g.lineTo(30, 250); g.lineTo(86, 70); g.closePath(); g.fill(); g.fillStyle = "rgba(200,80,110,0.35)"; for (let i = 0; i < 40; i++) { g.beginPath(); g.arc(60 + r() * 140, 80 + r() * 160, 5, 0, Math.PI * 2); g.fill(); } shade(30, 226); peg(104); peg(152); });
+    cell(5, () => { g.fillStyle = "#f4f2ec"; for (const ox of [70, 150]) { g.beginPath(); g.moveTo(ox, 6); g.lineTo(ox + 36, 6); g.lineTo(ox + 36, 120); g.quadraticCurveTo(ox + 40, 160, ox + 10, 160); g.lineTo(ox - 14, 160); g.quadraticCurveTo(ox - 20, 130, ox, 120); g.closePath(); g.fill(); peg(ox + 18); } });
+    cell(6, () => { g.fillStyle = "#f4f2ec"; g.beginPath(); g.moveTo(76, 8); g.lineTo(180, 8); g.lineTo(226, 50); g.lineTo(200, 80); g.lineTo(180, 64); g.lineTo(180, 200); g.lineTo(76, 200); g.lineTo(76, 64); g.lineTo(56, 80); g.lineTo(30, 50); g.closePath(); g.fill(); shade(76, 180); peg(86); peg(170); });
+    cell(7, () => { g.fillStyle = "#f4f2ec"; g.fillRect(40, 6, 176, 150); g.strokeStyle = "rgba(0,0,0,0.1)"; g.lineWidth = 4; g.strokeRect(50, 16, 156, 130); shade(40, 216); peg(52); peg(204); });
+  });
+}
+/** The walkway's paving (3.6 m square, repeats along it): trachyte blocks, the Istrian stone kerb on the canal side (u = 0). */
+function veniceWalkTop(THREE, S) {
+  const W = Math.round(3.6 * S), r = koiRng(77);
+  const tex = canvasTexture(THREE, W, W, (g) => {
+    g.fillStyle = "#5e5c58"; g.fillRect(0, 0, W, W);
+    const bw = 0.9 * S, bh = 0.45 * S;
+    for (let row = 0; row * bh < W; row++) for (let x = row % 2 ? -bw / 2 : 0; x < W; x += bw) { const t = r(0.72, 1.08); g.fillStyle = `rgb(${Math.round(120 * t)},${Math.round(118 * t)},${Math.round(113 * t)})`; g.fillRect(x + 2, row * bh + 2, bw - 4, bh - 4); }
+    g.fillStyle = "#dcd6c8"; g.fillRect(0, 0, 0.35 * S, W); g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0.35 * S, 0, 3, W);
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 8;
+  return tex;
+}
+/** The walkway's edge above the canal: the Istrian kerb, damp stone, algae at the waterline (1.35 m tall; 0.8 m of it under water). */
+function veniceKerb(THREE) {
+  const tex = canvasTexture(THREE, 512, 64, (g, w, h) => {
+    const Y = (m) => h - ((m + 0.8) / 1.35) * h;
+    g.fillStyle = "#6a6860"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#dcd6c8"; g.fillRect(0, 0, w, Y(0.3));
+    const damp = g.createLinearGradient(0, Y(0.3), 0, Y(0)); damp.addColorStop(0, "rgba(40,50,40,0.2)"); damp.addColorStop(1, "rgba(28,40,30,0.9)"); g.fillStyle = damp; g.fillRect(0, Y(0.3), w, Y(0) - Y(0.3));
+    g.fillStyle = "#1f2b24"; g.fillRect(0, Y(0.1), w, h - Y(0.1));
+  });
+  tex.wrapS = THREE.RepeatWrapping;
+  return tex;
+}
+/** What the glossy gondolas mirror: the sky down the canal, warm walls either side, the low sun (or the lanterns at night). */
+function veniceEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, dark ? "#070b1c" : "#7d98cc"); grad.addColorStop(0.46, dark ? "#1a2448" : "#f3c49a"); grad.addColorStop(0.54, dark ? "#10162a" : "#6a4a3a"); grad.addColorStop(1, dark ? "#05070c" : "#23332e");
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    for (const u of [0.0, 0.5, 1.0]) { const wg = g.createLinearGradient(u * w - 60, 0, u * w + 60, 0); wg.addColorStop(0, "rgba(0,0,0,0)"); wg.addColorStop(0.5, dark ? "rgba(40,34,40,0.9)" : "rgba(120,80,64,0.7)"); wg.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = wg; g.fillRect(u * w - 60, h * 0.1, 120, h * 0.42); } // the walls either side
+    if (!dark) { const sx = w * 0.16, sy = h * 0.4, rg = g.createRadialGradient(sx, sy, 0, sx, sy, h * 0.22); rg.addColorStop(0, "rgba(255,238,200,1)"); rg.addColorStop(1, "rgba(255,200,140,0)"); g.fillStyle = rg; g.fillRect(sx - h * 0.22, sy - h * 0.22, h * 0.44, h * 0.44); }
+    else { const rr = koiRng(3); for (let i = 0; i < 16; i++) { const x = rr(0, w), y = rr(h * 0.3, h * 0.48), rg = g.createRadialGradient(x, y, 0, x, y, 9); rg.addColorStop(0, "rgba(255,200,130,1)"); rg.addColorStop(1, "rgba(255,160,80,0)"); g.fillStyle = rg; g.fillRect(x - 9, y - 9, 18, 18); } }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+/** A gondola's hull, bow towards +x: long and narrow, rising to both ends, open on top. 11 m. */
+function veniceHull(THREE) {
+  const NX = 44, NS = 12, L = 5.5, pos = [], idx = [];
+  for (let i = 0; i <= NX; i++) {
+    const u = -1 + (2 * i) / NX, e = Math.abs(u), x = u * L;
+    const hw = 0.7 * Math.pow(Math.max(0, 1 - e * e), 0.6) + 0.02, top = 0.3 + 0.65 * Math.pow(e, 3), bot = -0.2 + 0.45 * Math.pow(e, 4);
+    for (let j = 0; j <= NS; j++) { const f = (j / NS - 0.5) * Math.PI; pos.push(x, bot + (top - bot) * Math.pow(1 - Math.cos(f), 0.8), hw * Math.sin(f)); }
+  }
+  for (let i = 0; i < NX; i++) for (let j = 0; j < NS; j++) { const a = i * (NS + 1) + j, b = a + NS + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+/** The ferro, the gondola's iron prow: a curving blade with six teeth. Flat, in the x–y plane. */
+function veniceFerro(THREE) {
+  const blade = new THREE.Shape();
+  blade.moveTo(-0.05, 0); blade.lineTo(0.06, 0); blade.bezierCurveTo(0.12, 0.25, 0.08, 0.45, 0.18, 0.62); blade.bezierCurveTo(0.28, 0.76, 0.36, 0.8, 0.42, 0.9);
+  blade.lineTo(0.3, 0.95); blade.bezierCurveTo(0.12, 0.9, 0.0, 0.78, -0.04, 0.62); blade.closePath();
+  const parts = [[new THREE.ShapeGeometry(blade, 6), new THREE.Matrix4()]];
+  for (let k = 0; k < 6; k++) { const t = new THREE.Shape(), y = 0.1 + k * 0.075; t.moveTo(0.05, y); t.lineTo(0.3, y + 0.01); t.lineTo(0.3, y + 0.035); t.lineTo(0.05, y + 0.04); t.closePath(); parts.push([new THREE.ShapeGeometry(t), new THREE.Matrix4()]); }
+  const g = mergeParts(THREE, parts);
+  g.scale(1.25, 1.25, 1.25);
+  return g;
+}
+/** The café's awning in world space: a sloping canopy from the wall and its scalloped valance (u along the canal, v from the valance's hem to the wall). */
+function veniceAwning(THREE, xWall, xFront, yWall, yFront, z0, z1) {
+  const valance = 0.36, pos = [xWall, yWall, z0, xWall, yWall, z1, xFront, yFront, z1, xFront, yFront, z0, xFront, yFront, z0, xFront, yFront, z1, xFront, yFront - valance, z1, xFront, yFront - valance, z0];
+  const uv = [0, 1, 1, 1, 1, 0.2, 0, 0.2, 0, 0.2, 1, 0.2, 1, 0, 0, 0];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+  g.computeVertexNormals();
+  return g;
+}
+/** The facade quads of one stretch of one bank: each palazzo its own quad (standing forward by b.off), all on one canvas. */
+function veniceFacadeGeo(THREE, side, list, zA, zB, HW, HMAX) {
+  const pos = [], nrm = [], uv = [], idx = [];
+  for (const b of list) {
+    const x = side * (HW - b.off), u0 = (zA - b.z0) / (zA - zB), u1 = (zA - b.z1) / (zA - zB), k = pos.length / 3;
+    pos.push(x, 0, b.z0, x, 0, b.z1, x, HMAX, b.z1, x, HMAX, b.z0);
+    for (let i = 0; i < 4; i++) nrm.push(-side, 0, 0);
+    uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
+    idx.push(k, k + 1, k + 2, k, k + 2, k + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+function venice(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1797);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S3 = new THREE.Vector3(), E = new THREE.Euler(0, 0, 0, "YXZ");
+  const EYE = 5.2, PITCH = -0.035, HW = 10, HMAX = 26, ZEND = -312, BRIDGE_Z = -70; // standing on a bridge over the canal, looking down it
+  camera.fov = 50; camera.near = 0.5; camera.far = 4000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  let TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const halfW = (dist) => dist * TAN * camera.aspect;
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE)), mist = keep(inkMist(THREE));
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color();
+  const SUN = new THREE.Vector3(-0.42, 0.16, -0.89).normalize(); // low over the rooftops ahead on the left
+  // everything above the water is in `world`: drawn twice, the second time mirrored into the canal
+  const world = new THREE.Group(), near = new THREE.Group();
+  scene.add(world, near);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun);
+  scene.fog = new THREE.Fog(0xffffff, 150, 900);
+  let envTex = null;
+  const buildEnv = (dark) => { envTex?.dispose(); envTex = veniceEnv(THREE, dark); scene.environment = envTex; };
+  const flip = { value: 1 };
+  const fogU = { uFog: { value: new THREE.Color() }, uFogNear: { value: 150 }, uFogFar: { value: 900 } };
+  const litU = { uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() }, uFlip: flip };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, side: THREE.DoubleSide, ...extra }));
+  const lampMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffbf78, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, fog: false }));
+  const glowPts = []; // the lanterns' halos: [x, y, z, size], drawn together at the end of the build
+
+  /* --- the sky: a golden-hour gradient (the sun itself behind the roofs on the left), or night with stars and the moon over the canal's end --- */
+  const skyUni = {
+    uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() },
+    uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#fff0d0") }, uSun: { value: 1 },
+  };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(3200, 40, 20)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { depthWrite: false, depthTest: false }));
+  sky.position.set(0, EYE, 0); sky.renderOrder = -10; sky.frustumCulled = false;
+  world.add(sky);
+  const NSTAR = preview ? 300 : 900, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.04, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 3000, EYE + Math.sin(e) * 3000, Math.sin(a) * Math.cos(e) * 3000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false })); // depth-tested: the roofs hide them
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -9; stars.frustumCulled = false;
+  world.add(stars);
+  const plainMat = (opts) => keep(new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, fog: false, ...opts }));
+  const moon = new THREE.Mesh(quad, plainMat({ map: keep(sakuraMoon(THREE)) }));
+  moon.position.set(70, 385, -2400); moon.scale.setScalar(95); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(620); moonHalo.renderOrder = -9;
+  world.add(moon, moonHalo);
+  const cloudMat = plainMat({ map: mist });
+  const clouds = [[-300, 330, 1400, 80], [380, 430, 1600, 90], [-60, 570, 1300, 70], [620, 700, 1500, 90], [-640, 820, 1700, 110]].map(([x, y, w, h]) => { const m = new THREE.Mesh(quad, cloudMat); m.position.set(x, y, -2500); m.scale.set(w, h, 1); m.renderOrder = -7; m.frustumCulled = false; world.add(m); return { m, speed: r(3, 6) }; });
+
+  /* --- the far shore where the canal opens: a domed basilica against the sky --- */
+  const farUni = { uMask: { value: keep(veniceFarShore(THREE, preview ? 512 : 1024)) }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uWin: { value: new THREE.Color() }, uTime: time };
+  const farMesh = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, VENICE_FAR_FS, farUni, { transparent: true, depthWrite: false, forceSinglePass: true }));
+  farMesh.position.set(0, 40, -620); farMesh.scale.set(160, 80, 1); farMesh.renderOrder = 1; farMesh.frustumCulled = false;
+  world.add(farMesh);
+
+  /* --- the palazzi on both banks --- */
+  const tiles = veniceTiles(), S_NEAR = preview ? 14 : 32, S_FAR = preview ? 5 : 10;
+  const lampList = [], doorList = [], rows = {};
+  const facadeUni = {
+    ...litU, ...fogU, uBounce: { value: new THREE.Color() }, uSkyRefl: { value: new THREE.Color() }, uAccent: { value: accent }, uWarm: { value: new THREE.Color("#ffb46a") },
+    uNight: { value: 0 }, uHW: { value: HW }, uRoofZ: { value: 330 }, uRoof: { value: null }, uLamps: { value: Array.from({ length: 24 }, () => new THREE.Vector4()) },
+  };
+  for (const side of [-1, 1]) {
+    const row = veniceRow(r, -2, ZEND);
+    if (side === 1) for (const b of row) if (b.z0 > -36 && b.z1 < -6) { b.shop = true; b.off = 0; } // the café's houses on the right, behind a walkway
+    rows[side] = row;
+    let split = row.findIndex((b) => b.z1 < -84);
+    if (split < 0) split = row.length - 1;
+    for (const [list, s] of [[row.slice(0, split + 1), S_NEAR], [row.slice(split + 1), S_FAR]]) {
+      if (!list.length) continue;
+      const zA = list[0].z0, zB = list[list.length - 1].z1;
+      const { c, mc, lamps, doors } = venicePaintRow(list, zA, zB, s, HMAX, tiles, side === 1); // the right bank reads mirrored: its sign is lettered backwards
+      const tex = keep(new THREE.CanvasTexture(c)), mtex = keep(new THREE.CanvasTexture(mc));
+      tex.colorSpace = THREE.SRGBColorSpace; mtex.colorSpace = THREE.NoColorSpace;
+      tex.anisotropy = mtex.anisotropy = 8; // seen at a grazing angle all the way down the canal
+      const mesh = new THREE.Mesh(keep(veniceFacadeGeo(THREE, side, list, zA, zB, HW, HMAX)), shader(VENICE_FACADE_VS, VENICE_FACADE_FS, { ...facadeUni, uMap: { value: tex }, uMask: { value: mtex } }, { defines: { VENICE_LAMPS: 24 }, alphaToCoverage: true }));
+      mesh.frustumCulled = false;
+      world.add(mesh);
+      for (const L of lamps) lampList.push(new THREE.Vector3(side * (HW - L.b.off - 0.3), L.h, L.z));
+      for (const D of doors) doorList.push({ side, z: D.z, off: D.b.off });
+    }
+  }
+  const ROOFZ = 330, roofData = new Uint8Array(1024 * 4); // the left bank's roofline: what shades the right bank's facades
+  for (let i = 0; i < 1024; i++) { const z = -((i + 0.5) / 1024) * ROOFZ, b = rows[-1].find((q) => z <= q.z0 && z > q.z1); roofData.set([b ? Math.min(255, Math.round(((b.h + 0.45) / 30) * 255)) : 0, 0, 0, 255], i * 4); }
+  const roofTex = keep(new THREE.DataTexture(roofData, 1024, 1));
+  roofTex.magFilter = roofTex.minFilter = THREE.LinearFilter; roofTex.needsUpdate = true;
+  facadeUni.uRoof.value = roofTex;
+  const retPos = [], retCol = [], tint = new THREE.Color(); // the side walls where a palazzo stands forward of its neighbour
+  for (const side of [-1, 1]) {
+    const row = rows[side];
+    for (let i = 1; i < row.length; i++) {
+      const b = row[i], p = row[i - 1];
+      if (b.off <= p.off + 0.05) continue;
+      const x0 = side * (HW - p.off), x1 = side * (HW - b.off), z = b.z0;
+      retPos.push(x0, 0, z, x1, 0, z, x1, b.h, z, x0, 0, z, x1, b.h, z, x0, b.h, z);
+      tint.set(b.color).multiplyScalar(0.7);
+      for (let k = 0; k < 6; k++) retCol.push(tint.r, tint.g, tint.b);
+    }
+  }
+  if (retPos.length) {
+    const retGeo = keep(new THREE.BufferGeometry());
+    retGeo.setAttribute("position", new THREE.Float32BufferAttribute(retPos, 3)); retGeo.setAttribute("color", new THREE.Float32BufferAttribute(retCol, 3)); retGeo.computeVertexNormals();
+    world.add(new THREE.Mesh(retGeo, keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide, envMapIntensity: 0.2 }))));
+  }
+
+  /* --- the stone bridge down the canal, and people crossing it --- */
+  const bridgeTex = keep(veniceBridge(THREE, preview ? 24 : 48, tiles));
+  const bridge = new THREE.Mesh(quad, keep(new THREE.MeshStandardMaterial({ map: bridgeTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9, envMapIntensity: 0.25 })));
+  bridge.position.set(0, 2.8, BRIDGE_Z); bridge.scale.set(21.6, 5.6, 1);
+  world.add(bridge);
+  for (const [lx, ly] of bridgeTex.userData.lamps) lampList.push(new THREE.Vector3(lx, ly, BRIDGE_Z + 0.1));
+  const peopleMat = keep(new THREE.MeshBasicMaterial({ map: keep(venicePeople(THREE)), alphaTest: 0.5, side: THREE.DoubleSide }));
+  const walkers = [0, 1, 2].map((k) => {
+    const geo = keep(new THREE.PlaneGeometry(1, 1)), uvs = geo.attributes.uv;
+    geo.translate(0, 0.5, 0);
+    for (let i = 0; i < uvs.count; i++) uvs.setX(i, (k + uvs.getX(i)) / 3);
+    const m = new THREE.Mesh(geo, peopleMat);
+    world.add(m);
+    return { m, x: r(-9, 9), dir: r() < 0.5 ? -1 : 1, speed: r(1.0, 1.4), k };
+  });
+
+  /* --- the café on the right: a walkway along the houses, tables, a striped awning --- */
+  const shops = rows[1].filter((b) => b.shop), zW0 = shops[0].z0, zW1 = shops[shops.length - 1].z1, walkL = zW0 - zW1;
+  const walkTex = keep(veniceWalkTop(THREE, preview ? 48 : 96));
+  walkTex.repeat.set(1, walkL / 3.6);
+  const walkTop = new THREE.Mesh(keep(new THREE.PlaneGeometry(3.6, walkL).rotateX(-Math.PI / 2)), keep(new THREE.MeshStandardMaterial({ map: walkTex, roughness: 0.9, side: THREE.DoubleSide, envMapIntensity: 0.2 })));
+  walkTop.position.set(8.2, 0.55, (zW0 + zW1) / 2);
+  const kerbTex = keep(veniceKerb(THREE));
+  kerbTex.repeat.set(walkL / 3.75, 1);
+  const kerb = new THREE.Mesh(keep(new THREE.PlaneGeometry(walkL, 1.35).rotateY(-Math.PI / 2)), keep(new THREE.MeshStandardMaterial({ map: kerbTex, roughness: 0.95, side: THREE.DoubleSide, envMapIntensity: 0.2 })));
+  kerb.position.set(6.4, -0.125, (zW0 + zW1) / 2);
+  world.add(walkTop, kerb);
+  const cafe = shops.reduce((a, b) => (Math.abs((b.z0 + b.z1) / 2 + 16) < Math.abs((a.z0 + a.z1) / 2 + 16) ? b : a)); // the house nearest 16 m off has the café
+  const aw0 = cafe.z0 - 0.6, aw1 = Math.max(cafe.z1 + 0.6, aw0 - 14);
+  const awnUni = { uAccent: { value: accent }, uLight: { value: new THREE.Color() }, uUnder: { value: new THREE.Color() }, uStripes: { value: Math.round((aw0 - aw1) / 1.05) } };
+  world.add(new THREE.Mesh(keep(veniceAwning(THREE, 9.95, 7.4, 3.45, 2.75, aw0, aw1)), shader(VENICE_AWNING_VS, VENICE_AWNING_FS, awnUni)));
+  const tableMat = keep(new THREE.MeshBasicMaterial({ map: keep(veniceCafeTables(THREE)), alphaTest: 0.5, side: THREE.DoubleSide }));
+  const tableGeos = [0, 1].map((k) => { const geo = keep(new THREE.PlaneGeometry(1, 1)), uvs = geo.attributes.uv; for (let i = 0; i < uvs.count; i++) uvs.setX(i, (k + uvs.getX(i)) / 2); return geo; });
+  const nTab = Math.max(2, Math.floor((aw0 - aw1) / 3.1)), tables = [];
+  for (let i = 0; i < nTab; i++) {
+    const z = aw0 - ((aw0 - aw1) * (i + 0.5)) / nTab, m = new THREE.Mesh(tableGeos[(i + (r() < 0.5 ? 0 : 1)) % 2], tableMat);
+    m.position.set(8.5, 0.55 + 0.825, z); m.scale.set(2.2, 1.65, 1);
+    world.add(m); tables.push(m);
+    glowPts.push([8.5, 0.55 + 0.9, z, 0.55]);
+  }
+
+  /* --- mooring poles by the water doors and the moored gondolas --- */
+  const poleSpots = [];
+  for (const d of doorList) if (d.z > -230) for (const dz of [-1.3, 1.3]) if (r() < 0.8) poleSpots.push([d.side * (HW - d.off - 1.0), d.z + dz, r(3.0, 4.6)]);
+  for (const z of [-18.2, -24.4, -30.6]) poleSpots.push([-5.35, z, r(3.4, 4.3)]); // where the two covered gondolas are tied up
+  const poleGeo = keep(new THREE.CylinderGeometry(0.11, 0.13, 1, 10));
+  poleGeo.translate(0, 0.5, 0);
+  const poleMesh = new THREE.InstancedMesh(poleGeo, shader(VENICE_POLE_VS, VENICE_POLE_FS, { ...litU, ...fogU }), poleSpots.length);
+  const capMesh = new THREE.InstancedMesh(keep(new THREE.SphereGeometry(0.17, 10, 8)), keep(new THREE.MeshStandardMaterial({ color: 0xc9a045, metalness: 0.8, roughness: 0.35 })), poleSpots.length);
+  const POLE_COLS = ["#2a4a8a", "#b8282a", "#2f6a44", "#1c1c1c"].map((c) => new THREE.Color(c)), accentPoles = [];
+  poleSpots.forEach(([x, z, h], i) => {
+    E.set(r(-0.05, 0.05), 0, r(-0.05, 0.05), "YXZ");
+    poleMesh.setMatrixAt(i, M4.compose(V.set(x, -0.6, z), Q.setFromEuler(E), S3.set(1, h + 0.6, 1)));
+    capMesh.setMatrixAt(i, M4.compose(V.set(x, h, z), Q.identity(), S3.set(1, 1, 1)));
+    if (r() < 0.3) accentPoles.push(i); else poleMesh.setColorAt(i, POLE_COLS[(r() * POLE_COLS.length) | 0]);
+  });
+  if (accentPoles.length) poleMesh.setColorAt(accentPoles[0], accent);
+  poleMesh.frustumCulled = capMesh.frustumCulled = false;
+  world.add(poleMesh, capMesh);
+
+  /* --- laundry on lines across the canal --- */
+  const lineParts = [], clothes = [];
+  for (const [z, y0, sag] of [[-44, 10.6, 0.9], [-128, 12.2, 1.1]]) {
+    const xa = -HW + 0.2, xb = HW - 0.2, yAt = (x) => y0 - sag * (1 - (x / HW) ** 2), pts = [];
+    for (let i = 0; i <= 16; i++) { const x = xa + ((xb - xa) * i) / 16; pts.push(new THREE.Vector3(x, yAt(x), z)); }
+    lineParts.push([new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 32, 0.02, 4), new THREE.Matrix4()]);
+    for (let x = xa + r(0.8, 1.6); x < xb - 0.8; x += r(1.3, 2.3)) clothes.push({ x, y: yAt(x) + 0.02, z, cell: (r() * 8) | 0 });
+  }
+  world.add(new THREE.Mesh(keep(mergeParts(THREE, lineParts)), keep(new THREE.MeshBasicMaterial({ color: 0x2e2e2e }))));
+  const SIZES = [[0.95, 0.95], [0.75, 1.15], [0.75, 1.05], [1.7, 1.55], [0.85, 1.2], [0.5, 0.5], [0.8, 0.75], [0.75, 0.55]];
+  const CLOTH_COLS = ["#ffffff", "#bcd4ec", "#f2cccc", "#f2e0a0", "#ffffff", "#d0e8d0"].map((c) => new THREE.Color(c)), accentCloth = [];
+  const clothGeo = keep(new THREE.PlaneGeometry(1, 1));
+  clothGeo.translate(0, -0.5, 0);
+  const aCloth = new THREE.InstancedBufferAttribute(new Float32Array(clothes.length * 2), 2);
+  clothGeo.setAttribute("aCloth", aCloth);
+  const clothUni = { uTime: time, uMap: { value: keep(veniceLaundry(THREE)) }, uLight: { value: new THREE.Color() }, ...fogU };
+  const clothMesh = new THREE.InstancedMesh(clothGeo, shader(VENICE_CLOTH_VS, VENICE_CLOTH_FS, clothUni), clothes.length);
+  clothes.forEach((cl, i) => {
+    const [w, h] = SIZES[cl.cell];
+    clothMesh.setMatrixAt(i, M4.compose(V.set(cl.x, cl.y, cl.z), Q.identity(), S3.set(w, h, 1)));
+    aCloth.setXY(i, cl.cell, r(0, 6.28));
+    if (i % 5 === 2) accentCloth.push(i); else clothMesh.setColorAt(i, CLOTH_COLS[(r() * CLOTH_COLS.length) | 0]);
+  });
+  if (accentCloth.length) clothMesh.setColorAt(accentCloth[0], accent);
+  clothMesh.frustumCulled = false;
+  world.add(clothMesh);
+
+  /* --- gondolas: two gliding along the canal (out from under our bridge, and back towards it), two moored under covers --- */
+  const hullGeo = keep(veniceHull(THREE)), ferroGeo = keep(veniceFerro(THREE));
+  const seatGeo = keep(new THREE.CapsuleGeometry(0.12, 0.64, 4, 10).rotateX(Math.PI / 2).scale(4.2, 0.9, 1)), backGeo = keep(new THREE.CapsuleGeometry(0.13, 0.62, 4, 10).rotateX(Math.PI / 2)), deckGeo = keep(new THREE.BoxGeometry(8.4, 0.05, 1.0)), sternGeo = keep(new THREE.BoxGeometry(0.9, 0.06, 0.55));
+  const tarpGeo = keep(veniceCover(THREE));
+  const lacquer = keep(new THREE.MeshStandardMaterial({ color: 0x06070a, roughness: 0.3, metalness: 0, side: THREE.DoubleSide, envMapIntensity: 0.4 })); // black lacquer: a sheen, not a mirror
+  const silver = keep(new THREE.MeshStandardMaterial({ color: 0xd2d5da, roughness: 0.28, metalness: 1, side: THREE.DoubleSide }));
+  const cushion = keep(new THREE.MeshStandardMaterial({ roughness: 0.75, envMapIntensity: 0.3 }));
+  const woodMat = keep(new THREE.MeshStandardMaterial({ color: 0x4a3322, roughness: 0.8, envMapIntensity: 0.3 }));
+  const tarpMat = keep(new THREE.MeshStandardMaterial({ color: 0x24375e, roughness: 0.8, side: THREE.DoubleSide, envMapIntensity: 0.25 }));
+  const makeGondola = (covered) => {
+    const g = new THREE.Group(), add = (geo, mat, x, y) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, 0); g.add(m); };
+    add(hullGeo, lacquer, 0, 0); add(ferroGeo, silver, 5.2, 0.62); add(deckGeo, woodMat, 0, -0.04);
+    if (covered) add(tarpGeo, tarpMat, 0, 0);
+    else { add(seatGeo, cushion, 0.62, 0.17); add(backGeo, cushion, 0.02, 0.4); add(sternGeo, woodMat, -4.5, 0.6); } // the passengers' little sofa: an upholstered seat and a bolster back
+    world.add(g);
+    return g;
+  };
+  const gondolierMat = keep(new THREE.MeshBasicMaterial({ map: keep(veniceGondolier(THREE)), alphaTest: 0.5, side: THREE.DoubleSide }));
+  const standGeo = keep(new THREE.PlaneGeometry(1, 1));
+  standGeo.translate(0, 0.5, 0);
+  const movers = [[-1, 2.2, -26], [1, -2.2, -120], [-1, 2.2, -205]].map(([dir, x, z]) => {
+    const man = new THREE.Mesh(standGeo, gondolierMat);
+    world.add(man);
+    const lamp = new THREE.Sprite(lampMat);
+    lamp.scale.setScalar(1.3); lamp.renderOrder = 20;
+    world.add(lamp);
+    return { g: makeGondola(false), man, lamp, dir, x, z, speed: 1.12, phase: r(0, 6.28) };
+  });
+  const moored = [[-8.05, -24.9], [-6.45, -23.9]].map(([x, z]) => { const g = makeGondola(true); g.position.set(x, 0, z); return { g, p: r(0, 6.28) }; }); // side by side along the left bank
+  const stern = new THREE.Vector3(), bow = new THREE.Vector3();
+  function stepGondolas(dt, t) {
+    for (const m of movers) {
+      m.phase += dt * 2.1; // a stroke of the oar every three seconds
+      m.z += m.dir * m.speed * (0.85 + 0.3 * Math.max(0, Math.sin(m.phase))) * dt;
+      if (m.dir < 0 && m.z < -335) m.z = 14;
+      if (m.dir > 0 && m.z > 14) m.z = -335;
+      m.g.position.set(m.x + Math.sin(t * 0.21 + m.x) * 0.12, 0.02 * Math.sin(t * 1.1 + m.x), m.z);
+      m.g.rotation.set(0.012 * Math.sin(t * 0.9 + m.x), (m.dir < 0 ? Math.PI / 2 : -Math.PI / 2) + 0.025 * Math.sin(m.phase), 0, "YXZ");
+      m.g.updateMatrixWorld();
+      stern.set(-4.4, 0, 0).applyMatrix4(m.g.matrixWorld); bow.set(5.0, 1.0, 0).applyMatrix4(m.g.matrixWorld); // the sprite stands in the water: its feet are painted 0.62 m up, on the stern deck
+      m.man.position.copy(stern);
+      m.man.rotation.set(0, Math.atan2(camera.position.x - stern.x, camera.position.z - stern.z), 0.05 * Math.sin(m.phase), "YXZ"); // leaning into the stroke
+      m.man.scale.set(m.dir < 0 ? 1.3 : -1.3, 2.6, 1); // coming towards us the oar is on our left
+      m.lamp.position.copy(bow);
+    }
+    for (const mo of moored) { mo.g.position.y = 0.03 * Math.sin(t * 0.8 + mo.p); mo.g.rotation.set(0.02 * Math.sin(t * 0.7 + mo.p), Math.PI / 2, 0, "YXZ"); }
+  }
+  function stepWalkers(dt, t) {
+    for (const w of walkers) {
+      w.x += w.dir * w.speed * dt;
+      if (Math.abs(w.x) > 10.4) { w.x = -w.dir * 10.4; w.speed = r(1.0, 1.4); }
+      w.m.position.set(w.x, VENICE_DECK(w.x) + Math.abs(Math.sin(t * 6 + w.k)) * 0.03, BRIDGE_Z - 0.8);
+      w.m.scale.set(0.85 * w.dir, 1.7, 1);
+    }
+  }
+
+  /* --- gulls over the rooftops by day --- */
+  const NGULL = preview ? 2 : 4, gullGeo = keep(lhGull(THREE)), aGull = new THREE.InstancedBufferAttribute(new Float32Array(NGULL * 2), 2);
+  aGull.setUsage(THREE.DynamicDrawUsage);
+  gullGeo.setAttribute("aGull", aGull);
+  const gullMesh = new THREE.InstancedMesh(gullGeo, shader(LH_GULL_VS, LH_GULL_FS, { uBody: { value: new THREE.Color("#f5f7f9") }, uWing: { value: new THREE.Color("#c2c9d1") }, uTip: { value: new THREE.Color("#1c2025") } }), NGULL);
+  gullMesh.frustumCulled = false; gullMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  world.add(gullMesh);
+  const gulls = Array.from({ length: NGULL }, () => ({ a: r(0, 6.28), R: r(9, 17), w: (r() < 0.5 ? -1 : 1) * r(0.12, 0.2), h: r(26, 40), cz: r(-110, -60), beat: r(0, 6.28), amp: 0.3, flap: r() < 0.5, timer: r(1, 4) }));
+  function stepGulls(dt) {
+    gulls.forEach((g, i) => {
+      if ((g.timer -= dt) <= 0) { g.flap = !g.flap; g.timer = g.flap ? r(1.5, 3) : r(3, 6); }
+      g.amp += ((g.flap ? 0.5 : 0.05) - g.amp) * Math.min(1, dt * 3);
+      g.beat += dt * (g.flap ? 8.5 : 2);
+      g.a += g.w * dt;
+      V.set(Math.cos(g.a) * g.R, g.h + Math.sin(g.a * 0.7) * 2, g.cz + Math.sin(g.a) * g.R * 0.7);
+      const vx = -Math.sin(g.a) * g.R * g.w, vz = Math.cos(g.a) * g.R * 0.7 * g.w;
+      E.set(0, Math.atan2(-vx, -vz), g.w > 0 ? 0.3 : -0.3, "YXZ");
+      gullMesh.setMatrixAt(i, M4.compose(V, Q.setFromEuler(E), S3.setScalar(1.3)));
+      aGull.setXY(i, g.beat, g.amp);
+    });
+    gullMesh.instanceMatrix.needsUpdate = aGull.needsUpdate = true;
+  }
+
+  /* --- the lanterns at night: glows on the walls and the bridge; the nearest light the walls round them --- */
+  for (const L of lampList) if (!(L.x > 0 && L.y < 3.8 && L.z < aw0 + 0.6 && L.z > aw1 - 0.6)) glowPts.push([L.x, L.y, L.z, 1.6]); // the café's lanterns are under its awning
+  const glowQuad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(glowQuad.index); glowGeo.setAttribute("position", glowQuad.attributes.position); glowGeo.setAttribute("uv", glowQuad.attributes.uv);
+  glowGeo.setAttribute("aGlow", new THREE.InstancedBufferAttribute(new Float32Array(glowPts.flat()), 4));
+  glowGeo.instanceCount = glowPts.length;
+  const glowMesh = new THREE.Mesh(glowGeo, shader(VENICE_GLOW_VS, VENICE_GLOW_FS, { uMap: { value: glow }, uColor: { value: new THREE.Color("#ffbf78") }, uTime: time }, { transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+  glowMesh.frustumCulled = false; glowMesh.renderOrder = 20; // halos are in the eye: a wall does not cut them off
+  world.add(glowMesh);
+  const lamps24 = lampList.slice().sort((a, b) => b.z - a.z).slice(0, 24);
+
+  /* --- the canal: the mirrored world, broken by wavelets --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); // multisampled: the roof edges stay smooth in the mirror
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const waterUni = { tReflect: { value: reflectRT.texture }, uNoise: { value: noise }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: time, uDeep: { value: new THREE.Color() }, uSheen: { value: new THREE.Color() } };
+  const waterGeo = keep(new THREE.PlaneGeometry(1400, 1500));
+  waterGeo.rotateX(-Math.PI / 2);
+  const water = new THREE.Mesh(waterGeo, keep(new THREE.ShaderMaterial({ uniforms: waterUni, vertexShader: LANTERN_LAKE_VS, fragmentShader: VENICE_WATER_FS })));
+  water.position.z = -740; water.renderOrder = -5; water.frustumCulled = false;
+  scene.add(water);
+
+  /* --- close by: the stone coping of the bridge we stand on (not in the reflection) --- */
+  const copingMat = keep(new THREE.MeshStandardMaterial({ map: keep(veniceCoping(THREE)), roughness: 0.9, envMapIntensity: 0.35, fog: false }));
+  const coping = new THREE.Mesh(keep(new THREE.BoxGeometry(1, 1, 1)), copingMat);
+  coping.frustumCulled = false;
+  near.add(coping);
+
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  const flipLights = (s) => { flip.value = s; sun.position.y = Math.abs(sun.position.y) * s; const c0 = hemi.color.clone(); hemi.color.copy(hemi.groundColor); hemi.groundColor.copy(c0); }; // the mirror image is lit from below
+  sky.onBeforeRender = (renderer, sc, cam) => {
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf);
+    waterUni.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    world.scale.y = -1; water.visible = false; near.visible = false; flipLights(-1);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT);
+    renderer.render(sc, cam);
+    renderer.setRenderTarget(before);
+    world.scale.y = 1; water.visible = true; near.visible = true; flipLights(1);
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accent.set(p.accent);
+    buildEnv(d);
+    skyUni.uZenith.value.set(d ? "#050a1c" : "#6f93cf"); skyUni.uMid.value.set(d ? "#0c1634" : "#e9b39a"); skyUni.uHorizon.value.set(d ? "#1c2a50" : "#ffd6a2");
+    skyUni.uGlow.value.set(d ? "#2c2640" : "#ffb070").multiplyScalar(0.45); skyUni.uSun.value = d ? 0 : 1.8;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudMat.color.set(d ? "#26345e" : "#fff0e4"); cloudMat.opacity = d ? 0.35 : 0.6;
+    litU.uSunCol.value.set(d ? "#8fa2d0" : "#ffcb8c").multiplyScalar(d ? 0.3 : 1.4);
+    litU.uAmb.value.set(d ? "#1c2544" : "#8093b6").multiplyScalar(d ? 0.55 : 0.6);
+    facadeUni.uBounce.value.set(d ? "#000000" : "#e2a070").multiplyScalar(0.22);
+    facadeUni.uSkyRefl.value.set(d ? "#141c34" : "#b4c6de");
+    facadeUni.uNight.value = d ? 1 : 0;
+    lamps24.forEach((L, i) => facadeUni.uLamps.value[i].set(L.x, L.y, L.z, d ? 1 : 0));
+    fogU.uFog.value.set(d ? "#121a34" : "#f0cfaa"); fogU.uFogNear.value = d ? 90 : 140; fogU.uFogFar.value = d ? 700 : 950;
+    scene.fog.color.copy(fogU.uFog.value); scene.fog.near = fogU.uFogNear.value; scene.fog.far = fogU.uFogFar.value;
+    sun.color.set(d ? "#8fa2d0" : "#ffd29a"); sun.intensity = d ? 0.35 : 2.2; sun.position.copy(SUN).multiplyScalar(100);
+    hemi.color.set(d ? "#27325a" : "#a8bce0"); hemi.groundColor.set(d ? "#0a0a10" : "#6a4a38"); hemi.intensity = d ? 0.5 : 1.0;
+    waterUni.uDeep.value.set(d ? "#03111a" : "#2d5a4e"); waterUni.uSheen.value.set(d ? "#ffcf8a" : "#fff2d8").multiplyScalar(d ? 0.25 : 0.5);
+    farUni.uBody.value.set(d ? "#141a30" : "#a39cb4"); farUni.uRim.value.set("#ffc890").multiplyScalar(d ? 0 : 0.8); farUni.uWin.value.set(d ? "#ffbe6a" : "#000000");
+    glowMesh.visible = d; for (const m of movers) m.lamp.visible = d;
+    awnUni.uLight.value.set(d ? "#6a6f88" : "#e0d8d0"); awnUni.uUnder.value.set(d ? "#ffb870" : "#b8a898").multiplyScalar(d ? 0.9 : 0.8);
+    tableMat.color.set(d ? "#c8a07a" : "#d8d0c8");
+    cushion.color.copy(accent);
+    for (const i of accentPoles) poleMesh.setColorAt(i, accent);
+    if (poleMesh.instanceColor) poleMesh.instanceColor.needsUpdate = true;
+    for (const i of accentCloth) clothMesh.setColorAt(i, accent);
+    if (clothMesh.instanceColor) clothMesh.instanceColor.needsUpdate = true;
+    clothUni.uLight.value.set(d ? "#4a5270" : "#f2e6d8");
+    gondolierMat.color.set(d ? "#6a6f88" : "#f0e0d0"); peopleMat.color.copy(gondolierMat.color);
+    gullMesh.visible = !d; walkers[2].m.visible = !d;
+    copingMat.color.set(d ? "#8a90a8" : "#fff4ea");
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  function layout() {
+    const A = camera.aspect || 1, fov = A >= 1 ? 50 : 50 + (1 - A) * 22; // a phone held upright sees more sky and water
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); TAN = Math.tan((fov * Math.PI) / 360); }
+    const drop = 1.77 * Math.tan(Math.atan(0.82 * TAN) - PITCH); // its far edge 82% of the way down from the middle, whatever the field of view
+    coping.scale.set(2 * halfW(1.9) + 1.6, 0.2, 0.3); coping.position.set(0, EYE - drop - 0.1, -1.62); // its top a band along the foot of any screen
+    coping.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout; // before the frustum is taken, on every render: a still frame gets no update() call
+  function frame(dt, t) {
+    time.value = t;
+    const cx = Math.sin(t * 0.02) * 0.35;
+    camera.position.set(cx, EYE + Math.sin(t * 0.05) * 0.03, 0);
+    camera.lookAt(look.set(cx * 0.3, EYE + Math.tan(PITCH) * 100, -100));
+    for (const c of clouds) { c.m.position.x += c.speed * dt; if (c.m.position.x > 2200) c.m.position.x = -2200; }
+    stepGondolas(dt, t);
+    stepWalkers(dt, t);
+    if (!pal.dark) stepGulls(dt);
+    for (const tb of tables) tb.rotation.y = Math.atan2(camera.position.x - tb.position.x, camera.position.z - tb.position.z);
+  }
+  frame(0, 0);
+
+  return {
+    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    setPalette: applyPalette,
+    stats() { return { gondolas: movers.map((m) => Math.round(m.z)), walkers: walkers.map((w) => +w.x.toFixed(1)), lamps: lampList.length, poles: poleSpots.length, laundry: clothes.length }; }, // for checking by hand
+    dispose() { scene.environment = null; scene.fog = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
