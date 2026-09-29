@@ -10264,71 +10264,103 @@ function auroraTreeline(THREE, W, H) {
     }
   });
 }
-/** One spruce close by, boughs heavy with snow; W × H canvas, the trunk at the bottom middle. */
+/** One spruce close by: a solid mass of drooping boughs with a ragged needle fringe, snow lying in clumps on the outer boughs; W × H canvas, the trunk at the bottom middle. */
 function auroraPine(THREE, W, H, seed) {
   const r = koiRng(seed);
   return canvasTexture(THREE, W, H, (g) => {
-    g.fillStyle = "#3a2a20"; g.fillRect(W * 0.47, H * 0.6, W * 0.06, H * 0.4);
-    const tiers = 9, top = H * 0.04;
-    for (let k = tiers - 1; k >= 0; k--) { // from the bottom up, so the upper boughs lie over the lower
-      const y = top + (k / tiers) * H * 0.88, hw = W * (0.08 + 0.42 * Math.pow(k / (tiers - 1), 1.1)), hh = H * 0.13;
-      const grad = g.createLinearGradient(-hw, 0, hw, 0);
-      grad.addColorStop(0, "#243f2e"); grad.addColorStop(0.45, "#35593d"); grad.addColorStop(1, "#182e22");
-      g.fillStyle = grad; g.beginPath(); g.moveTo(W / 2, y);
-      for (let i = 0; i <= 10; i++) { const u = i / 10, x = W / 2 + hw * u, yy = y + hh * (0.55 + 0.45 * u) + (i % 2 ? r(0, 8) : -r(0, 8)) * (H / 768); g.lineTo(x, yy); }
-      g.lineTo(W / 2, y + hh * 0.98);
-      for (let i = 10; i >= 0; i--) { const u = i / 10, x = W / 2 - hw * u, yy = y + hh * (0.55 + 0.45 * u) + (i % 2 ? r(0, 8) : -r(0, 8)) * (H / 768); g.lineTo(x, yy); }
-      g.closePath(); g.fill();
-      const snow = g.createLinearGradient(0, y, 0, y + hh * 0.5); // snow lying along the top of the bough
-      snow.addColorStop(0, "#f4f7fb"); snow.addColorStop(1, "rgba(200,214,232,0)");
-      g.fillStyle = snow; g.beginPath(); g.moveTo(W / 2, y);
-      for (let i = 0; i <= 8; i++) { const u = i / 8; g.lineTo(W / 2 + hw * u * 0.95, y + hh * (0.5 + 0.4 * u) * 0.85 + (i % 2 ? 4 : -4) * (H / 768)); }
-      g.lineTo(W / 2, y + hh * 0.7);
-      for (let i = 8; i >= 0; i--) { const u = i / 8; g.lineTo(W / 2 - hw * u * 0.95, y + hh * (0.5 + 0.4 * u) * 0.85 + (i % 2 ? 4 : -4) * (H / 768)); }
-      g.closePath(); g.fill();
+    const k = W / 512, cx = W / 2, top = H * 0.03, base = H * 0.97;
+    g.strokeStyle = "#3a2a20"; g.lineCap = "round"; g.lineWidth = 10 * k; g.beginPath(); g.moveTo(cx, top + H * 0.1); g.lineTo(cx, base); g.stroke();
+    const N = 14;
+    for (let i = N - 1; i >= 0; i--) { // from the bottom up, so each bough lies over the one below
+      const t = i / (N - 1), y = top + H * 0.05 + t * H * 0.84, len = W * (0.06 + 0.42 * Math.pow(t, 0.95)) * r(0.9, 1.08), droop = len * r(0.35, 0.5), fr = H * (0.05 + 0.05 * t);
+      for (const side of [-1, 1]) {
+        const tipX = cx + side * len, tipY = y + droop;
+        const topAt = (u) => [cx + side * len * u, y + droop * u * u - droop * 0.08 * Math.sin(u * Math.PI)]; // the bough's upper edge: out, a little up, then drooping to the tip
+        g.fillStyle = t < 0.35 ? "#2a4c36" : t < 0.7 ? "#22412d" : "#1b3626";
+        g.beginPath(); g.moveTo(cx, y - 3 * k);
+        for (let j = 1; j <= 8; j++) { const [px, py] = topAt(j / 8); g.lineTo(px, py); }
+        for (let j = 8; j >= 0; j--) { const u = j / 8, [px, py] = topAt(u); g.lineTo(px + side * (j % 2 ? 3 : -3) * k, py + fr * (0.55 + 0.45 * Math.sin(u * Math.PI)) + (j % 2 ? r(3, 10) : r(0, 4)) * k); } // the ragged needle fringe underneath
+        g.closePath(); g.fill();
+        if (i % 2 === 0 || t > 0.75) { // snow lying on the outer part of the bough, heavier towards the drooping tip
+          g.fillStyle = "rgba(244,248,253,0.96)";
+          g.beginPath();
+          const [sx, sy] = topAt(0.3); g.moveTo(sx, sy + 1 * k);
+          for (let j = 3; j <= 8; j++) { const u = j / 8, [px, py] = topAt(u); g.lineTo(px, py - (2 + 8 * (u - 0.3)) * k); }
+          g.lineTo(tipX, tipY + 4 * k);
+          for (let j = 7; j >= 3; j--) { const u = j / 8, [px, py] = topAt(u); g.lineTo(px, py + (3 + 3 * (u - 0.3)) * k); }
+          g.closePath(); g.fill();
+        }
+      }
     }
+    g.fillStyle = "#2a4c36"; g.beginPath(); g.moveTo(cx, top); g.lineTo(cx + 12 * k, top + H * 0.09); g.lineTo(cx - 12 * k, top + H * 0.09); g.closePath(); g.fill(); // the leader
+    g.fillStyle = "rgba(244,248,253,0.9)"; g.beginPath(); g.moveTo(cx, top); g.lineTo(cx + 7 * k, top + H * 0.05); g.lineTo(cx - 7 * k, top + H * 0.05); g.closePath(); g.fill();
   });
 }
-/** The log cabin: log walls, a snowy roof, a stone chimney, a door in the accent colour, windows lit at night. Redrawn when the palette changes. */
+/** The log cabin: a log gable under a thick snow roof with overhanging eaves, framed windows lit at night, a door in the accent colour with a lantern and a step. Redrawn when the palette changes. */
 function auroraCabinDraw(g, W, H, accent, lit) {
   g.clearRect(0, 0, W, H);
-  const k = W / 512, wallTop = H * 0.42, wallBot = H * 0.94, left = W * 0.12, right = W * 0.88;
-  g.fillStyle = "#e9eef6"; g.fillRect(left - 6 * k, wallBot - 8 * k, right - left + 12 * k, H - wallBot + 8 * k); // snow at the foot
-  for (let y = wallTop; y < wallBot; y += 18 * k) { // the logs
-    const grad = g.createLinearGradient(0, y, 0, y + 18 * k);
-    grad.addColorStop(0, "#8a5f3a"); grad.addColorStop(0.5, "#6a4528"); grad.addColorStop(1, "#4a2f1a");
-    g.fillStyle = grad; g.beginPath(); g.roundRect(left, y, right - left, 17 * k, 8 * k); g.fill();
-    g.fillStyle = "#5a3a22"; g.beginPath(); g.arc(left + 4 * k, y + 9 * k, 7 * k, 0, Math.PI * 2); g.arc(right - 4 * k, y + 9 * k, 7 * k, 0, Math.PI * 2); g.fill();
+  const k = W / 512, L = W * 0.14, R = W * 0.86, wallTop = H * 0.46, wallBot = H * 0.9, apexY = H * 0.16, midX = W * 0.5;
+  const drift = g.createLinearGradient(0, wallBot - 14 * k, 0, H); drift.addColorStop(0, "rgba(233,238,246,0)"); drift.addColorStop(0.4, "#e9eef6"); drift.addColorStop(1, "#d6dfec");
+  g.fillStyle = drift; g.beginPath(); g.ellipse(midX, wallBot + 4 * k, (R - L) * 0.62, 16 * k, 0, 0, Math.PI * 2); g.fill(); // snow drifted against the foot
+  g.save(); g.beginPath(); g.moveTo(L, wallBot); g.lineTo(L, wallTop); g.lineTo(midX, apexY + 10 * k); g.lineTo(R, wallTop); g.lineTo(R, wallBot); g.closePath(); g.clip(); // the walls and the gable, all logs
+  for (let y = apexY; y < wallBot; y += 15 * k) {
+    const grad = g.createLinearGradient(0, y, 0, y + 15 * k);
+    grad.addColorStop(0, "#9a6b42"); grad.addColorStop(0.5, "#7a4f2e"); grad.addColorStop(1, "#52331d");
+    g.fillStyle = grad; g.fillRect(L - 10 * k, y, R - L + 20 * k, 14 * k);
+    g.fillStyle = "rgba(40,22,10,0.5)"; g.fillRect(L - 10 * k, y + 13 * k, R - L + 20 * k, 1.5 * k);
   }
-  g.fillStyle = accent; g.beginPath(); g.roundRect(W * 0.44, H * 0.62, W * 0.12, wallBot - H * 0.62, [6 * k, 6 * k, 0, 0]); g.fill(); // the door
-  g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(W * 0.44, H * 0.62, W * 0.12, 4 * k); g.fillStyle = "#e8d29a"; g.beginPath(); g.arc(W * 0.545, H * 0.8, 2.5 * k, 0, Math.PI * 2); g.fill();
-  for (const wx of [W * 0.2, W * 0.66]) { // the windows
-    g.fillStyle = "#3a2a1a"; g.fillRect(wx - 3 * k, H * 0.5 - 3 * k, W * 0.14 + 6 * k, H * 0.16 + 6 * k);
-    g.fillStyle = lit ? "#ffd27a" : "#2b3a52"; g.fillRect(wx, H * 0.5, W * 0.14, H * 0.16);
-    if (lit) { const gl = g.createRadialGradient(wx + W * 0.07, H * 0.58, 0, wx + W * 0.07, H * 0.58, W * 0.09); gl.addColorStop(0, "rgba(255,255,220,0.9)"); gl.addColorStop(1, "rgba(255,200,100,0)"); g.fillStyle = gl; g.fillRect(wx, H * 0.5, W * 0.14, H * 0.16); }
-    g.fillStyle = "#3a2a1a"; g.fillRect(wx + W * 0.07 - 1.5 * k, H * 0.5, 3 * k, H * 0.16); g.fillRect(wx, H * 0.58 - 1.5 * k, W * 0.14, 3 * k);
+  g.restore();
+  for (let y = wallTop; y < wallBot; y += 15 * k) { for (const x of [L, R]) { g.fillStyle = "#6a4326"; g.beginPath(); g.arc(x, y + 7 * k, 7.5 * k, 0, Math.PI * 2); g.fill(); g.fillStyle = "#c79a6a"; g.beginPath(); g.arc(x, y + 7 * k, 4 * k, 0, Math.PI * 2); g.fill(); } } // the log ends, crossing at the corners
+  for (const wx of [W * 0.21, W * 0.63]) { // the windows: frame, four panes, warm light at night
+    g.fillStyle = "#3a2a1a"; g.fillRect(wx - 4 * k, H * 0.55 - 4 * k, W * 0.16 + 8 * k, H * 0.17 + 8 * k);
+    g.fillStyle = lit ? "#ffd27a" : "#2b3a52"; g.fillRect(wx, H * 0.55, W * 0.16, H * 0.17);
+    if (lit) { const gl = g.createRadialGradient(wx + W * 0.08, H * 0.63, 0, wx + W * 0.08, H * 0.63, W * 0.1); gl.addColorStop(0, "rgba(255,255,225,0.9)"); gl.addColorStop(1, "rgba(255,200,100,0)"); g.fillStyle = gl; g.fillRect(wx, H * 0.55, W * 0.16, H * 0.17); }
+    g.fillStyle = "#e8dcc4"; g.fillRect(wx + W * 0.08 - 1.5 * k, H * 0.55, 3 * k, H * 0.17); g.fillRect(wx, H * 0.635 - 1.5 * k, W * 0.16, 3 * k);
+    g.fillStyle = "#f2f5fa"; g.fillRect(wx - 5 * k, H * 0.55 - 8 * k, W * 0.16 + 10 * k, 5 * k); // snow on the sill and the frame's top
+    if (lit) { const sp = g.createLinearGradient(0, wallBot, 0, H); sp.addColorStop(0, "rgba(255,190,90,0.45)"); sp.addColorStop(1, "rgba(255,190,90,0)"); g.fillStyle = sp; g.beginPath(); g.moveTo(wx - W * 0.04, wallBot); g.lineTo(wx + W * 0.2, wallBot); g.lineTo(wx + W * 0.26, H); g.lineTo(wx - W * 0.1, H); g.closePath(); g.fill(); } // its light on the snow
   }
-  g.fillStyle = "#5b6470"; g.fillRect(W * 0.68, H * 0.08, W * 0.08, H * 0.24); // the chimney
-  g.fillStyle = "#eef2f8"; g.fillRect(W * 0.67, H * 0.07, W * 0.1, 5 * k);
-  const roof = g.createLinearGradient(0, H * 0.12, 0, wallTop); // the roof, deep in snow
-  roof.addColorStop(0, "#f7f9fc"); roof.addColorStop(1, "#c5d1e2");
-  g.fillStyle = roof; g.beginPath(); g.moveTo(W * 0.04, wallTop + 4 * k); g.lineTo(W * 0.5, H * 0.1); g.lineTo(W * 0.96, wallTop + 4 * k); g.lineTo(W * 0.96, wallTop + 14 * k); g.lineTo(W * 0.5, H * 0.2); g.lineTo(W * 0.04, wallTop + 14 * k); g.closePath(); g.fill();
-  g.fillStyle = "#3d2b1c"; g.beginPath(); g.moveTo(W * 0.04, wallTop + 14 * k); g.lineTo(W * 0.5, H * 0.2); g.lineTo(W * 0.96, wallTop + 14 * k); g.lineTo(W * 0.96, wallTop + 20 * k); g.lineTo(W * 0.5, H * 0.2 + 6 * k); g.lineTo(W * 0.04, wallTop + 20 * k); g.closePath(); g.fill(); // the eaves' dark edge
-  for (let i = 0; i < 9; i++) { g.fillStyle = "#dfe8f4"; g.beginPath(); g.moveTo(W * (0.06 + i * 0.1), wallTop + 20 * k); g.lineTo(W * (0.1 + i * 0.1), wallTop + 20 * k); g.lineTo(W * (0.08 + i * 0.1), wallTop + (30 + (i % 3) * 5) * k); g.closePath(); g.fill(); } // icicles
+  g.fillStyle = "#3a2a1a"; g.fillRect(W * 0.435, H * 0.6, W * 0.13, wallBot - H * 0.6 + 2 * k); // the door frame
+  const dg = g.createLinearGradient(W * 0.44, 0, W * 0.56, 0); dg.addColorStop(0, accent); dg.addColorStop(1, accent);
+  g.fillStyle = accent; g.fillRect(W * 0.445, H * 0.61, W * 0.11, wallBot - H * 0.61);
+  g.fillStyle = "rgba(0,0,0,0.28)"; g.fillRect(W * 0.445, H * 0.61, W * 0.11, wallBot - H * 0.61); // deepened, so the accent reads as paint on wood
+  g.fillStyle = accent; g.fillRect(W * 0.455, H * 0.63, W * 0.09, H * 0.1); g.fillRect(W * 0.455, H * 0.75, W * 0.09, wallBot - H * 0.77); // the panels
+  g.fillStyle = lit ? "#ffd27a" : "#2b3a52"; g.fillRect(W * 0.47, H * 0.645, W * 0.06, H * 0.06); // a small pane
+  g.fillStyle = "#e8d29a"; g.beginPath(); g.arc(W * 0.535, H * 0.79, 2.5 * k, 0, Math.PI * 2); g.fill(); // the handle
+  g.fillStyle = "#c9b79a"; g.fillRect(W * 0.42, wallBot, W * 0.16, 6 * k); g.fillStyle = "#f2f5fa"; g.fillRect(W * 0.42, wallBot - 2 * k, W * 0.16, 3 * k); // the step
+  g.fillStyle = "#2a2a30"; g.fillRect(W * 0.6, H * 0.6, 3 * k, 22 * k); g.fillRect(W * 0.585, H * 0.6, 12 * k, 3 * k); // the lantern by the door
+  g.fillStyle = lit ? "#ffcf6a" : "#565a66"; g.beginPath(); g.arc(W * 0.6 + 1.5 * k, H * 0.6 + 26 * k, 5 * k, 0, Math.PI * 2); g.fill();
+  if (lit) { const lg = g.createRadialGradient(W * 0.6, H * 0.6 + 26 * k, 0, W * 0.6, H * 0.6 + 26 * k, 34 * k); lg.addColorStop(0, "rgba(255,200,110,0.55)"); lg.addColorStop(1, "rgba(255,200,110,0)"); g.fillStyle = lg; g.fillRect(W * 0.5, H * 0.5, W * 0.2, H * 0.35); }
+  // the roof: a dark underside at the eaves, then thick snow slabs on both slopes, overhanging the walls
+  g.fillStyle = "#2c1e12"; g.beginPath(); g.moveTo(W * 0.05, wallTop + 10 * k); g.lineTo(midX, apexY + 4 * k); g.lineTo(W * 0.95, wallTop + 10 * k); g.lineTo(W * 0.95, wallTop + 18 * k); g.lineTo(midX, apexY + 14 * k); g.lineTo(W * 0.05, wallTop + 18 * k); g.closePath(); g.fill();
+  const snow = g.createLinearGradient(0, apexY - 20 * k, 0, wallTop + 10 * k); snow.addColorStop(0, "#f8fafd"); snow.addColorStop(1, "#c8d4e4");
+  g.strokeStyle = snow; g.lineCap = "round"; g.lineJoin = "round"; g.lineWidth = 26 * k;
+  g.beginPath(); g.moveTo(W * 0.06, wallTop + 2 * k); g.lineTo(midX, apexY - 8 * k); g.lineTo(W * 0.94, wallTop + 2 * k); g.stroke();
+  g.strokeStyle = "rgba(160,180,205,0.5)"; g.lineWidth = 4 * k; g.beginPath(); g.moveTo(W * 0.06, wallTop + 14 * k); g.lineTo(midX, apexY + 4 * k); g.lineTo(W * 0.94, wallTop + 14 * k); g.stroke(); // the snow's lower edge, in shadow
+  for (let i = 0; i < 12; i++) { const x = W * (0.07 + i * 0.075), y = i < 6 ? wallTop + 16 * k - (5 - i) * (wallTop - apexY) / 6 * 0.1 : wallTop + 16 * k - (i - 6) * (wallTop - apexY) / 6 * 0.1; g.fillStyle = "#dfe8f4"; g.beginPath(); g.moveTo(x - 3 * k, y); g.lineTo(x + 3 * k, y); g.lineTo(x, y + (9 + (i % 3) * 5) * k); g.closePath(); g.fill(); } // icicles along the eaves
+  const chx = W * 0.7, chTop = apexY + (wallTop - apexY) * 0.42 - 34 * k; // the chimney, rising from the right slope
+  g.fillStyle = "#5b6470"; g.fillRect(chx, chTop, W * 0.08, (apexY + (wallTop - apexY) * 0.42) - chTop + 8 * k);
+  g.fillStyle = "#3f4650"; g.fillRect(chx + W * 0.06, chTop, W * 0.02, (apexY + (wallTop - apexY) * 0.42) - chTop + 8 * k);
+  g.fillStyle = "#f2f5fa"; g.beginPath(); g.roundRect(chx - 3 * k, chTop - 6 * k, W * 0.08 + 6 * k, 8 * k, 3 * k); g.fill(); // its snow cap
 }
-/** The canoe pulled up on the snow, in the accent colour, a paddle across it. */
+/** The canoe pulled up on the snow, in the accent colour, seen a little from above: the inside with its ribs and thwarts, a paddle across it, snow drifted against the hull. */
 function auroraCanoeDraw(g, W, H, accent) {
   g.clearRect(0, 0, W, H);
   const k = W / 256;
-  g.fillStyle = "rgba(90,110,140,0.35)"; g.beginPath(); g.ellipse(W * 0.5, H * 0.84, W * 0.42, H * 0.1, 0, 0, Math.PI * 2); g.fill(); // its shadow on the snow
-  const hull = g.createLinearGradient(0, H * 0.3, 0, H * 0.8);
-  hull.addColorStop(0, accent); hull.addColorStop(1, "rgba(0,0,0,0.55)");
-  g.fillStyle = accent; g.beginPath(); g.moveTo(W * 0.04, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.95, W * 0.96, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.55, W * 0.04, H * 0.3); g.closePath(); g.fill();
-  g.fillStyle = hull; g.beginPath(); g.moveTo(W * 0.04, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.95, W * 0.96, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.55, W * 0.04, H * 0.3); g.closePath(); g.fill();
-  g.fillStyle = "#3a2a1c"; g.beginPath(); g.moveTo(W * 0.06, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.52, W * 0.94, H * 0.3); g.quadraticCurveTo(W * 0.5, H * 0.42, W * 0.06, H * 0.3); g.closePath(); g.fill(); // the inside
-  g.strokeStyle = "rgba(255,255,255,0.55)"; g.lineWidth = 2.5 * k; g.beginPath(); g.moveTo(W * 0.05, H * 0.31); g.quadraticCurveTo(W * 0.5, H * 0.54, W * 0.95, H * 0.31); g.stroke(); // the gunwale
-  g.strokeStyle = "#c9a26a"; g.lineWidth = 3 * k; g.beginPath(); g.moveTo(W * 0.3, H * 0.12); g.lineTo(W * 0.62, H * 0.42); g.stroke(); // the paddle
-  g.fillStyle = "#c9a26a"; g.beginPath(); g.ellipse(W * 0.66, H * 0.46, 8 * k, 4.5 * k, 0.75, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "rgba(70,90,125,0.4)"; g.beginPath(); g.ellipse(W * 0.5, H * 0.88, W * 0.44, H * 0.09, 0, 0, Math.PI * 2); g.fill(); // its shadow on the snow
+  const bow = [W * 0.03, H * 0.36], stern = [W * 0.97, H * 0.36];
+  g.fillStyle = accent; g.beginPath(); g.moveTo(...bow); g.quadraticCurveTo(W * 0.5, H * 1.02, ...stern); g.quadraticCurveTo(W * 0.5, H * 0.62, ...bow); g.closePath(); g.fill(); // the hull side
+  const shade = g.createLinearGradient(0, H * 0.45, 0, H * 0.85); shade.addColorStop(0, "rgba(255,255,255,0.18)"); shade.addColorStop(0.5, "rgba(0,0,0,0.12)"); shade.addColorStop(1, "rgba(0,0,0,0.5)");
+  g.fillStyle = shade; g.beginPath(); g.moveTo(...bow); g.quadraticCurveTo(W * 0.5, H * 1.02, ...stern); g.quadraticCurveTo(W * 0.5, H * 0.62, ...bow); g.closePath(); g.fill();
+  g.fillStyle = "#4a3320"; g.beginPath(); g.moveTo(...bow); g.quadraticCurveTo(W * 0.5, H * 0.62, ...stern); g.quadraticCurveTo(W * 0.5, H * 0.14, ...bow); g.closePath(); g.fill(); // the inside, seen from above
+  g.strokeStyle = "rgba(255,225,190,0.35)"; g.lineWidth = 1.5 * k; // the ribs
+  for (let i = 1; i < 12; i++) { const u = i / 12, x = bow[0] + (stern[0] - bow[0]) * u, d = Math.sin(u * Math.PI); g.beginPath(); g.moveTo(x, H * 0.36 - d * H * 0.2); g.lineTo(x, H * 0.36 + d * H * 0.24); g.stroke(); }
+  g.fillStyle = "#b08a5a"; for (const u of [0.3, 0.7]) { const x = bow[0] + (stern[0] - bow[0]) * u, d = Math.sin(u * Math.PI); g.fillRect(x - 3 * k, H * 0.36 - d * H * 0.19, 6 * k, d * H * 0.42); } // the thwarts
+  g.strokeStyle = "#e8dcc8"; g.lineWidth = 3 * k; g.beginPath(); g.moveTo(...bow); g.quadraticCurveTo(W * 0.5, H * 0.62, ...stern); g.stroke(); // the gunwale
+  g.strokeStyle = "rgba(255,255,255,0.35)"; g.lineWidth = 2 * k; g.beginPath(); g.moveTo(W * 0.06, H * 0.34); g.quadraticCurveTo(W * 0.5, H * 0.12, W * 0.94, H * 0.34); g.stroke(); // the far gunwale
+  g.strokeStyle = "#c9a26a"; g.lineWidth = 3.5 * k; g.beginPath(); g.moveTo(W * 0.28, H * 0.08); g.lineTo(W * 0.62, H * 0.5); g.stroke(); // the paddle, lying across
+  g.fillStyle = "#c9a26a"; g.beginPath(); g.ellipse(W * 0.66, H * 0.55, 9 * k, 5 * k, 0.85, 0, Math.PI * 2); g.fill();
+  const drift = g.createLinearGradient(0, H * 0.7, 0, H); drift.addColorStop(0, "rgba(238,242,248,0)"); drift.addColorStop(0.35, "#eef2f8"); drift.addColorStop(1, "#dfe6f0");
+  g.fillStyle = drift; g.beginPath(); g.ellipse(W * 0.5, H * 0.93, W * 0.5, H * 0.14, 0, Math.PI, Math.PI * 2); g.fill(); // snow drifted against the hull
 }
 /** The snowy shore under the viewer's feet: a flat quad, the water side (u → 1) fading out along an uneven edge with a rim of ice. */
 function auroraShore(THREE, W, H) {
@@ -10417,7 +10449,7 @@ function northernlights(THREE, scene, camera, pal, preview) {
   const canoe = layer(canoeMat, 0, 0.8, -30, 4.6, 1.72, 8);
   const pineMats = [1, 2, 3].map((seed) => plain({ map: keep(auroraPine(THREE, preview ? 256 : 512, preview ? 384 : 768, seed * 77)) }));
   const PINES = [[-0.84, 46, 15, 0], [-0.56, 78, 19, 1], [-0.72, 118, 22, 2], [-0.36, 150, 17, 0], [-0.98, 92, 20, 1]]; // fraction of the half-width, distance, height, which painting
-  const pines = PINES.map(([fx, z, h, k]) => ({ m: layer(pineMats[k], 0, h / 2, -z, h * 0.62, h, 5), fx, z }));
+  const pines = PINES.map(([fx, z, h, k]) => ({ m: layer(pineMats[k], 0, h / 2, -z, h * 0.667, h, 5), fx, z }));
   const windowGlowMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xffb060, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, fog: false }));
   const windowGlows = [0.2, 0.66].map((u) => { const s = new THREE.Sprite(windowGlowMat); s.renderOrder = 7; world.add(s); return { s, u }; });
   const smokeMat = keep(new THREE.SpriteMaterial({ map: glow, color: 0xc8d0dc, depthWrite: false, depthTest: false, transparent: true, fog: false, opacity: 0.3 }));
