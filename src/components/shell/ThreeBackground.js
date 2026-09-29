@@ -10725,6 +10725,31 @@ const VENICE_GLOW_FS = /* glsl */ `
     #include <colorspace_fragment>
   }
 `;
+// the palazzi's near side walls, where a house rises above the one in front of it: plaster in the house's colour, damp streaks,
+// the coppi along the pitched gable and their shadow; lit like the facades that face away from the sun
+const VENICE_SIDE_VS = /* glsl */ `
+  attribute vec3 aSide; // metres below the wall's top edge, a seed, metres from the facade
+  attribute vec3 aTint;
+  varying vec3 vWorld; varying vec3 vSide; varying vec3 vTint;
+  void main() { vSide = aSide; vTint = aTint; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const VENICE_SIDE_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform vec3 uAmb; uniform vec3 uBounce; uniform vec3 uTile; uniform float uFlip;
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec3 vWorld; varying vec3 vSide; varying vec3 vTint;
+  void main() {
+    float y = vWorld.y * uFlip, u = vSide.z + vSide.y;
+    float blot = texture2D(uNoise, vec2(u, y) * 0.07).r, grain = texture2D(uNoise, vec2(u, y) * 0.9).g;
+    float streak = texture2D(uNoise, vec2(u * 0.3, y * 0.015 + vSide.y)).g; // damp running down from the gable
+    vec3 base = vTint * (0.78 + 0.4 * blot + 0.1 * grain) * (1.0 - 0.3 * smoothstep(0.5, 0.72, streak) * (1.0 - smoothstep(2.0, 9.0, vSide.x)));
+    if (vSide.x < 0.3) base = uTile * (0.78 + 0.3 * step(0.5, fract(vSide.z * 3.6))); // the ends of the coppi along the gable
+    else base *= 1.0 - 0.45 * exp(-(vSide.x - 0.3) * 5.0); // their shadow on the wall
+    vec3 col = base * (uAmb + uBounce * clamp(y / 18.0, 0.2, 1.0));
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
 const VENICE_WALLS = ["#d9a066", "#c8694e", "#e3a58a", "#d98f8f", "#e9d7b3", "#b8563f", "#d88a4a", "#e8c67e", "#c98d8d", "#d6b9a0", "#a9564a", "#dcae84"];
 const VENICE_SHUTTERS = ["#3d6a4d", "#2f5a44", "#56704f", "#6b4a33", "#7d8a70", "#3d6a4d"];
 /** A row of palazzi along one bank, near to far (z decreasing): width, height, wall colour, how far it stands forward. */
@@ -10851,24 +10876,13 @@ function veniceLantern(g, mk, x, y, s) {
   g.fillStyle = "#1c1c1e"; g.fillRect(x - 0.14 * s, y + 0.12 * s, 0.28 * s, 0.05 * s);
   mk.fillStyle = "rgb(255,0,0)"; mk.fillRect(x - 0.12 * s, y - 0.24 * s, 0.24 * s, 0.36 * s);
 }
-/** The cornice, the band of roof tiles above it, Venetian funnel chimneys, now and then an altana (a wooden roof terrace on posts). */
+/** The cornice and the band of roof tiles above it (the chimneys are solid, on the roofs: see veniceBlocks). */
 function veniceRoof(g, X0, X1, top, s, r) {
   g.fillStyle = "rgba(0,0,0,0.34)"; g.fillRect(X0, top + 0.36 * s, X1 - X0, 0.2 * s);
   g.fillStyle = "#e8e0cf"; g.fillRect(X0 - 0.15 * s, top, X1 - X0 + 0.3 * s, 0.4 * s);
   g.fillStyle = "rgba(0,0,0,0.18)"; for (let x = X0; x < X1; x += 0.3 * s) g.fillRect(x, top + 0.26 * s, 0.14 * s, 0.1 * s);
   g.fillStyle = "#a9543a"; g.fillRect(X0 - 0.2 * s, top - 0.45 * s, X1 - X0 + 0.4 * s, 0.45 * s);
   g.fillStyle = "rgba(255,205,165,0.22)"; for (let x = X0 - 0.2 * s; x < X1 + 0.2 * s; x += 0.22 * s) g.fillRect(x, top - 0.45 * s, 0.08 * s, 0.45 * s);
-  for (let k = 0, n = (r() * 2.6) | 0; k < n; k++) { // Venetian chimneys: a stout stack, a funnel pot on top
-    const cx = X0 + r(0.15, 0.85) * (X1 - X0), hc = r(1.1, 1.9) * s, wc = r(0.75, 0.95) * s, y0 = top - 0.45 * s, brickCol = r() < 0.45;
-    g.fillStyle = brickCol ? "#b8674a" : "#dccfbd";
-    g.fillRect(cx - wc / 2, y0 - hc, wc, hc);
-    g.fillStyle = "rgba(0,0,0,0.22)"; g.fillRect(cx + wc * 0.18, y0 - hc, wc * 0.32, hc); // its shaded side
-    g.fillStyle = brickCol ? "#a95a40" : "#d2c4b0"; g.fillRect(cx - wc * 0.62, y0 - hc - 0.12 * s, wc * 1.24, 0.14 * s); // a cornice
-    const ft = y0 - hc - 0.12 * s, fh = r(0.7, 1.0) * s; // the funnel
-    g.beginPath(); g.moveTo(cx - wc * 0.4, ft); g.lineTo(cx - wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.4, ft); g.closePath(); g.fill();
-    g.fillStyle = "rgba(0,0,0,0.25)"; g.beginPath(); g.moveTo(cx + wc * 0.1, ft); g.lineTo(cx + wc * 0.35, ft - fh); g.lineTo(cx + wc * 0.95, ft - fh); g.lineTo(cx + wc * 0.4, ft); g.closePath(); g.fill();
-    g.fillStyle = "#3a2e28"; g.fillRect(cx - wc, ft - fh - 0.08 * s, wc * 2, 0.1 * s);
-  }
 }
 /** The café's ground floor behind the walkway: arched glazed fronts (lit at night) and a signboard, lettered to read from the canal. */
 function veniceShopFront(g, mk, X0, X1, base, s, mirrorText, addLamp) {
@@ -10943,18 +10957,32 @@ function veniceFacade(g, mk, X0, X1, base, s, b, pats, addLamp, addDoor, mirrorT
   }
   veniceRoof(g, X0, X1, top, s, r);
 }
-/** Paint a stretch of one bank: the facades (colour + alpha above the roofs) and their mask at half size. */
-function venicePaintRow(list, zA, zB, s, HMAX, tiles, mirrorText) {
-  const W = Math.ceil((zA - zB) * s), H = Math.ceil(HMAX * s);
-  const c = document.createElement("canvas"), mc = document.createElement("canvas");
-  c.width = W; c.height = H; mc.width = Math.ceil(W / 2); mc.height = Math.ceil(H / 2);
+/** Paint a stretch of one bank: each palazzo in its own column of the canvas (colour + alpha above the roof) with a 4 px gutter either
+ *  side holding copies of its edge columns, so texture filtering at a quad's edge only ever meets that house's own pixels (a shared
+ *  boundary let a taller neighbour's edge show as a hairline in the sky); the mask at half size, laid out the same way. */
+function venicePaintRow(list, s, HMAX, tiles, mirrorText) {
+  const G = 4, H = Math.ceil(HMAX * s), cols = [];
+  let cursor = G;
+  for (const b of list) { const w = 2 * Math.max(1, Math.round(((b.z0 - b.z1) * s) / 2)); cols.push([cursor, cursor + w]); cursor += w + 2 * G; } // even: the half-size mask lines up
+  const W = cursor - G, c = document.createElement("canvas"), mc = document.createElement("canvas");
+  c.width = W; c.height = H; mc.width = W / 2; mc.height = Math.ceil(H / 2);
   const g = c.getContext("2d"), mk = mc.getContext("2d");
   mk.fillStyle = "#000"; mk.fillRect(0, 0, mc.width, mc.height); mk.scale(0.5, 0.5);
   const pats = { plaster: g.createPattern(tiles.plaster, "repeat"), brick: g.createPattern(tiles.brick, "repeat") };
   pats.plaster.setTransform(new DOMMatrix().scale(s / 32)); pats.brick.setTransform(new DOMMatrix().scale(Math.max(0.15, s / 115)));
   const lamps = [], doors = [];
-  for (const b of list) veniceFacade(g, mk, Math.round((zA - b.z0) * s), Math.round((zA - b.z1) * s), H, s, b, pats, (x, h) => lamps.push({ z: zA - x / s, h, b }), (x) => doors.push({ z: zA - x / s, b }), mirrorText);
-  return { c, mc, lamps, doors };
+  list.forEach((b, i) => {
+    const [X0, X1] = cols[i], zAt = (x) => b.z0 - (x - X0) / s;
+    for (const k of [g, mk]) { k.save(); k.beginPath(); k.rect(X0 - G, 0, X1 - X0 + 2 * G, H); k.clip(); } // a cornice's overhang stays in its own gutter
+    veniceFacade(g, mk, X0, X1, H, s, b, pats, (x, h) => lamps.push({ z: zAt(x), h, b }), (x) => doors.push({ z: zAt(x), b }), mirrorText);
+    g.restore(); mk.restore();
+  });
+  mk.setTransform(1, 0, 0, 1, 0, 0);
+  for (const [X0, X1] of cols) { // the gutters: each house's first and last columns, repeated outwards
+    g.drawImage(c, X0, 0, 1, H, X0 - G, 0, G, H); g.drawImage(c, X1 - 1, 0, 1, H, X1, 0, G, H);
+    mk.drawImage(mc, X0 / 2, 0, 1, mc.height, X0 / 2 - G / 2, 0, G / 2, mc.height); mk.drawImage(mc, X1 / 2 - 1, 0, 1, mc.height, X1 / 2, 0, G / 2, mc.height);
+  }
+  return { c, mc, lamps, doors, cols };
 }
 /** The walkway's height across the bridge: from the quays at its ends up to the crown. */
 const VENICE_DECK = (x) => 1.25 + 2.25 * Math.pow(Math.cos((Math.min(1, Math.abs(x) / 10.8) * Math.PI) / 2), 1.4);
@@ -11220,22 +11248,55 @@ function veniceAwning(THREE, xWall, xFront, yWall, yFront, z0, z1) {
   g.computeVertexNormals();
   return g;
 }
-/** The facade quads of one stretch of one bank: each palazzo its own quad (standing forward by b.off), all on one canvas. */
-function veniceFacadeGeo(THREE, side, list, zA, zB, HW, HMAX) {
+/** The facade quads of one stretch of one bank: each palazzo its own quad (standing forward by b.off) over its own column of the canvas. */
+function veniceFacadeGeo(THREE, side, list, cols, W, HW, HMAX) {
   const pos = [], nrm = [], uv = [], idx = [];
-  for (const b of list) {
-    const x = side * (HW - b.off), u0 = (zA - b.z0) / (zA - zB), u1 = (zA - b.z1) / (zA - zB), k = pos.length / 3;
+  list.forEach((b, i) => {
+    const x = side * (HW - b.off), u0 = cols[i][0] / W, u1 = cols[i][1] / W, k = pos.length / 3;
     pos.push(x, 0, b.z0, x, 0, b.z1, x, HMAX, b.z1, x, HMAX, b.z0);
-    for (let i = 0; i < 4; i++) nrm.push(-side, 0, 0);
+    for (let n = 0; n < 4; n++) nrm.push(-side, 0, 0);
     uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
     idx.push(k, k + 1, k + 2, k, k + 2, k + 3);
-  }
+  });
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
   g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
   return g;
+}
+/** Depth behind the painted facades: each palazzo's near side wall (facing the viewer, from the facade back D metres) up to a
+ *  pitched gable, one mesh for both banks; and where its chimneys stand: 1–2 on the roof just behind the cornice, and a flue up
+ *  the side wall where it rises above the house in front. */
+function veniceBlocks(THREE, rows, HW, r) {
+  const pos = [], aSide = [], aTint = [], idx = [], stacks = [];
+  const c = new THREE.Color(), grey = new THREE.Color();
+  for (const side of [-1, 1]) {
+    rows[side].forEach((b, i) => {
+      const p = rows[side][i - 1], D = r(12, 17), pitch = r(0.32, 0.42), tp = Math.tan(pitch), eave = b.h + 0.45, ridge = eave + (D / 2) * tp, seed = r(0, 40);
+      const X = (d) => side * (HW - b.off + d), z = b.z0, k = pos.length / 3;
+      c.set(b.color); grey.setScalar(c.r * 0.3 + c.g * 0.59 + c.b * 0.11); c.lerp(grey, 0.25).multiplyScalar(0.92); // plainer than the front
+      // 0 foot at the facade, 1 eave at the facade, 2 ridge, 3 eave at the back, 4 foot at the back, 5 foot under the ridge
+      for (const [d, y, below] of [[0, 0, eave], [0, eave, 0], [D / 2, ridge, 0], [D, eave, 0], [D, 0, eave], [D / 2, 0, ridge]]) {
+        pos.push(X(d), y, z); aSide.push(below, seed, d); aTint.push(c.r, c.g, c.b);
+      }
+      idx.push(k, k + 5, k + 2, k, k + 2, k + 1, k + 5, k + 4, k + 3, k + 5, k + 3, k + 2);
+      for (let n = r() < 0.45 ? 2 : 1, j = 0; j < n; j++) { // on the roof, just behind the cornice: seen rising over it
+        const w = r(0.6, 0.85), d = r(0.5, 2.0) + w / 2;
+        stacks.push({ x: X(d), z: r(b.z1 + 1.2, b.z0 - 1.2), y0: eave + (d - w / 2) * tp - 0.25, h: r(1.0, 2.0), w, dz: w * r(0.75, 1), f: r(0.7, 1.0), brick: r() < 0.45 });
+      }
+      if (p && b.h > p.h + 1.2 && r() < 0.55) { // a flue up the exposed side wall, its pot above the gable
+        const d = D * r(0.22, 0.7), top = eave + Math.min(d, D - d) * tp, w = r(0.8, 1.05);
+        stacks.push({ x: X(d), z: z + 0.22, y0: p.h - 1, h: top - p.h + 1 + r(0.8, 1.5), w, dz: 0.44, f: r(0.8, 1.1), brick: r() < 0.5 });
+      }
+    });
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aSide", new THREE.Float32BufferAttribute(aSide, 3));
+  g.setAttribute("aTint", new THREE.Float32BufferAttribute(aTint, 3));
+  g.setIndex(idx);
+  return { walls: g, stacks };
 }
 function venice(THREE, scene, camera, pal, preview) {
   const disposables = [];
@@ -11301,6 +11362,9 @@ function venice(THREE, scene, camera, pal, preview) {
 
   /* --- the palazzi on both banks --- */
   const tiles = veniceTiles(), S_NEAR = preview ? 14 : 32, S_FAR = preview ? 5 : 10;
+  // alpha-to-coverage cut-outs write their texture alpha into the canvas: at a soft edge the page behind the canvas showed through as a
+  // light seam. The colour replaces, the alpha the sky already wrote (1) is kept.
+  const KEEP_ALPHA = { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor };
   const lampList = [], doorList = [], rows = {};
   const facadeUni = {
     ...litU, ...fogU, uBounce: { value: new THREE.Color() }, uSkyRefl: { value: new THREE.Color() }, uAccent: { value: accent }, uWarm: { value: new THREE.Color("#ffb46a") },
@@ -11314,12 +11378,11 @@ function venice(THREE, scene, camera, pal, preview) {
     if (split < 0) split = row.length - 1;
     for (const [list, s] of [[row.slice(0, split + 1), S_NEAR], [row.slice(split + 1), S_FAR]]) {
       if (!list.length) continue;
-      const zA = list[0].z0, zB = list[list.length - 1].z1;
-      const { c, mc, lamps, doors } = venicePaintRow(list, zA, zB, s, HMAX, tiles, side === 1); // the right bank reads mirrored: its sign is lettered backwards
+      const { c, mc, lamps, doors, cols } = venicePaintRow(list, s, HMAX, tiles, side === 1); // the right bank reads mirrored: its sign is lettered backwards
       const tex = keep(new THREE.CanvasTexture(c)), mtex = keep(new THREE.CanvasTexture(mc));
       tex.colorSpace = THREE.SRGBColorSpace; mtex.colorSpace = THREE.NoColorSpace;
       tex.anisotropy = mtex.anisotropy = 8; // seen at a grazing angle all the way down the canal
-      const mesh = new THREE.Mesh(keep(veniceFacadeGeo(THREE, side, list, zA, zB, HW, HMAX)), shader(VENICE_FACADE_VS, VENICE_FACADE_FS, { ...facadeUni, uMap: { value: tex }, uMask: { value: mtex } }, { defines: { VENICE_LAMPS: 24 }, alphaToCoverage: true }));
+      const mesh = new THREE.Mesh(keep(veniceFacadeGeo(THREE, side, list, cols, c.width, HW, HMAX)), shader(VENICE_FACADE_VS, VENICE_FACADE_FS, { ...facadeUni, uMap: { value: tex }, uMask: { value: mtex } }, { defines: { VENICE_LAMPS: 24 }, alphaToCoverage: true, ...KEEP_ALPHA }));
       mesh.frustumCulled = false;
       world.add(mesh);
       for (const L of lamps) lampList.push(new THREE.Vector3(side * (HW - L.b.off - 0.3), L.h, L.z));
@@ -11331,23 +11394,22 @@ function venice(THREE, scene, camera, pal, preview) {
   const roofTex = keep(new THREE.DataTexture(roofData, 1024, 1));
   roofTex.magFilter = roofTex.minFilter = THREE.LinearFilter; roofTex.needsUpdate = true;
   facadeUni.uRoof.value = roofTex;
-  const retPos = [], retCol = [], tint = new THREE.Color(); // the side walls where a palazzo stands forward of its neighbour
-  for (const side of [-1, 1]) {
-    const row = rows[side];
-    for (let i = 1; i < row.length; i++) {
-      const b = row[i], p = row[i - 1];
-      if (b.off <= p.off + 0.05) continue;
-      const x0 = side * (HW - p.off), x1 = side * (HW - b.off), z = b.z0;
-      retPos.push(x0, 0, z, x1, 0, z, x1, b.h, z, x0, 0, z, x1, b.h, z, x0, b.h, z);
-      tint.set(b.color).multiplyScalar(0.7);
-      for (let k = 0; k < 6; k++) retCol.push(tint.r, tint.g, tint.b);
-    }
-  }
-  if (retPos.length) {
-    const retGeo = keep(new THREE.BufferGeometry());
-    retGeo.setAttribute("position", new THREE.Float32BufferAttribute(retPos, 3)); retGeo.setAttribute("color", new THREE.Float32BufferAttribute(retCol, 3)); retGeo.computeVertexNormals();
-    world.add(new THREE.Mesh(retGeo, keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide, envMapIntensity: 0.2 }))));
-  }
+  const blocks = veniceBlocks(THREE, rows, HW, koiRng(2024)); // the houses' depth: side walls with gables, chimneys on the roofs (own random stream: the rest of the scene stays as it was)
+  const sideUni = { uNoise: { value: noise }, uAmb: litU.uAmb, uBounce: facadeUni.uBounce, uTile: { value: new THREE.Color("#b35a3c") }, uFlip: flip, ...fogU };
+  const sideWalls = new THREE.Mesh(keep(blocks.walls), shader(VENICE_SIDE_VS, VENICE_SIDE_FS, sideUni));
+  sideWalls.frustumCulled = false;
+  world.add(sideWalls);
+  const stackGeo = keep(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)), potGeo = keep(new THREE.CylinderGeometry(0.5, 0.2, 1, 10).translate(0, 0.5, 0)); // a stack, a funnel pot on it
+  const chimMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.92, envMapIntensity: 0.25 }));
+  const stackMesh = new THREE.InstancedMesh(stackGeo, chimMat, blocks.stacks.length), potMesh = new THREE.InstancedMesh(potGeo, chimMat, blocks.stacks.length);
+  const CREAM = new THREE.Color("#ddd0bd"), BRICK = new THREE.Color("#a95c40"), SOOTED = new THREE.Color("#b3a795");
+  blocks.stacks.forEach((cm, i) => {
+    stackMesh.setMatrixAt(i, M4.compose(V.set(cm.x, cm.y0, cm.z), Q.identity(), S3.set(cm.w, cm.h, cm.dz)));
+    potMesh.setMatrixAt(i, M4.compose(V.set(cm.x, cm.y0 + cm.h, cm.z), Q.identity(), S3.set(cm.w * 1.75, cm.f, cm.w * 1.75)));
+    stackMesh.setColorAt(i, cm.brick ? BRICK : CREAM); potMesh.setColorAt(i, cm.brick ? BRICK : SOOTED);
+  });
+  stackMesh.frustumCulled = potMesh.frustumCulled = false;
+  world.add(stackMesh, potMesh);
 
   /* --- the stone bridge down the canal, and people crossing it --- */
   const bridgeTex = keep(veniceBridge(THREE, preview ? 24 : 48, tiles));
@@ -11623,7 +11685,7 @@ function venice(THREE, scene, camera, pal, preview) {
   return {
     update(dt, t) { frame(Math.min(dt, 0.05), t); },
     setPalette: applyPalette,
-    stats() { return { gondolas: movers.map((m) => Math.round(m.z)), walkers: walkers.map((w) => +w.x.toFixed(1)), lamps: lampList.length, poles: poleSpots.length, laundry: clothes.length }; }, // for checking by hand
+    stats() { return { gondolas: movers.map((m) => Math.round(m.z)), walkers: walkers.map((w) => +w.x.toFixed(1)), lamps: lampList.length, poles: poleSpots.length, laundry: clothes.length, chimneys: blocks.stacks.length }; }, // for checking by hand
     dispose() { scene.environment = null; scene.fog = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
   };
 }
