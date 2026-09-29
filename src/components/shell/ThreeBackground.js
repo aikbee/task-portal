@@ -9430,7 +9430,8 @@ const REEF_WATER_FS = /* glsl */ `
     vec2 sp = d.xz / max(d.y, 0.06) * 6.0;
     float rip = texture2D(uNoise, sp * 0.04 + uTime * 0.01).r;
     float win = smoothstep(0.22, 0.6, d.y + (rip - 0.5) * 0.35);
-    col += uUp * win * uWindow * (0.42 + 0.06 * reefCaust(sp));
+    float crest = smoothstep(0.55, 0.72, texture2D(uNoise, sp * 0.09 - vec2(uTime * 0.02, uTime * 0.013)).g); // the surface's waves seen from below
+    col += uUp * win * uWindow * (0.28 + 0.05 * reefCaust(sp) + 0.25 * crest);
     float sd = distance(d, uSunDir);
     col += uSunCol * (0.7 * exp(-sd * 9.0) + 0.18 * exp(-sd * 2.2)) * smoothstep(0.0, 0.3, d.y);
     gl_FragColor = vec4(col, 1.0);
@@ -9453,7 +9454,7 @@ const REEF_RAY_FS = /* glsl */ `
       float t = dt * (float(i) + j);
       vec3 x = ro + rd * t;
       vec2 s = x.xz + uSunDir.xz * (uSurf - x.y) / uSunDir.y;
-      sum += reefCaust(s * 0.5) * exp(-(uSurf - x.y) * uAbsorb) * exp(-t * 0.03);
+      sum += max(reefCaust(s * 0.5) - 0.8, 0.0) * exp(-(uSurf - x.y) * uAbsorb) * exp(-t * 0.03);
     }
     float toward = 1.0 + 1.5 * pow(max(dot(rd, uSunDir), 0.0), 4.0);
     gl_FragColor = vec4(uColor * (sum * dt / REEF_RANGE) * toward, 1.0); // the average along the ray, so the gain is in plain units
@@ -9468,8 +9469,10 @@ const REEF_FLOOR_FS = /* glsl */ `
   uniform sampler2D uMap; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform float uCaustic; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
   varying vec3 vWorld; varying vec3 vN; varying vec2 vUv; varying vec3 vTint;
   void main() {
-    vec3 N = normalize(vN);
-    vec3 sand = texture2D(uMap, vUv).rgb * vTint;
+    vec2 e = vec2(0.012, 0.0);
+    float h0 = texture2D(uMap, vUv).g, hx = texture2D(uMap, vUv + e.xy).g, hz = texture2D(uMap, vUv + e.yx).g;
+    vec3 N = normalize(vN + vec3(h0 - hx, 0.0, h0 - hz) * 2.5); // the ripples catch the light
+    vec3 sand = texture2D(uMap, vUv).rgb * vTint * (0.9 + 0.2 * texture2D(uNoise, vWorld.xz * 0.05).r);
     vec3 col = sand * (uAmb + uSunCol * (max(dot(N, uSunDir), 0.0) * 0.8 + reefCaust(vWorld.xz) * uCaustic));
     col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
     gl_FragColor = vec4(col, 1.0);
@@ -9480,7 +9483,7 @@ const REEF_FLOOR_FS = /* glsl */ `
 const REEF_CORAL_VS = /* glsl */ `
   uniform float uTime;
   attribute float aSway;
-  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway;
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway; varying float vLocalY;
   void main() {
     vec3 p = position;
     vec2 at = instanceMatrix[3].xz;
@@ -9494,7 +9497,7 @@ const REEF_CORAL_VS = /* glsl */ `
     #else
       vCol = vec3(1.0);
     #endif
-    vUv = uv; vSway = aSway;
+    vUv = uv; vSway = aSway; vLocalY = position.y;
     gl_Position = projectionMatrix * viewMatrix * w;
   }
 `;
@@ -9502,10 +9505,11 @@ const REEF_CORAL_FS = /* glsl */ `
   ${REEF_CAUST}
   uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uAmbDown; uniform float uCaustic; uniform float uGlow;
   uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  uniform float uKind; // 0 staghorn, 1 boulder, 2 table, 3 fan, 4 anemone, 5 grass
   #ifdef REEF_MAP
     uniform sampler2D uMap;
   #endif
-  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway;
+  varying vec3 vWorld; varying vec3 vN; varying vec3 vCol; varying vec2 vUv; varying float vSway; varying float vLocalY;
   void main() {
     vec3 base = vCol;
     #ifdef REEF_MAP
@@ -9513,11 +9517,61 @@ const REEF_CORAL_FS = /* glsl */ `
       if (t.a < 0.5) discard;
       base *= t.rgb;
     #endif
+    vec3 P = vWorld;
+    float d1 = texture2D(uNoise, P.xz * 1.7 + P.y * 0.9).r, d2 = texture2D(uNoise, (P.xy + P.zx) * 4.5).g;
+    float polyp = smoothstep(0.64, 0.74, d2); // the little polyps, lighter dots all over the skeleton
+    base *= (0.78 + 0.44 * d1) * (1.0 + 0.3 * polyp);
+    if (uKind < 0.5) base = mix(base, vec3(0.86, 0.9, 1.0), 0.55 * smoothstep(0.5, 1.0, vLocalY)); // staghorn tips go pale
+    if (uKind > 0.5 && uKind < 1.5) base *= 1.0 - 0.5 * (1.0 - smoothstep(0.03, 0.14, abs(2.0 * texture2D(uNoise, P.xz * 2.2 + P.y * 1.4).r - 1.0))); // the brain's grooves
+    if (uKind > 3.5 && uKind < 4.5) base = mix(base, vec3(0.75, 0.95, 0.72), 0.45 * smoothstep(0.7, 1.0, vLocalY)); // anemone tentacles tip green
+    float ao = mix(0.5, 1.0, smoothstep(0.0, 0.38, vLocalY)); // shadowed where it meets the sand
     vec3 N = normalize(vN);
     if (!gl_FrontFacing) N = -N;
-    float diff = max(dot(N, uSunDir), 0.0);
-    vec3 col = base * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) + uSunCol * (diff * 0.9 + reefCaust(vWorld.xz) * uCaustic * max(N.y, 0.0))) * (1.0 + 0.3 * vSway);
+    vec3 V = normalize(cameraPosition - P);
+    bool thin = uKind > 2.5 && uKind != 4.0;
+    float diff = thin ? abs(dot(N, uSunDir)) * 0.8 + 0.2 : max(dot(N, uSunDir), 0.0);
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    float spec = (uKind < 2.5) ? pow(max(dot(reflect(-uSunDir, N), V), 0.0), 18.0) * 0.22 : 0.0; // the wet sheen of a hard coral
+    vec3 col = base * ao * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) * (1.0 + 0.7 * rim) + uSunCol * (diff * 0.9 + reefCaust(P.xz) * uCaustic * max(N.y, 0.0))) + uSunCol * spec;
     col += base * base * uGlow; // fluorescence at night
+    col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(P, cameraPosition)));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// painted soft corals and sponges: upright billboards from a 2 × 2 atlas, the base on the sand, swaying from the base up
+const REEF_SPRITE_VS = /* glsl */ `
+  uniform float uTime;
+  attribute vec4 aSprite; // size, atlas cell, sway phase, spare
+  varying vec2 vUv; varying vec3 vWorld; varying vec3 vCol; varying float vLocalY;
+  void main() {
+    vec4 root = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 c = viewMatrix * root;
+    float sway = (0.05 * sin(uTime * 1.0 + aSprite.z) + 0.025 * sin(uTime * 2.2 + aSprite.z * 1.3)) * position.y;
+    c.xy += vec2((position.x + sway) * aSprite.x, position.y * aSprite.x * 1.15);
+    gl_Position = projectionMatrix * c;
+    vUv = (uv + vec2(mod(aSprite.y, 2.0), 1.0 - floor(aSprite.y / 2.0))) * 0.5;
+    vWorld = root.xyz;
+    #ifdef USE_INSTANCING_COLOR
+      vCol = instanceColor;
+    #else
+      vCol = vec3(1.0);
+    #endif
+    vLocalY = position.y;
+  }
+`;
+const REEF_SPRITE_FS = /* glsl */ `
+  ${REEF_CAUST}
+  uniform sampler2D uMap; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uAmbDown; uniform float uCaustic; uniform float uGlow;
+  uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+  varying vec2 vUv; varying vec3 vWorld; varying vec3 vCol; varying float vLocalY;
+  void main() {
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.5) discard;
+    vec3 base = t.rgb * vCol;
+    float ao = mix(0.55, 1.0, smoothstep(0.0, 0.3, vLocalY));
+    vec3 col = base * ao * (mix(uAmbDown, uAmb, 0.5 + 0.5 * vLocalY) + uSunCol * (0.55 + reefCaust(vWorld.xz + vLocalY * 0.7) * uCaustic * 0.8));
+    col += base * base * uGlow;
     col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
     gl_FragColor = vec4(col, 1.0);
     #include <colorspace_fragment>
@@ -9549,7 +9603,8 @@ const REEF_FISH_FS = /* glsl */ `
     vec3 N = normalize(vN);
     if (!gl_FrontFacing) N = -N;
     vec3 base = mix(vCol, vec3(0.92, 0.94, 0.96), vBelly * 0.7);
-    vec3 col = base * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) + uSunCol * max(dot(N, uSunDir), 0.0));
+    vec3 V = normalize(cameraPosition - vWorld);
+    vec3 col = base * (mix(uAmbDown, uAmb, N.y * 0.5 + 0.5) + uSunCol * max(dot(N, uSunDir), 0.0)) + uSunCol * pow(max(dot(reflect(-uSunDir, N), V), 0.0), 24.0) * 0.5; // scales catch the light
     col = mix(col, uFog, smoothstep(uFogNear, uFogFar, distance(vWorld, cameraPosition)));
     gl_FragColor = vec4(col, 1.0);
     #include <colorspace_fragment>
@@ -9585,7 +9640,7 @@ function reefRockiness(x, z) { let k = 0; for (const [bx, bz, rad] of REEF_BOMMI
 function reefSand(THREE, S) {
   const r = koiRng(808), k = S / 512;
   const tex = canvasTexture(THREE, S, S, (g) => {
-    g.fillStyle = "#e6d9b9"; g.fillRect(0, 0, S, S);
+    g.fillStyle = "#d9c9a4"; g.fillRect(0, 0, S, S);
     for (let i = 0; i < 24; i++) { // ripples: soft bands across, wandering a little (periodic in S so the tile joins)
       g.strokeStyle = `rgba(150,125,90,${r(0.07, 0.16)})`; g.lineWidth = r(6, 14) * k; g.beginPath();
       const y0 = (i / 24) * S;
@@ -9615,11 +9670,11 @@ function reefFanTex(THREE, S) {
         px = nx; py = ny;
       }
     };
-    g.fillStyle = "rgba(255,255,255,0.28)"; g.beginPath(); g.moveTo(S * 0.5, S * 0.98); // the mesh between the branches, a translucent fan shape
+    g.fillStyle = "rgba(255,255,255,0.42)"; g.beginPath(); g.moveTo(S * 0.5, S * 0.98); // the mesh between the branches, a translucent fan shape
     for (let i = 0; i <= 24; i++) { const a = Math.PI + (i / 24) * Math.PI, rad = S * (0.72 + 0.1 * Math.sin(i * 1.7)); g.lineTo(S * 0.5 + Math.cos(a) * rad * 0.62, S * 0.98 + Math.sin(a) * rad); }
     g.closePath(); g.fill();
     for (let k = 0; k < 9; k++) limb(S * 0.5, S * 0.98, Math.PI / 2 + (k - 4) * 0.27 + r(-0.08, 0.08), S * r(0.55, 0.85), 13 * (S / 512), 0);
-    g.lineWidth = 2.4 * (S / 512); g.strokeStyle = "rgba(255,255,255,0.85)";
+    g.lineWidth = 3.2 * (S / 512); g.strokeStyle = "rgba(255,255,255,0.85)";
     for (let i = 0; i < 2600; i++) { const x = r(S * 0.05, S * 0.95), y = r(S * 0.1, S * 0.94), a = r(0, 6.28), l = r(5, 16) * (S / 512); if (Math.hypot((x - S / 2) / 0.62, y - S) > S * 0.78) continue; g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke(); }
   });
 }
@@ -9644,6 +9699,56 @@ function reefRing(THREE) {
     g.fillStyle = "rgba(255,255,255,0.95)"; g.beginPath(); g.ellipse(22, 20, 6, 4, -0.6, 0, Math.PI * 2); g.fill();
   });
 }
+/** A second atlas of painted things: an anemone, a tuft of sea grass, a lettuce coral, a finger coral. */
+function reefSoftAtlas2(THREE, S) {
+  const r = koiRng(7171), cell = S / 2, k = S / 1024;
+  return canvasTexture(THREE, S, S, (g) => {
+    const cellAt = (i, draw) => { g.save(); g.translate((i % 2) * cell, Math.floor(i / 2) * cell); g.beginPath(); g.rect(0, 0, cell, cell); g.clip(); draw(cell); g.restore(); };
+    const taper = (x0, y0, x1, y1, cx, cy, w0, w1, col0, col1, steps = 9) => { // a stroke narrowing from w0 to w1 along a curve, shading from col0 to col1
+      let px = x0, py = y0;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps, u = 1 - t, x = u * u * x0 + 2 * u * t * cx + t * t * x1, y = u * u * y0 + 2 * u * t * cy + t * t * y1;
+        g.strokeStyle = t < 0.5 ? col0 : col1; g.lineWidth = w0 + (w1 - w0) * t; g.lineCap = "round"; g.beginPath(); g.moveTo(px, py); g.lineTo(x, y); g.stroke();
+        px = x; py = y;
+      }
+    };
+    cellAt(0, (c) => { // an anemone: a column and a crown of tentacles, pink with pale tips
+      const gr = g.createLinearGradient(c * 0.3, 0, c * 0.7, 0); gr.addColorStop(0, "#8a5a58"); gr.addColorStop(0.5, "#c88a86"); gr.addColorStop(1, "#7a4c4a");
+      g.fillStyle = gr; g.beginPath(); g.moveTo(c * 0.3, c * 0.98); g.quadraticCurveTo(c * 0.28, c * 0.74, c * 0.5, c * 0.72); g.quadraticCurveTo(c * 0.72, c * 0.74, c * 0.7, c * 0.98); g.closePath(); g.fill();
+      const tents = [];
+      for (let i = 0; i < 130; i++) { const u = r(-1, 1), y0 = c * (0.72 + 0.03 * u * u), x0 = c * (0.5 + u * 0.2), len = c * r(0.2, 0.4), a = -Math.PI / 2 + u * 1.25 + r(-0.3, 0.3); tents.push([x0, y0, x0 + Math.cos(a) * len, y0 + Math.sin(a) * len, u]); }
+      tents.sort((p, q) => Math.abs(q[4]) - Math.abs(p[4])); // the outer ones first, the middle ones over them
+      for (const [x0, y0, x1, y1] of tents) { taper(x0, y0, x1, y1, (x0 + x1) / 2 + r(-8, 8) * k, (y0 + y1) / 2 - 10 * k, 13 * k, 4 * k, "#d98a9e", "#f7d3dc"); g.fillStyle = "#fff0f3"; g.beginPath(); g.arc(x1, y1, 3.2 * k, 0, Math.PI * 2); g.fill(); }
+    });
+    cellAt(1, (c) => { // sea grass: a tuft of blades bending in the surge
+      for (let i = 0; i < 11; i++) {
+        const u = r(-1, 1), x1 = c * (0.5 + u * 0.42), y1 = c * r(0.08, 0.42), lean = r(-0.15, 0.15);
+        taper(c * (0.5 + u * 0.06), c * 0.98, x1, y1, c * (0.5 + u * 0.3 + lean), c * 0.6, 13 * k, 2 * k, ["#3f7a45", "#4d8c4e", "#356e4a"][(r() * 3) | 0], ["#7fc46a", "#98d07c", "#6ab86a"][(r() * 3) | 0], 11);
+      }
+    });
+    cellAt(2, (c) => { // a lettuce coral: ruffled plates stacked up, lighter along their rims
+      for (let layer = 0; layer < 7; layer++) {
+        const y = c * (0.96 - layer * 0.11), w = c * (0.44 - layer * 0.04), hue = 30 + layer * 3;
+        g.fillStyle = `hsl(${hue}, 55%, ${34 + layer * 4}%)`; g.beginPath(); g.moveTo(c * 0.5 - w, y);
+        for (let x = -w; x <= w; x += w / 8) g.lineTo(c * 0.5 + x, y - c * 0.07 - Math.sin(x / w * Math.PI * 4 + layer) * c * 0.025);
+        g.lineTo(c * 0.5 + w, y); g.closePath(); g.fill();
+        g.strokeStyle = `hsl(${hue}, 60%, ${62 + layer * 3}%)`; g.lineWidth = 3 * k; g.beginPath();
+        for (let x = -w; x <= w; x += w / 16) g.lineTo(c * 0.5 + x, y - c * 0.07 - Math.sin(x / w * Math.PI * 4 + layer) * c * 0.025);
+        g.stroke();
+      }
+    });
+    cellAt(3, (c) => { // a finger coral: fat yellow fingers with polyp dots
+      const fingers = [[0.5, 0.1, 0.09], [0.32, 0.22, 0.08], [0.68, 0.2, 0.085], [0.41, 0.36, 0.07], [0.6, 0.38, 0.075], [0.22, 0.42, 0.065], [0.78, 0.44, 0.065]];
+      for (const [x, top, w] of fingers) {
+        const cx = x * c, ty = top * c, ww = w * c;
+        const gr = g.createLinearGradient(cx - ww, 0, cx + ww, 0); gr.addColorStop(0, "#9a6a1e"); gr.addColorStop(0.4, "#e8b84a"); gr.addColorStop(1, "#8a5c1a");
+        g.fillStyle = gr; g.beginPath(); g.moveTo(cx - ww, c * 0.98); g.lineTo(cx - ww, ty + ww); g.arc(cx, ty + ww, ww, Math.PI, 0); g.lineTo(cx + ww, c * 0.98); g.closePath(); g.fill();
+        g.fillStyle = "rgba(255,240,190,0.75)";
+        for (let i = 0; i < 40; i++) { const yy = r(ty + ww * 0.3, c * 0.96), xx = cx + r(-0.85, 0.85) * ww; g.beginPath(); g.arc(xx, yy, r(1.2, 2.4) * k, 0, Math.PI * 2); g.fill(); }
+      }
+    });
+  });
+}
 /** Give a geometry its sway weights from a rule on each vertex's position. */
 function reefSway(THREE, geo, fn) {
   const p = geo.attributes.position, a = new Float32Array(p.count);
@@ -9657,7 +9762,7 @@ function reefStaghorn(THREE, r) {
   const parts = [], up = new THREE.Vector3(0, 1, 0);
   const branch = (from, dir, len, rad, depth) => {
     const to = from.clone().addScaledVector(dir, len), mid = from.clone().add(to).multiplyScalar(0.5);
-    parts.push([new THREE.CylinderGeometry(rad * 0.6, rad, len, 6), new THREE.Matrix4().compose(mid, new THREE.Quaternion().setFromUnitVectors(up, dir), new THREE.Vector3(1, 1, 1))]);
+    parts.push([new THREE.CylinderGeometry(rad * 0.6, rad, len, 8), new THREE.Matrix4().compose(mid, new THREE.Quaternion().setFromUnitVectors(up, dir), new THREE.Vector3(1, 1, 1))]);
     if (depth >= 3) return;
     for (let k = 0; k < (depth === 0 ? 4 : 2); k++) {
       const d = dir.clone().add(new THREE.Vector3(r(-0.8, 0.8), r(0.3, 0.9), r(-0.8, 0.8))).normalize();
@@ -9669,10 +9774,70 @@ function reefStaghorn(THREE, r) {
 }
 /** A boulder or brain coral: a lumpy, squashed ball half sunk in the sand. */
 function reefBoulder(THREE, seed) {
-  const g = new THREE.IcosahedronGeometry(1, 2), p = g.attributes.position;
+  const g = new THREE.SphereGeometry(1, 26, 16), p = g.attributes.position; // indexed, so the normals stay smooth (an icosahedron shows every facet)
   for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), s = 0.86 + 0.28 * lhNoise3(x * 2 + seed, y * 2, z * 2 + seed); p.setXYZ(i, x * s, y * s * 0.7 + 0.35, z * s); }
   g.computeVertexNormals();
   return reefSway(THREE, g, () => 0);
+}
+/** Painted soft corals and sponges in a 2 × 2 atlas: a cauliflower soft coral, tube sponges, a brain coral, a red gorgonian; the base at the bottom middle of each cell. */
+function reefSoftAtlas(THREE, S) {
+  const r = koiRng(9090), cell = S / 2;
+  return canvasTexture(THREE, S, S, (g) => {
+    const blob = (x, y, rad, hi, lo, a = 1) => { const gr = g.createRadialGradient(x - rad * 0.3, y - rad * 0.35, rad * 0.1, x, y, rad); gr.addColorStop(0, hi); gr.addColorStop(1, lo); g.globalAlpha = a; g.fillStyle = gr; g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1; };
+    const cellAt = (i, draw) => { g.save(); g.translate((i % 2) * cell, Math.floor(i / 2) * cell); g.beginPath(); g.rect(0, 0, cell, cell); g.clip(); draw(cell); g.restore(); };
+    cellAt(0, (c) => { // a cauliflower soft coral: a short stalk and a head of lobes, cream to pink
+      g.fillStyle = "#d9b7a0"; g.fillRect(c * 0.44, c * 0.62, c * 0.12, c * 0.38);
+      const lobes = [];
+      for (let i = 0; i < 90; i++) { const a = r(0, 6.28), d = Math.sqrt(r()) * c * 0.3; lobes.push([c * 0.5 + Math.cos(a) * d * 1.15, c * 0.44 + Math.sin(a) * d * 0.85, r(0.045, 0.085) * c]); }
+      lobes.sort((p, q) => q[1] - p[1]);
+      for (const [x, y, rad] of lobes) blob(x, y, rad, ["#ffe9dc", "#ffd9d0", "#ffe4c8"][(r() * 3) | 0], ["#d98c8c", "#c97f92", "#d9a07f"][(r() * 3) | 0]);
+      g.fillStyle = "rgba(255,255,255,0.7)";
+      for (let i = 0; i < 260; i++) { const a = r(0, 6.28), d = Math.sqrt(r()) * c * 0.3; g.beginPath(); g.arc(c * 0.5 + Math.cos(a) * d * 1.15, c * 0.44 + Math.sin(a) * d * 0.85, r(1, 2.2) * (S / 1024), 0, Math.PI * 2); g.fill(); }
+    });
+    cellAt(1, (c) => { // tube sponges: a cluster of tubes leaning apart, a dark mouth in each
+      const tubes = [[0.5, 0.12, 0.09, 0], [0.34, 0.26, 0.075, -0.18], [0.66, 0.24, 0.08, 0.16], [0.42, 0.4, 0.06, -0.08], [0.6, 0.42, 0.065, 0.1]];
+      for (const [x, top, w, lean] of tubes) {
+        const cx = x * c, ty = top * c, ww = w * c, bx = c * 0.5 + (cx - c * 0.5) * 0.35;
+        const gr = g.createLinearGradient(cx - ww, 0, cx + ww, 0); gr.addColorStop(0, "#5a3d8a"); gr.addColorStop(0.45, "#a884d9"); gr.addColorStop(1, "#4a2f74");
+        g.fillStyle = gr; g.beginPath(); g.moveTo(bx - ww * 0.8, c * 0.98); g.lineTo(cx - ww, ty); g.lineTo(cx + ww, ty); g.lineTo(bx + ww * 0.8, c * 0.98); g.closePath(); g.fill();
+        g.fillStyle = "#2a1a44"; g.beginPath(); g.ellipse(cx, ty, ww, ww * 0.42, 0, 0, Math.PI * 2); g.fill();
+        g.strokeStyle = "rgba(255,255,255,0.35)"; g.lineWidth = 2 * (S / 1024); g.beginPath(); g.ellipse(cx, ty, ww, ww * 0.42, 0, Math.PI, Math.PI * 2); g.stroke();
+        g.strokeStyle = "rgba(40,20,70,0.25)"; for (let k = 0; k < 6; k++) { const yy = ty + ((k + 1) / 7) * (c * 0.98 - ty); g.beginPath(); g.moveTo(cx - ww * (1 + 0.2 * k / 6), yy); g.lineTo(cx + ww * (1 + 0.2 * k / 6), yy); g.stroke(); }
+      }
+    });
+    cellAt(2, (c) => { // a brain coral: a dome with winding grooves
+      const gr = g.createRadialGradient(c * 0.4, c * 0.5, c * 0.05, c * 0.5, c * 0.65, c * 0.5); gr.addColorStop(0, "#d8c27a"); gr.addColorStop(1, "#8a7a3e");
+      g.fillStyle = gr; g.beginPath(); g.ellipse(c * 0.5, c * 0.62, c * 0.46, c * 0.37, 0, 0, Math.PI * 2); g.fill();
+      const sh = g.createLinearGradient(0, c * 0.7, 0, c * 0.99); sh.addColorStop(0, "rgba(40,30,10,0)"); sh.addColorStop(1, "rgba(40,30,10,0.55)");
+      g.fillStyle = sh; g.beginPath(); g.ellipse(c * 0.5, c * 0.62, c * 0.46, c * 0.37, 0, 0, Math.PI * 2); g.fill(); // darker underneath
+      g.strokeStyle = "rgba(70,55,20,0.6)"; g.lineWidth = 2.6 * (S / 1024); g.lineCap = "round";
+      for (let i = 0; i < 26; i++) {
+        let x = r(c * 0.1, c * 0.9), y = r(c * 0.38, c * 0.9), a = r(0, 6.28);
+        g.beginPath(); g.moveTo(x, y);
+        for (let k = 0; k < 14; k++) { a += r(-0.9, 0.9); x += Math.cos(a) * c * 0.03; y += Math.sin(a) * c * 0.018; if (Math.hypot((x - c * 0.5) / 0.46, (y - c * 0.62) / 0.37) > c * 0.94) break; g.lineTo(x, y); }
+        g.stroke();
+      }
+      g.strokeStyle = "rgba(255,245,200,0.35)"; g.lineWidth = 2 * (S / 1024);
+      for (let i = 0; i < 26; i++) { let x = r(c * 0.1, c * 0.9), y = r(c * 0.4, c * 0.9), a = r(0, 6.28); g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 10; k++) { a += r(-0.9, 0.9); x += Math.cos(a) * c * 0.03; y += Math.sin(a) * c * 0.018; g.lineTo(x, y); } g.stroke(); }
+    });
+    cellAt(3, (c) => { // a red gorgonian: knobbly branches spreading up from a stem
+      const limb = (x, y, a, len, w, depth) => {
+        const steps = 6;
+        let px = x, py = y;
+        for (let i = 1; i <= steps; i++) {
+          a += r(-0.25, 0.25);
+          const nx = px + Math.cos(a) * (len / steps), ny = py - Math.sin(a) * (len / steps);
+          g.strokeStyle = "#b8362e"; g.lineCap = "round"; g.lineWidth = w * (1 - (0.45 * i) / steps); g.beginPath(); g.moveTo(px, py); g.lineTo(nx, ny); g.stroke();
+          blob(nx, ny, w * 0.7, "#ff8f7a", "#9c2a22", 0.9);
+          if (depth < 3 && i > 1 && r() < 0.6) limb(nx, ny, a + (r() < 0.5 ? -1 : 1) * r(0.4, 0.9), len * r(0.45, 0.65), w * 0.68, depth + 1);
+          px = nx; py = ny;
+        }
+      };
+      for (let k = 0; k < 3; k++) limb(c * 0.5, c * 0.98, Math.PI / 2 + (k - 1) * 0.45 + r(-0.1, 0.1), c * r(0.45, 0.6), 14 * (S / 1024), 0);
+      g.fillStyle = "rgba(255,230,200,0.8)";
+      for (let i = 0; i < 300; i++) { const x = r(c * 0.1, c * 0.9), y = r(c * 0.15, c * 0.95); const d = g.getImageData(x | 0, y | 0, 1, 1).data; if (d[3] > 100 && d[0] > 120) { g.beginPath(); g.arc(x, y, r(1, 2) * (S / 1024), 0, Math.PI * 2); g.fill(); } }
+    });
+  });
 }
 /** A table coral: a flat plate on a short stalk. */
 function reefTable(THREE) {
@@ -9758,7 +9923,7 @@ function reef(THREE, scene, camera, pal, preview) {
       const x = p.getX(i), z = p.getZ(i), rock = reefRockiness(x, z);
       p.setY(i, floorAt(x, z));
       uv.setXY(i, x / 6, z / 6);
-      col.set([1 - 0.45 * rock, 1 - 0.5 * rock, 1 - 0.52 * rock], i * 3);
+      col.set([1 - 0.42 * rock, 1 - 0.52 * rock, 1 - 0.6 * rock], i * 3); // the bommies' rock is browner and darker than the sand
     }
     floorGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
     floorGeo.computeVertexNormals();
@@ -9770,9 +9935,10 @@ function reef(THREE, scene, camera, pal, preview) {
 
   /* --- the corals: six kinds, instanced, growing thickest on the bommies --- */
   const coralUni = { ...common, uGlow: { value: 0 } };
-  const coralMat = keep(new THREE.ShaderMaterial({ uniforms: coralUni, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS }));
-  const leafMat = keep(new THREE.ShaderMaterial({ uniforms: coralUni, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS, side: THREE.DoubleSide }));
-  const fanMat = keep(new THREE.ShaderMaterial({ uniforms: { ...coralUni, uMap: { value: keep(reefFanTex(THREE, preview ? 256 : 512)) } }, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS, defines: { REEF_MAP: 1 }, side: THREE.DoubleSide, alphaToCoverage: true }));
+  const coralMatFor = (kind, extra = {}, uni = {}) => keep(new THREE.ShaderMaterial({ uniforms: { ...coralUni, uKind: { value: kind }, ...uni }, vertexShader: REEF_CORAL_VS, fragmentShader: REEF_CORAL_FS, ...extra }));
+  const fanMat = coralMatFor(3, { defines: { REEF_MAP: 1 }, side: THREE.DoubleSide, alphaToCoverage: true }, { uMap: { value: keep(reefFanTex(THREE, preview ? 256 : 512)) } });
+  const spriteMat = (tex) => keep(new THREE.ShaderMaterial({ uniforms: { ...coralUni, uMap: { value: keep(tex) } }, vertexShader: REEF_SPRITE_VS, fragmentShader: REEF_SPRITE_FS, side: THREE.DoubleSide, alphaToCoverage: true }));
+  const softMat = spriteMat(reefSoftAtlas(THREE, preview ? 512 : 1024)), softMat2 = spriteMat(reefSoftAtlas2(THREE, preview ? 512 : 1024));
   const accentFans = [];
   const spotFor = (near) => { // a place on the floor: most on or beside a bommie, the rest anywhere on the reef, never right at the viewer's feet
     for (let tries = 0; tries < 20; tries++) {
@@ -9800,14 +9966,30 @@ function reef(THREE, scene, camera, pal, preview) {
     return mesh;
   };
   const k = preview ? 0.33 : 1;
-  plant(reefStaghorn(THREE, r), coralMat, Math.round(55 * k), 0.75, [0.9, 2.2], ["#c9a27a", "#d9b98f", "#b58fd6", "#8fb8d9", "#e2c8a0", "#d99a8a"]);
-  plant(reefBoulder(THREE, 3), coralMat, Math.round(22 * k), 0.8, [0.5, 1.4], ["#7c9a4f", "#a0a65a", "#8a6b45", "#5f8f6a", "#b7965a"], 0.3);
-  plant(reefBoulder(THREE, 11), coralMat, Math.round(20 * k), 0.8, [0.4, 1.1], ["#8a9a4a", "#9a7a50", "#6f9a7a", "#b08a5a"], 0.3);
-  plant(reefTable(THREE), coralMat, Math.round(18 * k) + 2, 0.7, [0.7, 1.6], ["#8fa56a", "#b0a070", "#9c8a5a", "#a8b07a"], 0.1, [[-4.6, -5.2], [5.2, -6.4]]);
-  plant(reefBoulder(THREE, 7), coralMat, 2, 0.8, [1.3, 1.7], ["#8a6b45", "#7c9a4f"], 0.3, [[-3.8, -4.2], [4.2, -5.0]]);
+  plant(reefStaghorn(THREE, r), coralMatFor(0), Math.round(50 * k), 0.75, [0.9, 2.2], ["#c8a888", "#d6b694", "#b9a0c8", "#a9b8c8", "#dcc4a4", "#c9a294"]);
+  plant(reefBoulder(THREE, 3), coralMatFor(1), Math.round(22 * k), 0.8, [0.5, 1.4], ["#b09a58", "#a8a06a", "#9a7a52", "#8fa070", "#c4a262"], 0.3);
+  plant(reefBoulder(THREE, 11), coralMatFor(1), Math.round(20 * k), 0.8, [0.4, 1.1], ["#a89a5a", "#a8865a", "#8aa084", "#b8946a"], 0.3);
+  plant(reefTable(THREE), coralMatFor(2), Math.round(18 * k) + 2, 0.7, [0.7, 1.6], ["#a8a878", "#b8a882", "#a89a6c", "#b0b088"], 0.1, [[-4.6, -5.2], [5.2, -6.4]]);
+  plant(reefBoulder(THREE, 7), coralMatFor(1), 2, 0.8, [0.85, 1.1], ["#9a7a52", "#b09a58"], 0.3, [[-4.4, -5.0], [4.8, -5.8]]);
   plant(reefFan(THREE), fanMat, Math.round(45 * k), 0.7, [0.8, 1.8], ["#b04a7a", "#d4553d", "#7a4fb8", "#e08a3a", "accent", "accent"], 0.15);
-  plant(reefAnemone(THREE, r), coralMat, Math.round(45 * k) + 3, 0.65, [0.6, 1.3], ["#d97aa5", "#e7c26a", "#8ad3c8", "#f0a070", "#c6a2e6", "#ff7f6e"], 0.1, [[-2.6, -3.6], [3.1, -4.1], [-5.4, -3.4]]);
-  plant(reefGrass(THREE, r), leafMat, Math.round(70 * k) + 6, 0.35, [0.6, 1.4], ["#3f8a4a", "#5aa05a", "#2f7a55", "#6aa84f"], 0.2, [[-1.9, -3.2], [-3.2, -3.0], [2.2, -3.4], [3.6, -3.0], [-6.2, -4.6], [6.4, -4.4]]);
+  // painted things: upright billboards from the two atlases; `fixed` places the foreground ones, with their cell
+  const sprinkle = (mat, n, near, sizes, cells, fixed) => {
+    const spriteGeo = keep(new THREE.PlaneGeometry(1, 1));
+    spriteGeo.translate(0, 0.5, 0);
+    const aSprite = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4);
+    spriteGeo.setAttribute("aSprite", aSprite);
+    const mesh = new THREE.InstancedMesh(spriteGeo, mat, n), c = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const [x, z, cell] = i < fixed.length ? fixed[i] : [...spotFor(near), cells[(r() * cells.length) | 0]];
+      mesh.setMatrixAt(i, M4.makeTranslation(x, floorAt(x, z) - 0.03, z));
+      aSprite.setXYZW(i, r(sizes[0], sizes[1]), cell, r(0, 6.28), 0);
+      mesh.setColorAt(i, c.setScalar(r(0.85, 1.05)));
+    }
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+  };
+  sprinkle(softMat, Math.round(46 * k) + 4, 0.8, [0.9, 1.9], [0, 1, 2, 3], [[-3.0, -4.6, 2], [3.4, -4.4, 0], [-5.8, -6.0, 3], [6.0, -6.6, 1]]);
+  sprinkle(softMat2, Math.round(110 * k) + 9, 0.5, [0.55, 1.3], [0, 1, 1, 1, 2, 3], [[-2.6, -3.6, 0], [3.1, -4.1, 0], [-5.4, -3.4, 3], [-1.9, -3.2, 1], [-3.2, -3.0, 1], [2.2, -3.4, 1], [3.6, -3.0, 1], [-6.2, -4.6, 2], [6.4, -4.4, 1]]);
 
   /* --- the school: a couple of hundred small fish that hold a loose shape round a point and swirl about it; the point follows the pointer --- */
   const NF = preview ? 80 : 220;
@@ -9885,11 +10067,11 @@ function reef(THREE, scene, camera, pal, preview) {
   const bubbles = new THREE.Points(bubGeo, keep(new THREE.PointsMaterial({ map: keep(reefRing(THREE)), size: 0.16, transparent: true, depthWrite: false, opacity: 0.7, fog: false })));
   bubbles.frustumCulled = false; bubbles.renderOrder = 7;
   scene.add(bubbles);
-  const NM = preview ? 120 : 400, mote = new Float32Array(NM * 3), moteV = [];
+  const NM = preview ? 150 : 650, mote = new Float32Array(NM * 3), moteV = [];
   for (let i = 0; i < NM; i++) { mote.set([r(-25, 25), r(0.3, SURF - 0.3), r(-50, 4)], i * 3); moteV.push([r(-0.04, 0.04), r(-0.02, 0.03), r(-0.04, 0.04)]); }
   const moteGeo = keep(new THREE.BufferGeometry());
   moteGeo.setAttribute("position", new THREE.BufferAttribute(mote, 3).setUsage(THREE.DynamicDrawUsage));
-  const moteMat = keep(new THREE.PointsMaterial({ map: glow, size: 0.07, transparent: true, depthWrite: false, opacity: 0.35, fog: true }));
+  const moteMat = keep(new THREE.PointsMaterial({ map: glow, size: 0.1, transparent: true, depthWrite: false, opacity: 0.45, fog: true }));
   const motes = new THREE.Points(moteGeo, moteMat);
   motes.frustumCulled = false; motes.renderOrder = 7;
   scene.add(motes);
@@ -9915,17 +10097,17 @@ function reef(THREE, scene, camera, pal, preview) {
     for (const { mesh, i } of accentFans) { mesh.setColorAt(i, c.copy(accent).multiplyScalar(1.1)); mesh.instanceColor.needsUpdate = true; }
     for (const i of accentFish) school.setColorAt(i, c.copy(accent).multiplyScalar(1.15));
     school.instanceColor.needsUpdate = true;
-    waterUni.uDeep.value.set(d ? "#02101f" : "#0a4f80"); waterUni.uMid.value.set(d ? "#041a30" : "#1a8fbf"); waterUni.uUp.value.set(d ? "#0a2c4a" : "#5fd0ee"); waterUni.uWindow.value = d ? 0.3 : 1;
-    lightUni.uSunCol.value.set(d ? "#5d7fb0" : "#fff2d8").multiplyScalar(d ? 0.28 : 0.6);
-    lightUni.uAmb.value.set(d ? "#12243a" : "#6a9fc2").multiplyScalar(d ? 1 : 0.6); lightUni.uAmbDown.value.set(d ? "#050c16" : "#284a66");
-    lightUni.uCaustic.value = d ? 0.05 : 0.2;
-    rayUni.uColor.value.set(d ? "#6f90c0" : "#cfe8ff").multiplyScalar(d ? 0.14 : 0.55);
+    waterUni.uDeep.value.set(d ? "#02101f" : "#063a66"); waterUni.uMid.value.set(d ? "#041a30" : "#1277ab"); waterUni.uUp.value.set(d ? "#0a2c4a" : "#4cbde4"); waterUni.uWindow.value = d ? 0.3 : 1;
+    lightUni.uSunCol.value.set(d ? "#5d7fb0" : "#fff2d8").multiplyScalar(d ? 0.28 : 0.55);
+    lightUni.uAmb.value.set(d ? "#12243a" : "#5a90b8").multiplyScalar(d ? 1 : 0.5); lightUni.uAmbDown.value.set(d ? "#050c16" : "#22405c");
+    lightUni.uCaustic.value = d ? 0.05 : 0.27;
+    rayUni.uColor.value.set(d ? "#6f90c0" : "#cfe8ff").multiplyScalar(d ? 0.2 : 1.1);
     coralUni.uGlow.value = d ? 0.5 : 0;
-    fogUni.uFog.value.set(d ? "#041226" : "#1e8fc0"); fogUni.uFogNear.value = d ? 4 : 6; fogUni.uFogFar.value = d ? 40 : 60;
+    fogUni.uFog.value.set(d ? "#041226" : "#187db2"); fogUni.uFogNear.value = d ? 4 : 6; fogUni.uFogFar.value = d ? 40 : 60;
     scene.fog.color.copy(fogUni.uFog.value); scene.fog.near = fogUni.uFogNear.value; scene.fog.far = fogUni.uFogFar.value;
     hemi.color.set(d ? "#1b3350" : "#a6d6f0"); hemi.groundColor.set(d ? "#040a12" : "#3a6a88"); hemi.intensity = d ? 0.6 : 1.6;
     sun.color.set(d ? "#6d8fc0" : "#fff2d8"); sun.intensity = d ? 0.5 : 2.0;
-    moteMat.color.set(d ? "#9fd8ff" : "#ffffff"); moteMat.opacity = d ? 0.25 : 0.35;
+    moteMat.color.set(d ? "#9fd8ff" : "#ffffff"); moteMat.opacity = d ? 0.25 : 0.45;
     sparks.visible = d;
   }
   applyPalette(pal);
