@@ -2,9 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { usePrefs } from "@/lib/store";
 
-/** Accent + theme as three.js-friendly hex strings, read from the live CSS variables. */
-function readPalette() {
-  const cs = getComputedStyle(document.documentElement);
+/** Accent + theme as three.js-friendly hex strings, read from the live CSS variables (on the background layer, which may carry the admin's colour). */
+function readPalette(el) {
+  const cs = getComputedStyle(el ?? document.documentElement);
   const accent = cs.getPropertyValue("--accent").trim() || "#6366f1";
   const strong = cs.getPropertyValue("--accent-strong").trim() || "#4f46e5";
   const dark = document.documentElement.dataset.theme === "dark";
@@ -12401,7 +12401,7 @@ const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, oc
  * the loop pauses when the tab is hidden or animation is off, colours follow the theme and
  * accent, and everything is disposed when the style changes or the component unmounts.
  */
-export default function ThreeBackground({ style, preview = false }) {
+export default function ThreeBackground({ style, preview = false, speed = 1, color = null }) {
   const ref = useRef(null);
   const animate = usePrefs((s) => s.bgAnimate);
   const reduce = usePrefs((s) => s.reduceMotion);
@@ -12409,6 +12409,15 @@ export default function ThreeBackground({ style, preview = false }) {
   useEffect(() => {
     running.current = animate && !reduce;
   }, [animate, reduce]);
+  // the admin's look: the scene's clock runs at `speed`; a new `color` repaints the scene without rebuilding it
+  const speedRef = useRef(speed);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+  const repaint = useRef(() => {});
+  useEffect(() => {
+    repaint.current();
+  }, [color]);
 
   // Previews (the admin Backgrounds page shows every scene at once) only hold a WebGL context
   // while they are on screen: browsers allow about 16 live contexts per page.
@@ -12444,7 +12453,7 @@ export default function ThreeBackground({ style, preview = false }) {
       const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 200);
       let built;
       try {
-        built = BUILDERS[style](THREE, scene, camera, readPalette(), preview);
+        built = BUILDERS[style](THREE, scene, camera, readPalette(el), preview);
       } catch (err) {
         console.error(`Background "${style}" failed to build`, err);
         renderer.dispose();
@@ -12462,9 +12471,11 @@ export default function ThreeBackground({ style, preview = false }) {
       resize();
       const ro = new ResizeObserver(resize);
       ro.observe(el);
-      const mo = new MutationObserver(() => built.setPalette(readPalette()));
+      repaint.current = () => built.setPalette(readPalette(el));
+      const mo = new MutationObserver(() => built.setPalette(readPalette(el)));
       mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
       let last = performance.now();
+      let clock = last / 1000; // the scene's own time, at the admin's speed
       let staticDrawn = false;
       const loop = (now) => {
         raf = requestAnimationFrame(loop);
@@ -12476,8 +12487,10 @@ export default function ThreeBackground({ style, preview = false }) {
           return;
         }
         staticDrawn = false;
+        const step = dt * speedRef.current;
+        clock += step;
         try {
-          built.update(dt, now / 1000);
+          built.update(step, clock);
         } catch (err) {
           console.error(`Background "${style}" failed while animating`, err);
           cancelAnimationFrame(raf);
@@ -12488,6 +12501,7 @@ export default function ThreeBackground({ style, preview = false }) {
       raf = requestAnimationFrame(loop);
       cleanup = () => {
         cancelAnimationFrame(raf);
+        repaint.current = () => {};
         ro.disconnect();
         mo.disconnect();
         built.dispose();

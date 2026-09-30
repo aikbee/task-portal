@@ -1,11 +1,12 @@
 "use client";
 import { useState } from "react";
-import { Save, Check, Lock, Pencil, ListOrdered, RotateCcw, Ban } from "lucide-react";
+import { Save, Check, Lock, Pencil, ListOrdered, RotateCcw, Ban, Gauge, Palette, SunMedium } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
 import Modal from "@/components/ui/Modal";
-import { Toggle, Field, Input, Textarea } from "@/components/ui/Controls";
+import { Toggle, Field, Input, Textarea, Segmented } from "@/components/ui/Controls";
+import ColorPicker from "@/components/ui/ColorPicker";
 import { useToast } from "@/components/ui/Toast";
 import { Skeleton } from "@/components/ui/Misc";
 import AnimatedBackground from "@/components/shell/AnimatedBackground";
@@ -15,7 +16,7 @@ import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useUI } from "@/lib/store";
 import { MODULE_MAP } from "@/lib/modules";
-import { BG_STYLES, BG_KEYS, BG_TITLE_MAX, BG_DESC_MAX, normaliseBgSettings, orderedStyles, bgText } from "@/lib/backgrounds";
+import { BG_STYLES, BG_KEYS, BG_TITLE_MAX, BG_DESC_MAX, BG_LOOK_DEFAULT, BG_SPEED, BG_BRIGHTNESS, normaliseBgSettings, orderedStyles, bgText } from "@/lib/backgrounds";
 import { cn } from "@/lib/utils";
 import { useT, useLocale, translate } from "@/lib/i18n";
 
@@ -59,6 +60,10 @@ function Editor({ initial, mod, tr }) {
     });
   };
   const setDefault = (key) => update((f) => ({ default: key, enabled: f.enabled.includes(key) ? f.enabled : [...f.enabled, key] }));
+  const setLook = (patch) => update((f) => ({ look: { ...f.look, ...patch } }));
+  const lookChanged = JSON.stringify(form.look) !== JSON.stringify(BG_LOOK_DEFAULT);
+  // "One colour for everyone" starts from the admin's own accent colour
+  const ownAccent = () => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#6366f1";
   const save = async () => {
     setSaving(true);
     try {
@@ -84,6 +89,31 @@ function Editor({ initial, mod, tr }) {
           <Button size="sm" variant="outline" icon={ListOrdered} onClick={() => setOrdering(true)} data-testid="bg-order">{tr("Order")}</Button>
         </div>
       </Card>
+      <Card className="mb-4 space-y-4" data-testid="bg-look">
+        <div>
+          <p className="text-sm font-semibold">{tr("Speed, colour and brightness")}</p>
+          <p className="text-xs text-fg-muted">{tr("For every background and everyone. The previews below show it before you save.")}</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Slider icon={Gauge} label={tr("Animation speed")} value={form.look.speed} range={BG_SPEED} format={(v) => `${v}×`} onChange={(v) => setLook({ speed: v })} testid="bg-speed" />
+          <Slider icon={SunMedium} label={tr("Brightness")} value={form.look.brightness} range={BG_BRIGHTNESS} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => setLook({ brightness: v })} testid="bg-brightness" />
+        </div>
+        <div>
+          <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium"><Palette size={13} className="text-fg-muted" /> {tr("Colour")}</p>
+          <Segmented
+            value={form.look.color ? "fixed" : "user"}
+            onChange={(v) => setLook({ color: v === "fixed" ? form.look.color ?? ownAccent() : null })}
+            options={[{ value: "user", label: tr("Each user's accent colour") }, { value: "fixed", label: tr("One colour for everyone") }]}
+            className="w-full sm:max-w-lg"
+          />
+          {form.look.color ? <ColorPicker value={form.look.color} onChange={(c) => setLook({ color: c })} className="mt-3" /> : null}
+          <p className="mt-2 text-[11px] text-fg-muted">{tr("One colour replaces each user's accent colour in the backgrounds that use it (about two in three; landscapes keep their own colours).")}</p>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-fg-faint">{tr("A user who switched animation off, or asked for reduced motion, still sees a still background.")}</p>
+          {lookChanged ? <Button size="sm" variant="ghost" icon={RotateCcw} onClick={() => setLook(BG_LOOK_DEFAULT)}>{tr("Reset speed, colour and brightness")}</Button> : null}
+        </div>
+      </Card>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 anim-stagger">
         {orderedStyles(form).map((b) => {
           const on = enabled.has(b.value);
@@ -93,7 +123,7 @@ function Editor({ initial, mod, tr }) {
           return (
             <Card key={b.value} padding={false} className={cn("overflow-hidden", !on && "opacity-60")} data-bg={b.value}>
               <div className="bg-preview aspect-[16/9] bg-bg" data-theme={undefined}>
-                <AnimatedBackground preview={b.value} />
+                <AnimatedBackground preview={b.value} look={form.look} />
                 {isDefault ? <span className="absolute left-2 top-2 z-10 rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-white">{tr("Default")}</span> : null}
                 {form.locked && isDefault ? <span className="absolute right-2 top-2 z-10 grid h-6 w-6 place-items-center rounded-full bg-surface/90 text-accent"><Lock size={12} /></span> : null}
               </div>
@@ -139,6 +169,28 @@ function Editor({ initial, mod, tr }) {
         />
       ) : null}
     </>
+  );
+}
+
+/** A labelled range with its value shown (speed as ×, brightness as %). */
+function Slider({ icon: Icon, label, value, range, format, onChange, testid }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 flex items-center justify-between gap-2 text-xs font-medium">
+        <span className="flex items-center gap-1.5"><Icon size={13} className="text-fg-muted" /> {label}</span>
+        <span className="font-mono text-fg-muted">{format(value)}</span>
+      </span>
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={value}
+        onChange={(e) => onChange(Math.round(Number(e.target.value) * 100) / 100)}
+        className="w-full accent-[var(--accent)]"
+        data-testid={testid}
+      />
+    </label>
   );
 }
 

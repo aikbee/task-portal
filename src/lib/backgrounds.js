@@ -68,6 +68,44 @@ export const BG_DESC_MAX = 160;
 /** The languages the admin writes in: "en" and "zh" (the site's zh-CN). */
 export const BG_LANGS = ["en", "zh"];
 
+/**
+ * The admin's look for every background, for everyone: animation speed (×1 = as built), one colour instead of each
+ * user's accent colour (null: follow the user), and brightness (×1 = as built).
+ */
+export const BG_LOOK_DEFAULT = { speed: 1, color: null, brightness: 1 };
+export const BG_SPEED = { min: 0.25, max: 2, step: 0.25 };
+export const BG_BRIGHTNESS = { min: 0.5, max: 1.5, step: 0.05 };
+export const isHexColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+
+function cleanLook(raw) {
+  const l = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const num = (v, range) => (typeof v === "number" && Number.isFinite(v) ? Math.min(range.max, Math.max(range.min, v)) : 1);
+  return { speed: num(l.speed, BG_SPEED), color: isHexColor(l.color) ? l.color.toLowerCase() : null, brightness: num(l.brightness, BG_BRIGHTNESS) };
+}
+
+/** "#rrggbb" mixed towards black (t < 0) or white (t > 0). */
+function shade(hex, t) {
+  const n = parseInt(hex.slice(1), 16);
+  const target = t < 0 ? 0 : 255;
+  const mix = (c) => Math.round(c + (target - c) * Math.abs(t));
+  return "#" + [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => mix(c).toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The look as styles on a background layer: a brightness filter, and the accent variables the backgrounds colour
+ * themselves with (the rest of the app keeps each user's accent). Speed is applied by the components themselves.
+ */
+export function bgLookStyle(look) {
+  const style = {};
+  if (look?.brightness && look.brightness !== 1) style.filter = `brightness(${look.brightness})`;
+  if (isHexColor(look?.color)) {
+    style["--accent"] = look.color;
+    style["--accent-strong"] = shade(look.color, -0.18);
+    style["--accent-soft"] = shade(look.color, 0.72);
+  }
+  return style;
+}
+
 /** Every style once, in the admin's order; styles added since the admin last saved come after, in their built-in order. */
 function cleanOrder(raw) {
   const seen = new Set();
@@ -107,7 +145,7 @@ export function normaliseBgSettings(raw) {
   let enabled = Array.isArray(s.enabled) ? order.filter((k) => s.enabled.includes(k) || (known && !known.includes(k))) : order.slice();
   if (!enabled.length) enabled = ["none"];
   const def = enabled.includes(s.default) ? s.default : enabled[0];
-  return { enabled, default: def, locked: Boolean(s.locked), order, names: cleanNames(s.names) };
+  return { enabled, default: def, locked: Boolean(s.locked), order, names: cleanNames(s.names), look: cleanLook(s.look) };
 }
 
 /** The styles in the admin's order. */

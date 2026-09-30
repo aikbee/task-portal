@@ -1,9 +1,9 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePrefs, useUI } from "@/lib/store";
 import { useMounted } from "@/lib/hooks";
 import { api } from "@/lib/api";
-import { resolveBackground, THREE_STYLES } from "@/lib/backgrounds";
+import { resolveBackground, normaliseBgSettings, bgLookStyle, THREE_STYLES } from "@/lib/backgrounds";
 import ThreeBackground from "./ThreeBackground";
 
 const ORBS = [
@@ -44,10 +44,40 @@ const PULSES_V = [
 ];
 
 /**
+ * The admin's speed for the CSS styles: every animation in the layer plays at that rate. Animations that start later
+ * (another style, animation switched back on, the reduced-motion setting lifted) are caught by the observer and a
+ * slow check.
+ */
+function useCssSpeed(ref, speed, style) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof el.getAnimations !== "function") return;
+    const apply = () => {
+      for (const a of el.getAnimations({ subtree: true })) {
+        if (a.playbackRate === speed) continue;
+        if (typeof a.updatePlaybackRate === "function") a.updatePlaybackRate(speed);
+        else a.playbackRate = speed;
+      }
+    };
+    apply();
+    if (speed === 1) return;
+    const mo = new MutationObserver(apply);
+    mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+    const timer = setInterval(apply, 3000);
+    return () => {
+      mo.disconnect();
+      clearInterval(timer);
+    };
+  }, [ref, speed, style]);
+}
+
+/**
  * The page background. Follows the user's preference within what the admin allows
  * (see /backgrounds); `preview` renders a given style inside a small box instead.
+ * The admin's look (speed, colour, brightness) applies to every style, for everyone;
+ * `look` overrides it (the admin page previews unsaved values).
  */
-export default function AnimatedBackground({ preview = null }) {
+export default function AnimatedBackground({ preview = null, look = null }) {
   const pref = usePrefs((s) => s.bgStyle);
   const settings = useUI((s) => s.bgSettings);
   const setBgSettings = useUI((s) => s.setBgSettings);
@@ -58,17 +88,21 @@ export default function AnimatedBackground({ preview = null }) {
   }, [preview, setBgSettings]);
   const style = preview ?? resolveBackground(pref, settings);
   const cls = preview ? "bg-layer bg-preview-layer" : "bg-layer";
-  if (!mounted || style === "none") return <div className={cls} aria-hidden />;
+  const tuned = look ?? normaliseBgSettings(settings).look;
+  const layer = useRef(null);
+  useCssSpeed(layer, tuned.speed, style);
+  const layerStyle = bgLookStyle(tuned);
+  if (!mounted || style === "none") return <div ref={layer} className={cls} aria-hidden />;
   if (THREE_STYLES.has(style)) {
     return (
-      <div className={cls} aria-hidden>
-        <ThreeBackground style={style} preview={Boolean(preview)} />
+      <div ref={layer} className={cls} style={layerStyle} aria-hidden>
+        <ThreeBackground style={style} preview={Boolean(preview)} speed={tuned.speed} color={tuned.color} />
       </div>
     );
   }
 
   return (
-    <div className={cls} aria-hidden>
+    <div ref={layer} className={cls} style={layerStyle} aria-hidden>
       {style === "aurora" ? (
         <div className="aurora absolute inset-0">
           <span />

@@ -509,8 +509,22 @@ console.log("background settings");
   check("an order that is not a list -> 400", badOrder.status === 400);
   const badNames = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", names: ["rain"] } });
   check("names that are not an object -> 400", badNames.status === 400);
+  // speed, colour and brightness of every background, for everyone (admin only: a user's PUT is refused further down)
+  check("GET carries the look (speed, colour or null for each user's accent, brightness)", before.look && typeof before.look.speed === "number" && typeof before.look.brightness === "number" && "color" in before.look);
+  const looked = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "stars", look: { speed: 1.5, color: "#FF8800", brightness: 0.75 } } });
+  check("the admin sets speed, one colour and brightness for every background", looked.status === 200 && looked.data.look.speed === 1.5 && looked.data.look.color === "#ff8800" && looked.data.look.brightness === 0.75, JSON.stringify(looked.raw).slice(0, 200));
+  const pubLook = await call("GET", "/api/settings/backgrounds", { noAuth: true });
+  check("the public settings carry the look (the web and the app's /bg page apply it)", pubLook.data.look?.speed === 1.5 && pubLook.data.look.color === "#ff8800" && pubLook.data.look.brightness === 0.75);
+  const keptLook = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain" } });
+  check("a save without the look keeps it", keptLook.status === 200 && keptLook.data.look.speed === 1.5 && keptLook.data.look.brightness === 0.75 && keptLook.data.look.color === "#ff8800");
+  for (const [look, what] of [[{ speed: 0.1 }, "a speed below 0.25"], [{ speed: 3 }, "a speed above 2"], [{ speed: "fast" }, "a speed that is not a number"], [{ brightness: 2 }, "brightness above 1.5"], [{ brightness: 0.2 }, "brightness below 0.5"], [{ color: "red" }, "a colour that is not #rrggbb"], [["x"], "a look that is not an object"]]) {
+    const bad = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", look } });
+    check(`${what} -> 400`, bad.status === 400, JSON.stringify(bad.raw));
+  }
+  const userColour = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain", look: { speed: 1, color: null, brightness: 1 } } });
+  check("colour null goes back to each user's accent colour", userColour.status === 200 && userColour.data.look.color === null && userColour.data.look.speed === 1);
   const restore = await call("PUT", "/api/settings/backgrounds", { body: before });
-  check("restore defaults (order and names too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names));
+  check("restore defaults (order, names and look too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names) && JSON.stringify(restore.data.look) === JSON.stringify(before.look));
 }
 
 console.log("draw boards");
