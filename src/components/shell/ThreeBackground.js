@@ -2604,6 +2604,17 @@ const LUCKY_SPARK_FS = /* glsl */ `
     #include <colorspace_fragment>
   }
 `;
+/**
+ * A scene's update in pieces of at most `max` seconds (0.05 s, the step the scenes are tuned for). The host passes the
+ * frame time × the admin's speed (up to 2×), so on a slow device one frame can be 0.1 s: clamping that to 0.05 s ran
+ * boats, gondolas and flocks slower than the set speed; this keeps the full time and the safe step. At most eight pieces.
+ */
+function sceneStep(frame, max = 0.05) {
+  return (dt, t) => {
+    let left = Math.min(Math.max(0, dt), max * 8);
+    do { const s = Math.min(left, max); left -= s; frame(s, t - left); } while (left > 1e-6);
+  };
+}
 /** Draw with a 2D canvas and hand it over as a texture. */
 function canvasTexture(THREE, w, h, draw) {
   const c = document.createElement("canvas");
@@ -5176,7 +5187,7 @@ function rainwindow(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { let n = 0; for (let i = 0; i < hi; i++) n += alive[i]; return { drops: n, sliding: wipes.length }; }, // for checking by hand
     dispose() { layerTex.forEach((x) => { x.sharp.dispose(); x.soft.dispose(); }); disposables.forEach((x) => x.dispose()); },
@@ -5677,7 +5688,7 @@ function skylanterns(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     dispose() { disposables.forEach((x) => x.dispose()); },
   };
@@ -6402,7 +6413,7 @@ function snowglobe(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { let n = 0; for (let i = 0; i < NF; i++) n += rest[i]; return { flakes: NF, resting: n, energy: +energy.toFixed(2), spin: +spin.toFixed(2) }; }, // for checking by hand
     shake(amount = 1) { energy = Math.min(1.6, energy + amount); spin += amount; },
@@ -7270,7 +7281,7 @@ function lighthouse(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { let n = 0; for (let k = 0; k < NS; k++) n += sLife[k] > 0 ? 1 : 0; return { spray: n, flash: +flash.toFixed(2), shipX: Math.round(shipX), lhX: Math.round(lhX) }; }, // for checking by hand
     dispose() { scene.fog = null; disposables.forEach((x) => x.dispose()); },
@@ -8478,7 +8489,7 @@ function sakura(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     dispose() { cords?.geometry.dispose(); disposables.forEach((x) => x.dispose()); },
   };
@@ -9014,7 +9025,7 @@ function observatory(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { const ph = moonUni.uPhase.value, names = ["new moon", "waxing crescent", "first quarter", "waxing gibbous", "full moon", "waning gibbous", "last quarter", "waning crescent"]; return { phase: +ph.toFixed(3), moon: names[Math.round(ph * 8) % 8], target: ti }; }, // for checking by hand
     dispose() { scene.environment = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
@@ -9400,7 +9411,7 @@ function hotair(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { let burning = 0, lo = 1e9, hi = 0; for (const b of B) { if (b.burn > 0.5) burning++; lo = Math.min(lo, b.y); hi = Math.max(hi, b.y); } return { balloons: NB, burning, lowest: Math.round(lo), highest: Math.round(hi), shadows: shadowsOn }; }, // for checking by hand
     dispose() { gone = true; scene.fog = null; disposables.forEach((x) => x.dispose()); },
@@ -10160,7 +10171,7 @@ function reef(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { let n = 0; for (let i = 0; i < NSP; i++) if (spBorn[i] >= 0 && time.value - spBorn[i] < 1.6) n++; return { fish: NF, following: time.value - pointerT < 5 ? "pointer" : "wandering", school: [att.x, att.y, att.z].map((v) => +v.toFixed(1)), turtle: +ta.toFixed(2), sparks: n }; }, // for checking by hand
     dispose() { window.removeEventListener("pointermove", onMove); scene.fog = null; disposables.forEach((x) => x.dispose()); },
@@ -10548,7 +10559,7 @@ function northernlights(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { return { aurora: skyUni.uAurora.value, snow: NSNOW, snowAlpha: snowUni.uAlpha.value, puffs: puffs.filter((p) => p.age < p.life).length }; }, // for checking by hand
     dispose() { disposables.forEach((x) => x.dispose()); },
@@ -11683,7 +11694,7 @@ function venice(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { return { gondolas: movers.map((m) => Math.round(m.z)), walkers: walkers.map((w) => +w.x.toFixed(1)), lamps: lampList.length, poles: poleSpots.length, laundry: clothes.length, chimneys: blocks.stacks.length }; }, // for checking by hand
     dispose() { scene.environment = null; scene.fog = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
@@ -12387,7 +12398,7 @@ function santorini(THREE, scene, camera, pal, preview) {
   frame(0, 0);
 
   return {
-    update(dt, t) { frame(Math.min(dt, 0.05), t); },
+    update: sceneStep(frame),
     setPalette: applyPalette,
     stats() { return { houses: V_.white.length, decals: V_.decals.length, lamps: V_.lamps.length, flowers: NF, pools: V_.pools.length, boats: boats.map((b) => [Math.round(b.x), Math.round(b.z)]), shadows: shadowsOn }; }, // for checking by hand
     dispose() { gone = true; scene.fog = null; disposables.forEach((x) => x.dispose()); },
