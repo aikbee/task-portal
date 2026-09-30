@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Save, Check, Lock, Pencil, ListOrdered, RotateCcw, Ban, Gauge, Palette, SunMedium } from "lucide-react";
+import { Save, Check, Lock, Pencil, ListOrdered, RotateCcw, Ban, Gauge, Palette, SunMedium, SlidersHorizontal } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
@@ -16,7 +16,7 @@ import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useUI } from "@/lib/store";
 import { MODULE_MAP } from "@/lib/modules";
-import { BG_STYLES, BG_KEYS, BG_TITLE_MAX, BG_DESC_MAX, BG_LOOK_DEFAULT, BG_SPEED, BG_BRIGHTNESS, normaliseBgSettings, orderedStyles, bgText } from "@/lib/backgrounds";
+import { BG_STYLES, BG_KEYS, BG_TITLE_MAX, BG_DESC_MAX, BG_LOOK_DEFAULT, BG_SPEED, BG_BRIGHTNESS, normaliseBgSettings, orderedStyles, bgText, effectiveLook } from "@/lib/backgrounds";
 import { cn } from "@/lib/utils";
 import { useT, useLocale, translate } from "@/lib/i18n";
 
@@ -43,6 +43,7 @@ function Editor({ initial, mod, tr }) {
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null); // the style whose texts are being edited
   const [ordering, setOrdering] = useState(false);
+  const [looking, setLooking] = useState(null); // the style whose own speed, colour and brightness are being set
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const enabled = new Set(form.enabled);
   const text = (b) => bgText(b, form, locale, tr);
@@ -62,6 +63,13 @@ function Editor({ initial, mod, tr }) {
   const setDefault = (key) => update((f) => ({ default: key, enabled: f.enabled.includes(key) ? f.enabled : [...f.enabled, key] }));
   const setLook = (patch) => update((f) => ({ look: { ...f.look, ...patch } }));
   const lookChanged = JSON.stringify(form.look) !== JSON.stringify(BG_LOOK_DEFAULT);
+  // a style's own values; none left: it follows the look for all backgrounds again
+  const setOwnLook = (key, own) => update((f) => {
+    const looks = { ...f.looks };
+    if (own && Object.keys(own).length) looks[key] = own;
+    else delete looks[key];
+    return { looks };
+  });
   // "One colour for everyone" starts from the admin's own accent colour
   const ownAccent = () => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#6366f1";
   const save = async () => {
@@ -92,7 +100,7 @@ function Editor({ initial, mod, tr }) {
       <Card className="mb-4 space-y-4" data-testid="bg-look">
         <div>
           <p className="text-sm font-semibold">{tr("Speed, colour and brightness")}</p>
-          <p className="text-xs text-fg-muted">{tr("For every background and everyone. The previews below show it before you save.")}</p>
+          <p className="text-xs text-fg-muted">{tr("For every background and everyone; a background can also have its own (Look, on its card). The previews below show changes before you save.")}</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Slider icon={Gauge} label={tr("Animation speed")} value={form.look.speed} range={BG_SPEED} format={(v) => `${v}×`} onChange={(v) => setLook({ speed: v })} testid="bg-speed" />
@@ -123,7 +131,7 @@ function Editor({ initial, mod, tr }) {
           return (
             <Card key={b.value} padding={false} className={cn("overflow-hidden", !on && "opacity-60")} data-bg={b.value}>
               <div className="bg-preview aspect-[16/9] bg-bg" data-theme={undefined}>
-                <AnimatedBackground preview={b.value} look={form.look} />
+                <AnimatedBackground preview={b.value} look={effectiveLook(form, b.value)} />
                 {isDefault ? <span className="absolute left-2 top-2 z-10 rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-white">{tr("Default")}</span> : null}
                 {form.locked && isDefault ? <span className="absolute right-2 top-2 z-10 grid h-6 w-6 place-items-center rounded-full bg-surface/90 text-accent"><Lock size={12} /></span> : null}
               </div>
@@ -132,6 +140,7 @@ function Editor({ initial, mod, tr }) {
                   <p className="flex items-center gap-1.5 text-sm font-semibold">
                     <span className="truncate">{t.title}</span>
                     {edited ? <span className="shrink-0 rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent">{tr("Edited")}</span> : null}
+                    {form.looks[b.value] ? <span className="shrink-0 rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent" data-testid={`bg-own-look-${b.value}`}>{tr("Own look")}</span> : null}
                   </p>
                   <p className="text-[11px] text-fg-muted">{t.desc}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -140,6 +149,9 @@ function Editor({ initial, mod, tr }) {
                     </button>
                     <button type="button" onClick={() => setEditing(b.value)} className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg" data-testid={`bg-edit-${b.value}`}>
                       <Pencil size={11} /> {tr("Name and description")}
+                    </button>
+                    <button type="button" onClick={() => setLooking(b.value)} className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg" data-testid={`bg-look-${b.value}`}>
+                      <SlidersHorizontal size={11} /> {tr("Look")}
                     </button>
                   </div>
                 </div>
@@ -158,6 +170,17 @@ function Editor({ initial, mod, tr }) {
           onDone={(texts) => { update((f) => ({ names: { ...f.names, [editing]: texts } })); setEditing(null); }}
         />
       ) : null}
+      {looking ? (
+        <LookDialog
+          style={looking}
+          form={form}
+          title={text(looking).title}
+          ownAccent={ownAccent}
+          tr={tr}
+          onClose={() => setLooking(null)}
+          onDone={(own) => { setOwnLook(looking, own); setLooking(null); }}
+        />
+      ) : null}
       {ordering ? (
         <OrderDialog
           order={form.order}
@@ -169,6 +192,87 @@ function Editor({ initial, mod, tr }) {
         />
       ) : null}
     </>
+  );
+}
+
+const speedText = (v) => `${v}×`;
+const brightnessText = (v) => `${Math.round(v * 100)}%`;
+
+/**
+ * One style's own speed, colour and brightness, with a live preview. What stays on "Same as all backgrounds"
+ * follows the card at the top of the page; `onDone` gets only the values the style has of its own.
+ */
+function LookDialog({ style, form, title, ownAccent, tr, onClose, onDone }) {
+  const own = form.looks[style] ?? {};
+  const base = form.look;
+  const [speed, setSpeed] = useState(own.speed ?? null); // null: same as all backgrounds
+  const [brightness, setBrightness] = useState(own.brightness ?? null);
+  const [colorMode, setColorMode] = useState(Object.hasOwn(own, "color") ? (own.color ? "fixed" : "user") : "all");
+  const [color, setColor] = useState(own.color ?? base.color ?? ownAccent());
+  const draft = {
+    ...(speed != null ? { speed } : {}),
+    ...(brightness != null ? { brightness } : {}),
+    ...(colorMode === "user" ? { color: null } : colorMode === "fixed" ? { color } : {}),
+  };
+  const shown = effectiveLook({ look: base, looks: { [style]: draft } }, style);
+  const reset = () => { setSpeed(null); setBrightness(null); setColorMode("all"); };
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      title={tr("{name}: speed, colour and brightness", { name: title })}
+      description={tr("What stays on “Same as all backgrounds” follows the card at the top of the page.")}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
+          <Button variant="ghost" icon={RotateCcw} onClick={reset} disabled={!Object.keys(draft).length}>{tr("Use the look of all backgrounds")}</Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>{tr("Cancel")}</Button>
+            <Button icon={Check} onClick={() => onDone(draft)} data-testid="bg-look-done">{tr("Done")}</Button>
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-5">
+        <div className="bg-preview relative aspect-[16/9] overflow-hidden rounded-app border border-line bg-bg" data-testid="bg-look-preview">
+          <AnimatedBackground preview={style} look={shown} />
+        </div>
+        <OwnValue icon={Gauge} label={tr("Animation speed")} value={speed} base={base.speed} range={BG_SPEED} format={speedText} onChange={setSpeed} tr={tr} testid="bg-own-speed" />
+        <OwnValue icon={SunMedium} label={tr("Brightness")} value={brightness} base={base.brightness} range={BG_BRIGHTNESS} format={brightnessText} onChange={setBrightness} tr={tr} testid="bg-own-brightness" />
+        <div className="space-y-2">
+          <p className="flex items-center gap-1.5 text-xs font-medium"><Palette size={13} className="text-fg-muted" /> {tr("Colour")}</p>
+          <Segmented
+            value={colorMode}
+            onChange={setColorMode}
+            options={[{ value: "all", label: tr("Same as all backgrounds") }, { value: "user", label: tr("Each user's accent colour") }, { value: "fixed", label: tr("One colour") }]}
+            className="w-full"
+          />
+          {colorMode === "fixed" ? <ColorPicker value={color} onChange={setColor} /> : null}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** "Same as all backgrounds" (showing that value) or the style's own, set with a range. */
+function OwnValue({ icon: Icon, label, value, base, range, format, onChange, tr, testid }) {
+  const own = value != null;
+  return (
+    <div className="space-y-2">
+      <p className="flex items-center justify-between gap-2 text-xs font-medium">
+        <span className="flex items-center gap-1.5"><Icon size={13} className="text-fg-muted" /> {label}</span>
+        <span className="font-mono text-fg-muted">{format(own ? value : base)}</span>
+      </p>
+      <Segmented
+        value={own ? "own" : "all"}
+        onChange={(v) => onChange(v === "own" ? base : null)}
+        options={[{ value: "all", label: `${tr("Same as all backgrounds")} · ${format(base)}` }, { value: "own", label: tr("Its own") }]}
+        className="w-full sm:max-w-lg"
+      />
+      {own ? (
+        <input type="range" min={range.min} max={range.max} step={range.step} value={value} onChange={(e) => onChange(Math.round(Number(e.target.value) * 100) / 100)} className="w-full accent-[var(--accent)]" data-testid={testid} />
+      ) : null}
+    </div>
   );
 }
 

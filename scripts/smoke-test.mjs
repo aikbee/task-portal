@@ -523,8 +523,24 @@ console.log("background settings");
   }
   const userColour = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain", look: { speed: 1, color: null, brightness: 1 } } });
   check("colour null goes back to each user's accent colour", userColour.status === 200 && userColour.data.look.color === null && userColour.data.look.speed === 1);
+  // a background's own speed, colour and brightness; what it has not got follows the look for all backgrounds
+  check("GET carries the backgrounds' own looks", before.looks && typeof before.looks === "object" && !Array.isArray(before.looks));
+  const own = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "stars", looks: { stars: { speed: 2 }, rain: { color: null, brightness: 1.25 }, galaxy: { color: "#10B981" }, nope: { speed: 1 }, mesh: null } } });
+  check("the admin gives backgrounds their own values (only those it sets; colour null = each user's accent; unknown styles dropped)",
+    own.status === 200 && JSON.stringify(own.data.looks.stars) === '{"speed":2}' && own.data.looks.rain && Object.hasOwn(own.data.looks.rain, "color") && own.data.looks.rain.color === null && own.data.looks.rain.brightness === 1.25 && !("speed" in own.data.looks.rain) && own.data.looks.galaxy?.color === "#10b981" && !own.data.looks.nope && !own.data.looks.mesh,
+    JSON.stringify(own.raw).slice(0, 300));
+  const pubOwn = await call("GET", "/api/settings/backgrounds", { noAuth: true });
+  check("the public settings carry them (the web and the app's /bg page work out each background's look)", pubOwn.data.looks.stars?.speed === 2 && pubOwn.data.looks.rain && Object.hasOwn(pubOwn.data.looks.rain, "color"));
+  const keptOwn = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain" } });
+  check("a save without looks keeps them", keptOwn.status === 200 && keptOwn.data.looks.stars?.speed === 2 && keptOwn.data.looks.galaxy?.color === "#10b981");
+  for (const [looks, what] of [[{ stars: { speed: 9 } }, "a background's speed out of range"], [{ rain: { brightness: 0.1 } }, "a background's brightness out of range"], [{ rain: { color: "green" } }, "a background's colour that is not #rrggbb"], [{ stars: "fast" }, "a background's look that is not an object"], [["stars"], "looks that are not an object"]]) {
+    const bad = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", looks } });
+    check(`${what} -> 400`, bad.status === 400, JSON.stringify(bad.raw));
+  }
+  const noOwn = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain", looks: {} } });
+  check("an empty looks puts every background back on the look for all", noOwn.status === 200 && Object.keys(noOwn.data.looks).length === 0);
   const restore = await call("PUT", "/api/settings/backgrounds", { body: before });
-  check("restore defaults (order, names and look too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names) && JSON.stringify(restore.data.look) === JSON.stringify(before.look));
+  check("restore defaults (order, names, look and own looks too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names) && JSON.stringify(restore.data.look) === JSON.stringify(before.look) && JSON.stringify(restore.data.looks) === JSON.stringify(before.looks));
 }
 
 console.log("draw boards");

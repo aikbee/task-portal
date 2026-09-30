@@ -1,6 +1,16 @@
 import { queryOne, execute } from "@/lib/db";
 import { handler, ok, readJson, HttpError } from "@/lib/api-utils";
-import { BG_KEYS, BG_LANGS, BG_TITLE_MAX, BG_DESC_MAX, BG_SPEED, BG_BRIGHTNESS, isHexColor, DEFAULT_BG_SETTINGS, normaliseBgSettings } from "@/lib/backgrounds";
+import { BG_KEYS, BG_LANGS, BG_TITLE_MAX, BG_DESC_MAX, BG_SPEED, BG_BRIGHTNESS, isHexColor, inBgRange, DEFAULT_BG_SETTINGS, normaliseBgSettings } from "@/lib/backgrounds";
+
+const isObject = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
+/** Speed, colour and brightness as sent: any of them may be missing; out of range (or a colour that is not #rrggbb) is a 400. */
+function checkLook(l, where) {
+  if (!isObject(l)) throw new HttpError(`${where} must be an object: { speed, color, brightness }.`, 400);
+  if (l.speed !== undefined && !inBgRange(l.speed, BG_SPEED)) throw new HttpError(`Speed must be between ${BG_SPEED.min} and ${BG_SPEED.max}.`, 400);
+  if (l.brightness !== undefined && !inBgRange(l.brightness, BG_BRIGHTNESS)) throw new HttpError(`Brightness must be between ${BG_BRIGHTNESS.min} and ${BG_BRIGHTNESS.max}.`, 400);
+  if (l.color !== undefined && l.color !== null && !isHexColor(l.color)) throw new HttpError("Colour must be #rrggbb, or null for each user's accent colour.", 400);
+}
 
 export async function readBgSettings() {
   const row = await queryOne("SELECT value FROM app_settings WHERE name = 'backgrounds'");
@@ -13,8 +23,9 @@ export const GET = handler(async () => ok(await readBgSettings()), { auth: false
 
 /**
  * Admin: { enabled: [...keys], default: key, locked: boolean, order?: [...keys], names?: { key: { title: { en, zh }, desc: { en, zh } } },
- * look?: { speed, color, brightness } }. `order`, `names` and `look` are kept as they are when left out; a blank text means
- * the built-in one; `look.color` null means each user's own accent colour.
+ * look?: { speed, color, brightness }, looks?: { key: { speed?, color?, brightness? } } }. `order`, `names`, `look` and
+ * `looks` are kept as they are when left out; a blank text means the built-in one; a colour null means each user's own
+ * accent colour; a style's missing values follow `look` (the one for all backgrounds).
  */
 export const PUT = handler(
   async (request, _params, user) => {
@@ -31,18 +42,15 @@ export const PUT = handler(
         if (String(n?.desc?.[lang] ?? "").trim().length > BG_DESC_MAX) throw new HttpError(`A description can have at most ${BG_DESC_MAX} characters.`, 400);
       }
     }
-    if (body.look !== undefined) {
-      const l = body.look;
-      if (!l || typeof l !== "object" || Array.isArray(l)) throw new HttpError("look must be an object: { speed, color, brightness }.", 400);
-      const inRange = (v, r) => typeof v === "number" && Number.isFinite(v) && v >= r.min && v <= r.max;
-      if (l.speed !== undefined && !inRange(l.speed, BG_SPEED)) throw new HttpError(`Speed must be between ${BG_SPEED.min} and ${BG_SPEED.max}.`, 400);
-      if (l.brightness !== undefined && !inRange(l.brightness, BG_BRIGHTNESS)) throw new HttpError(`Brightness must be between ${BG_BRIGHTNESS.min} and ${BG_BRIGHTNESS.max}.`, 400);
-      if (l.color !== undefined && l.color !== null && !isHexColor(l.color)) throw new HttpError("Colour must be #rrggbb, or null for each user's accent colour.", 400);
+    if (body.look !== undefined) checkLook(body.look, "look");
+    if (body.looks !== undefined) {
+      if (!isObject(body.looks)) throw new HttpError("looks must be an object keyed by background.", 400);
+      for (const [key, l] of Object.entries(body.looks)) if (l !== null) checkLook(l, `looks.${key}`);
     }
     const current = await readBgSettings();
     const value = normaliseBgSettings({
       enabled: body.enabled, default: body.default, locked: Boolean(body.locked),
-      order: body.order ?? current.order, names: body.names ?? current.names, look: body.look ?? current.look,
+      order: body.order ?? current.order, names: body.names ?? current.names, look: body.look ?? current.look, looks: body.looks ?? current.looks,
     });
     // remember which styles existed at save time so future additions show up enabled by default; an order is kept
     // only when the admin changed it (then styles added later come last), otherwise new styles stay where they were put

@@ -83,6 +83,45 @@ function cleanLook(raw) {
   return { speed: num(l.speed, BG_SPEED), color: isHexColor(l.color) ? l.color.toLowerCase() : null, brightness: num(l.brightness, BG_BRIGHTNESS) };
 }
 
+/** A value inside a range (the per-style values are dropped rather than clamped when they are not). */
+export const inBgRange = (v, range) => typeof v === "number" && Number.isFinite(v) && v >= range.min && v <= range.max;
+
+/**
+ * One style's own values: only the ones it has; the others follow the look for all backgrounds.
+ * `color` null (present) means each user's accent colour even when all backgrounds have one colour.
+ */
+function cleanOwnLook(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const own = {};
+  if (inBgRange(raw.speed, BG_SPEED)) own.speed = raw.speed;
+  if (inBgRange(raw.brightness, BG_BRIGHTNESS)) own.brightness = raw.brightness;
+  if (raw.color === null) own.color = null;
+  else if (isHexColor(raw.color)) own.color = raw.color.toLowerCase();
+  return Object.keys(own).length ? own : null;
+}
+
+function cleanLooks(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const key of BG_KEYS) {
+    const own = cleanOwnLook(raw[key]);
+    if (own) out[key] = own;
+  }
+  return out;
+}
+
+/** The look a style is shown with: its own values where it has them, the look for all backgrounds for the rest. */
+export function effectiveLook(settings, style) {
+  const base = settings?.look ?? BG_LOOK_DEFAULT;
+  const own = settings?.looks?.[style];
+  if (!own) return base;
+  return {
+    speed: own.speed ?? base.speed,
+    brightness: own.brightness ?? base.brightness,
+    color: Object.hasOwn(own, "color") ? own.color : base.color,
+  };
+}
+
 /** "#rrggbb" mixed towards black (t < 0) or white (t > 0). */
 function shade(hex, t) {
   const n = parseInt(hex.slice(1), 16);
@@ -145,7 +184,7 @@ export function normaliseBgSettings(raw) {
   let enabled = Array.isArray(s.enabled) ? order.filter((k) => s.enabled.includes(k) || (known && !known.includes(k))) : order.slice();
   if (!enabled.length) enabled = ["none"];
   const def = enabled.includes(s.default) ? s.default : enabled[0];
-  return { enabled, default: def, locked: Boolean(s.locked), order, names: cleanNames(s.names), look: cleanLook(s.look) };
+  return { enabled, default: def, locked: Boolean(s.locked), order, names: cleanNames(s.names), look: cleanLook(s.look), looks: cleanLooks(s.looks) };
 }
 
 /** The styles in the admin's order. */

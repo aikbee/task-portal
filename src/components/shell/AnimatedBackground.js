@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { usePrefs, useUI } from "@/lib/store";
 import { useMounted } from "@/lib/hooks";
 import { api } from "@/lib/api";
-import { resolveBackground, normaliseBgSettings, bgLookStyle, THREE_STYLES } from "@/lib/backgrounds";
+import { resolveBackground, normaliseBgSettings, effectiveLook, bgLookStyle, THREE_STYLES } from "@/lib/backgrounds";
 import ThreeBackground from "./ThreeBackground";
 
 const ORBS = [
@@ -74,8 +74,9 @@ function useCssSpeed(ref, speed, style) {
 /**
  * The page background. Follows the user's preference within what the admin allows
  * (see /backgrounds); `preview` renders a given style inside a small box instead.
- * The admin's look (speed, colour, brightness) applies to every style, for everyone;
- * `look` overrides it (the admin page previews unsaved values).
+ * The admin's look (speed, colour, brightness) applies for everyone: a style's own values where
+ * it has them, the look for all backgrounds for the rest; `look` overrides it (the admin page
+ * previews unsaved values).
  */
 export default function AnimatedBackground({ preview = null, look = null }) {
   const pref = usePrefs((s) => s.bgStyle);
@@ -88,7 +89,7 @@ export default function AnimatedBackground({ preview = null, look = null }) {
   }, [preview, setBgSettings]);
   const style = preview ?? resolveBackground(pref, settings);
   const cls = preview ? "bg-layer bg-preview-layer" : "bg-layer";
-  const tuned = look ?? normaliseBgSettings(settings).look;
+  const tuned = look ?? effectiveLook(normaliseBgSettings(settings), style);
   const layer = useRef(null);
   useCssSpeed(layer, tuned.speed, style);
   const layerStyle = bgLookStyle(tuned);
