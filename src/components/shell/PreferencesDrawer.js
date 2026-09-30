@@ -1,6 +1,6 @@
 "use client";
 import { Sun, Moon, Monitor, Check, RotateCcw, Sparkles, Rows3, LayoutGrid, Waves, CircleDashed, Grid3x3, Ban, Timer, Lock, PenLine, Bell, Wind, Blend, Star, Hexagon, Droplets, Sunrise, Shuffle, Gauge, CloudRain, Snowflake, Mountain, Cpu, PartyPopper, ShieldCheck, Orbit, MountainSnow, Gem, Globe, Zap, TreePalm, Sailboat, Wallpaper, Lollipop, Heart, Fish, Ghost, Aperture, Flame, Eclipse, Table2, Sprout, Car, BrainCircuit, CloudSnow, Cat, TentTree, FishSymbol, Scroll, Umbrella, LampCeiling, TreePine, TowerControl, Cog, Flower, Telescope, Balloon, Turtle, MoonStar, Ship, Sunset } from "lucide-react";
-import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
+import { normaliseBgSettings, orderedStyles, bgText } from "@/lib/backgrounds";
 import Drawer from "@/components/ui/Drawer";
 import Button from "@/components/ui/Button";
 import { Toggle, Segmented, Select, Field, Input } from "@/components/ui/Controls";
@@ -25,7 +25,8 @@ export default function PreferencesDrawer() {
   const locale = useLocale();
   const bgRaw = useUI((s) => s.bgSettings);
   const bg = normaliseBgSettings(bgRaw);
-  const bgChoices = BG_STYLES.filter((b) => bg.enabled.includes(b.value));
+  // in the admin's order, with the admin's titles and descriptions where there are any
+  const bgChoices = orderedStyles(bg).filter((b) => bg.enabled.includes(b.value));
 
   return (
     <Drawer open={open} onClose={() => setOpen(false)} title={tr("Preferences")} description={tr("Personalise the workspace. Saved in this browser.")}>
@@ -107,8 +108,8 @@ export default function PreferencesDrawer() {
                 >
                   <Icon size={16} className={cn("mt-px shrink-0", active ? "text-accent" : "text-fg-muted")} />
                   <span>
-                    <span className="block text-xs font-medium">{tr(b.label)}</span>
-                    <span className="block text-[11px] text-fg-muted">{tr(b.desc)}</span>
+                    <span className="block text-xs font-medium">{bgText(b, bg, locale, tr).title}</span>
+                    <span className="block text-[11px] text-fg-muted">{bgText(b, bg, locale, tr).desc}</span>
                   </span>
                 </button>
               );
@@ -299,3 +300,6 @@ function Section({ title, icon: Icon, children }) {
     </section>
   );
 }
+
+/** The icon of each background style (the admin's Backgrounds page lists them too). */
+export { BG_ICONS };

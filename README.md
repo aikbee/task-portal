@@ -195,7 +195,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET/POST | `/api/employees` | filters: `status`, `department`, `project_id`, `q`; body may include `project_ids[]` |
 | GET/PUT/DELETE | `/api/employees/:id` | detail includes `projects[]` and `tasks[]` |
 | GET | `/api/info/search` | `?q=&fields=title,content,notes,attachments&category=&project_id=&tag=&pinned=1` → items with `matches[]` snippets |
-| GET / PUT | `/api/settings/backgrounds` | GET is public (`{ enabled[], default, locked }`); PUT is admin-only |
+| GET / PUT | `/api/settings/backgrounds` | GET is public (`{ enabled[], default, locked, order[], names }`); PUT is admin-only. `order` is the order users see the styles in (web and app; kept only when it differs from the built-in one, so styles added later come last); `names` holds the admin's own titles and descriptions per style in English and Chinese (`{ key: { title: { en, zh }, desc: { en, zh } } }`, 60 / 160 characters, blank keeps the built-in text). Both are kept when a PUT leaves them out |
 | GET/POST | `/api/drawboards` | filter `project_id`, `q`; lists omit the drawing data |
 | GET/PUT/DELETE | `/api/drawboards/:id` | detail with `data` (Fabric JSON), `thumbnail`, `attachments[]`; PUT accepts fields, `data`, `thumbnail`; `?light=1` skips the big columns in the response |
 | POST/PUT | `/api/drawboards/:id/attachments` | upload images placed on the board / reorder (files served via `/api/attachments/drawboard/:id`) |

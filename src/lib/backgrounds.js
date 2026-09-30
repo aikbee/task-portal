@@ -56,17 +56,72 @@ export const BG_STYLES = [
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
 export const THREE_STYLES = new Set(BG_STYLES.filter((b) => b.three).map((b) => b.value));
 
-/** Admin settings: which styles users may pick, the default, and whether the default is forced on everyone. */
+/**
+ * Admin settings: which styles users may pick, the default, whether the default is forced on everyone, the order
+ * the styles are listed in, and the admin's own titles and descriptions (English and Chinese).
+ */
 export const DEFAULT_BG_SETTINGS = { enabled: BG_KEYS.slice(), default: "aurora", locked: false };
+
+/** Lengths the admin's texts may have. */
+export const BG_TITLE_MAX = 60;
+export const BG_DESC_MAX = 160;
+/** The languages the admin writes in: "en" and "zh" (the site's zh-CN). */
+export const BG_LANGS = ["en", "zh"];
+
+/** Every style once, in the admin's order; styles added since the admin last saved come after, in their built-in order. */
+function cleanOrder(raw) {
+  const seen = new Set();
+  const order = [];
+  if (Array.isArray(raw)) for (const k of raw) if (BG_KEYS.includes(k) && !seen.has(k)) { seen.add(k); order.push(k); }
+  for (const k of BG_KEYS) if (!seen.has(k)) order.push(k);
+  return order;
+}
+
+/** { key: { title: { en, zh }, desc: { en, zh } } } with only the texts the admin wrote (blank keeps the built-in one). */
+function cleanNames(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of BG_KEYS) {
+    const n = raw[key];
+    if (!n || typeof n !== "object") continue;
+    const entry = {};
+    for (const [field, max] of [["title", BG_TITLE_MAX], ["desc", BG_DESC_MAX]]) {
+      const texts = {};
+      for (const lang of BG_LANGS) {
+        const v = n[field]?.[lang];
+        const text = typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "";
+        if (text) texts[lang] = text;
+      }
+      if (Object.keys(texts).length) entry[field] = texts;
+    }
+    if (Object.keys(entry).length) out[key] = entry;
+  }
+  return out;
+}
 
 export function normaliseBgSettings(raw) {
   const s = { ...DEFAULT_BG_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
+  const order = cleanOrder(s.order);
   // styles added after the admin last saved (not in `known`) stay enabled until the admin decides
   const known = Array.isArray(s.known) ? s.known : null;
-  let enabled = Array.isArray(s.enabled) ? BG_KEYS.filter((k) => s.enabled.includes(k) || (known && !known.includes(k))) : BG_KEYS.slice();
+  let enabled = Array.isArray(s.enabled) ? order.filter((k) => s.enabled.includes(k) || (known && !known.includes(k))) : order.slice();
   if (!enabled.length) enabled = ["none"];
   const def = enabled.includes(s.default) ? s.default : enabled[0];
-  return { enabled, default: def, locked: Boolean(s.locked) };
+  return { enabled, default: def, locked: Boolean(s.locked), order, names: cleanNames(s.names) };
+}
+
+/** The styles in the admin's order. */
+export function orderedStyles(settings) {
+  return normaliseBgSettings(settings).order.map((k) => BG_STYLES.find((b) => b.value === k)).filter(Boolean);
+}
+
+/** A style's title and description: the admin's words for this language, else the built-in text (`tr` translates it). */
+export function bgText(style, settings, locale, tr) {
+  const b = typeof style === "string" ? BG_STYLES.find((x) => x.value === style) : style;
+  if (!b) return { title: String(style ?? ""), desc: "" };
+  const n = settings?.names?.[b.value];
+  const lang = locale === "zh-CN" ? "zh" : "en";
+  return { title: n?.title?.[lang] || tr(b.label), desc: n?.desc?.[lang] || tr(b.desc) };
 }
 
 /** The style a browser should actually show, given the user's preference and the admin settings. */

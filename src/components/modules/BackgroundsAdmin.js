@@ -1,22 +1,28 @@
 "use client";
 import { useState } from "react";
-import { Save, Check, Lock } from "lucide-react";
+import { Save, Check, Lock, Pencil, ListOrdered, RotateCcw, Ban } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
-import { Toggle } from "@/components/ui/Controls";
+import Modal from "@/components/ui/Modal";
+import { Toggle, Field, Input, Textarea } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import { Skeleton } from "@/components/ui/Misc";
 import AnimatedBackground from "@/components/shell/AnimatedBackground";
+import { BG_ICONS } from "@/components/shell/PreferencesDrawer";
+import SortableList from "./SortableList";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useUI } from "@/lib/store";
 import { MODULE_MAP } from "@/lib/modules";
-import { BG_STYLES, normaliseBgSettings } from "@/lib/backgrounds";
+import { BG_STYLES, BG_KEYS, BG_TITLE_MAX, BG_DESC_MAX, normaliseBgSettings, orderedStyles, bgText } from "@/lib/backgrounds";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { useT, useLocale, translate } from "@/lib/i18n";
 
-/** Admin: which background styles users may choose, the default, and an optional lock. */
+/**
+ * Admin: which background styles users may choose, the default, an optional lock, the order the styles are listed
+ * in, and the titles and descriptions users see (English and Chinese; blank keeps the built-in text).
+ */
 export default function BackgroundsAdmin() {
   const tr = useT();
   const mod = MODULE_MAP.backgrounds;
@@ -28,26 +34,38 @@ export default function BackgroundsAdmin() {
 
 function Editor({ initial, mod, tr }) {
   const toast = useToast();
+  const locale = useLocale();
   const setBgSettings = useUI((s) => s.setBgSettings);
   const [form, setForm] = useState(() => normaliseBgSettings(initial));
+  // what is saved: after a save it is the new starting point, so "Save changes" rests until the next change
+  const [saved, setSaved] = useState(() => normaliseBgSettings(initial));
   const [saving, setSaving] = useState(false);
-  const dirty = JSON.stringify(form) !== JSON.stringify(normaliseBgSettings(initial));
+  const [editing, setEditing] = useState(null); // the style whose texts are being edited
+  const [ordering, setOrdering] = useState(false);
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const enabled = new Set(form.enabled);
+  const text = (b) => bgText(b, form, locale, tr);
+  // every change goes through normaliseBgSettings, so the form has one shape and "unsaved changes" is exact
+  const update = (patch) => setForm((f) => normaliseBgSettings({ ...f, ...patch(f) }));
 
   const toggle = (key, on) => {
     const next = new Set(enabled);
     if (on) next.add(key);
     else next.delete(key);
     if (!next.size) return toast.error(tr("Keep at least one background enabled."));
-    const list = BG_STYLES.map((b) => b.value).filter((k) => next.has(k));
-    setForm((f) => ({ ...f, enabled: list, default: list.includes(f.default) ? f.default : list[0] }));
+    update((f) => {
+      const list = f.order.filter((k) => next.has(k));
+      return { enabled: list, default: list.includes(f.default) ? f.default : list[0] };
+    });
   };
-  const setDefault = (key) => setForm((f) => ({ ...f, default: key, enabled: f.enabled.includes(key) ? f.enabled : [...f.enabled, key] }));
+  const setDefault = (key) => update((f) => ({ default: key, enabled: f.enabled.includes(key) ? f.enabled : [...f.enabled, key] }));
   const save = async () => {
     setSaving(true);
     try {
-      const saved = await api.put("/api/settings/backgrounds", form);
-      setBgSettings(saved);
+      const answer = normaliseBgSettings(await api.put("/api/settings/backgrounds", form));
+      setBgSettings(answer);
+      setForm(answer);
+      setSaved(answer);
       toast.success(tr("Background settings saved"));
     } catch (e) {
       toast.error("Could not save", e.message);
@@ -60,15 +78,20 @@ function Editor({ initial, mod, tr }) {
     <>
       <PageHeader title={tr("Backgrounds")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<Button icon={Save} onClick={save} loading={saving} disabled={!dirty}>{tr("Save changes")}</Button>} />
       <Card className="mb-4 space-y-3">
-        <Toggle checked={form.locked} onChange={(v) => setForm((f) => ({ ...f, locked: v }))} label={tr("Lock the background for everyone")} description={tr("Users see the default below and cannot choose their own")} />
-        <p className="text-xs text-fg-muted">{tr("{n} of {total} styles enabled · default: {d}", { n: form.enabled.length, total: BG_STYLES.length, d: tr(BG_STYLES.find((b) => b.value === form.default)?.label ?? form.default) })}</p>
+        <Toggle checked={form.locked} onChange={(v) => update(() => ({ locked: v }))} label={tr("Lock the background for everyone")} description={tr("Users see the default below and cannot choose their own")} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-fg-muted">{tr("{n} of {total} styles enabled · default: {d}", { n: form.enabled.length, total: BG_STYLES.length, d: text(form.default).title })}</p>
+          <Button size="sm" variant="outline" icon={ListOrdered} onClick={() => setOrdering(true)} data-testid="bg-order">{tr("Order")}</Button>
+        </div>
       </Card>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 anim-stagger">
-        {BG_STYLES.map((b) => {
+        {orderedStyles(form).map((b) => {
           const on = enabled.has(b.value);
           const isDefault = form.default === b.value;
+          const t = text(b);
+          const edited = Boolean(form.names[b.value]);
           return (
-            <Card key={b.value} padding={false} className={cn("overflow-hidden", !on && "opacity-60")}>
+            <Card key={b.value} padding={false} className={cn("overflow-hidden", !on && "opacity-60")} data-bg={b.value}>
               <div className="bg-preview aspect-[16/9] bg-bg" data-theme={undefined}>
                 <AnimatedBackground preview={b.value} />
                 {isDefault ? <span className="absolute left-2 top-2 z-10 rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-white">{tr("Default")}</span> : null}
@@ -76,18 +99,125 @@ function Editor({ initial, mod, tr }) {
               </div>
               <div className="flex items-start justify-between gap-3 p-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">{tr(b.label)}</p>
-                  <p className="text-[11px] text-fg-muted">{tr(b.desc)}</p>
-                  <button type="button" onClick={() => setDefault(b.value)} className={cn("mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]", isDefault ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>
-                    {isDefault ? <Check size={11} /> : null} {isDefault ? tr("Default") : tr("Make default")}
-                  </button>
+                  <p className="flex items-center gap-1.5 text-sm font-semibold">
+                    <span className="truncate">{t.title}</span>
+                    {edited ? <span className="shrink-0 rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent">{tr("Edited")}</span> : null}
+                  </p>
+                  <p className="text-[11px] text-fg-muted">{t.desc}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <button type="button" onClick={() => setDefault(b.value)} className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]", isDefault ? "border-accent bg-accent/10 text-accent" : "border-line text-fg-muted hover:text-fg")}>
+                      {isDefault ? <Check size={11} /> : null} {isDefault ? tr("Default") : tr("Make default")}
+                    </button>
+                    <button type="button" onClick={() => setEditing(b.value)} className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg" data-testid={`bg-edit-${b.value}`}>
+                      <Pencil size={11} /> {tr("Name and description")}
+                    </button>
+                  </div>
                 </div>
-                <Toggle checked={on} onChange={(v) => toggle(b.value, v)} label="" aria-label={tr(b.label)} />
+                <Toggle checked={on} onChange={(v) => toggle(b.value, v)} label="" aria-label={t.title} />
               </div>
             </Card>
           );
         })}
       </div>
+      {editing ? (
+        <TextsDialog
+          style={editing}
+          names={form.names}
+          tr={tr}
+          onClose={() => setEditing(null)}
+          onDone={(texts) => { update((f) => ({ names: { ...f.names, [editing]: texts } })); setEditing(null); }}
+        />
+      ) : null}
+      {ordering ? (
+        <OrderDialog
+          order={form.order}
+          enabled={enabled}
+          text={text}
+          tr={tr}
+          onClose={() => setOrdering(false)}
+          onDone={(order) => { update(() => ({ order })); setOrdering(false); }}
+        />
+      ) : null}
     </>
+  );
+}
+
+/** One style's title and description in English and Chinese; blank fields keep the built-in text (shown in grey). */
+function TextsDialog({ style, names, tr, onClose, onDone }) {
+  const b = BG_STYLES.find((x) => x.value === style);
+  const cur = names[style] ?? {};
+  const [v, setV] = useState({ title: { en: cur.title?.en ?? "", zh: cur.title?.zh ?? "" }, desc: { en: cur.desc?.en ?? "", zh: cur.desc?.zh ?? "" } });
+  const set = (field, lang) => (e) => { const value = e.target.value; setV((x) => ({ ...x, [field]: { ...x[field], [lang]: value } })); };
+  const builtIn = { title: { en: b.label, zh: translate("zh-CN", b.label) }, desc: { en: b.desc, zh: translate("zh-CN", b.desc) } };
+  const blank = { title: { en: "", zh: "" }, desc: { en: "", zh: "" } };
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      title={tr("Name and description")}
+      description={tr("Leave a field blank to keep the built-in text, shown in grey.")}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
+          <Button variant="ghost" icon={RotateCcw} onClick={() => setV(blank)}>{tr("Use the built-in texts")}</Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>{tr("Cancel")}</Button>
+            <Button icon={Check} onClick={() => onDone(v)} data-testid="bg-texts-done">{tr("Done")}</Button>
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={tr("Title (English)")}><Input value={v.title.en} onChange={set("title", "en")} placeholder={builtIn.title.en} maxLength={BG_TITLE_MAX} data-testid="bg-title-en" /></Field>
+          <Field label={tr("Title (Chinese)")}><Input value={v.title.zh} onChange={set("title", "zh")} placeholder={builtIn.title.zh} maxLength={BG_TITLE_MAX} lang="zh-CN" data-testid="bg-title-zh" /></Field>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={tr("Description (English)")}><Textarea rows={3} value={v.desc.en} onChange={set("desc", "en")} placeholder={builtIn.desc.en} maxLength={BG_DESC_MAX} data-testid="bg-desc-en" /></Field>
+          <Field label={tr("Description (Chinese)")}><Textarea rows={3} value={v.desc.zh} onChange={set("desc", "zh")} placeholder={builtIn.desc.zh} maxLength={BG_DESC_MAX} lang="zh-CN" data-testid="bg-desc-zh" /></Field>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** The order users see the styles in: drag by the handle, use the arrows, or type a position. */
+function OrderDialog({ order, enabled, text, tr, onClose, onDone }) {
+  const [ids, setIds] = useState(order);
+  const items = ids.map((k) => BG_STYLES.find((b) => b.value === k)).filter(Boolean);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={tr("Order of the backgrounds")}
+      description={tr("Users see the backgrounds in this order, on the web and in the app.")}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
+          <Button variant="ghost" icon={RotateCcw} onClick={() => setIds(BG_KEYS.slice())}>{tr("Built-in order")}</Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>{tr("Cancel")}</Button>
+            <Button icon={Check} onClick={() => onDone(ids)} data-testid="bg-order-done">{tr("Done")}</Button>
+          </div>
+        </div>
+      }
+    >
+      <SortableList
+        items={items}
+        getId={(b) => b.value}
+        onReorder={setIds}
+        className="space-y-1.5"
+        renderItem={(b) => {
+          const Icon = BG_ICONS[b.value] ?? Ban;
+          const off = !enabled.has(b.value);
+          return (
+            <div className={cn("flex items-center gap-2.5 px-3 py-2", off && "opacity-55")} data-order-item={b.value}>
+              <Icon size={15} className="shrink-0 text-fg-muted" />
+              <span className="min-w-0 flex-1 truncate text-sm">{text(b).title}</span>
+              {off ? <span className="shrink-0 text-[11px] text-fg-faint">{tr("Off")}</span> : null}
+            </div>
+          );
+        }}
+      />
+    </Modal>
   );
 }

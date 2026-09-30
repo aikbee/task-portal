@@ -490,8 +490,27 @@ console.log("background settings");
   check("admin saves settings", saved.status === 200 && saved.data.default === "rain" && saved.data.locked === true && saved.data.enabled.join() === "stars,rain,none");
   const readBack = await call("GET", "/api/settings/backgrounds", { noAuth: true });
   check("settings persist", readBack.data.default === "rain" && readBack.data.locked === true);
+  // the order users see and the admin's own titles and descriptions, in English and Chinese
+  check("GET carries the order (every style once) and the admin's names", Array.isArray(before.order) && before.order.length === new Set(before.order).size && before.order.length >= before.enabled.length && typeof before.names === "object");
+  const named = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "rain", locked: false, order: ["rain", "nope", "stars", "rain"], names: { rain: { title: { en: "  Monsoon  ", zh: "季风" }, desc: { en: "", zh: "  雨丝  斜落 " } }, nope: { title: { en: "x" } } } } });
+  check("the admin orders the styles and names them in English and Chinese (unknown keys and repeats dropped, blank keeps the built-in text)",
+    named.status === 200 && named.data.order[0] === "rain" && named.data.order[1] === "stars" && named.data.order.length === before.order.length && new Set(named.data.order).size === named.data.order.length &&
+    named.data.enabled.join() === "rain,stars" && named.data.names.rain?.title?.en === "Monsoon" && named.data.names.rain.title.zh === "季风" && named.data.names.rain.desc?.zh === "雨丝 斜落" && !("en" in (named.data.names.rain.desc ?? {})) && !named.data.names.nope,
+    JSON.stringify(named.raw).slice(0, 300));
+  const pubNamed = await call("GET", "/api/settings/backgrounds", { noAuth: true });
+  check("the public settings carry the order and the names (the web picker and the app follow them)", pubNamed.data.order[0] === "rain" && pubNamed.data.names.rain?.title?.en === "Monsoon" && pubNamed.data.enabled[0] === "rain");
+  const kept = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars", "rain"], default: "stars" } });
+  check("a save without order or names keeps them", kept.status === 200 && kept.data.default === "stars" && kept.data.order[0] === "rain" && kept.data.names.rain?.title?.en === "Monsoon");
+  const tooLong = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", names: { stars: { title: { en: "x".repeat(61) } } } } });
+  check("a title over 60 characters -> 400", tooLong.status === 400 && /at most 60/.test(tooLong.raw?.error ?? ""), JSON.stringify(tooLong.raw));
+  const tooLongDesc = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", names: { stars: { desc: { zh: "长".repeat(161) } } } } });
+  check("a description over 160 characters -> 400", tooLongDesc.status === 400 && /at most 160/.test(tooLongDesc.raw?.error ?? ""));
+  const badOrder = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", order: "rain,stars" } });
+  check("an order that is not a list -> 400", badOrder.status === 400);
+  const badNames = await call("PUT", "/api/settings/backgrounds", { body: { enabled: ["stars"], default: "stars", names: ["rain"] } });
+  check("names that are not an object -> 400", badNames.status === 400);
   const restore = await call("PUT", "/api/settings/backgrounds", { body: before });
-  check("restore defaults", restore.status === 200 && restore.data.locked === false);
+  check("restore defaults (order and names too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names));
 }
 
 console.log("draw boards");
