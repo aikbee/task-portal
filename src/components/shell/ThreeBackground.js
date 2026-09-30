@@ -12405,7 +12405,625 @@ function santorini(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini };
+/* ---------- Paris rooftops: a sea of zinc roofs at dusk from a high balcony, the boulevard leading to the Eiffel Tower ---------- */
+// Every building is solid (walls, a mansard, dormers, chimney stacks); what is drawn on them comes from `aFace` = (kind, u, v, seed),
+// u and v in metres on that face: 0 facade (a window in every 3.2 m bay, 3 m storeys over a 4.2 m shop floor, the iron balconies of
+// the 2nd and 5th floors, planters in the accent colour), 1 dormer front, 2 slate, 3 zinc, 4 chimney stack, 5 blank wall. Injected
+// into MeshStandardMaterial, so the low sun's shadows and the fog come for free; at night the windows light and the streets glow.
+const PARIS_BLD_VERT_PARS = /* glsl */ `
+  attribute vec4 aFace; varying vec4 vFace;
+`;
+const PARIS_BLD_FRAG_PARS = /* glsl */ `
+  uniform vec3 uAccent; uniform float uNight; uniform float uLitAmt; uniform vec3 uStreet; uniform vec3 uSkyGlass;
+  varying vec4 vFace;
+  float parisHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+`;
+const PARIS_BLD_FRAG = /* glsl */ `
+  vec3 winLight = vec3(0.0);
+  {
+    float kind = vFace.x, seed = vFace.w; vec2 q = vFace.yz;
+    vec3 c = diffuseColor.rgb;
+    if (kind < 0.5) { // a facade
+      float bayI = floor(q.x / 3.2), bx = fract(q.x / 3.2);
+      if (q.y < 4.2) { // the shop floor: big openings, some lit
+        float open = step(abs(bx - 0.5), 0.36) * step(0.3, q.y) * step(q.y, 3.5);
+        c = mix(c * 0.9, vec3(0.12, 0.11, 0.1), open);
+        winLight += open * step(0.35, parisHash(vec2(bayI, seed))) * vec3(1.0, 0.7, 0.4);
+      } else {
+        float fy = q.y - 4.2, storey = floor(fy / 3.0), wy = fract(fy / 3.0), h = parisHash(vec2(bayI + seed * 7.13, storey));
+        c *= 0.95 + 0.05 * step(0.5, fract(q.y * 2.0)); // stone courses
+        float win = step(abs(bx - 0.5), 0.19) * step(0.13, wy) * step(wy, 0.83);
+        float frame = step(abs(bx - 0.5), 0.23) * step(0.09, wy) * step(wy, 0.87) - win;
+        c = mix(c, vec3(0.94, 0.92, 0.88), frame);
+        c = mix(c, mix(vec3(0.11, 0.13, 0.17), uSkyGlass, 0.1 + 0.22 * h), win);
+        winLight += win * step(0.4, h) * mix(vec3(1.0, 0.6, 0.28), vec3(1.0, 0.78, 0.5), fract(h * 13.0));
+        float balcony = (1.0 - step(0.5, abs(storey - 1.0))) + (1.0 - step(0.5, abs(storey - 4.0))); // the 2nd and 5th floors
+        float rail = balcony * step(0.1, wy) * step(wy, 0.32);
+        c = mix(c, vec3(0.07, 0.07, 0.08), rail * (0.45 + 0.55 * step(0.55, fract(q.x * 5.0))));
+        c = mix(c, c * 0.62, balcony * step(0.05, wy) * step(wy, 0.1)); // its shadow on the stone
+        float box = step(parisHash(vec2(bayI * 1.7, storey + seed)), 0.2) * (1.0 - balcony) * step(abs(bx - 0.5), 0.22); // window boxes in the accent colour, flowers in them
+        float planter = box * step(0.1, wy) * step(wy, 0.2), bloom = box * step(0.2, wy) * step(wy, 0.28) * step(0.35, parisHash(floor(q * vec2(9.0, 14.0))));
+        c = mix(c, uAccent * 0.95, planter);
+        c = mix(c, mix(vec3(0.75, 0.12, 0.16), vec3(0.24, 0.42, 0.2), step(0.62, parisHash(floor(q * vec2(9.0, 14.0)) + 3.1))), bloom);
+      }
+    } else if (kind < 1.5) { // a dormer's window
+      float win = step(0.2, q.x) * step(q.x, 1.0) * step(0.22, q.y) * step(q.y, 1.6);
+      float frame = step(0.14, q.x) * step(q.x, 1.06) * step(0.16, q.y) * step(q.y, 1.66) - win;
+      c = mix(mix(c, vec3(0.93, 0.91, 0.87), frame), mix(vec3(0.11, 0.13, 0.17), uSkyGlass, 0.2), win);
+      winLight += win * step(0.45, parisHash(vec2(seed, 5.0))) * vec3(1.0, 0.66, 0.36);
+    } else if (kind < 2.5) { // slate: courses and a little variation
+      c *= (0.9 + 0.1 * step(0.3, fract(q.y * 4.0))) * (0.92 + 0.08 * parisHash(floor(q * vec2(3.3, 4.0))));
+    } else if (kind < 3.5) { // zinc: standing seams every 0.55 m, each sheet a shade of its own
+      float seam = abs(fract(q.x / 0.55 + 0.5) - 0.5) * 0.55;
+      c *= (0.84 + 0.16 * smoothstep(0.0, 0.045, seam)) * (0.95 + 0.08 * parisHash(vec2(floor(q.x / 0.55), seed)));
+    } else if (kind < 4.5) { // a chimney stack, sooty at the top
+      c *= 1.0 - 0.35 * smoothstep(0.6, 1.0, q.y);
+    } else { // a blank party wall: old plaster in patches, the pale traces of flues running up it, grimier low down
+      c *= 0.9 + 0.12 * parisHash(floor(q / vec2(2.6, 2.2)) + seed);
+      c *= 1.0 + 0.07 * step(0.8, fract(q.x / 3.7 + seed));
+      c *= 0.9 + 0.1 * smoothstep(0.0, 8.0, q.y);
+    }
+    diffuseColor.rgb = c;
+    winLight *= uLitAmt;
+    winLight += uStreet * uNight * (1.0 - step(0.5, kind)) * exp(-q.y / 4.5) * 0.7; // the street lights on the lower floors
+  }
+`;
+// the Eiffel Tower as masks on a camera-facing quad: r the iron, g its sparkling bulbs, b the platforms' lights
+const PARIS_TOWER_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uIron; uniform vec3 uRim; uniform vec3 uGold; uniform float uNight; uniform float uTime; uniform float uSparkle;
+  uniform vec3 uHaze; uniform float uHazeAmt;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    if (m.r < 0.03) discard;
+    vec3 col = uIron * (0.8 + 0.2 * vUv.y) + uRim * smoothstep(0.62, 0.3, vUv.x) * (1.0 - uNight);
+    vec3 gold = uGold * (0.62 + 0.38 * m.b + 0.15 * (1.0 - vUv.y));
+    col = mix(col, gold, uNight);
+    float tw = fract(sin(dot(floor(vUv * vec2(260.0, 700.0)), vec2(12.9898, 78.233))) * 43758.5453);
+    float flash = step(0.62, sin(uTime * (9.0 + tw * 7.0) + tw * 60.0)) * m.g;
+    col += vec3(1.0, 0.98, 0.92) * flash * uSparkle * 2.2;
+    col = mix(col, uHaze, uHazeAmt * (1.0 - 0.6 * uNight));
+    gl_FragColor = vec4(col, m.r);
+    #include <colorspace_fragment>
+  }
+`;
+// the beacon's beams from the top: a flat fan of light along +x, bright at the lamp, fading away and to its edges
+const PARIS_BEAM_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uAmt;
+  varying vec2 vUv;
+  void main() {
+    float along = vUv.x, across = abs(vUv.y - 0.5) * 2.0;
+    float a = pow(1.0 - along, 3.0) * (1.0 - smoothstep(0.1 + 0.9 * along, 1.0, across + 0.02)) * uAmt;
+    gl_FragColor = vec4(uColor * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// lights with a colour each (car headlights and tail lights, street lamps), all in one draw
+const PARIS_GLOW_VS = /* glsl */ `
+  attribute vec4 aGlow; attribute vec3 aTint;
+  uniform float uTime;
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    vUv = uv; vTint = aTint;
+    vec4 mv = modelViewMatrix * vec4(aGlow.xyz, 1.0);
+    mv.xy += position.xy * aGlow.w * (0.95 + 0.05 * sin(uTime * 5.3 + aGlow.x * 0.7 + aGlow.z));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const PARIS_GLOW_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform float uAmt;
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    gl_FragColor = vec4(texture2D(uMap, vUv).rgb * vTint * uAmt, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the railing in front: its texture repeats along it (uRep = repeat, offset); the flower box takes the accent colour
+const PARIS_RAIL_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform sampler2D uMask; uniform vec3 uAccent; uniform vec3 uTint; uniform vec2 uRep;
+  varying vec2 vUv;
+  void main() {
+    vec2 uv = vec2(vUv.x * uRep.x + uRep.y, vUv.y);
+    vec4 t = texture2D(uMap, uv);
+    if (t.a < 0.04) discard;
+    float m = texture2D(uMask, uv).r;
+    vec3 col = mix(t.rgb, uAccent * (0.25 + 0.62 * t.r), m) * uTint;
+    gl_FragColor = vec4(col, t.a);
+    #include <colorspace_fragment>
+  }
+`;
+/** The Eiffel Tower seen face on, as masks (black ground, channels added): r the iron (its lattice open to the sky), g the sparkle bulbs,
+ *  b the platforms' lights. 125 × 330 m: half-width of the legs' outer edge 62.5·e^(−y/95), the legs parting below 180 m. */
+function parisTower(THREE) {
+  const W = 512, H = 1352, s = W / 125, r = koiRng(1889), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => W / 2 + m * s, Y = (m) => H - m * s;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  g.globalCompositeOperation = "lighter";
+  const outer = (y) => 62.5 * Math.exp(-y / 95), leg = (y) => 23 * Math.exp(-y / 120), inner = (y) => (y < 180 ? Math.max(0, outer(y) - leg(y)) * Math.min(1, (180 - y) / 60) : 0);
+  const IRON = "rgb(255,0,0)", line = (x0, y0, x1, y1, wdt, colr = IRON) => { g.strokeStyle = colr; g.lineWidth = wdt; g.beginPath(); g.moveTo(X(x0), Y(y0)); g.lineTo(X(x1), Y(y1)); g.stroke(); };
+  g.lineCap = "round";
+  // the two legs we see (and, faintly, the pair behind through the lattice), then the single shaft
+  for (const side of [-1, 1]) {
+    for (let y = 0; y < 180; y += 1) { line(side * outer(y), y, side * outer(y + 1), y + 1, 8.5); if (inner(y) > 0.5) line(side * inner(y), y, side * inner(y + 1), y + 1, 6.5); } // the legs' edges
+    let prev = 0;
+    for (const y of [0, 7, 15, 24, 34, 45, 57, 64, 74, 86, 99, 115, 120, 134, 150, 166, 180]) { // cross-bracing between struts
+      if (y > 0) {
+        const xo0 = side * outer(prev), xo1 = side * outer(y), xi0 = side * inner(prev), xi1 = side * inner(y);
+        line(xo0, prev, xi1, y, 3.4); line(xi0, prev, xo1, y, 3.4); line(xo1, y, xi1, y, 3.6);
+        const m0 = (xo0 + xi0) / 2, m1 = (xo1 + xi1) / 2; line(m0, prev, m1, y, 2.4); // a middle chord
+      }
+      prev = y;
+    }
+  }
+  for (let y = 180; y < 276; y += 1) for (const side of [-1, 1]) line(side * outer(y), y, side * outer(y + 1), y + 1, 6.5);
+  for (let y = 180, k = 0; y < 272; y += 9 + k * 0.4, k++) { const y2 = Math.min(276, y + 9 + k * 0.4); line(-outer(y), y, outer(y2), y2, 2.8); line(outer(y), y, -outer(y2), y2, 2.8); line(-outer(y2), y2, outer(y2), y2, 3.2); }
+  // the great arch between the legs under the first platform, its spandrels latticed
+  g.strokeStyle = IRON; g.lineWidth = 3.4 * s * 0.25; g.beginPath(); g.ellipse(X(0), Y(0), inner(4) * s, 39 * s, 0, Math.PI, 2 * Math.PI); g.stroke();
+  g.lineWidth = 1.2; g.beginPath(); g.ellipse(X(0), Y(0), (inner(4) - 2.2) * s, 36.5 * s, 0, Math.PI, 2 * Math.PI); g.stroke();
+  for (let a = 0.08; a < 1; a += 0.08) { const ang = Math.PI + a * Math.PI, px = Math.cos(ang) * inner(4), py = -Math.sin(ang) * 39; line(px, py, px * 1.06, Math.min(57, py + 18 * (1 - Math.abs(Math.cos(ang)))), 1.2); }
+  // the platforms: the first with its arcade frieze, the second, the top; their lights in b
+  const band = (y0, y1, extra) => { const hw = outer(y0) + extra; g.fillStyle = IRON; g.fillRect(X(-hw), Y(y1), hw * 2 * s, (y1 - y0) * s); g.fillStyle = "rgb(0,0,255)"; g.fillRect(X(-hw), Y(y1), hw * 2 * s, (y1 - y0) * s); };
+  band(57, 64.5, 2.5); band(115, 119.5, 1.6); band(274, 279, 1.2);
+  g.fillStyle = "rgb(0,0,0)"; g.globalCompositeOperation = "destination-out";
+  for (let x = -outer(57) - 1.5; x < outer(57) + 1.5; x += 3.1) { g.beginPath(); g.ellipse(X(x), Y(59.5), 1.0 * s, 1.5 * s, 0, 0, Math.PI * 2); g.fill(); } // the arcade of the frieze
+  g.globalCompositeOperation = "lighter";
+  // the lantern at the top and the antenna
+  g.fillStyle = IRON; g.fillRect(X(-3.2), Y(290), 6.4 * s, 11 * s); g.beginPath(); g.ellipse(X(0), Y(290), 3.4 * s, 3 * s, 0, Math.PI, 2 * Math.PI); g.fill();
+  line(0, 292, 0, 330, 2.6); for (const y of [298, 306, 314]) line(-1.6, y, 1.6, y, 1.6);
+  g.fillStyle = "rgb(0,0,255)"; g.fillRect(X(-3.2), Y(290), 6.4 * s, 11 * s);
+  // sparkle bulbs, scattered over the iron (only where there is iron)
+  const img = g.getImageData(0, 0, W, H).data;
+  g.fillStyle = "rgb(0,255,0)";
+  for (let i = 0; i < 2600; i++) { const x = (r() * W) | 0, y = (r() * H) | 0; if (img[(y * W + x) * 4] > 90) g.fillRect(x - 1, y - 1, 2.5, 2.5); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+/** A wrought-iron balcony railing, 2 × 1.3 m (the top rail at 1 m), repeating: a frieze of scrolls under the rail, bars below;
+ *  a small flower box hooked over the rail (u 0.75–0.95 of each 2 m; `mask` marks it for the accent colour) with geraniums in it. */
+function parisRailing(THREE, W) {
+  const H = Math.round(W * 0.65), s = W / 2, r = koiRng(77);
+  const c = document.createElement("canvas"), mc = document.createElement("canvas");
+  c.width = mc.width = W; c.height = mc.height = H;
+  const g = c.getContext("2d"), mk = mc.getContext("2d"), Y = (m) => H - m * s, X = (m) => m * s;
+  mk.fillStyle = "#000"; mk.fillRect(0, 0, W, H);
+  g.fillStyle = "#141414"; g.strokeStyle = "#141414"; g.lineCap = "round";
+  g.fillRect(0, Y(1.0), W, 0.032 * s); g.fillRect(0, Y(0.852), W, 0.014 * s); g.fillRect(0, Y(0.55), W, 0.014 * s); // the rails
+  g.lineWidth = 0.009 * s;
+  for (let x = 0; x < 2.01; x += 0.125) { // the frieze: a pair of scrolls in each panel, a ring where they meet
+    g.beginPath(); g.moveTo(X(x), Y(0.955)); g.bezierCurveTo(X(x + 0.035), Y(0.955), X(x + 0.055), Y(0.9), X(x + 0.0625), Y(0.905)); g.bezierCurveTo(X(x + 0.07), Y(0.9), X(x + 0.09), Y(0.955), X(x + 0.125), Y(0.955)); g.stroke();
+    g.beginPath(); g.moveTo(X(x), Y(0.866)); g.bezierCurveTo(X(x + 0.035), Y(0.866), X(x + 0.055), Y(0.91), X(x + 0.0625), Y(0.905)); g.bezierCurveTo(X(x + 0.07), Y(0.91), X(x + 0.09), Y(0.866), X(x + 0.125), Y(0.866)); g.stroke();
+    g.beginPath(); g.arc(X(x + 0.0625), Y(0.905), 0.012 * s, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.moveTo(X(x), Y(0.968)); g.lineTo(X(x), Y(0.852)); g.stroke();
+  }
+  g.lineWidth = 0.012 * s; for (let x = 0.03; x < 2; x += 0.0625) { g.beginPath(); g.moveTo(X(x), Y(0.845)); g.lineTo(X(x), Y(0)); g.stroke(); }
+  // the flower box over the rail: painted grey here, the shader tints it (lit top edge, shaded foot, the hooks)
+  const bx0 = 1.5, bx1 = 1.9, by0 = 0.955, by1 = 1.04, grad = g.createLinearGradient(0, Y(by1), 0, Y(by0)); // a small box: at arm's length it is big enough
+  grad.addColorStop(0, "#e2e2e2"); grad.addColorStop(0.15, "#c4c4c4"); grad.addColorStop(1, "#8c8c8c");
+  g.fillStyle = grad; g.fillRect(X(bx0), Y(by1), (bx1 - bx0) * s, (by1 - by0) * s);
+  mk.fillStyle = "#fff"; mk.fillRect(X(bx0), Y(by1), (bx1 - bx0) * s, (by1 - by0) * s);
+  g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(X(bx0), Y(by0 + 0.012), (bx1 - bx0) * s, 0.012 * s);
+  for (let i = 0; i < 230; i++) { const x = r(bx0 + 0.01, bx1 - 0.01), y = r(by1 - 0.01, by1 + 0.05) - Math.pow(Math.abs(x - 1.7) / 0.2, 4) * 0.03; g.fillStyle = r() < 0.5 ? "#2f5a2a" : "#467a36"; g.beginPath(); g.ellipse(X(x), Y(y), r(0.01, 0.022) * s, r(0.008, 0.017) * s, r(0, 3), 0, Math.PI * 2); g.fill(); }
+  for (let i = 0; i < 16; i++) { const x = r(bx0 + 0.03, bx1 - 0.03), y = r(by1 + 0.02, by1 + 0.06) - Math.pow(Math.abs(x - 1.7) / 0.2, 4) * 0.025; for (let k = 0; k < 7; k++) { g.fillStyle = r() < 0.5 ? "#d62a35" : "#ee4b4b"; g.beginPath(); g.arc(X(x + r(-0.011, 0.011)), Y(y + r(-0.011, 0.011)), 0.008 * s, 0, Math.PI * 2); g.fill(); } }
+  const map = new THREE.CanvasTexture(c), mask = new THREE.CanvasTexture(mc);
+  map.colorSpace = THREE.SRGBColorSpace; mask.colorSpace = THREE.NoColorSpace;
+  map.wrapS = mask.wrapS = THREE.RepeatWrapping;
+  return { map, mask };
+}
+/** La Défense far off in the haze: towers and the Grande Arche as masks (r body, g lit windows, b the sunlit edges). 2400 × 260 m. */
+function parisSkyline(THREE, W) {
+  const s = W / 2400, H = Math.round(260 * s), r = koiRng(92), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => (m + 1200) * s, Y = (m) => H - m * s;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  for (let x = -1180; x < 1150; ) {
+    const w = r(40, 95), h = r() < 0.3 ? r(150, 245) : r(60, 140);
+    g.fillStyle = "rgb(255,0,0)"; g.fillRect(X(x), Y(h), w * s, h * s);
+    g.fillStyle = "rgb(0,0,255)"; g.fillRect(X(x), Y(h), Math.max(1, w * s * 0.12), h * s);
+    for (let wy = 8; wy < h - 6; wy += 7) for (let wx = x + 4; wx < x + w - 4; wx += 6) if (r() < 0.3) { g.fillStyle = "rgb(0,255,0)"; g.fillRect(X(wx), Y(wy), Math.max(1, 2 * s), Math.max(1, 2 * s)); }
+    x += w + r(15, 70);
+  }
+  g.fillStyle = "rgb(255,0,0)"; g.fillRect(X(-80), Y(110), 110 * s, 110 * s); // the Grande Arche: a hollow cube
+  g.globalCompositeOperation = "source-over"; g.fillStyle = "#000"; g.fillRect(X(-62), Y(95), 74 * s, 95 * s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the gilded dome and the window glass mirror: the dusk sky, the sun low on the left (or the city's glow at night). */
+function parisEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, dark ? "#070b1c" : "#6d86c4"); grad.addColorStop(0.45, dark ? "#1c2448" : "#f2b99a"); grad.addColorStop(0.52, dark ? "#3a2c30" : "#b08070"); grad.addColorStop(1, dark ? "#0a0a10" : "#3a3440");
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    if (!dark) { const sx = w * 0.4, sy = h * 0.44, rg = g.createRadialGradient(sx, sy, 0, sx, sy, h * 0.3); rg.addColorStop(0, "rgba(255,236,190,1)"); rg.addColorStop(1, "rgba(255,190,130,0)"); g.fillStyle = rg; g.fillRect(0, 0, w, h); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+/** The city: blocks between the streets, the boulevard (x 12…48) running away from us towards the Tower. Near blocks are rings of
+ *  Haussmann buildings round their courtyards (walls, slate-and-zinc mansards hipped at the corners, gable ends on the party walls,
+ *  dormers over the window bays, chimney stacks with rows of pots); farther ones have fewer, simpler buildings; far ones are one each. */
+function parisCity(THREE, preview, CAM, holes) {
+  const r = koiRng(1889), col = new THREE.Color();
+  const mk = () => ({ P: [], N: [], C: [], F: [] }), near = mk(), far = mk(), pots = [];
+  const STONE = ["#e8dcc6", "#dfd2ba", "#ebe0cb", "#dccfb7", "#e4d5bc", "#d8c9b0", "#e0cfb0"], SLATE = ["#535c6f", "#4c5568", "#596275"], ZINC = ["#8591a1", "#7d8999", "#8a95a4"];
+  const pick = (a) => a[(r() * a.length) | 0];
+  // one face (a convex polygon), its normal turned to `out`, each corner with its (u, v) in metres
+  const face = (G, pts, uvs, kind, hex, seed, out) => {
+    const [a, b, c] = pts;
+    let nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    let P = pts, U = uvs;
+    if (nx * out[0] + ny * out[1] + nz * out[2] < 0) { P = pts.slice().reverse(); U = uvs.slice().reverse(); nx = -nx; ny = -ny; nz = -nz; }
+    col.set(hex);
+    for (let i = 1; i < P.length - 1; i++) for (const k of [0, i, i + 1]) { G.P.push(P[k][0], P[k][1], P[k][2]); G.N.push(nx, ny, nz); G.C.push(col.r, col.g, col.b); G.F.push(kind, U[k][0], U[k][1], seed); }
+  };
+  function building(G, cx, cz, ang, W, D, H, o) {
+    const ca = Math.cos(ang), sa = Math.sin(ang), seed = r(0, 50);
+    const T = (x, y, z) => [cx + x * ca + z * sa, y, cz - x * sa + z * ca], R = (x, y, z) => [x * ca + z * sa, y, -x * sa + z * ca];
+    const f = (pts, uvs, kind, hex, out) => face(G, pts.map((p) => T(p[0], p[1], p[2])), uvs, kind, hex, seed, R(out[0], out[1], out[2]));
+    const w = W / 2, d = D / 2, stone = pick(STONE), slate = pick(SLATE), zinc = pick(ZINC);
+    f([[-w, 0, d], [w, 0, d], [w, H, d], [-w, H, d]], [[0, 0], [W, 0], [W, H], [0, H]], o.street.F ? 0 : 5, stone, [0, 0, 1]);
+    f([[w, 0, -d], [-w, 0, -d], [-w, H, -d], [w, H, -d]], [[0, 0], [W, 0], [W, H], [0, H]], o.street.B ? 0 : 5, stone, [0, 0, -1]);
+    f([[w, 0, d], [w, 0, -d], [w, H, -d], [w, H, d]], [[0, 0], [D, 0], [D, H], [0, H]], o.street.R ? 0 : 5, stone, [1, 0, 0]);
+    f([[-w, 0, -d], [-w, 0, d], [-w, H, d], [-w, H, -d]], [[0, 0], [D, 0], [D, H], [0, H]], o.street.L ? 0 : 5, stone, [-1, 0, 0]);
+    // the steep slate slope, then a low zinc slope rising almost to a ridge (a narrow flat along the top)
+    const simple = o.lod === 2, h1 = 3.2, h2 = simple ? 0 : 1.7, i1 = 1.0, i2 = simple ? 0 : Math.max(0.5, d - i1 - 0.4), ix2 = simple ? 0 : Math.min(i2, Math.max(0.5, w / (o.hip.L && o.hip.R ? 1 : 2) - i1 - 0.4));
+    const inL = o.hip.L ? 1 : 0, inR = o.hip.R ? 1 : 0, Y0 = H, Y1 = H + h1, Y2 = H + h1 + h2;
+    const Kx0 = -w + i1 * inL, Kx1 = w - i1 * inR, Kz0 = -d + i1, Kz1 = d - i1, Tx0 = -w + (i1 + ix2) * inL, Tx1 = w - (i1 + ix2) * inR, Tz0 = -d + i1 + i2, Tz1 = d - i1 - i2;
+    const sl = Math.hypot(h1, i1), sl2 = Math.hypot(h2, i2);
+    f([[-w, Y0, d], [w, Y0, d], [Kx1, Y1, Kz1], [Kx0, Y1, Kz1]], [[0, 0], [W, 0], [Kx1 + w, sl], [Kx0 + w, sl]], 2, slate, [0, 0.3, 1]);
+    f([[w, Y0, -d], [-w, Y0, -d], [Kx0, Y1, Kz0], [Kx1, Y1, Kz0]], [[0, 0], [W, 0], [w - Kx0, sl], [w - Kx1, sl]], 2, slate, [0, 0.3, -1]);
+    if (h2) {
+      f([[Kx0, Y1, Kz1], [Kx1, Y1, Kz1], [Tx1, Y2, Tz1], [Tx0, Y2, Tz1]], [[Kx0 + w, 0], [Kx1 + w, 0], [Tx1 + w, sl2], [Tx0 + w, sl2]], 3, zinc, [0, 1, 0.4]);
+      f([[Kx1, Y1, Kz0], [Kx0, Y1, Kz0], [Tx0, Y2, Tz0], [Tx1, Y2, Tz0]], [[w - Kx1, 0], [w - Kx0, 0], [w - Tx0, sl2], [w - Tx1, sl2]], 3, zinc, [0, 1, -0.4]);
+    }
+    for (const [key, sx] of [["R", 1], ["L", -1]]) {
+      const xe = sx * w, xk = sx > 0 ? Kx1 : Kx0, xt = sx > 0 ? Tx1 : Tx0;
+      if (o.hip[key]) { // a hipped end at the street corner
+        f([[xe, Y0, d], [xe, Y0, -d], [xk, Y1, Kz0], [xk, Y1, Kz1]], [[0, 0], [D, 0], [D - i1, sl], [i1, sl]], 2, slate, [sx, 0.3, 0]);
+        if (h2) f([[xk, Y1, Kz1], [xk, Y1, Kz0], [xt, Y2, Tz0], [xt, Y2, Tz1]], [[i1, 0], [D - i1, 0], [D - i1 - i2, Math.hypot(h2, ix2)], [i1 + i2, Math.hypot(h2, ix2)]], 3, zinc, [sx, 1, 0]);
+      } else { // a gable: the mansard's profile rising as a blank party wall
+        const pts = h2 ? [[xe, Y0, -d], [xe, Y0, d], [xe, Y1, Kz1], [xe, Y2, Tz1], [xe, Y2, Tz0], [xe, Y1, Kz0]] : [[xe, Y0, -d], [xe, Y0, d], [xe, Y1, Kz1], [xe, Y1, Kz0]];
+        f(pts, pts.map((p) => [p[2] + d, p[1]]), 5, stone, [sx, 0, 0]);
+      }
+    }
+    if (Tx1 > Tx0 + 0.2 && Tz1 > Tz0 + 0.2) f([[Tx0, Y2, Tz1], [Tx1, Y2, Tz1], [Tx1, Y2, Tz0], [Tx0, Y2, Tz0]], [[Tx0 + w, 0], [Tx1 + w, 0], [Tx1 + w, Tz1 - Tz0], [Tx0 + w, Tz1 - Tz0]], 3, zinc, [0, 1, 0]);
+    if (o.lod === 0) for (let x = -w + 1.6; x < w - 1.2; x += 3.2) { // dormers over the window bays of the street side
+      if (x - 0.7 < Kx0 || x + 0.7 > Kx1 || r() < 0.22) continue;
+      const hw = 0.62, zf = d - 0.2, zb = d - 1.3, yb = Y0 + 0.35, yt = Y0 + 2.15, yr = yt + 0.5;
+      f([[x - hw, yb, zf], [x + hw, yb, zf], [x + hw, yt, zf], [x - hw, yt, zf]], [[0, 0], [1.24, 0], [1.24, 1.8], [0, 1.8]], 1, stone, [0, 0, 1]);
+      f([[x + hw, yb, zf], [x + hw, yb, zb], [x + hw, yt, zb], [x + hw, yt, zf]], [[0, 0], [1.1, 0], [1.1, 1.8], [0, 1.8]], 3, zinc, [1, 0, 0]);
+      f([[x - hw, yb, zb], [x - hw, yb, zf], [x - hw, yt, zf], [x - hw, yt, zb]], [[0, 0], [1.1, 0], [1.1, 1.8], [0, 1.8]], 3, zinc, [-1, 0, 0]);
+      f([[x - hw - 0.1, yt - 0.05, zf + 0.1], [x, yr, zf + 0.1], [x, yr, zb], [x - hw - 0.1, yt - 0.05, zb]], [[0, 0], [0.8, 0], [0.8, 1.2], [0, 1.2]], 3, zinc, [-1, 1.3, 0]);
+      f([[x, yr, zf + 0.1], [x + hw + 0.1, yt - 0.05, zf + 0.1], [x + hw + 0.1, yt - 0.05, zb], [x, yr, zb]], [[0, 0], [0.8, 0], [0.8, 1.2], [0, 1.2]], 3, zinc, [1, 1.3, 0]);
+      f([[x - hw, yt, zf + 0.02], [x + hw, yt, zf + 0.02], [x, yr, zf + 0.02]], [[0, 0], [1.24, 0], [0.62, 0.5]], 5, stone, [0, 0, 1]);
+    }
+    if (o.lod < 2 && !o.hip.R && r() < 0.85) { // a chimney stack on the party wall, a row of pots on it
+      const L = Math.min(D - 7, r(2.4, 5.4)), zc = r(-d + 3.5 + L / 2, d - 3.5 - L / 2), yb = Y2 - 1.0, yt = Y2 + r(1.2, 2.4), brick = r() < 0.35;
+      const hx = 0.42, z0 = zc - L / 2, z1 = zc + L / 2, hexc = brick ? "#a8634c" : "#d9ccb8", hgt = yt - yb;
+      f([[w - hx, yb, z1], [w + hx, yb, z1], [w + hx, yt, z1], [w - hx, yt, z1]], [[0, 0], [0.84, 0], [0.84, 1], [0, 1]], 4, hexc, [0, 0, 1]);
+      f([[w + hx, yb, z0], [w - hx, yb, z0], [w - hx, yt, z0], [w + hx, yt, z0]], [[0, 0], [0.84, 0], [0.84, 1], [0, 1]], 4, hexc, [0, 0, -1]);
+      f([[w + hx, yb, z1], [w + hx, yb, z0], [w + hx, yt, z0], [w + hx, yt, z1]], [[0, 0], [L, 0], [L, 1], [0, 1]], 4, hexc, [1, 0, 0]);
+      f([[w - hx, yb, z0], [w - hx, yb, z1], [w - hx, yt, z1], [w - hx, yt, z0]], [[0, 0], [L, 0], [L, 1], [0, 1]], 4, hexc, [-1, 0, 0]);
+      f([[w - hx, yt, z1], [w + hx, yt, z1], [w + hx, yt, z0], [w - hx, yt, z0]], [[0, 1], [0.84, 1], [0.84, 1], [0, 1]], 4, hexc, [0, 1, 0]);
+      if (o.lod === 0 && hgt > 0) for (let z = z0 + 0.26; z < z1 - 0.12; z += 0.42) pots.push([...T(w, yt, z), r(0.5, 0.95)]);
+    }
+  }
+  // the grid of blocks
+  const xs = [], zs = [];
+  for (let x = 12, i = 0; i < 28; i++) { const b = r(58, 72); xs.push([x - b, x]); x -= b + 12; }
+  for (let x = 48, i = 0; i < 24; i++) { const b = r(58, 72); xs.push([x, x + b]); x += b + 12; }
+  for (let z = 16, i = 0; i < 42; i++) { const b = r(54, 66); zs.push([z - b, z]); z -= b + 12; }
+  let nBld = 0;
+  // nearest blocks first: triangles are drawn in buffer order, so the near roofs fill the depth buffer before the far ones are shaded
+  const blocks = [];
+  for (const [bx0, bx1] of xs) for (const [bz0, bz1] of zs) blocks.push([bx0, bx1, bz0, bz1, Math.hypot((bx0 + bx1) / 2 - CAM[0], (bz0 + bz1) / 2 - CAM[1])]);
+  blocks.sort((a, b) => a[4] - b[4]);
+  for (const [bx0, bx1, bz0, bz1, dist] of blocks) {
+    const cx = (bx0 + bx1) / 2, cz = (bz0 + bz1) / 2, az = Math.atan2(cx - CAM[0], -(cz - CAM[1]));
+    if (dist > 2350 || az < -1.25 || az > 0.75 || cz > CAM[1] + 40) continue;
+    if (holes.some(([hx, hz, hr]) => Math.hypot(cx - hx, cz - hz) < hr)) continue; // the Champ de Mars, the Invalides
+    const lod = dist < (preview ? 180 : 270) ? 0 : dist < (preview ? 700 : 950) ? 1 : 2, G = lod === 2 ? far : near;
+    const base = r() < 0.12 ? r(13.5, 16) : r(18.5, 21);
+    const Hh = () => Math.max(12, base + (r() < 0.1 ? r(-4, 3.5) : r(-1.2, 1.2)));
+    if (lod === 2) { building(G, cx, cz, 0, bx1 - bx0, bz1 - bz0, Hh(), { lod, street: { F: true, B: true, L: true, R: true }, hip: { L: true, R: true } }); nBld++; continue; }
+    const D = r(14, 17), wMin = lod === 0 ? 10 : 17, wMax = lod === 0 ? 17 : 32;
+    for (const [zc, ang] of [[bz1 - D / 2, 0], [bz0 + D / 2, Math.PI]]) { // the rows along the streets in front and behind, corners hipped
+      for (let xx = bx0; xx < bx1 - 0.1; ) {
+        let wL = Math.min(r(wMin, wMax), bx1 - xx);
+        if (bx1 - xx - wL < wMin * 0.7) wL = bx1 - xx;
+        const first = xx === bx0, last = xx + wL >= bx1 - 0.1, hip = ang === 0 ? { L: first, R: last } : { L: last, R: first };
+        building(G, xx + wL / 2, zc, ang, wL, D, Hh(), { lod, street: { F: true, B: false, L: hip.L, R: hip.R }, hip });
+        nBld++; xx += wL;
+      }
+    }
+    for (const [xc, ang] of [[bx0 + D / 2, -Math.PI / 2], [bx1 - D / 2, Math.PI / 2]]) { // the sides between the rows
+      for (let zz = bz0 + D; zz < bz1 - D - 0.1; ) {
+        let wL = Math.min(r(wMin, wMax), bz1 - D - zz);
+        if (bz1 - D - zz - wL < wMin * 0.7) wL = bz1 - D - zz;
+        building(G, xc, zz + wL / 2, ang, wL, D, Hh(), { lod, street: { F: true, B: false, L: false, R: false }, hip: { L: false, R: false } });
+        nBld++; zz += wL;
+      }
+    }
+  }
+  const geo = (G) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(G.P, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(G.N, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(G.C, 3));
+    g.setAttribute("aFace", new THREE.Float32BufferAttribute(G.F, 4));
+    return g;
+  };
+  return { near: geo(near), far: geo(far), pots, buildings: nBld };
+}
+function paris(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1789);
+  const V = new THREE.Vector3(), M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S3 = new THREE.Vector3(), E = new THREE.Euler(0, 0, 0, "YXZ");
+  const CAM = [8, 6], EYE = 44, PITCH = -0.1, YAW = 0.28; // a high balcony by the boulevard, turned a little left of it
+  const TOWER = [30, -1320], DOME = [-420, -980];
+  camera.fov = 50; camera.near = 0.5; camera.far = 45000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  let TAN = Math.tan((camera.fov * Math.PI) / 360);
+  const time = { value: 0 }, nightU = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE)), quad = keep(new THREE.PlaneGeometry(1, 1));
+  const accent = new THREE.Color();
+  const SUN = new THREE.Vector3(-0.55, 0.14, -0.82).normalize(), MOON = new THREE.Vector3(-0.42, 0.3, -0.86).normalize();
+  const KEEP_ALPHA = { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const shadowMats = [];
+  const std = (opts) => { const m = keep(new THREE.MeshStandardMaterial(opts)); shadowMats.push(m); return m; };
+
+  /* --- light: the low sun on the left (the moon at night) casts real shadows over the near roofs --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  const TARGET = new THREE.Vector3(-20, 20, -330);
+  sun.target.position.copy(TARGET);
+  if (!preview) {
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -420, right: 420, top: 160, bottom: -160, near: 500, far: 2600 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.6;
+  }
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 350, 3400);
+  let envTex = null;
+
+  /* --- the sky: dusk with the sun low on the left, a deck of cloud; night with a few stars and the moon --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#fff0c8") }, uSun: { value: 1 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 40, 20)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false;
+  scene.add(sky);
+  const NSTAR = preview ? 150 : 420, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.12, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry());
+  starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.4, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -9; stars.frustumCulled = false;
+  scene.add(stars);
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false })));
+  moon.position.copy(MOON).multiplyScalar(30000); moon.position.y += EYE; moon.scale.setScalar(700); moon.lookAt(CAM[0], EYE, CAM[1]); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(4800); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const cloudGeo = keep(new THREE.PlaneGeometry(80000, 80000));
+  cloudGeo.rotateX(Math.PI / 2);
+  const clouds = new THREE.Mesh(cloudGeo, shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudUni, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2600, -20000); clouds.renderOrder = -6; clouds.frustumCulled = false;
+  scene.add(clouds);
+
+  /* --- the city --- */
+  const city = parisCity(THREE, preview, CAM, [[TOWER[0], TOWER[1], 190], [DOME[0], DOME[1], 95]]);
+  const cityU = { uAccent: { value: accent }, uNight: nightU, uLitAmt: { value: 0.1 }, uStreet: { value: new THREE.Color("#ff9a4a") }, uSkyGlass: { value: new THREE.Color() } };
+  const cityMat = std({ vertexColors: true, roughness: 0.86, envMapIntensity: 0.3 });
+  cityMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, cityU);
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\n" + PARIS_BLD_VERT_PARS).replace("#include <begin_vertex>", "#include <begin_vertex>\n  vFace = aFace;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + PARIS_BLD_FRAG_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n" + PARIS_BLD_FRAG)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += winLight;");
+  };
+  const nearCity = new THREE.Mesh(keep(city.near), cityMat), farCity = new THREE.Mesh(keep(city.far), cityMat);
+  nearCity.castShadow = nearCity.receiveShadow = !preview; // the far city lies beyond the shadow map anyway
+  nearCity.frustumCulled = farCity.frustumCulled = false;
+  scene.add(nearCity, farCity);
+  const groundMat = std({ color: 0x57524e, roughness: 1, envMapIntensity: 0.1, emissive: 0x000000 });
+  const groundGeo = keep(new THREE.PlaneGeometry(9000, 9000));
+  groundGeo.rotateX(-Math.PI / 2);
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.position.set(0, 0, -2500); ground.receiveShadow = !preview; ground.frustumCulled = false;
+  scene.add(ground);
+  // terracotta pots on the chimney stacks
+  const potGeo = keep(new THREE.CylinderGeometry(0.17, 0.19, 1, 7, 1, true).translate(0, 0.5, 0));
+  const potMat = std({ color: 0xb4623e, roughness: 0.9, side: THREE.DoubleSide });
+  const pots = new THREE.InstancedMesh(potGeo, potMat, Math.max(1, city.pots.length));
+  city.pots.forEach(([x, y, z, h], i) => pots.setMatrixAt(i, M4.compose(V.set(x, y - 0.05, z), Q.identity(), S3.set(1, h, 1))));
+  pots.count = city.pots.length; pots.castShadow = !preview; pots.frustumCulled = false;
+  scene.add(pots);
+
+  /* --- the boulevard: plane trees, lamps, the traffic --- */
+  const trees = [];
+  for (const x of [17.5, 42.5]) for (let z = -8 + r(0, 4); z > -1180; z += -r(8.5, 10.5)) trees.push([x + r(-0.4, 0.4), z, r(3.4, 4.4)]);
+  const treeGeo = keep(mergeParts(THREE, [[0, 0.1, 0, 0.8], [0.45, -0.1, 0.2, 0.62], [-0.42, 0, -0.18, 0.66], [0.05, 0.45, -0.3, 0.55]].map(([x, y, z, k]) => [new THREE.IcosahedronGeometry(k, 0), new THREE.Matrix4().makeTranslation(x, y, z)])));
+  const treeMat = std({ roughness: 0.95, emissive: 0x000000, envMapIntensity: 0.15, flatShading: true });
+  const treeMesh = new THREE.InstancedMesh(treeGeo, treeMat, trees.length);
+  const TREE_COLS = ["#4a6634", "#42602f", "#526e39", "#476433"].map((c) => new THREE.Color(c));
+  trees.forEach(([x, z, s], i) => { treeMesh.setMatrixAt(i, M4.compose(V.set(x, 8.5 + s * 0.3, z), Q.identity(), S3.set(s * 1.05, s * 0.85, s * 1.05))); treeMesh.setColorAt(i, TREE_COLS[i % 4]); });
+  treeMesh.castShadow = treeMesh.receiveShadow = !preview; treeMesh.frustumCulled = false;
+  scene.add(treeMesh);
+  const lamps = [];
+  for (const [x, off] of [[15.2, 0], [44.8, 12]]) for (let z = -6 - off; z > -1200; z -= 24) lamps.push([x, 5.2, z]);
+  const glowGeo = (n, dyn) => { const q = keep(new THREE.PlaneGeometry(1, 1)), g = keep(new THREE.InstancedBufferGeometry()); g.setIndex(q.index); g.setAttribute("position", q.attributes.position); g.setAttribute("uv", q.attributes.uv); const a = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4), t = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3); if (dyn) a.setUsage(THREE.DynamicDrawUsage); g.setAttribute("aGlow", a); g.setAttribute("aTint", t); g.instanceCount = n; return g; };
+  const glowMat = (amt) => shader(PARIS_GLOW_VS, PARIS_GLOW_FS, { uMap: { value: glow }, uAmt: { value: amt }, uTime: time }, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  const lampGeo = glowGeo(lamps.length, false), lampGlow = new THREE.Mesh(lampGeo, glowMat(1));
+  lamps.forEach(([x, y, z], i) => { lampGeo.attributes.aGlow.setXYZW(i, x, y, z, 3.4); lampGeo.attributes.aTint.setXYZ(i, 1.0, 0.72, 0.4); });
+  lampGlow.frustumCulled = false; lampGlow.renderOrder = 20;
+  scene.add(lampGlow);
+  const cars = [];
+  for (const [x, dir] of [[22.5, 1], [26.5, 1], [33.5, -1], [37.5, -1]]) for (let k = 0; k < 7; k++) cars.push({ x, dir, z: r(-1500, 20), v: r(8.5, 13.5) });
+  const carGeo = keep(new THREE.BoxGeometry(1.8, 1.4, 4.4));
+  const carMat = std({ roughness: 0.4, envMapIntensity: 0.5 });
+  const carMesh = new THREE.InstancedMesh(carGeo, carMat, cars.length);
+  const CAR_COLS = ["#1c1f24", "#c9ccd1", "#f2f2f0", "#7a1f25", "#2b3a55", "#5d6168", "#12151a"].map((c) => new THREE.Color(c));
+  cars.forEach((c, i) => carMesh.setColorAt(i, CAR_COLS[(r() * CAR_COLS.length) | 0]));
+  carMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); carMesh.frustumCulled = false;
+  scene.add(carMesh);
+  const carLightGeo = glowGeo(cars.length * 2, true), carGlow = new THREE.Mesh(carLightGeo, glowMat(1));
+  cars.forEach((c, i) => { const [cr, cg, cb] = c.dir > 0 ? [1.0, 0.95, 0.85] : [1.0, 0.12, 0.08]; carLightGeo.attributes.aTint.setXYZ(2 * i, cr, cg, cb); carLightGeo.attributes.aTint.setXYZ(2 * i + 1, cr, cg, cb); });
+  carGlow.frustumCulled = false; carGlow.renderOrder = 21;
+  scene.add(carGlow);
+  function stepCars(dt) {
+    const ag = carLightGeo.attributes.aGlow;
+    cars.forEach((c, i) => {
+      c.z += c.dir * c.v * dt;
+      if (c.z > 30) c.z = -1500; if (c.z < -1500) c.z = 30;
+      carMesh.setMatrixAt(i, M4.compose(V.set(c.x, 0.75, c.z), Q.identity(), S3.set(1, 1, 1)));
+      const zf = c.z + c.dir * 2.25; // the lights on the end facing us: headlights coming, tail lights going
+      ag.setXYZW(2 * i, c.x - 0.62, 0.8, zf, c.dir > 0 ? 2.2 : 1.5); ag.setXYZW(2 * i + 1, c.x + 0.62, 0.8, zf, c.dir > 0 ? 2.2 : 1.5);
+    });
+    carMesh.instanceMatrix.needsUpdate = true; ag.needsUpdate = true;
+  }
+
+  /* --- the Eiffel Tower at the end of the boulevard: bronze against the dusk; gold at night, sparkling now and then, its beacon sweeping --- */
+  const towerU = { uMask: { value: keep(parisTower(THREE)) }, uIron: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uGold: { value: new THREE.Color("#ffb347") }, uNight: nightU, uTime: time, uSparkle: { value: 0 }, uHaze: { value: new THREE.Color() }, uHazeAmt: { value: 0.3 } };
+  const tower = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, PARIS_TOWER_FS, towerU, { transparent: true, depthWrite: false }));
+  tower.position.set(TOWER[0], 163, TOWER[1]); tower.scale.set(125, 330, 1); tower.lookAt(CAM[0], 163, CAM[1]); tower.renderOrder = 2; tower.frustumCulled = false;
+  scene.add(tower);
+  const beamU = { uColor: { value: new THREE.Color("#fff1d0") }, uAmt: { value: 0 } };
+  const beamGeo = keep(new THREE.PlaneGeometry(1800, 12).translate(900, 0, 0));
+  const beamMat = shader(LANTERN_LAYER_VS, PARIS_BEAM_FS, beamU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  const beacon = new THREE.Group(); // each beam: two crossed planes, rolled about the beam, tilted up, then turned to its bearing
+  beacon.position.set(TOWER[0], 318, TOWER[1]);
+  for (const a of [0, Math.PI]) for (const roll of [0, Math.PI / 2]) { const b = new THREE.Mesh(beamGeo, beamMat); b.rotation.set(roll, a, 0.035, "YZX"); b.frustumCulled = false; b.renderOrder = 3; beacon.add(b); }
+  scene.add(beacon);
+  const redLight = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0xff3020, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false })));
+  redLight.position.set(TOWER[0], 331, TOWER[1]); redLight.scale.setScalar(14); redLight.renderOrder = 4;
+  scene.add(redLight);
+
+  /* --- the Invalides' gilded dome over the roofs on the left; La Défense far off in the haze --- */
+  const stoneMat = std({ color: 0xdcd0b8, roughness: 0.9, envMapIntensity: 0.2 });
+  const goldMat = std({ color: 0xe0b24a, metalness: 0.85, roughness: 0.3, envMapIntensity: 1.2, emissive: 0x000000 });
+  const domeParts = [
+    [keep(new THREE.BoxGeometry(76, 24, 64)), stoneMat, 12], [keep(new THREE.CylinderGeometry(16, 17, 30, 36)), stoneMat, 39],
+    [keep(new THREE.SphereGeometry(15.5, 36, 14, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 1.35, 1)), goldMat, 54], [keep(new THREE.CylinderGeometry(3, 3.4, 9, 12)), goldMat, 79],
+    [keep(new THREE.ConeGeometry(1.6, 22, 8)), goldMat, 94.5],
+  ];
+  for (const [g, m, y] of domeParts) { const mesh = new THREE.Mesh(g, m); mesh.position.set(DOME[0], y, DOME[1]); mesh.castShadow = mesh.receiveShadow = !preview; scene.add(mesh); }
+  const skyU = { uMask: { value: keep(parisSkyline(THREE, preview ? 1024 : 2048)) }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uLights: { value: new THREE.Color() }, uTime: time };
+  const skyline = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, SANTORINI_ISLE_FS, skyU, { transparent: true, depthWrite: false }));
+  skyline.position.set(1700, 126, -9000); skyline.scale.set(2400, 260, 1); skyline.lookAt(CAM[0], 126, CAM[1]); skyline.renderOrder = 1; skyline.frustumCulled = false;
+  scene.add(skyline);
+
+  /* --- pigeons wheeling over the roofs by day --- */
+  const NP = preview ? 3 : 6, pigeonGeo = keep(lhGull(THREE)), aGull = new THREE.InstancedBufferAttribute(new Float32Array(NP * 2), 2);
+  aGull.setUsage(THREE.DynamicDrawUsage);
+  pigeonGeo.setAttribute("aGull", aGull);
+  const pigeons = new THREE.InstancedMesh(pigeonGeo, shader(LH_GULL_VS, LH_GULL_FS, { uBody: { value: new THREE.Color("#8b9097") }, uWing: { value: new THREE.Color("#a3a9b1") }, uTip: { value: new THREE.Color("#2b2d31") } }), NP);
+  pigeons.frustumCulled = false; pigeons.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(pigeons);
+  const flock = Array.from({ length: NP }, (_, i) => ({ a: (i / NP) * 6.28 + r(-0.2, 0.2), R: r(16, 26), h: r(46, 58), beat: r(0, 6.28) }));
+  function stepPigeons(dt, t) {
+    flock.forEach((p, i) => {
+      p.a += 0.32 * dt; p.beat += dt * 11;
+      const cx = -40 + Math.sin(t * 0.05) * 20, cz = -95;
+      V.set(cx + Math.cos(p.a) * p.R, p.h + Math.sin(p.a * 2 + i) * 2.5, cz + Math.sin(p.a) * p.R * 0.6);
+      const vx = -Math.sin(p.a) * p.R, vz = Math.cos(p.a) * p.R * 0.6;
+      E.set(0, Math.atan2(-vx, -vz), 0.35, "YXZ");
+      pigeons.setMatrixAt(i, M4.compose(V, Q.setFromEuler(E), S3.setScalar(0.55)));
+      aGull.setXY(i, p.beat, 0.45);
+    });
+    pigeons.instanceMatrix.needsUpdate = aGull.needsUpdate = true;
+  }
+
+  /* --- close by: the balcony's wrought-iron railing, a flower box in the accent colour on it --- */
+  const railTex = parisRailing(THREE, preview ? 1024 : 2048);
+  keep(railTex.map); keep(railTex.mask);
+  const railU = { uMap: { value: railTex.map }, uMask: { value: railTex.mask }, uAccent: { value: accent }, uTint: { value: new THREE.Color() }, uRep: { value: new THREE.Vector2(1, 0) } };
+  const rail = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, PARIS_RAIL_FS, railU, { alphaToCoverage: true, ...KEEP_ALPHA, side: THREE.DoubleSide }));
+  rail.frustumCulled = false;
+  scene.add(rail);
+
+  // real shadows from the first draw; the city stands still, so the map is drawn once (and again when night swaps in the moon)
+  let shadowsOn = false, gone = false, rend = null;
+  sky.onBeforeRender = (renderer) => {
+    rend = renderer;
+    if (preview || shadowsOn) return;
+    shadowsOn = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accent.set(p.accent);
+    nightU.value = d ? 1 : 0;
+    envTex?.dispose(); envTex = parisEnv(THREE, d); goldMat.envMap = envTex; goldMat.needsUpdate = true; // only the gilding mirrors the sky: cheaper than an environment for every roof
+    skyUni.uZenith.value.set(d ? "#050a1e" : "#4d66a8"); skyUni.uMid.value.set(d ? "#0e1834" : "#dd9ca8"); skyUni.uHorizon.value.set(d ? "#2c2a48" : "#ffc48e");
+    skyUni.uGlow.value.set(d ? "#7a4632" : "#ffa060").multiplyScalar(0.5); skyUni.uSun.value = d ? 0 : 1.4;
+    starMat.opacity = d ? 0.55 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudUni.uSunDir.value.copy(L);
+    cloudUni.uLit.value.set(d ? "#40384e" : "#ffc9a8"); cloudUni.uShade.value.set(d ? "#1a1c30" : "#9c86ae"); cloudUni.uGlow.value.set(d ? "#8a5a48" : "#ffb070").multiplyScalar(d ? 0.3 : 0.6); cloudUni.uHaze.value.set(d ? "#1e2038" : "#f4c0a8");
+    sun.position.copy(L).multiplyScalar(1500).add(TARGET);
+    sun.color.set(d ? "#9fb4e8" : "#ffa862"); sun.intensity = d ? 0.45 : 4.0;
+    hemi.color.set(d ? "#222c52" : "#cdbad6"); hemi.groundColor.set(d ? "#3a2a20" : "#9a7a64"); hemi.intensity = d ? 0.6 : 0.85;
+    scene.fog.color.set(d ? "#1b1f3a" : "#eac2ae");
+    cityU.uLitAmt.value = d ? 1.1 : 0.1; cityU.uSkyGlass.value.set(d ? "#121a30" : "#c9c3d8");
+    groundMat.emissive.set(d ? "#b8622a" : "#000000"); groundMat.emissiveIntensity = d ? 0.02 : 0;
+    treeMat.emissive.set(d ? "#3a2810" : "#000000");
+    towerU.uIron.value.set(d ? "#2a2026" : "#4b3a37"); towerU.uRim.value.set("#ffb070").multiplyScalar(0.55); towerU.uHaze.value.copy(scene.fog.color); towerU.uHazeAmt.value = d ? 0.15 : 0.32;
+    beamU.uAmt.value = d ? 0.1 : 0; beacon.visible = redLight.visible = d;
+    goldMat.emissive.set(d ? "#b8862e" : "#000000"); goldMat.emissiveIntensity = d ? 0.35 : 0;
+    skyU.uBody.value.set(d ? "#141830" : "#c2b4c4"); skyU.uRim.value.set("#ffd0a0").multiplyScalar(d ? 0 : 0.18); skyU.uLights.value.set(d ? "#ffd9a0" : "#000000").multiplyScalar(0.9);
+    lampGlow.visible = carGlow.visible = d;
+    pigeons.visible = !d;
+    railU.uTint.value.set(d ? "#4a5068" : "#fff2e6");
+    if (rend && shadowsOn) rend.shadowMap.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3(), fwd = new THREE.Vector3(), right = new THREE.Vector3();
+  let sway = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, fov = A >= 1 ? 50 : 50 + (1 - A) * 22, yaw = A >= 1 ? YAW : YAW - (1 - A) * 0.35; // a phone turns towards the Tower
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); TAN = Math.tan((fov * Math.PI) / 360); }
+    camera.position.set(CAM[0] + Math.sin(sway) * 0.3, EYE + Math.sin(sway * 1.7) * 0.05, CAM[1]);
+    fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw)); right.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    camera.lookAt(look.copy(camera.position).addScaledVector(fwd, 1000).setY(EYE + Math.tan(PITCH) * 1000));
+    camera.updateMatrixWorld();
+    const dist = 1.3, drop = dist * Math.tan(Math.atan(0.86 * TAN) - PITCH), half = dist * TAN * Math.max(A, 0.3), Wq = 2 * half + 0.6;
+    rail.position.copy(camera.position).addScaledVector(fwd, dist).setY(EYE - drop - 0.35); rail.rotation.set(0, yaw, 0); rail.scale.set(Wq, 1.3, 1); // the top rail at EYE − drop
+    const xf = 0.7 * half; // the flower box near the right edge of any screen
+    railU.uRep.value.set(Wq / 2, ((0.85 - (xf + Wq / 2) / 2) % 1 + 1) % 1);
+    rail.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt, t) {
+    time.value = t;
+    sway = t * 0.025;
+    stepCars(dt);
+    if (!pal.dark) stepPigeons(dt, t);
+    beacon.rotation.y = t * 0.55;
+    const show = (t % 60) < 11; // the Tower sparkles for a while every minute (every hour, in Paris)
+    towerU.uSparkle.value = pal.dark && show ? 1 : 0;
+    redLight.material.opacity = 0.35 + 0.65 * (Math.sin(t * 2.4) > 0.2 ? 1 : 0.15);
+  }
+  frame(0, 0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { buildings: city.buildings, pots: city.pots.length, trees: trees.length, lamps: lamps.length, cars: cars.slice(0, 3).map((c) => Math.round(c.z)), sparkle: towerU.uSparkle.value, shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; envTex?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
