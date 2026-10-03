@@ -13985,7 +13985,359 @@ function robotfactory(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory };
+/* ---------- V8 engine: a cutaway V8 on an engine stand in a workshop, running slowly: pistons, crank, four camshafts, 32 valves, firing 1-8-4-3-6-5-7-2 ---------- */
+// One crank angle drives it all. The crank pins sit where the firing order puts them (cross-plane: 45°, 135°, 315°, 225°); each piston
+// follows its pin through its rod; the camshafts turn at half speed with every lobe set so its nose meets the tappet when that valve
+// should be fully open; each coil lights as its cylinder fires and the combustion glows through the cutaway windows. The windows are
+// cut into the valley side of both banks (so all eight pistons show from above), the heads are open, the belt drive turns at the front.
+/** The workshop floor: sealed concrete, trowel swirls, oil stains and the saw-cut joints; 3 m square, repeating. */
+function v8Floor(THREE) {
+  const r = koiRng(808);
+  const tex = canvasTexture(THREE, 1024, 1024, (g, w, h) => {
+    g.fillStyle = "#8f8d88"; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 26000; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "60,58,54" : "235,232,226"},${r(0.02, 0.07)})`; g.fillRect(r(0, w), r(0, h), r(1, 3), r(1, 3)); }
+    for (let i = 0; i < 40; i++) { g.strokeStyle = `rgba(255,255,255,${r(0.01, 0.025)})`; g.lineWidth = r(10, 30); g.beginPath(); g.arc(r(0, w), r(0, h), r(60, 200), r(0, 6), r(0, 6) + r(1, 2.5)); g.stroke(); } // trowel swirls
+    for (let i = 0; i < 3; i++) { const x = r(0, w), y = r(0, h), rad = r(20, 60), gr = g.createRadialGradient(x, y, 0, x, y, rad); gr.addColorStop(0, `rgba(30,26,20,${r(0.12, 0.22)})`); gr.addColorStop(1, "rgba(30,26,20,0)"); g.fillStyle = gr; g.beginPath(); g.ellipse(x, y, rad, rad * r(0.5, 1), r(0, 3), 0, Math.PI * 2); g.fill(); } // a few oil stains
+    g.fillStyle = "rgba(40,38,34,0.55)"; g.fillRect(0, 0, w, 3); g.fillRect(0, 0, 3, h); // the joints
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return tex;
+}
+/** The ribbed serpentine belt (u along the belt): a dark rubber band with the ribs and a wear line across. */
+function v8Belt(THREE) {
+  const tex = canvasTexture(THREE, 64, 32, (g, w, h) => {
+    g.fillStyle = "#1b1b1c"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#2c2c2e"; for (let y = 2; y < h; y += 6) g.fillRect(0, y, w, 2); // the ribs, along the belt
+    g.fillStyle = "#3a3a3c"; g.fillRect(0, 0, 4, h); // a mark across, so the run shows
+  });
+  tex.wrapS = THREE.RepeatWrapping;
+  return tex;
+}
+/** A pulley's face: machined rings, a hub with bolts, six lightening holes — so it is seen to turn. */
+function v8PulleyFace(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const gr = g.createRadialGradient(118, 112, 8, 128, 128, 128); gr.addColorStop(0, "#d9dcdf"); gr.addColorStop(0.7, "#9aa0a6"); gr.addColorStop(1, "#5d6268");
+    g.fillStyle = gr; g.beginPath(); g.arc(128, 128, 127, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.18)"; g.lineWidth = 1; for (let rr = 20; rr < 126; rr += 7) { g.beginPath(); g.arc(128, 128, rr, 0, Math.PI * 2); g.stroke(); }
+    g.fillStyle = "#1c1d1f"; for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; g.beginPath(); g.arc(128 + Math.cos(a) * 78, 128 + Math.sin(a) * 78, 22, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = "#3b3e42"; g.beginPath(); g.arc(128, 128, 34, 0, Math.PI * 2); g.fill();
+    for (let k = 0; k < 4; k++) { const a = (k / 4) * Math.PI * 2 + 0.4; g.fillStyle = "#c7cbcf"; g.beginPath(); g.arc(128 + Math.cos(a) * 22, 128 + Math.sin(a) * 22, 6, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = "#e8b923"; g.fillRect(124, 4, 8, 16); // a timing mark
+  });
+}
+/** Pegboard with the outlines of the tools hung on it. */
+function v8Pegboard(THREE) {
+  const r = koiRng(31);
+  return canvasTexture(THREE, 1024, 512, (g, w, h) => {
+    g.fillStyle = "#b9a483"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "rgba(60,46,30,0.55)"; for (let y = 12; y < h; y += 24) for (let x = 12; x < w; x += 24) { g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
+    const tool = (x, y, l, wd, c) => { g.fillStyle = c; g.save(); g.translate(x, y); g.fillRect(-wd / 2, 0, wd, l); g.beginPath(); g.arc(0, 0, wd * 1.4, 0, Math.PI * 2); g.fill(); g.restore(); };
+    for (let i = 0; i < 9; i++) tool(70 + i * 40, 60, 150 + i * 10, 10, ["#8d9298", "#a7acb1", "#7a7f85"][i % 3]); // spanners, shortest to longest
+    for (let i = 0; i < 6; i++) { g.fillStyle = ["#c0392b", "#1f5fa8", "#e8b923", "#2e8b57"][i % 4]; g.fillRect(500 + i * 52, 70, 26, 90); g.fillStyle = "#9aa0a6"; g.fillRect(509 + i * 52, 160, 8, 120); } // screwdrivers
+    g.fillStyle = "#2c2e31"; g.fillRect(840, 70, 120, 40); g.fillRect(880, 110, 40, 140); // a hammer
+    g.strokeStyle = "rgba(0,0,0,0.25)"; g.lineWidth = 2; g.strokeRect(1, 1, w - 2, h - 2);
+    for (let i = 0; i < 2000; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "80,60,40" : "255,240,220"},0.05)`; g.fillRect(r(0, w), r(0, h), 2, 2); }
+  });
+}
+/** What the paint and the metal mirror: the garage's window and strip light by day, the work lamp in the dark at night. */
+function v8Env(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#0b0c0f" : "#d9dde2"); gr.addColorStop(0.45, dark ? "#16171a" : "#9b9a96"); gr.addColorStop(0.55, dark ? "#0e0e10" : "#6f6c67"); gr.addColorStop(1, dark ? "#050506" : "#3a3835");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    if (dark) { const s = g.createRadialGradient(w * 0.55, h * 0.12, 0, w * 0.55, h * 0.12, 60); s.addColorStop(0, "rgba(255,226,180,1)"); s.addColorStop(1, "rgba(255,200,140,0)"); g.fillStyle = s; g.fillRect(0, 0, w, h * 0.5); }
+    else { g.fillStyle = "#ffffff"; g.fillRect(w * 0.18, h * 0.22, w * 0.1, h * 0.18); g.fillRect(w * 0.45, h * 0.04, w * 0.18, h * 0.03); } // the window, the strip light
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function v8engine(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(808);
+  const AXIS = 0.95, R = 0.045, LR = 0.155, S = 0.112, DECK = 0.23, BORE = 0.0505; // crank axis height; crank radius (90 mm stroke), rod, bore spacing, deck, bore radius
+  const FIRING = [1, 8, 4, 3, 6, 5, 7, 2], TAU = Math.PI * 2, OMEGA = (24 / 60) * TAU; // 24 rpm: slow enough to follow every stroke
+  const BANKS = [Math.PI / 4, -Math.PI / 4], SV = [-1, 1]; // near bank (odd cylinders) and far bank: axis from vertical; the side of each bank's frame facing the valley (the cutaway windows are on the other, outer side)
+  camera.fov = 40; camera.near = 0.05; camera.far = 60;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const bankM = BANKS.map((th) => new THREE.Matrix4().makeRotationZ(-th)), inBank = (b, m) => bankM[b].clone().multiply(m);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cylZ = (rad, len, seg = 24) => new THREE.CylinderGeometry(rad, rad, len, seg).rotateX(Math.PI / 2);
+  const cylX = (rad, len, seg = 16) => new THREE.CylinderGeometry(rad, rad, len, seg).rotateZ(Math.PI / 2);
+  const wrap = (a, m = TAU) => ((a % m) + m) % m;
+  const inward = (g) => { const n = g.attributes.normal, ix = g.index; for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i)); for (let i = 0; i < ix.count; i += 3) { const t = ix.getX(i + 1); ix.setX(i + 1, ix.getX(i + 2)); ix.setX(i + 2, t); } return g; };
+  const shadowMats = [], envMats = [];
+  const std = (o, env = 0) => { const m = keep(new THREE.MeshStandardMaterial(o)); shadowMats.push(m); if (env) { m.envMapIntensity = env; envMats.push(m); } return m; };
+  const ALU = 0xb5b9bd, CAST = 0x9da2a7, DARKC = 0x2b2d30, BLACK = 0x18191b, STEEL = 0xc6cacf, SOOT = 0x2f2c2a, FORGE = 0x7d848b, RED = 0x353f4b; // RED: the stand, charcoal (the tool chest is the red one)
+
+  /* --- the cylinders: bank, pin, firing angle (crank pins follow from the firing order: a cross-plane crank) --- */
+  const cyl = [];
+  for (let c = 1; c <= 8; c++) {
+    const odd = c % 2 === 1, k = (c - 1) >> 1, bank = odd ? 0 : 1, theta = BANKS[bank], F = (Math.PI / 2) * FIRING.indexOf(c);
+    cyl.push({ c, k, bank, theta, F, z: (1.5 - k) * S + (odd ? 0.012 : -0.012), pin: wrap(theta - F), i: c - 1 });
+  }
+  const PIN = [0, 1, 2, 3].map((k) => cyl[2 * k].pin); // the even cylinder of each pair agrees
+
+  /* --- materials --- */
+  const paintMat = std({ roughness: 0.3, metalness: 0.2 }, 0.8);
+  const castMat = std({ vertexColors: true, roughness: 0.45, metalness: 0.55 }, 0.7);
+  const metalMat = std({ vertexColors: true, roughness: 0.28, metalness: 0.9 }, 1);
+  const wsMat = std({ vertexColors: true, roughness: 0.85 });
+  const paintParts = [], castParts = [], wsParts = [];
+  const P = (geo, m) => paintParts.push([geo, m]), C = (geo, m, hex) => castParts.push([geo, m, hex]), W = (geo, hex, x, y, z, rx, ry, rz) => wsParts.push([geo, at(x, y, z, rx, ry, rz), hex]);
+  const eng = new THREE.Group(); eng.position.y = AXIS; eng.rotation.z = 0.39; scene.add(eng); // turned 22.5° on the stand: the near bank's windows face the view
+  const standParts = [];
+
+  /* --- the block and heads, built in each bank's frame (x across the bank, y up the bore, z along the engine) --- */
+  const holed = (u0, u1, v0, v1, wins) => { // a wall's outline with rounded windows: [u centre, half width, bottom, top]
+    const s = new THREE.Shape(); s.moveTo(u0, v0); s.lineTo(u1, v0); s.lineTo(u1, v1); s.lineTo(u0, v1); s.lineTo(u0, v0);
+    for (const [uc, hw, a, c] of wins) { const h = new THREE.Path(), q = 0.01; h.moveTo(uc - hw + q, a); h.lineTo(uc + hw - q, a); h.quadraticCurveTo(uc + hw, a, uc + hw, a + q); h.lineTo(uc + hw, c - q); h.quadraticCurveTo(uc + hw, c, uc + hw - q, c); h.lineTo(uc - hw + q, c); h.quadraticCurveTo(uc - hw, c, uc - hw, c - q); h.lineTo(uc - hw, a + q); h.quadraticCurveTo(uc - hw, a, uc - hw + q, a); s.holes.push(h); }
+    return s;
+  };
+  const panelM = (b, xw, sv) => { const ez = new THREE.Vector3(sv, 0, 0), ey = new THREE.Vector3(0, 1, 0), ex = new THREE.Vector3().crossVectors(ey, ez); return inBank(b, new THREE.Matrix4().makeBasis(ex, ey, ez).setPosition(xw, 0, 0)); };
+  const valves = [];
+  for (const b of [0, 1]) {
+    const sv = SV[b], wo = -sv, mine = cyl.filter((cy) => cy.bank === b);
+    const wall = holed(-0.245, 0.245, 0.075, DECK, mine.map((cy) => [-wo * cy.z, 0.034, 0.1, 0.214]));
+    C(new THREE.ExtrudeGeometry(wall, { depth: 0.008, bevelEnabled: false, curveSegments: 4 }), panelM(b, wo * 0.06, wo), CAST); // the outer wall with a window at every cylinder
+    P(new THREE.ShapeGeometry(wall, 4), panelM(b, wo * 0.0685, wo)); // its painted face
+    P(box(0.008, DECK - 0.075, 0.49), inBank(b, at(sv * 0.064, (DECK + 0.075) / 2, 0))); // the valley wall
+    for (const zz of [-0.24, 0.24]) P(box(0.136, DECK - 0.075, 0.01), inBank(b, at(0, (DECK + 0.075) / 2, zz)));
+    C(box(0.018, 0.012, 0.49), inBank(b, at(sv * 0.059, DECK + 0.006, 0)), ALU); // the deck: the valley strip, bridges between the bores, the outer strip
+    const zs = mine.map((cy) => cy.z).sort((p, q) => p - q);
+    for (let i = 0; i <= zs.length; i++) {
+      const z0 = i === 0 ? -0.245 : zs[i - 1] + BORE, z1 = i === zs.length ? 0.245 : zs[i] - BORE;
+      if (z1 - z0 > 0.002) C(box(0.1, 0.012, z1 - z0), inBank(b, at(0, DECK + 0.006, (z0 + z1) / 2)), ALU);
+      const w0 = i === 0 ? -0.245 : zs[i - 1] + 0.04, w1 = i === zs.length ? 0.245 : zs[i] - 0.04;
+      C(box(0.018, 0.012, w1 - w0), inBank(b, at(wo * 0.059, DECK + 0.006, (w0 + w1) / 2)), ALU);
+    }
+    for (const cy of mine) C(inward(new THREE.CylinderGeometry(BORE, BORE, 0.15, 28, 1, true, sv < 0 ? Math.PI : 0, Math.PI)), inBank(b, at(0, 0.155, cy.z)), STEEL); // the liners' valley halves: the window halves are cut away
+    // the head: its valley wall cut open over each chamber, the outer wall, the dark inside behind the valves, the open top with the tappet bores
+    const hwall = holed(-0.245, 0.245, 0.242, 0.338, mine.map((cy) => [-wo * cy.z, 0.034, 0.25, 0.318]));
+    C(new THREE.ExtrudeGeometry(hwall, { depth: 0.008, bevelEnabled: false, curveSegments: 4 }), panelM(b, wo * 0.077, wo), CAST); // the head's outer wall, open over each chamber and its valves
+    P(new THREE.ShapeGeometry(hwall, 4), panelM(b, wo * 0.0855, wo));
+    P(box(0.008, 0.096, 0.49), inBank(b, at(sv * 0.064, 0.29, 0)));
+    for (const zz of [-0.24, 0.24]) P(box(0.153, 0.096, 0.01), inBank(b, at(wo * 0.0085, 0.29, zz)));
+    C(box(0.006, 0.07, 0.47), inBank(b, at(sv * 0.016, 0.282, 0)), SOOT);
+    const top = new THREE.Shape(), xa = wo < 0 ? -0.085 : -0.068, xb = wo < 0 ? 0.068 : 0.085;
+    top.moveTo(xa, -0.245); top.lineTo(xb, -0.245); top.lineTo(xb, 0.245); top.lineTo(xa, 0.245); top.lineTo(xa, -0.245);
+    for (const cy of mine) {
+      C(new THREE.CylinderGeometry(0.004, 0.005, 0.02, 10), inBank(b, at(0, 0.268, cy.z)), DARKC); // the plug's tip in the chamber
+      C(new THREE.CylinderGeometry(0.0085, 0.0085, 0.07, 12), inBank(b, at(0, 0.36, cy.z)), DARKC); // its boot between the camshafts
+      const cyH = b === 1 ? 0.015 : 0; // the far head's coils stand on its cover
+      C(box(0.024, 0.07, 0.036), inBank(b, at(0, 0.43 + cyH, cy.z)), BLACK); C(box(0.016, 0.012, 0.02), inBank(b, at(0, 0.471 + cyH, cy.z + 0.008)), DARKC); // the coil
+      for (const side of [1, -1]) for (const dz of [-0.019, 0.019]) {
+        const x = side * 0.032, zv = cy.z + dz, intake = side === sv; // intake valves on the valley side
+        valves.push({ b, x, z: zv, cy, intake });
+        const h = new THREE.Path(); h.absarc(x, -zv, 0.0175, 0, TAU, true); top.holes.push(h);
+      }
+    }
+    const topM = inBank(b, new THREE.Matrix4().makeBasis(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 1, 0)).setPosition(0, 0.33, 0));
+    C(new THREE.ExtrudeGeometry(top, { depth: 0.008, bevelEnabled: false, curveSegments: 14 }), topM, ALU);
+    for (const x of [-0.032, 0.032]) for (const zb of [-0.215, ...zs.slice(0, 3).map((z, i) => (z + zs[i + 1]) / 2), 0.215]) C(box(0.034, 0.012, 0.018), inBank(b, at(x, 0.386, zb)), ALU); // cam bearing caps
+    if (b === 1) { P(box(0.165, 0.06, 0.47), inBank(b, at(0.0085 * wo, 0.37, 0))); P(box(0.15, 0.012, 0.44), inBank(b, at(0.0085 * wo, 0.404, 0))); C(new THREE.CylinderGeometry(0.018, 0.018, 0.02, 20), inBank(b, at(0.04 * sv, 0.41, -0.17)), BLACK); } // the far head keeps its cover (and oil cap)
+  }
+  // the crankcase below the banks, the pan
+  { // the near crankcase wall with a long window onto the crank; the far one plain
+    const ey = new THREE.Vector3(-0.031, 0.098, 0).normalize(), ez = new THREE.Vector3(ey.y, -ey.x, 0), ex = new THREE.Vector3().crossVectors(ey, ez), o = new THREE.Vector3(0.13, -0.09, 0);
+    const cw = holed(-0.245, 0.245, 0, 0.103, [[0, 0.19, 0.016, 0.088]]);
+    C(new THREE.ExtrudeGeometry(cw, { depth: 0.009, bevelEnabled: false, curveSegments: 4 }), new THREE.Matrix4().makeBasis(ex, ey, ez).setPosition(o.clone().addScaledVector(ez, -0.009)), CAST);
+    P(new THREE.ShapeGeometry(cw, 4), new THREE.Matrix4().makeBasis(ex, ey, ez).setPosition(o.clone().addScaledVector(ez, 0.0005)));
+    C(box(0.01, 0.103, 0.49), at(-0.114, -0.041, 0, 0, 0, -0.315), CAST);
+  }
+  for (const zz of [-0.24, 0.24]) P(box(0.25, 0.11, 0.01), at(0, -0.04, zz));
+  C(box(0.28, 0.012, 0.5), at(0, -0.096, 0), ALU); C(box(0.25, 0.1, 0.46), at(0, -0.152, 0), BLACK); C(box(0.2, 0.05, 0.2), at(0, -0.214, -0.12), BLACK); C(cylX(0.012, 0.02), at(0.1, -0.225, -0.12), STEEL);
+  // the timing cover over the front of the block and heads (the valley stays open), the water pump housing
+  const cover = new THREE.Shape(), cpts = [[0.098, 0.008], [0.216, 0.126], [0.23, 0.112], [0.298, 0.18], [0.191, 0.287], [0.005, 0.101]];
+  cover.moveTo(-0.13, -0.096); cover.lineTo(0.13, -0.096); for (const [x, y] of cpts) cover.lineTo(x, y); for (const [x, y] of [...cpts].reverse()) cover.lineTo(-x, y); cover.lineTo(-0.13, -0.096);
+  C(new THREE.ExtrudeGeometry(cover, { depth: 0.012, bevelEnabled: false }), at(0, 0, 0.245), ALU);
+  C(box(0.1, 0.09, 0.022), at(0, 0.15, 0.262), ALU); C(cylZ(0.038, 0.05), at(0, 0.165, 0.275), ALU);
+  C(cylZ(0.065, 0.11, 28), at(-0.27, 0.06, 0.25), 0xa8adb2); C(cylZ(0.066, 0.02, 28), at(-0.27, 0.06, 0.255), DARKC); // the alternator, on the far side (it would hide the near bank's first windows)
+  C(box(0.09, 0.02, 0.012), at(-0.13, -0.04, 0.27, 0, 0, 0.3), DARKC); C(box(0.06, 0.018, 0.012), at(0.08, 0.11, 0.27, 0, 0, -0.5), DARKC); // tensioner arm, idler bracket
+  // the engine stand at the back
+  for (const [x, y] of [[0.17, 0.14], [-0.17, 0.14], [0.17, -0.12], [-0.17, -0.12]]) C(box(0.025, 0.025, 0.13), at(x, y, -0.3), RED);
+  C(cylZ(0.11, 0.02, 32), at(0, 0, -0.37), RED); // the stand's turning head (with the arms, it turns with the engine); the rest stands still
+  const SP = (geo, hex, x, y, z) => standParts.push([geo, at(x, y, z), hex]);
+  SP(cylZ(0.05, 0.04, 24), RED, 0, AXIS, -0.4); SP(box(0.06, 0.06, 0.43), RED, 0, AXIS, -0.62); SP(box(0.07, AXIS + 0.03, 0.07), RED, 0, AXIS / 2 + 0.015, -0.85);
+  for (const x of [-0.3, 0.3]) { SP(box(0.06, 0.05, 1.0), RED, x, 0.075, -0.45); for (const z of [0.02, -0.92]) SP(cylX(0.035, 0.03, 16), BLACK, x, 0.035, z); }
+  SP(box(0.66, 0.05, 0.06), RED, 0, 0.075, -0.85);
+
+  const paint = new THREE.Mesh(keep(mergeParts(THREE, paintParts)), paintMat), cast = new THREE.Mesh(keep(mergeColored(THREE, castParts)), castMat), stand = new THREE.Mesh(keep(mergeColored(THREE, standParts)), castMat);
+  for (const m of [paint, cast]) { m.castShadow = m.receiveShadow = !preview; eng.add(m); }
+  stand.castShadow = stand.receiveShadow = !preview; scene.add(stand);
+
+  /* --- the crankshaft (and the balancer and flywheel on it) --- */
+  const web = new THREE.Shape(); // a throw's web: round the pin at the top, the counterweight opposite
+  web.moveTo(0.072 * Math.cos(-0.61), 0.072 * Math.sin(-0.61)); web.lineTo(0.032, R); web.absarc(0, R, 0.032, 0, Math.PI, false); web.lineTo(0.072 * Math.cos(-2.53), 0.072 * Math.sin(-2.53)); web.absarc(0, 0, 0.072, -2.53, -0.61, false);
+  const crankParts = [];
+  for (let k = 0; k < 4; k++) {
+    const zk = (1.5 - k) * S, a = PIN[k];
+    crankParts.push([cylZ(0.024, 0.056, 20), at(R * Math.sin(a), R * Math.cos(a), zk), STEEL]);
+    for (const dz of [-0.035, 0.035]) crankParts.push([new THREE.ExtrudeGeometry(web, { depth: 0.016, bevelEnabled: false, curveSegments: 10 }).translate(0, 0, -0.008), at(0, 0, zk + dz, 0, 0, -a), FORGE]);
+  }
+  for (let k = 0; k <= 4; k++) crankParts.push([cylZ(0.028, 0.046, 24), at(0, 0, (2 - k) * S), STEEL]);
+  crankParts.push([cylZ(0.022, 0.07), at(0, 0, 0.27), STEEL], [cylZ(0.085, 0.03, 40), at(0, 0, 0.305), BLACK], [cylZ(0.074, 0.032, 40), at(0, 0, 0.305), DARKC], [cylZ(0.045, 0.02, 24), at(0, 0, -0.262), STEEL], [cylZ(0.15, 0.018, 48), at(0, 0, -0.283), FORGE]);
+  for (let i = 0; i < 90; i++) { const a = (i / 90) * TAU; crankParts.push([box(0.01, 0.009, 0.016), at(Math.sin(a) * 0.153, Math.cos(a) * 0.153, -0.283, 0, 0, -a), DARKC]); } // the ring gear
+  const crank = new THREE.Group(); eng.add(crank);
+  const crankMesh = new THREE.Mesh(keep(mergeColored(THREE, crankParts)), metalMat); crankMesh.castShadow = !preview; crank.add(crankMesh);
+  const faceTex = keep(v8PulleyFace(THREE)), faceMat = std({ map: faceTex, metalness: 0.7, roughness: 0.35 }, 0.8);
+  const crankFace = new THREE.Mesh(keep(new THREE.CircleGeometry(0.072, 40)), faceMat); crankFace.position.z = 0.3215; crank.add(crankFace);
+
+  /* --- rods and pistons, eight of each, instanced --- */
+  const rodGeo = mergeColored(THREE, [[cylZ(0.033, 0.021, 24), at(0, 0, 0), FORGE], [box(0.016, LR - 0.05, 0.012), at(0, LR / 2, 0), FORGE], [box(0.006, LR - 0.06, 0.02), at(0.009, LR / 2, 0), FORGE], [box(0.006, LR - 0.06, 0.02), at(-0.009, LR / 2, 0), FORGE], [cylZ(0.016, 0.021, 18), at(0, LR, 0), FORGE], [new THREE.CylinderGeometry(0.005, 0.005, 0.03, 8), at(0.026, -0.012, 0), STEEL], [new THREE.CylinderGeometry(0.005, 0.005, 0.03, 8), at(-0.026, -0.012, 0), STEEL]]);
+  const pistonGeo = mergeColored(THREE, [[new THREE.CylinderGeometry(0.0495, 0.0495, 0.062, 36), at(0, -0.002, 0), 0xc3c7cb], [new THREE.CylinderGeometry(0.046, 0.0495, 0.004, 36), at(0, 0.031, 0), 0xb0b4b8], ...[0.022, 0.0165, 0.011].map((y) => [new THREE.CylinderGeometry(0.0499, 0.0499, 0.0016, 36, 1, true), at(0, y, 0), 0x3a3d41]), [cylX(0.011, 0.094), at(0, 0, 0), STEEL]]);
+  const rods = new THREE.InstancedMesh(keep(rodGeo), metalMat, 8), pistons = new THREE.InstancedMesh(keep(pistonGeo), metalMat, 8);
+  for (const m of [rods, pistons]) { m.frustumCulled = false; eng.add(m); keep(m); }
+
+  /* --- valvetrain: four camshafts at half speed (every lobe set to its valve's timing), 32 valves with springs and buckets --- */
+  const EXH = [140, 380], INT = [345, 590], LIFT = 0.009; // opening and closing, in crank degrees after the firing TDC
+  const lift = (v, phi) => { const [o, e] = v.intake ? INT : EXH, z = wrap(phi - v.cy.F, 2 * TAU) * (180 / Math.PI); return z > o && z < e ? LIFT * Math.sin((Math.PI * (z - o)) / (e - o)) ** 2 : 0; };
+  const lobe = new THREE.Shape();
+  for (let i = 0; i <= 48; i++) { const t = (i / 48) * TAU, rr = 0.016 + LIFT * Math.max(0, Math.cos(t)) ** 5; if (i === 0) lobe.moveTo(rr * Math.cos(t), rr * Math.sin(t)); else lobe.lineTo(rr * Math.cos(t), rr * Math.sin(t)); }
+  const cams = [];
+  for (const b of [0, 1]) for (const intake of [true, false]) {
+    const x = (intake ? SV[b] : -SV[b]) * 0.032, parts = [[cylZ(0.0115, 0.47, 16), at(0, 0, 0), STEEL], [new THREE.CylinderGeometry(0.036, 0.036, 0.008, 28).rotateX(Math.PI / 2), at(0, 0, 0.228), DARKC]];
+    for (const v of valves.filter((q) => q.b === b && q.x === x)) { const peak = ((intake ? INT[0] + INT[1] : EXH[0] + EXH[1]) / 2) * (Math.PI / 180); parts.push([new THREE.ExtrudeGeometry(lobe, { depth: 0.013, bevelEnabled: false }).translate(0, 0, -0.0065), at(0, 0, v.z, 0, 0, (v.cy.F + peak) / 2 - Math.PI / 2), STEEL]); }
+    const m = new THREE.Mesh(keep(mergeColored(THREE, parts)), metalMat), p = new THREE.Vector3(x, 0.368, 0).applyMatrix4(bankM[b]);
+    m.position.copy(p); m.castShadow = !preview; eng.add(m); cams.push({ m, theta: BANKS[b] });
+  }
+  const valveGeo = mergeColored(THREE, [[new THREE.CylinderGeometry(0.016, 0.0125, 0.004, 24), at(0, 0.002, 0), STEEL], [new THREE.CylinderGeometry(0.0035, 0.0035, 0.09, 8), at(0, 0.047, 0), STEEL], [new THREE.CylinderGeometry(0.0115, 0.009, 0.004, 16), at(0, 0.077, 0), DARKC], [new THREE.CylinderGeometry(0.0165, 0.0165, 0.02, 24), at(0, 0.087, 0), 0xd5d9dd]]);
+  class Helix extends THREE.Curve { getPoint(t, out = new THREE.Vector3()) { const a = t * 6 * TAU; return out.set(Math.cos(a) * 0.012, t * 0.04, Math.sin(a) * 0.012); } }
+  const springGeo = mergeColored(THREE, [[new THREE.TubeGeometry(new Helix(), 120, 0.0016, 6, false), new THREE.Matrix4(), 0x34373b]]);
+  const valveMesh = new THREE.InstancedMesh(keep(valveGeo), metalMat, valves.length), springMesh = new THREE.InstancedMesh(keep(springGeo), metalMat, valves.length);
+  for (const m of [valveMesh, springMesh]) { m.frustumCulled = false; eng.add(m); keep(m); }
+
+  /* --- the belt drive at the front: crank, tensioner, alternator, water pump, idler; one belt round them all --- */
+  const PUL = [[0, 0, 0.085], [0.15, 0.12, 0.036], [0, 0.165, 0.058], [-0.27, 0.06, 0.032], [-0.16, -0.04, 0.034]], BZ = 0.305; // crank, idler, water pump, alternator, tensioner: in order round the belt
+  const tan = PUL.map(([x1, y1, r1], i) => { const [x2, y2, r2] = PUL[(i + 1) % PUL.length], dx = x2 - x1, dy = y2 - y1, D = Math.hypot(dx, dy), ux = dx / D, uy = dy / D, sb = (r1 - r2) / D, cb = Math.sqrt(1 - sb * sb), nx = cb * uy + sb * ux, ny = -cb * ux + sb * uy; return [[x1 + r1 * nx, y1 + r1 * ny], [x2 + r2 * nx, y2 + r2 * ny]]; }); // outer tangents
+  const path = [];
+  PUL.forEach(([cx, cy0, rr], i) => { // the arc round pulley i, from where the belt arrives to where it leaves, then the straight run
+    const [ax, ay] = tan[(i + PUL.length - 1) % PUL.length][1], [bx, by] = tan[i][0];
+    let a0 = Math.atan2(ay - cy0, ax - cx), a1 = Math.atan2(by - cy0, bx - cx); while (a1 < a0) a1 += TAU;
+    const n = Math.max(2, Math.ceil(((a1 - a0) * rr) / 0.004)); for (let j = 0; j <= n; j++) { const a = a0 + ((a1 - a0) * j) / n; path.push([cx + rr * Math.cos(a), cy0 + rr * Math.sin(a)]); }
+  });
+  path.push(path[0]);
+  const bpos = [], buv = [], bidx = []; let blen = 0;
+  path.forEach(([x, y], i) => { if (i) blen += Math.hypot(x - path[i - 1][0], y - path[i - 1][1]); for (const s of [-0.011, 0.011]) { bpos.push(x, y, BZ + s); buv.push(blen / 0.02, s > 0 ? 1 : 0); } if (i) { const a = (i - 1) * 2; bidx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } });
+  const beltGeo = keep(new THREE.BufferGeometry()); beltGeo.setAttribute("position", new THREE.Float32BufferAttribute(bpos, 3)); beltGeo.setAttribute("uv", new THREE.Float32BufferAttribute(buv, 2)); beltGeo.setIndex(bidx); beltGeo.computeVertexNormals();
+  const beltTex = keep(v8Belt(THREE)), belt = new THREE.Mesh(beltGeo, std({ map: beltTex, roughness: 0.75, side: THREE.DoubleSide }));
+  eng.add(belt);
+  const rimMat = std({ color: 0x3a3d41, metalness: 0.6, roughness: 0.4 }, 0.6);
+  const pulleys = PUL.slice(1).map(([x, y, rr]) => { const g = new THREE.Group(); g.position.set(x, y, BZ); const rim = new THREE.Mesh(keep(cylZ(rr, 0.026, 36)), rimMat); g.add(rim); const face = new THREE.Mesh(keep(new THREE.CircleGeometry(rr - 0.002, 32)), faceMat); face.position.z = 0.0132; g.add(face); eng.add(g); return { g, rr }; });
+
+  /* --- the workshop: floor, mat, drip tray, the walls with a window, a bench and pegboard, a tool chest, a strip light --- */
+  const floorTex = keep(v8Floor(THREE)); floorTex.repeat.set(10 / 3, 10 / 3);
+  const floor = new THREE.Mesh(keep(new THREE.PlaneGeometry(10, 10).rotateX(-Math.PI / 2)), std({ map: floorTex, roughness: 0.55 }, 0.25));
+  floor.position.set(0, 0, -1); floor.receiveShadow = !preview; scene.add(floor);
+  W(box(0.5, 0.025, 0.4), 0x6f7378, 0, 0.0125, 0.02); W(box(0.46, 0.004, 0.36), 0x2b2a28, 0, 0.026, 0.02); // a drip pan under the engine, a little oil in it
+  W(box(10, 3.2, 0.2), 0xd6cfbf, 0, 1.6, -3.1); W(box(0.2, 3.2, 10), 0xcbc4b4, -3.1, 1.6, -1); // walls, cream above
+  W(box(10, 1.15, 0.02), 0x46564f, 0, 0.575, -2.99); W(box(0.02, 1.15, 10), 0x46564f, -2.99, 0.575, -1); W(box(10, 0.04, 0.03), 0x2c3531, 0, 1.17, -2.985); W(box(0.03, 0.04, 10), 0x2c3531, -2.985, 1.17, -1); // a green-grey band below
+  W(box(2.1, 0.06, 0.72), 0x8a6a44, -0.3, 0.92, -2.62); for (const x of [-1.3, 0.7]) for (const z of [-2.32, -2.92]) W(box(0.05, 0.9, 0.05), 0x5d6168, x, 0.45, z); W(box(2.0, 0.03, 0.6), 0x5d6168, -0.3, 0.25, -2.62); // the bench and its shelf
+  W(box(0.16, 0.1, 0.12), 0x2a3b55, 0.45, 1.0, -2.4); W(box(0.06, 0.04, 0.2), 0x2a3b55, 0.45, 1.07, -2.3); W(box(0.42, 0.2, 0.22), 0xb3261e, -0.95, 1.05, -2.6); W(box(0.3, 0.12, 0.18), 0x2e5c8a, -1.0, 0.33, -2.6); // vice, a toolbox, a crate below
+  W(box(0.95, 1.05, 0.52), 0xb3261e, 1.45, 0.53, -2.72); for (let i = 0; i < 6; i++) W(box(0.86, 0.012, 0.02), 0x1d1e20, 1.45, 0.2 + i * 0.15, -2.455); // the tool chest beside the bench
+  W(box(0.08, 0.02, 1.6), 0xf3f6fa, 0.2, 3.05, -0.6); // the strip light's housing
+  const ws = new THREE.Mesh(keep(mergeColored(THREE, wsParts)), wsMat); ws.receiveShadow = !preview; scene.add(ws);
+  const peg = new THREE.Mesh(keep(new THREE.PlaneGeometry(2.1, 1.05)), std({ map: keep(v8Pegboard(THREE)), roughness: 0.9 })); peg.position.set(-0.3, 1.62, -2.99); scene.add(peg);
+  const windowMat = keep(new THREE.MeshBasicMaterial({ color: 0xffffff })), lightMat = keep(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  windowMat.map = keep(canvasTexture(THREE, 256, 200, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#ffffff"); gr.addColorStop(1, "#c9d6e2"); g.fillStyle = gr; g.fillRect(0, 0, w, h); g.fillStyle = "#3b4148"; g.fillRect(0, 0, w, 8); g.fillRect(0, h - 8, w, 8); g.fillRect(0, 0, 8, h); g.fillRect(w - 8, 0, 8, h); g.fillRect(w / 2 - 3, 0, 6, h); for (const y of [h / 3, (2 * h) / 3]) g.fillRect(0, y - 3, w, 6); }));
+  const win = new THREE.Mesh(keep(new THREE.PlaneGeometry(1.3, 1.0)), windowMat); win.position.set(-2.99, 1.85, -0.5); win.rotation.y = Math.PI / 2; scene.add(win);
+  const tube = new THREE.Mesh(keep(box(0.05, 0.03, 1.5)), lightMat); tube.position.set(0.2, 3.03, -0.6); scene.add(tube);
+
+  /* --- light: the window (and strip light) by day, a work lamp over the engine at night; static shadows --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), key = new THREE.SpotLight(0xffffff, 1, 12, 0.9, 0.7, 2), fill = new THREE.DirectionalLight(0xffffff, 0);
+  key.target.position.set(0, AXIS, 0); fill.position.set(1.5, 3, 3);
+  if (!preview) { key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; }
+  scene.add(hemi, key, key.target, fill);
+  // the glows: eight combustion chambers, eight coil lamps
+  const glowQuad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(glowQuad.index); glowGeo.setAttribute("position", glowQuad.attributes.position); glowGeo.setAttribute("uv", glowQuad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(16 * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(16 * 3), 3);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage); glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.instanceCount = 16;
+  const glowU = { uMap: { value: glow }, uTime: time, uAmt: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, keep(new THREE.ShaderMaterial({ uniforms: glowU, vertexShader: PARIS_GLOW_VS, fragmentShader: PARIS_GLOW_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  glows.frustumCulled = false; glows.renderOrder = 20; eng.add(glows);
+  const GP = cyl.flatMap((cy) => [new THREE.Vector3(0, 0.252, cy.z).applyMatrix4(bankM[cy.bank]), new THREE.Vector3(0, 0.474 + (cy.bank === 1 ? 0.015 : 0), cy.z - 0.01).applyMatrix4(bankM[cy.bank])]); // chamber, coil lamp
+
+  // shadows drawn once (the moving parts are inside the engine), again when the light changes
+  let shadowsOn = false, gone = false, rend = null;
+  floor.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true; rend = renderer;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    paintMat.color.set(p.accent).multiplyScalar(0.85);
+    env?.dispose(); env = v8Env(THREE, d);
+    for (const m of envMats) m.envMap = env;
+    hemi.color.set(d ? "#1b1f27" : "#e2e6ec"); hemi.groundColor.set(d ? "#0a0909" : "#6d6964"); hemi.intensity = d ? 0.16 : 0.95;
+    key.color.set(d ? "#ffe0b4" : "#fff4e4"); key.intensity = d ? 16 : 26; key.angle = d ? 0.5 : 0.95; key.penumbra = d ? 0.6 : 0.8;
+    key.position.set(...(d ? [1.05, 1.95, 0.85] : [0.9, 2.75, 1.3])); // the strip light above the front by day; a work lamp on a stand at night
+    fill.color.set(d ? "#8fa2c8" : "#eef3ff"); fill.intensity = d ? 0.05 : 0.55; fill.position.set(2.2, 1.6, 1.8); // the open door behind us by day
+    windowMat.color.set(d ? "#0f1828" : "#eaf1f8"); lightMat.color.set(d ? "#2a2c30" : "#f6f9ff");
+    glowU.uAmt.value = d ? 1 : 0.8;
+    if (rend && shadowsOn) rend.shadowMap.needsUpdate = true; // the lamp throws its shadows from elsewhere
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3(), mT = new THREE.Matrix4(), mS = new THREE.Matrix4(), mK = new THREE.Matrix4();
+  let phi = 0.4, sway = 0, beltOff = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 10;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 0.06;
+    camera.position.set(1.25 + s + k * 0.25, 1.33 + k * 0.42, 0.85 + k * 0.95); // a little above the engine, from the front and the near side: its windows, the open head, the belt drive
+    camera.lookAt(look.set(-0.02 + s * 0.2, AXIS + 0.05 - k * 0.14, -0.03)); // a phone looks down a little more: the engine in the middle of the tall frame
+    camera.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt, t) {
+    time.value = t; sway = t * 0.05;
+    phi += OMEGA * dt;
+    crank.rotation.z = -phi;
+    for (const cy of cyl) {
+      const pa = PIN[cy.k] + phi, px = R * Math.sin(pa), py = R * Math.cos(pa), ps = pa - cy.theta;
+      const s = R * Math.cos(ps) + Math.sqrt(LR * LR - (R * Math.sin(ps)) ** 2), wx = s * Math.sin(cy.theta), wy = s * Math.cos(cy.theta);
+      pistons.setMatrixAt(cy.i, mT.makeRotationZ(-cy.theta).setPosition(wx, wy, cy.z));
+      rods.setMatrixAt(cy.i, mT.makeRotationZ(-Math.atan2(wx - px, wy - py)).setPosition(px, py, cy.z));
+      const z = wrap(phi - cy.F, 2 * TAU) * (180 / Math.PI); // degrees after this cylinder's firing TDC
+      const spark = z > 710 || z < 3 ? 1 : 0, burn = z < 75 ? Math.pow(1 - z / 75, 1.6) : 0, coil = z > 680 && z < 712 ? 1 : 0;
+      const g0 = GP[cy.i * 2], g1 = GP[cy.i * 2 + 1];
+      aGlow.setXYZW(cy.i * 2, g0.x, g0.y, g0.z, 0.05 + 0.13 * burn + 0.06 * spark); aTint.setXYZ(cy.i * 2, 2.4 * burn + 1.6 * spark, 1.1 * burn + 1.8 * spark, 0.25 * burn + 2.4 * spark);
+      if (spark + burn === 0) aGlow.setW(cy.i * 2, 0);
+      aGlow.setXYZW(cy.i * 2 + 1, g1.x, g1.y, g1.z, 0.05 * (coil + spark)); aTint.setXYZ(cy.i * 2 + 1, 2.2, 1.2, 0.2);
+    }
+    for (const c of cams) c.m.rotation.z = -c.theta - phi / 2;
+    valves.forEach((v, i) => {
+      const L = lift(v, phi);
+      mT.copy(bankM[v.b]).multiply(mS.makeTranslation(v.x, 0.255 - L, v.z)); valveMesh.setMatrixAt(i, mT);
+      mT.copy(bankM[v.b]).multiply(mS.makeTranslation(v.x, 0.29, v.z)).multiply(mK.makeScale(1, (0.04 - L) / 0.04, 1)); springMesh.setMatrixAt(i, mT); // the spring squeezes as the valve opens
+    });
+    for (const m of [pistons, rods, valveMesh, springMesh]) m.instanceMatrix.needsUpdate = true;
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    const v = OMEGA * 0.085; // belt speed
+    beltOff = (beltOff + (v * dt) / 0.02) % 1; beltTex.offset.x = -beltOff;
+    for (const p of pulleys) p.g.rotation.z = -(v / p.rr) * t;
+  }
+  frame(0, 0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { rpm: 24, crank: +wrap(phi).toFixed(2), firing: FIRING.join("-"), pins: PIN.map((a) => Math.round((a * 180) / Math.PI)), shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
