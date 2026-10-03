@@ -13558,7 +13558,434 @@ function steamengine(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine };
+/* ---------- Robot factory: a car body shop; robot arms weld the bodies on a moving line, sparks flying, robot carts gliding past ---------- */
+// The line moves every body one station on, stops, and the robots weld: each runs its own program and finds its spots on the
+// body by inverse kinematics (a two-link arm, the wrist keeping the gun's angle). Every weld throws a fan of sparks that fall,
+// bounce once on the floor and die out — computed in the vertex shader from where and when they were thrown. All robots are
+// instanced per link (five draws for the lot); the bodies on the line are one mesh that shifts by the station pitch.
+const ROBOT_SPARK_VS = /* glsl */ `
+  uniform float uTime; uniform vec2 uView; uniform float uDpr; // the drawing buffer in pixels, the pixel ratio
+  attribute vec3 aOrigin; attribute vec3 aVel; attribute vec2 aBirth; // thrown when, lives how long
+  varying float vLife; varying vec2 vQ;
+  const float G = 9.8;
+  vec3 sparkAt(float t) {
+    float vy = aVel.y, y0 = max(aOrigin.y, 0.0);
+    float th = (vy + sqrt(vy * vy + 2.0 * G * y0)) / G; // when it reaches the floor
+    if (t <= th) { vec3 p = aOrigin + aVel * t; p.y -= 0.5 * G * t * t; return p; }
+    vec3 hit = aOrigin + aVel * th; hit.y = 0.0;
+    float t2 = t - th;
+    vec3 v2 = vec3(aVel.x * 0.45, (G * th - vy) * 0.28, aVel.z * 0.45); // one bounce that loses most of the speed
+    vec3 p = hit + v2 * t2; p.y = max(0.0, p.y - 0.5 * G * t2 * t2);
+    return p;
+  }
+  void main() {
+    float tau = uTime - aBirth.x;
+    vLife = tau / aBirth.y; vQ = position.xy;
+    if (tau < 0.0 || vLife > 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec4 ch = projectionMatrix * viewMatrix * vec4(sparkAt(tau), 1.0);
+    vec4 ct = projectionMatrix * viewMatrix * vec4(sparkAt(max(tau - 0.022, 0.0)), 1.0); // the streak: where it was a moment ago
+    vec2 d = (ch.xy / ch.w - ct.xy / ct.w) * uView * 0.5;
+    float len = length(d);
+    vec2 dir = len > 0.3 ? d / len : vec2(1.0, 0.0);
+    vec4 c = mix(ct, ch, position.x);
+    c.xy += vec2(-dir.y, dir.x) * position.y * (1.5 * uDpr * 2.0 / uView) * c.w;
+    c.xy += dir * (position.x * 2.0 - 1.0) * (1.2 * uDpr * 2.0 / uView) * c.w; // a slow spark is still a dot
+    gl_Position = c;
+  }
+`;
+const ROBOT_SPARK_FS = /* glsl */ `
+  uniform float uAmt;
+  varying float vLife; varying vec2 vQ;
+  void main() {
+    float heat = 1.0 - vLife;
+    vec3 col = mix(vec3(0.75, 0.13, 0.02), mix(vec3(1.0, 0.46, 0.08), vec3(1.0, 0.86, 0.5), smoothstep(0.75, 1.0, heat)), smoothstep(0.1, 0.45, heat)); // white-hot only at first, then orange, red
+    float a = (1.0 - vQ.y * vQ.y) * mix(0.3, 1.0, vQ.x) * (1.0 - smoothstep(0.65, 1.0, vLife)) * uAmt;
+    gl_FragColor = vec4(col * a * 2.0, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the blue warning spot a robot cart throws on the floor ahead of it
+const ROBOT_SPOT_VS = /* glsl */ `
+  attribute vec4 aSpot; // centre x, centre z, radius, strength
+  varying vec2 vUv; varying float vS;
+  void main() { vUv = uv; vS = aSpot.w; gl_Position = projectionMatrix * viewMatrix * vec4(aSpot.x + position.x * aSpot.z * 2.0, 0.015, aSpot.y - position.y * aSpot.z * 2.0, 1.0); }
+`;
+const ROBOT_SPOT_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uColor; uniform float uAmt;
+  varying vec2 vUv; varying float vS;
+  void main() {
+    gl_FragColor = vec4(texture2D(uMap, vUv).rgb * uColor * vS * uAmt, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** The hall's floor, one station (7 m along x) by the whole width (z −18…18): epoxy, the dark strip under the line, hatched
+ *  robot bays, yellow fence lines, green walkways, the robot carts' lane and the hatched column bases. Repeats along x. */
+function robotFloor(THREE) {
+  const W = 512, H = 2048, sx = W / 7, sz = H / 36, r = koiRng(4242);
+  const X = (x) => x * sx, Z = (z) => (z + 18) * sz;
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#a2aaa6"; g.fillRect(0, 0, W, H);
+    for (let i = 0; i < 12000; i++) { g.fillStyle = `rgba(${r() < 0.55 ? "70,76,74" : "240,244,242"},${r(0.02, 0.06)})`; g.fillRect(r(0, W), r(0, H), r(1, 6), r(1, 6)); }
+    g.fillStyle = "#828a88"; g.fillRect(0, Z(-1.9), W, Z(1.9) - Z(-1.9)); // under the line
+    const hatch = (x0, z0, x1, z1) => { g.save(); g.beginPath(); g.rect(X(x0), Z(z0), X(x1) - X(x0), Z(z1) - Z(z0)); g.clip(); g.fillStyle = "#e9b51c"; g.fillRect(X(x0), Z(z0), X(x1) - X(x0), Z(z1) - Z(z0)); g.strokeStyle = "#1d1f22"; g.lineWidth = 0.09 * sx; for (let d = -20; d < 20; d += 0.3) { g.beginPath(); g.moveTo(X(x0 + d), Z(z0)); g.lineTo(X(x0 + d + (z1 - z0)), Z(z1)); g.stroke(); } g.restore(); };
+    for (const s of [1, -1]) {
+      for (const x of [1.35, 5.45]) { hatch(x - 0.65, s * 3 - 0.65, x + 0.65, s * 3 + 0.65); } // robot bays
+      g.fillStyle = "#e9b51c"; g.fillRect(0, Z(s * 4.3) - 0.06 * sz, W, 0.12 * sz); // the fence line
+      g.fillStyle = "#4f8a5d"; g.fillRect(0, Z(s > 0 ? 4.6 : -6.4), W, 1.8 * sz); // the walkway
+      g.fillStyle = "#f2f4f2"; for (const z of [4.62, 6.38]) g.fillRect(0, Z(s * z) - 0.04 * sz, W, 0.08 * sz);
+      g.fillStyle = "#e9b51c"; for (let x = 0.2; x < 7; x += 1.4) g.fillRect(X(x), Z(s * 6.9) - 0.04 * sz, 0.7 * sx, 0.08 * sz); // the cart lane
+      g.fillStyle = "#f2f4f2"; for (const z of [6.5, 7.3]) g.fillRect(0, Z(s * z) - 0.03 * sz, W, 0.06 * sz);
+      hatch(3.0, s * 8.6 - 0.5, 4.0, s * 8.6 + 0.5); // round the column
+    }
+    g.fillStyle = "rgba(255,255,255,0.08)"; for (let x = 0; x < 7; x += 3.5) g.fillRect(X(x), 0, 2, H); // the slab joints
+  });
+  tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return tex;
+}
+/** Wire mesh for the safety fences (alpha: the wires), 50 mm squares; for alpha-to-coverage. */
+function robotMesh(THREE) {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d");
+  g.clearRect(0, 0, 64, 64); g.fillStyle = "#ffffff";
+  for (let k = 0; k < 4; k++) { g.fillRect(k * 16, 0, 3, 64); g.fillRect(0, k * 16, 64, 3); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 4;
+  return tex;
+}
+/** North-light glazing: panes between mullions and a transom (the colour comes from the material: sky by day, night at night). */
+function robotGlass(THREE) {
+  const tex = canvasTexture(THREE, 128, 64, (g) => {
+    const gr = g.createLinearGradient(0, 0, 0, 64); gr.addColorStop(0, "#ffffff"); gr.addColorStop(1, "#c9d2dc");
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 64);
+    g.fillStyle = "#4a535c"; g.fillRect(0, 0, 5, 64); g.fillRect(0, 30, 128, 4); g.fillRect(0, 0, 128, 3); g.fillRect(0, 61, 128, 3);
+  });
+  tex.wrapS = THREE.RepeatWrapping;
+  return tex;
+}
+/** The andon board over the line: bodies built today, the target, the line running. Redrawn when a body leaves. */
+function robotAndon(THREE) {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 160;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const draw = (count) => {
+    g.fillStyle = "#06080a"; g.fillRect(0, 0, 512, 160);
+    g.textBaseline = "middle"; g.font = "bold 28px ui-monospace, Menlo, Consolas, monospace";
+    g.fillStyle = "#ffb21e"; g.fillText("LINE 2  ·  BODY SHOP", 20, 30);
+    g.fillStyle = "#37f07a"; g.fillText(`BODIES ${count.toLocaleString("en-US")}`, 20, 80);
+    g.fillStyle = "#8fdcff"; g.fillText("TARGET 1,320", 300, 80);
+    g.fillStyle = "#37f07a"; g.fillText("OEE 98.6%", 20, 128); g.beginPath(); g.arc(318, 128, 9, 0, Math.PI * 2); g.fill(); g.fillText("RUN", 338, 128);
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** A cell's operator panel: a blue HMI with the cell view, a cycle bar and a few readouts. */
+function robotScreen(THREE) {
+  return canvasTexture(THREE, 256, 160, (g) => {
+    g.fillStyle = "#0b2a4a"; g.fillRect(0, 0, 256, 160);
+    g.fillStyle = "#1d5b94"; g.fillRect(0, 0, 256, 22);
+    g.fillStyle = "#e8f2ff"; g.font = "bold 13px ui-monospace, Menlo, monospace"; g.textBaseline = "middle"; g.fillText("CELL 210 · AUTO", 8, 11);
+    g.fillStyle = "#123c66"; g.fillRect(10, 32, 130, 90);
+    g.strokeStyle = "#8fd0ff"; g.lineWidth = 2; g.strokeRect(30, 70, 90, 26); g.beginPath(); g.moveTo(30, 70); g.lineTo(50, 52); g.lineTo(96, 52); g.lineTo(120, 70); g.stroke();
+    g.fillStyle = "#37f07a"; g.fillRect(150, 36, 96, 14); g.fillStyle = "#d6e6f5"; g.font = "11px ui-monospace, Menlo, monospace";
+    ["R1  OK", "R2  OK", "R3  OK", "R4  OK"].forEach((t, i) => g.fillText(t, 152, 66 + i * 15));
+    g.fillStyle = "#1d5b94"; g.fillRect(10, 132, 236, 14); g.fillStyle = "#37f07a"; g.fillRect(10, 132, 150, 14);
+  });
+}
+/** What the paint, steel and floor mirror: bright north lights high up by day, rows of LED lines at night. */
+function robotEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#121722" : "#eef3f8"); gr.addColorStop(0.42, dark ? "#1b212b" : "#b6bec6"); gr.addColorStop(0.55, dark ? "#141a22" : "#8e979e"); gr.addColorStop(1, dark ? "#07090c" : "#565c61");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 18; k++) { const x = (k + 0.5) * (w / 18); g.fillStyle = dark ? "#f4f8ff" : "#ffffff"; if (dark) { g.fillRect(x - 10, h * 0.2, 20, 3); g.fillRect(x - 8, h * 0.3, 16, 2); } else g.fillRect(x - 7, h * 0.06, 14, h * 0.16); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function robotfactory(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2077);
+  const PITCH = 7, CAR_Y = 0.645, T_CYCLE = 12, T_MOVE = 4; // station pitch, the rollers' top; the line moves 4 s of every 12
+  const ST = preview ? [-1, 0, 1, 2, 3] : [-2, -1, 0, 1, 2, 3, 4, 5, 6]; // stations at x = 7k
+  const LT = 0.55, A1 = 0.22, HS = 1.28, L2 = 1.1, L3 = 1.15; // the robot: gun, shoulder offset and height, upper and fore arm
+  camera.fov = 48; camera.near = 0.1; camera.far = 260;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, glow = keep(lhGlow(THREE)), accentU = { value: new THREE.Color() };
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cylX = (rad, len, seg = 16) => new THREE.CylinderGeometry(rad, rad, len, seg).rotateZ(Math.PI / 2);
+  const cylZ = (rad, len, seg = 16) => new THREE.CylinderGeometry(rad, rad, len, seg).rotateX(Math.PI / 2);
+  const KEEP_ALPHA = { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor };
+  const shadowMats = [], envMats = [];
+  const std = (o, env = 0) => { const m = keep(new THREE.MeshStandardMaterial(o)); shadowMats.push(m); if (env) { m.envMapIntensity = env; envMats.push(m); } return m; };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const mirrorZ = (g) => { g.scale(1, 1, -1); if (g.index) { const ix = g.index; for (let i = 0; i < ix.count; i += 3) { const t = ix.getX(i + 1); ix.setX(i + 1, ix.getX(i + 2)); ix.setX(i + 2, t); } } else for (const a of Object.values(g.attributes)) for (let i = 0; i < a.count; i += 3) for (let k = 0; k < a.itemSize; k++) { const j = (i + 1) * a.itemSize + k, l = (i + 2) * a.itemSize + k, t = a.array[j]; a.array[j] = a.array[l]; a.array[l] = t; } return g; };
+  const mesh = (geo, mat, cast = true) => { const m = new THREE.Mesh(keep(geo), mat); m.castShadow = cast && !preview; m.receiveShadow = !preview; scene.add(m); return m; };
+  const STEEL = 0xb3bac1, INNER = 0x959ca4, DARK = 0x2a2d31, GREY = 0x8d939a, YELLOW = 0xe8b923, FRAME = 0x5d6a75, ACC = 0xff00ff; // ACC: painted in the accent
+
+  /* --- materials --- */
+  const structMat = std({ vertexColors: true, roughness: 0.62, metalness: 0.2 }, 0.25);
+  const roofMat = std({ vertexColors: true, roughness: 0.85 }); // the roof and walls: lifted by day (daylight fills a hall from every side; page text reads over it)
+  const carMat = std({ vertexColors: true, roughness: 0.3, metalness: 0.65 }, 1);
+  const robotMat = std({ vertexColors: true, roughness: 0.34, metalness: 0.12 }, 0.55);
+  robotMat.onBeforeCompile = (sh) => { // magenta in the vertex colours marks the robots' paint: it takes the accent
+    sh.uniforms.uAccent = accentU;
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent;").replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.85, step(0.9, vColor.r) * step(0.9, vColor.b) * step(vColor.g, 0.1));");
+  };
+
+  /* --- light: daylight from the north lights (the LED lines at night) casts shadows; welding flashes; cart beacons --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), key = new THREE.DirectionalLight(0xffffff, 1);
+  key.target.position.set(6, 0, 0);
+  if (!preview) { key.castShadow = true; key.shadow.mapSize.set(2048, 2048); key.shadow.bias = -0.0005; key.shadow.normalBias = 0.03; }
+  const flashes = [0, 1].map(() => { const l = new THREE.PointLight(0xbcd4ff, 0, 7, 2); scene.add(l); return l; });
+  scene.add(hemi, key, key.target);
+  scene.fog = new THREE.Fog(0xffffff, 26, 100);
+
+  /* --- the hall: floor, conveyor, fences, columns, sawtooth roof with north lights, LED lines, racks --- */
+  const floorGeo = new THREE.PlaneGeometry(112, 36).rotateX(-Math.PI / 2).translate(16, 0, 0);
+  { const p = floorGeo.attributes.position, uv = floorGeo.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / PITCH, (18 - p.getZ(i)) / 36); }
+  const floorMat = std({ map: keep(robotFloor(THREE)), roughness: 0.42 }, 0.35);
+  const floor = mesh(floorGeo, floorMat, false);
+  const low = [], high = []; // coloured parts that cast shadows; the roof and what hangs from it (it would shade the whole hall)
+  const put = (list) => (geo, hex, x, y, z, rx, ry, rz) => list.push([geo, at(x, y, z, rx, ry, rz), hex]);
+  const P0 = put(low), PH = put(high);
+  for (const s of [1, -1]) {
+    P0(box(112, 0.12, 0.09), 0x4c5661, 16, 0.55, s * 0.62); // the roller bed's side rails
+    for (let x = -40; x <= 72; x += 2.4) P0(box(0.08, 0.5, 0.08), 0x4c5661, x, 0.25, s * 0.62);
+    for (let x = -39.3; x <= 72; x += 1.4) P0(box(0.06, 1.95, 0.06), YELLOW, x, 0.975, s * 4.3); // fence posts and rails
+    for (const y of [1.93, 0.14]) P0(box(112, 0.05, 0.05), YELLOW, 16, y, s * 4.3);
+    if (s < 0) P0(box(112, 0.1, 0.45), YELLOW, 16, 4.6, s * 4.65); // a cable tray over the far fence (the near one would cross the view)
+    PH(box(112, 11, 0.3), 0xc5cacd, 16, 5.5, s * 18.3); // the side walls
+  }
+  for (let x = -40; x <= 72; x += 0.6) P0(cylZ(0.045, 1.15, 10), 0xa9b0b7, x, 0.6, 0); // rollers
+  PH(box(0.3, 11, 36.6), 0xc5cacd, 72.2, 5.5, 0); // the far wall
+  for (let k = -6; k <= 10; k++) {
+    const xt = k * PITCH + 3.5;
+    for (const s of [1, -1]) { for (const dz of [-0.15, 0.15]) P0(box(0.32, 8.55, 0.03), FRAME, xt, 4.275, s * 8.6 + dz); P0(box(0.03, 8.55, 0.3), FRAME, xt, 4.275, s * 8.6); P0(box(0.5, 0.9, 0.5), YELLOW, xt, 0.45, s * 8.6); } // I-beam columns, their guards
+    PH(box(0.3, 0.45, 36), 0x7f8b96, xt, 8.78, 0); // the beam under the glazing (light: page text reads over the roof)
+    PH(new THREE.PlaneGeometry(7.28, 36).rotateX(Math.PI / 2).rotateZ(-0.278), 0xe2e5e8, xt + 3.5, 10, 0); // the roof's underside, sloping down from the glazing
+  }
+  const glassGeo = mergeParts(THREE, Array.from({ length: 17 }, (_, i) => { const g = new THREE.PlaneGeometry(36, 2.0).rotateY(-Math.PI / 2), uv = g.attributes.uv; for (let j = 0; j < uv.count; j++) uv.setX(j, uv.getX(j) * 30); return [g, at((i - 6) * PITCH + 3.5, 10, 0)]; }));
+  const glassMat = keep(new THREE.MeshBasicMaterial({ map: keep(robotGlass(THREE)) }));
+  mesh(glassGeo, glassMat, false).receiveShadow = false;
+  const ledParts = [], ledPts = [];
+  for (let x = -27.5; x <= 56; x += 3.5) for (const z of [-6.3, -2.3, 2.3, 6.3]) { ledParts.push([box(2.6, 0.08, 0.3), at(x, 7.4, z)]); ledPts.push(x, 7.3, z, 1.6, 0.85, 0.92, 1.0); const yr = 11 - (2 * ((((x - 3.5) % 7) + 7) % 7)) / 7; for (const dx of [-1, 1]) PH(box(0.015, yr - 7.44, 0.015), 0x6b7580, x + dx, (yr + 7.44) / 2, z); } // hung from the sloping roof
+  const ledMat = keep(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  mesh(mergeParts(THREE, ledParts), ledMat, false).receiveShadow = false;
+  for (let x = -24; x <= 52; x += 2.8) { // pallet racks along the far side, loaded
+    for (const z of [-10.2, -11.6]) { P0(box(0.08, 4.6, 0.08), 0x2f5fa8, x, 2.3, z); for (const y of [0.25, 1.75, 3.25]) P0(box(2.8, 0.12, 0.07), 0xe0761e, x + 1.4, y, z); }
+    for (const y of [0.31, 1.81, 3.31]) if (r() < 0.85) { const h = r(0.6, 1.1); P0(box(2.3, h, 1.2), [0x8a9096, 0xb0b7be, 0x2f6db5, 0xa57a4c][Math.floor(r(0, 4))], x + 1.4, y + h / 2, -10.9); }
+  }
+  // the andon board over the line, turned towards the view; operator panels along the far fence
+  const andon = robotAndon(THREE); keep(andon.tex);
+  const ANDON = [10.5, 5.6, -4.5], ANDON_YAW = -1.09; // down the line: nearer, it sat behind the sidebar's menu
+  P0(box(3.5, 1.2, 0.14), DARK, ANDON[0], ANDON[1], ANDON[2], 0, ANDON_YAW, 0);
+  for (const dx of [-1.4, 1.4]) PH(box(0.03, 2.6, 0.03), DARK, ANDON[0] + dx * Math.cos(ANDON_YAW), 7.2, ANDON[2] - dx * Math.sin(ANDON_YAW));
+  const andonFace = new THREE.Mesh(keep(new THREE.PlaneGeometry(3.3, 1.03)), keep(new THREE.MeshBasicMaterial({ map: andon.tex })));
+  andonFace.position.set(ANDON[0] + 0.075 * Math.sin(ANDON_YAW), ANDON[1], ANDON[2] + 0.075 * Math.cos(ANDON_YAW)); andonFace.rotation.y = ANDON_YAW; scene.add(andonFace);
+  const screenParts = [];
+  for (const k of ST) { const x = k * PITCH - 3.0; P0(box(0.08, 1.3, 0.08), DARK, x, 0.65, -4.05); P0(box(0.62, 0.44, 0.07), DARK, x, 1.48, -4.05); screenParts.push([new THREE.PlaneGeometry(0.56, 0.36), at(x, 1.48, -4.01)]); }
+  const screenMat = keep(new THREE.MeshBasicMaterial({ map: keep(robotScreen(THREE)) }));
+  mesh(mergeParts(THREE, screenParts), screenMat, false).receiveShadow = false;
+  if (!preview) { // the fences' wire mesh (alpha to coverage needs the antialiased canvas, so not in the small previews)
+    const fenceParts = [1, -1].map((s) => { const g = new THREE.PlaneGeometry(112, 1.72), uv = g.attributes.uv; for (let j = 0; j < uv.count; j++) uv.setXY(j, uv.getX(j) * 560, uv.getY(j) * 8.6); return [g, at(16, 1.03, s * 4.3)]; });
+    mesh(mergeParts(THREE, fenceParts), std({ map: keep(robotMesh(THREE)), color: 0x34393f, roughness: 0.6, side: THREE.DoubleSide, alphaToCoverage: true, ...KEEP_ALPHA }), false); // its shadow would be a solid wall
+  }
+
+  /* --- the bodies in white on their skids: one mesh for the whole line --- */
+  const shape = new THREE.Shape();
+  shape.moveTo(-2.25, 0.2); shape.lineTo(-1.88, 0.2); shape.absarc(-1.45, 0.2, 0.43, Math.PI, 0, true); shape.lineTo(1.02, 0.2); shape.absarc(1.45, 0.2, 0.43, Math.PI, 0, true); shape.lineTo(2.25, 0.2);
+  for (const [x, y] of [[2.31, 0.45], [2.27, 0.62], [2.1, 0.72], [1.0, 0.86], [0.95, 0.88], [0.38, 1.36], [0.2, 1.42], [-0.85, 1.42], [-1.05, 1.38], [-1.8, 0.98], [-2.2, 0.94], [-2.3, 0.8], [-2.32, 0.45], [-2.25, 0.2]]) shape.lineTo(x, y);
+  const hole = (pts) => { const p = new THREE.Path(); p.moveTo(...pts[0]); for (const q of pts.slice(1)) p.lineTo(...q); p.lineTo(...pts[0]); return p; };
+  shape.holes.push(hole([[0.86, 0.33], [0.88, 0.8], [0.32, 1.3], [0.02, 1.33], [-0.06, 1.29], [-0.06, 0.33]]), hole([[-0.2, 0.33], [-0.2, 1.31], [-0.85, 1.31], [-1.25, 1.05], [-1.25, 0.78], [-1.1, 0.56], [-0.95, 0.33]])); // the door apertures
+  const sideBase = keep(new THREE.ExtrudeGeometry(shape, { depth: 0.035, bevelEnabled: false, curveSegments: 10 }));
+  const zs = (y) => 0.9 - Math.max(0, y - 0.86) * 0.42; // the body side's surface at that height: the glasshouse leans in
+  const sideFor = (s) => { const g = sideBase.clone(), p = g.attributes.position; for (let i = 0; i < p.count; i++) p.setZ(i, zs(p.getY(i)) - 0.035 + p.getZ(i)); if (s < 0) mirrorZ(g); g.computeVertexNormals(); return g; };
+  const roofFor = () => { const g = new THREE.BoxGeometry(1.1, 0.03, 1.28, 1, 1, 10), p = g.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, p.getY(i) + 0.035 * (1 - (p.getZ(i) / 0.64) ** 2)); g.computeVertexNormals(); return g; };
+  const lineParts = [];
+  for (const k of [ST[0] - 1, ...ST]) {
+    const x0 = k * PITCH, add = (geo, hex, x, y, z) => lineParts.push([geo, at(x0 + x, CAR_Y + y, z), hex]);
+    add(sideFor(1), STEEL, 0, 0, 0); add(sideFor(-1), STEEL, 0, 0, 0); add(roofFor(), STEEL, -0.33, 1.405, 0);
+    add(box(4.36, 0.04, 1.72), INNER, 0, 0.2, 0); add(box(0.04, 0.6, 1.72), INNER, 0.96, 0.53, 0); add(box(0.2, 0.04, 1.72), STEEL, 1.0, 0.86, 0); // floor, dash, cowl
+    for (const s of [1, -1]) { add(box(1.32, 0.15, 0.12), INNER, 1.6, 0.34, s * 0.42); add(box(0.3, 0.42, 0.26), INNER, 1.45, 0.6, s * 0.6); add(box(0.06, 0.42, 0.06), INNER, 2.18, 0.45, s * 0.6); } // front rails, strut towers
+    add(box(0.08, 0.08, 1.56), INNER, 2.18, 0.66, 0); add(box(0.04, 0.55, 1.72), STEEL, -2.28, 0.62, 0); add(box(0.5, 0.03, 1.56), INNER, -1.72, 0.95, 0); // radiator support, rear panel, parcel shelf
+    for (const s of [1, -1]) add(box(4.6, 0.1, 0.12), DARK, 0, 0.05, s * 0.5); // the skid
+    for (const x of [-1.9, 0, 1.9]) add(box(0.12, 0.08, 1.12), DARK, x, 0.04, 0);
+  }
+  const line = mesh(mergeColored(THREE, lineParts), carMat);
+  line.frustumCulled = false;
+
+  /* --- the robots: four per station, two each side; every link of every robot in one instanced draw --- */
+  const robotPart = (list) => mergeColored(THREE, list.map(([g, m, c]) => [g, m, c]));
+  const LINKS = [
+    robotPart([[box(0.78, 0.5, 0.78), at(0, 0.25, 0), 0x7d848b], [box(0.86, 0.04, 0.86), at(0, 0.52, 0), 0x3a3f45], [new THREE.CylinderGeometry(0.33, 0.36, 0.24, 28), at(0, 0.66, 0), ACC], [box(0.16, 0.12, 0.22), at(-0.36, 0.6, 0), DARK]]), // riser and base
+    robotPart([[new THREE.CylinderGeometry(0.3, 0.32, 0.14, 28), at(0, 0.07, 0), ACC], [box(0.46, 0.36, 0.44), at(0.08, 0.3, 0), ACC], [cylZ(0.22, 0.44, 28), at(A1, 0.5, 0), ACC], [cylZ(0.11, 0.2, 18), at(A1, 0.5, 0.32), DARK], [new THREE.CylinderGeometry(0.09, 0.09, 0.22, 16), at(-0.2, 0.28, 0.13), DARK]]), // turret
+    robotPart([[box(L2, 0.26, 0.2), at(L2 / 2, 0, 0), ACC], [cylZ(0.15, 0.24, 24), at(0, 0, 0), ACC], [cylZ(0.135, 0.24, 24), at(L2, 0, 0), ACC], [box(0.8, 0.16, 0.03), at(0.55, 0, 0.115), ACC], [box(0.8, 0.16, 0.03), at(0.55, 0, -0.115), ACC], [cylX(0.05, 0.55, 12), at(0.32, -0.17, 0.14), GREY], [cylX(0.035, 0.95, 8), at(0.5, 0.16, -0.13), 0x141517]]), // upper arm, its balancer and the cable pack
+    robotPart([[box(0.62, 0.3, 0.3), at(0.02, 0.05, 0), ACC], [cylZ(0.16, 0.32, 24), at(0, 0, 0), ACC], [cylX(0.085, 0.18, 16), at(-0.38, 0.1, 0.08), DARK], [cylX(0.085, 0.18, 16), at(-0.38, 0.1, -0.08), DARK], [new THREE.CylinderGeometry(0.085, 0.115, 0.82, 18).rotateZ(-Math.PI / 2), at(0.74, 0.02, 0), ACC], [cylX(0.032, 0.85, 8), at(0.6, 0.15, 0), 0x141517]]), // forearm with its motors and cables
+    robotPart([[cylZ(0.095, 0.2, 20), at(0, 0, 0), ACC], [cylX(0.075, 0.12, 16), at(0.06, 0, 0), ACC], [cylX(0.082, 0.03, 18), at(0.135, 0, 0), GREY], [box(0.3, 0.27, 0.27), at(0.27, 0, 0), GREY], [cylX(0.055, 0.24, 12), at(0.25, 0.18, 0), 0xc8cdd2], [box(0.24, 0.06, 0.075), at(0.44, 0.075, 0, 0, 0, -0.3), DARK], [box(0.24, 0.06, 0.075), at(0.44, -0.075, 0, 0, 0, 0.3), DARK], [new THREE.CylinderGeometry(0.018, 0.018, 0.05, 10), at(0.545, 0.032, 0), 0xc0703e], [new THREE.CylinderGeometry(0.018, 0.018, 0.05, 10), at(0.545, -0.032, 0), 0xc0703e]]), // wrist and spot-welding gun
+  ];
+  const FRONT = [[0.86, 0.62], [0.62, 1.02], [0.34, 1.26], [0.02, 1.3], [-0.1, 1.12], [-0.1, 0.78], [0.5, 0.36], [0.14, 0.36]]; // weld spots round the door apertures (along, up)
+  const REAR = [[-0.26, 1.1], [-0.26, 0.64], [-0.56, 1.3], [-0.9, 1.24], [-1.28, 0.96], [-1.16, 0.62], [-0.62, 0.36], [-0.96, 0.4]];
+  const robots = [];
+  for (const k of ST) for (const [dx, side, set] of [[1.35, 1, FRONT], [-1.55, 1, REAR], [1.35, -1, FRONT], [-1.55, -1, REAR]]) {
+    const rb = { bx: k * PITCH + dx, bz: side * 3.0, yaw: 0, a2: 0, a3: 0, a5: 0, tip: new THREE.Vector3(), flash: 0, prevU: -99, segs: [], i: robots.length, far: k >= 3 }; // far stations throw fewer sparks
+    const n = set.length, start = (rb.i * 3) % n;
+    const spot = (i) => { const [px, py] = set[(start + i) % n]; return { x: k * PITCH + px, y: CAR_Y + py, z: side * (zs(py) + 0.004), phi: py >= 1.0 ? -0.32 : py <= 0.45 ? 0.18 : 0 }; };
+    const back = (p) => { const ux = p.x - rb.bx, uz = p.z - rb.bz, l = Math.hypot(ux, uz), c = Math.cos(p.phi); return { x: p.x - (0.2 * c * ux) / l, y: p.y - 0.2 * Math.sin(p.phi), z: p.z - (0.2 * c * uz) / l, phi: p.phi }; };
+    rb.home = { x: rb.bx, y: 2.3, z: rb.bz - side * 1.05, phi: -1.15 };
+    let t = r(0, 0.8), cur = rb.home;
+    const seg = (dur, a, b, weld = false) => { rb.segs.push({ t0: t, t1: t + dur, a, b, weld }); t += dur; };
+    for (let i = 0; i < 4; i++) { const w = spot(i), ap = back(w); seg(i === 0 ? 0.9 : 0.4, cur, ap); seg(0.28, ap, w); seg(0.42, w, w, true); seg(0.22, w, ap); cur = ap; }
+    seg(0.9, cur, rb.home);
+    rb.end = t;
+    robots.push(rb);
+  }
+  const links = LINKS.map((g) => { const m = new THREE.InstancedMesh(keep(g), robotMat, robots.length); m.castShadow = !preview; m.receiveShadow = !preview; m.frustumCulled = false; scene.add(m); keep(m); return m; });
+  const mT = new THREE.Matrix4(), mR = new THREE.Matrix4(), m1 = new THREE.Matrix4(), m2 = new THREE.Matrix4(), m3 = new THREE.Matrix4(), m5 = new THREE.Matrix4();
+  for (const rb of robots) links[0].setMatrixAt(rb.i, mT.makeTranslation(rb.bx, 0, rb.bz));
+  function solve(rb, x, y, z, phi) { // inverse kinematics: turn to the spot, reach the wrist with two links (elbow up), the wrist sets the gun's angle
+    const dx = x - rb.bx, dz = z - rb.bz, rW = Math.hypot(dx, dz) - LT * Math.cos(phi) - A1, h = y - LT * Math.sin(phi) - HS;
+    const D = Math.min(1, Math.max(-1, (rW * rW + h * h - L2 * L2 - L3 * L3) / (2 * L2 * L3))), q3 = -Math.acos(D);
+    rb.yaw = Math.atan2(-dz, dx); rb.a2 = Math.atan2(h, rW) - Math.atan2(L3 * Math.sin(q3), L2 + L3 * Math.cos(q3)); rb.a3 = rb.a2 + q3; rb.a5 = phi;
+  }
+  function place(rb) { // forward kinematics into the instance matrices; the gun's tip comes out of it
+    m1.makeRotationY(rb.yaw).setPosition(rb.bx, 0.78, rb.bz); links[1].setMatrixAt(rb.i, m1);
+    m2.copy(m1).multiply(mT.makeTranslation(A1, 0.5, 0)).multiply(mR.makeRotationZ(rb.a2)); links[2].setMatrixAt(rb.i, m2);
+    m3.copy(m2).multiply(mT.makeTranslation(L2, 0, 0)).multiply(mR.makeRotationZ(rb.a3 - rb.a2)); links[3].setMatrixAt(rb.i, m3);
+    m5.copy(m3).multiply(mT.makeTranslation(L3, 0, 0)).multiply(mR.makeRotationZ(rb.a5 - rb.a3)); links[4].setMatrixAt(rb.i, m5);
+    rb.tip.set(LT, 0, 0).applyMatrix4(m5);
+  }
+
+  /* --- sparks: a ring of streaks thrown by the welds (the vertex shader flies them) --- */
+  const NS = preview ? 500 : 2200, sparkQuad = keep(new THREE.PlaneGeometry(1, 2).translate(0.5, 0, 0)), sparkGeo = keep(new THREE.InstancedBufferGeometry());
+  sparkGeo.setIndex(sparkQuad.index); sparkGeo.setAttribute("position", sparkQuad.attributes.position);
+  const aOrigin = new THREE.InstancedBufferAttribute(new Float32Array(NS * 3), 3), aVel = new THREE.InstancedBufferAttribute(new Float32Array(NS * 3), 3), aBirth = new THREE.InstancedBufferAttribute(new Float32Array(NS * 2).fill(-100), 2);
+  for (const a of [aOrigin, aVel, aBirth]) a.setUsage(THREE.DynamicDrawUsage);
+  sparkGeo.setAttribute("aOrigin", aOrigin); sparkGeo.setAttribute("aVel", aVel); sparkGeo.setAttribute("aBirth", aBirth); sparkGeo.instanceCount = NS;
+  const sparkU = { uTime: time, uView: { value: new THREE.Vector2(1, 1) }, uDpr: { value: 1 }, uAmt: { value: 1 } };
+  const sparks = new THREE.Mesh(sparkGeo, shader(ROBOT_SPARK_VS, ROBOT_SPARK_FS, sparkU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  sparks.frustumCulled = false; sparks.renderOrder = 22; scene.add(sparks);
+  sparks.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(sparkU.uView.value); sparkU.uDpr.value = renderer.getPixelRatio(); };
+  let sparkHead = 0, sparkDirty = false, clock = 5.6, welds = 0;
+  const spark = (x, y, z, vx, vy, vz, life) => { const i = sparkHead; sparkHead = (sparkHead + 1) % NS; aOrigin.setXYZ(i, x, y, z); aVel.setXYZ(i, vx, vy, vz); aBirth.setXY(i, clock, life); sparkDirty = true; };
+  const burst = (rb, p, n) => { const ux = rb.bx - p.x, uz = rb.bz - p.z, l = Math.hypot(ux, uz); for (let i = 0; i < n; i++) { const vx = (ux / l) * 0.8 + r(-1, 1), vy = r(-0.3, 0.9), vz = (uz / l) * 0.8 + r(-1, 1), s = r(1.2, 4.2) / Math.hypot(vx, vy, vz); spark(p.x, p.y, p.z, vx * s, vy * s, vz * s, r(0.4, 1.0)); } };
+
+  /* --- robot carts on the lanes outside the fences, parts racks on their backs --- */
+  const CARTS = [{ z: 6.9, dir: -1, x0: 30 }, { z: -6.9, dir: 1, x0: -12 }, { z: 6.9, dir: -1, x0: -9 }];
+  const cartGeo = mergeColored(THREE, [[box(1.7, 0.28, 0.95), at(0, 0.2, 0), DARK], [box(1.76, 0.06, 1.01), at(0, 0.12, 0), YELLOW], [box(1.6, 0.04, 0.9), at(0, 0.36, 0), GREY], ...[[0.7, 0.38], [0.7, -0.38], [-0.7, 0.38], [-0.7, -0.38]].map(([x, z]) => [box(0.05, 1.0, 0.05), at(x, 0.88, z), 0x2f5fa8]), [box(1.5, 0.05, 0.85), at(0, 1.4, 0), 0x2f5fa8], ...[-0.22, 0, 0.22].map((z) => [box(1.15, 0.78, 0.035), at(0, 0.8, z), STEEL]), [new THREE.CylinderGeometry(0.05, 0.06, 0.07, 12), at(0.86, 0.33, 0), 0x17181a], [new THREE.CylinderGeometry(0.045, 0.045, 0.1, 12), at(0.7, 1.48, 0.36), 0xffa21a]]);
+  const carts = new THREE.InstancedMesh(keep(cartGeo), structMat, CARTS.length);
+  carts.castShadow = carts.receiveShadow = !preview; carts.frustumCulled = false; scene.add(carts); keep(carts);
+
+  mesh(mergeColored(THREE, low), structMat); mesh(mergeColored(THREE, high), roofMat, false);
+
+  /* --- halos: welding flashes and cart beacons (moving), the LED lines at night (still); the carts' blue floor spots --- */
+  const glowQuad = keep(new THREE.PlaneGeometry(1, 1));
+  const halos = (n, data) => { const g = keep(new THREE.InstancedBufferGeometry()); g.setIndex(glowQuad.index); g.setAttribute("position", glowQuad.attributes.position); g.setAttribute("uv", glowQuad.attributes.uv); const a = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4), c = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3); if (data) for (let i = 0; i < n; i++) { a.setXYZW(i, data[i * 7], data[i * 7 + 1], data[i * 7 + 2], data[i * 7 + 3]); c.setXYZ(i, data[i * 7 + 4], data[i * 7 + 5], data[i * 7 + 6]); } g.setAttribute("aGlow", a); g.setAttribute("aTint", c); g.instanceCount = n; return g; };
+  const flashU = { uMap: { value: glow }, uTime: time, uAmt: { value: 1 } }, ledU = { uMap: { value: glow }, uTime: time, uAmt: { value: 0 } };
+  const flashGeo = halos(robots.length + CARTS.length), flashGlow = new THREE.Mesh(flashGeo, shader(PARIS_GLOW_VS, PARIS_GLOW_FS, flashU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  flashGlow.frustumCulled = false; flashGlow.renderOrder = 20; scene.add(flashGlow);
+  const ledGlow = new THREE.Mesh(halos(ledPts.length / 7, ledPts), shader(PARIS_GLOW_VS, PARIS_GLOW_FS, ledU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  ledGlow.frustumCulled = false; ledGlow.renderOrder = 19; scene.add(ledGlow);
+  const spotGeo = keep(new THREE.InstancedBufferGeometry()); spotGeo.setIndex(glowQuad.index); spotGeo.setAttribute("position", glowQuad.attributes.position); spotGeo.setAttribute("uv", glowQuad.attributes.uv);
+  const aSpot = new THREE.InstancedBufferAttribute(new Float32Array(CARTS.length * 4), 4); aSpot.setUsage(THREE.DynamicDrawUsage); spotGeo.setAttribute("aSpot", aSpot); spotGeo.instanceCount = CARTS.length;
+  const spotU = { uMap: { value: glow }, uColor: { value: new THREE.Color(0.25, 0.5, 1.0) }, uAmt: { value: 1 } };
+  const spots = new THREE.Mesh(spotGeo, shader(ROBOT_SPOT_VS, ROBOT_SPOT_FS, spotU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  spots.frustumCulled = false; spots.renderOrder = 18; scene.add(spots);
+
+  // real shadows from the first draw (the robots move: the map follows them every frame)
+  let shadowsOn = false, gone = false;
+  floor.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.enabled = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+  const V = new THREE.Vector3();
+  function fitShadow() { // the shadow camera hugs the near stations as the light sees them
+    const cam = key.shadow.camera;
+    cam.position.copy(key.position); cam.lookAt(key.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [-9, 26]) for (const y of [0, 3.4]) for (const z of [-7.8, 7.8]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    Object.assign(cam, { left: lo.x, right: hi.x, bottom: lo.y, top: hi.y, near: Math.max(0.5, -hi.z - 6), far: -lo.z + 6 });
+    cam.updateProjectionMatrix();
+  }
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    env?.dispose(); env = robotEnv(THREE, d);
+    for (const m of envMats) m.envMap = env;
+    hemi.color.set(d ? "#26324a" : "#e4ecf4"); hemi.groundColor.set(d ? "#0c0e12" : "#9ea3a8"); hemi.intensity = d ? 0.48 : 1.1; roofMat.emissive.set(d ? "#000000" : "#8f969d");
+    key.color.set(d ? "#dce7ff" : "#fff4e6"); key.intensity = d ? 1.35 : 1.5;
+    key.position.copy(key.target.position).add(V.set(d ? 0.08 : -0.55, 1, d ? 0.12 : 0.25).normalize().multiplyScalar(40));
+    fitShadow();
+    scene.fog.color.set(d ? "#0b0f16" : "#c8d0d8"); scene.fog.near = d ? 20 : 26; scene.fog.far = d ? 78 : 100;
+    glassMat.color.set(d ? "#121a2a" : "#f2f7ff"); ledMat.color.set(d ? "#f3f8ff" : "#c6cdd3"); ledU.uAmt.value = d ? 0.24 : 0; ledGlow.visible = d;
+    screenMat.color.setScalar(d ? 1 : 0.85);
+    sparkU.uAmt.value = d ? 1 : 0.85; flashU.uAmt.value = d ? 1 : 0.7; spotU.uAmt.value = d ? 1.1 : 0.35;
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3();
+  let sway = 0, lastCycle = -1;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 48 + k * 14;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 0.35;
+    camera.position.set(-7 - k * 1.5 + s, 5.0 + k * 0.2, 4.6 - k * 2.0); // over the near fence, looking down the line; a phone looks straighter down it
+    camera.lookAt(look.set(12 + s * 0.3, 1.0, -0.5 + k * 0.3));
+    camera.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt) {
+    clock += dt; time.value = clock; sway = clock * 0.04;
+    const phase = clock % T_CYCLE, cycle = Math.floor(clock / T_CYCLE);
+    line.position.x = phase < T_MOVE ? PITCH * (0.5 - 0.5 * Math.cos((Math.PI * phase) / T_MOVE)) : 0; // a body moves one station on (identical bodies wait at every station)
+    if (cycle !== lastCycle) { lastCycle = cycle; andon.draw(1184 + cycle); }
+    const u = phase - T_MOVE - 0.15;
+    for (const rb of robots) {
+      if (u < rb.prevU) rb.prevU = -99;
+      let x = rb.home.x, y = rb.home.y, z = rb.home.z, phi = rb.home.phi, f = 0;
+      for (const s of rb.segs) {
+        if (u >= s.t0 && u < s.t1) { const q = (u - s.t0) / (s.t1 - s.t0), e = q * q * (3 - 2 * q); x = s.a.x + (s.b.x - s.a.x) * e; y = s.a.y + (s.b.y - s.a.y) * e; z = s.a.z + (s.b.z - s.a.z) * e; phi = s.a.phi + (s.b.phi - s.a.phi) * e; if (s.weld) f = q < 0.85 ? 1 : (1 - q) / 0.15; }
+        if (s.weld && dt > 0 && rb.prevU < s.t0 && u >= s.t0) { burst(rb, s.b, rb.far ? 12 : 30); welds++; }
+      }
+      rb.prevU = u;
+      solve(rb, x, y, z, phi); place(rb);
+      rb.flash = f * (0.72 + 0.28 * Math.sin(clock * 97 + rb.i * 1.7));
+      if (dt > 0 && f > 0.4 && r() < (rb.far ? 0.35 : 0.75)) burst(rb, rb.tip, 3);
+    }
+    for (let i = 1; i < links.length; i++) links[i].instanceMatrix.needsUpdate = true;
+    const ga = flashGeo.attributes.aGlow, gc = flashGeo.attributes.aTint;
+    for (const rb of robots) { V.copy(camera.position).sub(rb.tip).setLength(0.3).add(rb.tip); ga.setXYZW(rb.i, V.x, V.y, V.z, 1.3 * rb.flash); gc.setXYZ(rb.i, 0.75 * 2.2, 0.86 * 2.2, 2.2); } // a step towards the eye: the panel would hide half of it
+    CARTS.forEach((c, i) => {
+      const x = ((((c.x0 + c.dir * 0.9 * clock + 40) % 112) + 112) % 112) - 40;
+      carts.setMatrixAt(i, mT.makeRotationY(c.dir > 0 ? 0 : Math.PI).setPosition(x, 0, c.z));
+      const pulse = 0.25 + 0.75 * Math.pow(Math.max(0, Math.sin(clock * 7 + i * 2.1)), 6), j = robots.length + i;
+      ga.setXYZW(j, x + c.dir * 0.7, 1.48, c.z + c.dir * 0.36, 0.75 * pulse); gc.setXYZ(j, 1.6, 0.88, 0.13);
+      aSpot.setXYZW(i, x + c.dir * 1.9, c.z, 0.45, 1);
+    });
+    carts.instanceMatrix.needsUpdate = true; ga.needsUpdate = gc.needsUpdate = aSpot.needsUpdate = true;
+    if (sparkDirty) { aOrigin.needsUpdate = aVel.needsUpdate = aBirth.needsUpdate = true; sparkDirty = false; }
+    const k0 = ST.indexOf(0) * 4; // the near side's two robots of the main station light their welds
+    flashes.forEach((l, i) => { const rb = robots[k0 + i]; l.position.set(rb.tip.x, rb.tip.y + 0.15, rb.tip.z + 0.35); l.intensity = rb.flash * (pal.dark ? 10 : 5); });
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { let alive = 0; for (let i = 0; i < NS; i++) if (clock - aBirth.getX(i) < aBirth.getY(i)) alive++; return { cycle: lastCycle, phase: +(clock % T_CYCLE).toFixed(2), line: +line.position.x.toFixed(2), welds, sparks: alive, robots: robots.length, accent: "#" + accentU.value.getHexString(), shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
