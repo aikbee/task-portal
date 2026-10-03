@@ -13023,7 +13023,542 @@ function paris(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris };
+/* ---------- Steam engine room: a horizontal mill engine at work in its engine house; sunbeams through tall windows by day, gas light at night ---------- */
+// The engine is solid and runs on one crank angle: crosshead, connecting rod, crank and flywheel follow it exactly; the sun comes
+// through the windows of the back wall (an alpha-tested wall, so the floor gets the window light, mullions and turning spokes
+// as real shadows). The beams themselves are crossed planes along the light, the dust a cloud of points inside them.
+const STEAM_SHAFT_VS = /* glsl */ `
+  attribute vec2 aShaft; // along the beam (0 at the glass, 1 at its end), across it (0…1)
+  varying vec2 vS; varying vec3 vWorld;
+  void main() { vS = aShaft; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const STEAM_SHAFT_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uColor; uniform float uAmt;
+  varying vec2 vS; varying vec3 vWorld;
+  void main() {
+    float along = vS.x, across = abs(vS.y - 0.5) * 2.0;
+    vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+    float facing = abs(dot(N, normalize(cameraPosition - vWorld))); // a plane seen edge-on would show as a hard bright line
+    float n = texture2D(uNoise, vec2(vWorld.x * 0.07 + vWorld.z * 0.05 + uTime * 0.008, vWorld.y * 0.09 - uTime * 0.005)).r;
+    float a = (1.0 - along) * (1.0 - along) * smoothstep(0.0, 0.06, along) * (1.0 - smoothstep(0.45, 1.0, across)) * smoothstep(0.08, 0.5, facing) * (0.55 + 0.7 * n) * uAmt;
+    gl_FragColor = vec4(uColor * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+const STEAM_DUST_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx;
+  attribute vec4 aDust; // phase, speed, size, brightness
+  varying float vB;
+  void main() {
+    float ph = aDust.x, sp = aDust.y;
+    vec3 p = position + vec3(sin(uTime * 0.19 * sp + ph) * 0.3, sin(uTime * 0.11 * sp + ph * 1.7) * 0.22 + sin(uTime * 0.05 + ph) * 0.3, cos(uTime * 0.15 * sp + ph * 0.7) * 0.3);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    vB = aDust.w * (0.55 + 0.45 * sin(uTime * (1.3 + sp) + ph * 9.0));
+    gl_PointSize = max(1.0, aDust.z * uPx / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const STEAM_DUST_FS = /* glsl */ `
+  uniform vec3 uColor; uniform float uAmt;
+  varying float vB;
+  void main() {
+    float a = smoothstep(0.5, 0.05, length(gl_PointCoord - 0.5)) * vB * uAmt;
+    gl_FragColor = vec4(uColor * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// puffs of steam: camera-facing quads that swell and fade over their life
+const STEAM_PUFF_VS = /* glsl */ `
+  attribute vec4 aPuff; // where, how big
+  attribute float aLife; // 0 just out … 1 gone; below 0: not in use
+  varying vec2 vUv; varying float vLife;
+  void main() {
+    vUv = uv; vLife = aLife;
+    vec4 mv = modelViewMatrix * vec4(aPuff.xyz + vec3(0.0, aLife * aLife * 1.1, aLife * 0.55), 1.0); // blown out towards us, then rising
+    mv.xy += position.xy * (aLife < 0.0 ? 0.0 : aPuff.w * (0.35 + 1.3 * aLife));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const STEAM_PUFF_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uColor;
+  varying vec2 vUv; varying float vLife;
+  void main() {
+    float a = texture2D(uMap, vUv).a * smoothstep(0.0, 0.06, vLife) * (1.0 - smoothstep(0.4, 1.0, vLife)) * 0.8;
+    if (a < 0.005) discard;
+    gl_FragColor = vec4(uColor, a);
+    #include <colorspace_fragment>
+  }
+`;
+// the view through the windows, as masks: r the mill's buildings and its chimney, g their lit windows; the sky is a gradient
+const STEAM_OUTSIDE_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uSkyLow; uniform vec3 uSkyHigh; uniform vec3 uBody; uniform vec3 uLit;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    vec3 col = mix(uSkyLow, uSkyHigh, smoothstep(0.1, 0.9, vUv.y));
+    col = mix(col, uBody, m.r) + uLit * m.g;
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** Encaustic floor tiles, 2.4 m square, repeating: terracotta and cream squares, small black squares where they meet, worn a little. */
+function steamFloor(THREE) {
+  const r = koiRng(1712);
+  const tex = canvasTexture(THREE, 512, 512, (g, w) => {
+    const t = w / 8;
+    g.fillStyle = "#3a302a"; g.fillRect(0, 0, w, w);
+    for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) {
+      const c = (i + j) % 2 ? ["#8e5340", "#955a46", "#88503d"][(r() * 3) | 0] : ["#c4b497", "#bfae90", "#c8b99c"][(r() * 3) | 0];
+      g.fillStyle = c; g.fillRect(i * t + 1.5, j * t + 1.5, t - 3, t - 3);
+      if ((i + j) % 2 === 0) { g.fillStyle = "rgba(122,62,44,0.35)"; g.save(); g.translate(i * t + t / 2, j * t + t / 2); g.rotate(Math.PI / 4); g.fillRect(-t * 0.16, -t * 0.16, t * 0.32, t * 0.32); g.restore(); }
+    }
+    for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) { g.fillStyle = "#3a2e27"; g.fillRect(i * t - t * 0.09, j * t - t * 0.09, t * 0.18, t * 0.18); }
+    for (let i = 0; i < 2600; i++) { g.fillStyle = `rgba(${r() < 0.6 ? "40,30,24" : "255,245,230"},${r(0.03, 0.09)})`; g.fillRect(r(0, w), r(0, w), r(1, 3), r(1, 3)); }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return tex;
+}
+/** The back wall, 28 × 9.6 m: cream glazed brick over a green tiled dado, a maroon frieze; four tall arched windows (panes cut out, the
+ *  iron glazing bars kept, so the sun throws their pattern on the floor) and the arched doorway to the boiler room. */
+function steamWall(THREE, W) {
+  const s = W / 28, H = Math.round(9.6 * s), r = koiRng(1851), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => (m + 14) * s, Y = (m) => H - m * s;
+  g.fillStyle = "#e4d9c2"; g.fillRect(0, 0, W, H);
+  for (let y = 1.5, row = 0; y < 9.6; y += 0.075, row++) { // glazed bricks in stretcher bond
+    g.fillStyle = "rgba(120,100,80,0.22)"; g.fillRect(0, Y(y), W, Math.max(1, 0.008 * s));
+    for (let x = -14 + (row % 2) * 0.115; x < 14; x += 0.23) { g.fillRect(X(x), Y(y + 0.075), Math.max(1, 0.008 * s), 0.075 * s); if (r() < 0.25) { g.fillStyle = `rgba(${r() < 0.5 ? "255,250,240" : "150,130,100"},0.12)`; g.fillRect(X(x), Y(y + 0.075), 0.23 * s, 0.075 * s); g.fillStyle = "rgba(120,100,80,0.22)"; } }
+  }
+  g.fillStyle = "#2c4f40"; g.fillRect(0, Y(1.4), W, 1.4 * s); // the dado: green glazed tiles
+  g.fillStyle = "rgba(0,0,0,0.18)"; for (let x = -14; x < 14; x += 0.15) g.fillRect(X(x), Y(1.4), Math.max(1, 0.006 * s), 1.4 * s);
+  for (let y = 0.15; y < 1.4; y += 0.15) g.fillRect(0, Y(y), W, Math.max(1, 0.006 * s));
+  g.fillStyle = "#d8ccb0"; g.fillRect(0, Y(1.52), W, 0.12 * s); g.fillStyle = "#6a2a26"; g.fillRect(0, Y(1.56), W, 0.03 * s);
+  g.fillStyle = "#6a2a26"; g.fillRect(0, Y(8.35), W, 0.3 * s); g.fillStyle = "#d8ccb0"; g.fillRect(0, Y(8.42), W, 0.07 * s); // the frieze
+  const arch = (cx, y0, w, top) => { const rr = w / 2; g.beginPath(); g.moveTo(X(cx - rr), Y(y0)); g.lineTo(X(cx - rr), Y(top - rr)); g.arc(X(cx), Y(top - rr), rr * s, Math.PI, 0); g.lineTo(X(cx + rr), Y(y0)); g.closePath(); };
+  for (const cx of [-9, -3, 3, 9]) { // the windows
+    g.fillStyle = "#d4c7aa"; arch(cx, 1.85, 3.1, 7.85); g.fill(); // a stone surround and sill
+    g.fillStyle = "#c2b392"; g.fillRect(X(cx - 1.65), Y(2.0), 3.3 * s, 0.15 * s); g.beginPath(); g.moveTo(X(cx - 0.2), Y(7.95)); g.lineTo(X(cx + 0.2), Y(7.95)); g.lineTo(X(cx + 0.14), Y(7.45)); g.lineTo(X(cx - 0.14), Y(7.45)); g.closePath(); g.fill(); // the keystone
+    g.save(); g.globalCompositeOperation = "destination-out"; arch(cx, 2.1, 2.6, 7.6); g.fill(); g.restore(); // the opening
+    g.strokeStyle = "#262626"; g.lineWidth = 0.05 * s; g.lineCap = "butt"; // its iron glazing bars
+    for (const dx of [-0.65, 0, 0.65]) { g.beginPath(); g.moveTo(X(cx + dx), Y(2.1)); g.lineTo(X(cx + dx), Y(6.3 + Math.sqrt(Math.max(0, 1.3 * 1.3 - dx * dx)))); g.stroke(); }
+    for (let y = 2.75; y < 6.3; y += 0.6) { g.beginPath(); g.moveTo(X(cx - 1.3), Y(y)); g.lineTo(X(cx + 1.3), Y(y)); g.stroke(); }
+    g.beginPath(); g.moveTo(X(cx - 1.3), Y(6.3)); g.lineTo(X(cx + 1.3), Y(6.3)); g.stroke();
+    g.beginPath(); g.arc(X(cx), Y(6.3), 0.72 * s, Math.PI, 0); g.stroke();
+    for (const a of [0.2, 0.4, 0.6, 0.8]) { g.beginPath(); g.moveTo(X(cx + Math.cos(Math.PI * a) * 0.72), Y(6.3 + Math.sin(Math.PI * a) * 0.72)); g.lineTo(X(cx + Math.cos(Math.PI * a) * 1.3), Y(6.3 + Math.sin(Math.PI * a) * 1.3)); g.stroke(); }
+    g.lineWidth = 0.09 * s; arch(cx, 2.1, 2.6, 7.6); g.stroke(); // the frame
+  }
+  g.fillStyle = "#d4c7aa"; arch(-6, 0, 2.7, 4.05); g.fill(); // the doorway to the boiler room
+  g.save(); g.globalCompositeOperation = "destination-out"; arch(-6, 0, 2.2, 3.8); g.fill(); g.restore();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  return tex;
+}
+/** What the windows look out on, as masks: r the mill across the yard (a weaving shed's sawtooth roofs, a tall chimney), g its lit windows. 32 × 9 m. */
+function steamOutside(THREE) {
+  const W = 1024, s = W / 32, H = Math.round(9 * s), r = koiRng(77), c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d"), X = (m) => (m + 16) * s, Y = (m) => H - m * s;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  g.fillStyle = "rgb(255,0,0)";
+  for (let x = -16; x < 16; x += 1.6) { g.beginPath(); g.moveTo(X(x), Y(0)); g.lineTo(X(x), Y(3.2)); g.lineTo(X(x + 1.2), Y(4.2)); g.lineTo(X(x + 1.2), Y(3.2)); g.lineTo(X(x + 1.6), Y(3.2)); g.lineTo(X(x + 1.6), Y(0)); g.closePath(); g.fill(); } // the sheds
+  g.fillRect(X(4), Y(5.6), 9 * s, 5.6 * s); // the spinning block
+  g.beginPath(); g.moveTo(X(-5.6), Y(0)); g.lineTo(X(-5.1), Y(9)); g.lineTo(X(-4.3), Y(9)); g.lineTo(X(-3.8), Y(0)); g.closePath(); g.fill(); // the chimney
+  for (let y = 0.8; y < 5; y += 1.1) for (let x = 4.4; x < 12.6; x += 0.9) if (r() < 0.6) { g.fillStyle = "rgb(0,255,0)"; g.fillRect(X(x), Y(y + 0.6), 0.4 * s, 0.6 * s); }
+  for (let x = -15.6; x < 4; x += 1.6) if (r() < 0.5) { g.fillStyle = "rgb(0,200,0)"; g.fillRect(X(x + 1.25), Y(4.0), 0.25 * s, 0.6 * s); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** Mahogany lagging round the cylinder: planks with grain and a varnish sheen (u around, v along). */
+function steamLagging(THREE) {
+  const r = koiRng(31);
+  return canvasTexture(THREE, 512, 128, (g, w, h) => {
+    const n = 26, pw = w / n;
+    for (let i = 0; i < n; i++) {
+      const t = r(0.8, 1.1); g.fillStyle = `rgb(${Math.round(110 * t)},${Math.round(48 * t)},${Math.round(30 * t)})`; g.fillRect(i * pw, 0, pw, h);
+      g.strokeStyle = "rgba(40,14,8,0.35)"; g.lineWidth = 1; for (let k = 0; k < 4; k++) { const x = i * pw + r(2, pw - 2); g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + r(-3, 3), h * 0.3, x + r(-3, 3), h * 0.7, x + r(-2, 2), h); g.stroke(); }
+      g.fillStyle = "rgba(20,8,4,0.6)"; g.fillRect(i * pw, 0, 1.2, h);
+    }
+  });
+}
+/** A cylinder cover: turned steel, a ring of bolts, the boss in the middle. */
+function steamCover(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    const gr = g.createRadialGradient(110, 100, 10, 128, 128, 128); gr.addColorStop(0, "#e8eaec"); gr.addColorStop(0.6, "#a9adb3"); gr.addColorStop(1, "#7d8288");
+    g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+    g.strokeStyle = "rgba(0,0,0,0.1)"; for (let rr = 8; rr < 128; rr += 5) { g.beginPath(); g.arc(128, 128, rr, 0, Math.PI * 2); g.stroke(); }
+    for (let k = 0; k < 16; k++) { const a = (k / 16) * Math.PI * 2, x = 128 + Math.cos(a) * 108, y = 128 + Math.sin(a) * 108; g.fillStyle = "#4a4e54"; g.beginPath(); for (let j = 0; j < 6; j++) g.lineTo(x + Math.cos(j * 1.047) * 7, y + Math.sin(j * 1.047) * 7); g.closePath(); g.fill(); g.fillStyle = "#c8ccd0"; g.beginPath(); g.arc(x - 1, y - 1, 2.5, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = "#8e9298"; g.beginPath(); g.arc(128, 128, 30, 0, Math.PI * 2); g.fill(); g.fillStyle = "#d8dbde"; g.beginPath(); g.arc(122, 122, 16, 0, Math.PI * 2); g.fill();
+  });
+}
+/** The two gauges' dials side by side: white enamel, ticks and figures over 270°, a red line; STEAM left, VACUUM right. */
+function steamDials(THREE) {
+  return canvasTexture(THREE, 512, 256, (g) => {
+    ["STEAM", "VACUUM"].forEach((label, i) => {
+      const cx = 128 + i * 256;
+      g.fillStyle = "#f4f0e6"; g.beginPath(); g.arc(cx, 128, 124, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = "#1a1a1a";
+      for (let k = 0; k <= 40; k++) { const a = Math.PI * 0.75 + (k / 40) * Math.PI * 1.5, l = k % 5 ? 10 : 20; g.lineWidth = k % 5 ? 2 : 4; g.beginPath(); g.moveTo(cx + Math.cos(a) * 112, 128 + Math.sin(a) * 112); g.lineTo(cx + Math.cos(a) * (112 - l), 128 + Math.sin(a) * (112 - l)); g.stroke(); }
+      g.fillStyle = "#1a1a1a"; g.font = "bold 22px Georgia, serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      for (let k = 0; k <= 8; k++) { const a = Math.PI * 0.75 + (k / 8) * Math.PI * 1.5; g.fillText(String(k * 25), cx + Math.cos(a) * 74, 128 + Math.sin(a) * 74); }
+      g.strokeStyle = "#c0202a"; g.lineWidth = 7; g.beginPath(); g.arc(cx, 128, 104, Math.PI * 0.75 + Math.PI * 1.5 * 0.8, Math.PI * 0.75 + Math.PI * 1.5 * 0.86); g.stroke();
+      g.font = "italic 15px Georgia, serif"; g.fillText(label, cx, 178);
+    });
+  });
+}
+/** The engine-house clock's face: cream enamel, Roman hours (IIII, as clockmakers paint it), minute ticks. XII at the top. */
+function steamClockFace(THREE) {
+  return canvasTexture(THREE, 256, 256, (g) => {
+    g.fillStyle = "#f2ead6"; g.beginPath(); g.arc(128, 128, 127, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#1c1a16"; g.lineWidth = 3; g.beginPath(); g.arc(128, 128, 117, 0, Math.PI * 2); g.stroke(); g.lineWidth = 2; g.beginPath(); g.arc(128, 128, 100, 0, Math.PI * 2); g.stroke();
+    for (let k = 0; k < 60; k++) { const a = (k / 60) * Math.PI * 2, r0 = k % 5 ? 108 : 101; g.lineWidth = k % 5 ? 1.5 : 4; g.beginPath(); g.moveTo(128 + Math.sin(a) * r0, 128 - Math.cos(a) * r0); g.lineTo(128 + Math.sin(a) * 116, 128 - Math.cos(a) * 116); g.stroke(); }
+    g.fillStyle = "#1c1a16"; g.font = "bold 23px Georgia, serif"; g.textAlign = "center"; g.textBaseline = "middle";
+    ["XII", "I", "II", "III", "IIII", "V", "VI", "VII", "VIII", "IX", "X", "XI"].forEach((t, k) => { const a = (k / 12) * Math.PI * 2; g.fillText(t, 128 + Math.sin(a) * 80, 128 - Math.cos(a) * 80); });
+    g.font = "italic 12px Georgia, serif"; g.fillText("IRONBRIDGE", 128, 168);
+  });
+}
+/** The flywheel's rim face: rope grooves across it (u round the wheel, v across the rim). */
+function steamRope(THREE) {
+  const tex = canvasTexture(THREE, 64, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#8b9096"); gr.addColorStop(1, "#6d7278"); g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 7; k++) { const y = (k + 0.5) * (h / 7); g.fillStyle = "#2c2e31"; g.fillRect(0, y - 9, w, 18); g.fillStyle = "rgba(255,255,255,0.25)"; g.fillRect(0, y - 11, w, 2); }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+/** The maker's plate on the bed: cast brass letters on a black ground. */
+function steamPlate(THREE) {
+  return canvasTexture(THREE, 512, 128, (g) => {
+    g.fillStyle = "#b8923e"; g.beginPath(); g.ellipse(256, 64, 250, 60, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#1c1a16"; g.beginPath(); g.ellipse(256, 64, 238, 50, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#e0c070"; g.font = "bold 40px Georgia, serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("IRONBRIDGE WORKS", 256, 50); g.font = "italic 26px Georgia, serif"; g.fillText("No. 7 · 1891", 256, 90);
+  });
+}
+/** What the polished steel and brass mirror: the bright windows on one side, warm walls, a dark floor (night: lamplight spots). */
+function steamEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, dark ? "#0c0c12" : "#4a4238"); gr.addColorStop(0.45, dark ? "#2a2018" : "#b8a684"); gr.addColorStop(0.55, dark ? "#1a140e" : "#6a5a46"); gr.addColorStop(1, dark ? "#0a0806" : "#2a221c");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 4; k++) { const x = w * (0.32 + k * 0.08); if (dark) { const rg = g.createRadialGradient(x, h * 0.42, 0, x, h * 0.42, 14); rg.addColorStop(0, "rgba(255,190,120,1)"); rg.addColorStop(1, "rgba(255,150,80,0)"); g.fillStyle = rg; g.fillRect(x - 14, h * 0.42 - 14, 28, 28); } else { g.fillStyle = "#fff6e0"; g.fillRect(x - 9, h * 0.22, 18, h * 0.24); g.beginPath(); g.arc(x, h * 0.22, 9, Math.PI, 0); g.fill(); } }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+/** A soft puff of steam. */
+function steamPuffTex(THREE) {
+  const r = koiRng(5);
+  return canvasTexture(THREE, 128, 128, (g) => {
+    for (let i = 0; i < 11; i++) { const x = 64 + r(-20, 20), y = 64 + r(-16, 16), rad = r(22, 42), gr = g.createRadialGradient(x, y, 0, x, y, rad); gr.addColorStop(0, "rgba(255,255,255,0.6)"); gr.addColorStop(0.6, "rgba(255,255,255,0.25)"); gr.addColorStop(1, "rgba(255,255,255,0)"); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); }
+  });
+}
+function steamengine(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1769);
+  const AX = 1.7, CRANK = 4.6, R = 0.9, L = 4.5, FLY_Z = -1.9, FLY_R = 3.6, WALL_Z = -6, DOOR = -6; // the centre line, crankshaft, crank, rod, flywheel; the boiler-room door
+  camera.fov = 50; camera.near = 0.1; camera.far = 200;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 };
+  const noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const SUN = new THREE.Vector3(-0.3, 0.6, -1).normalize(), D = SUN.clone().negate(); // the afternoon sun, low behind the windows: the light comes in towards us
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const shadowMats = [], envMats = [];
+  const std = (o, env = 0) => { const m = keep(new THREE.MeshStandardMaterial(o)); shadowMats.push(m); if (env) { m.envMapIntensity = env; envMats.push(m); } return m; };
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  // everything that stands still is merged per material: one draw each (the moving parts get the same treatment per part)
+  const bucket = () => { const parts = new Map(); return { put(geo, mat, x = 0, y = 0, z = 0, rx, ry, rz) { if (!parts.has(mat)) parts.set(mat, []); parts.get(mat).push([geo, at(x, y, z, rx, ry, rz)]); }, flush(parent = scene, cast = true) { const out = []; for (const [mat, list] of parts) { const m = new THREE.Mesh(keep(mergeParts(THREE, list)), mat); m.castShadow = cast && !preview; m.receiveShadow = !preview; parent.add(m); out.push(m); } parts.clear(); return out; } }; };
+  const still = bucket(), quiet = bucket(); // quiet: lamps and the like, which cast no shadow
+  const put = still.put;
+  const cylX = (rad, len, seg = 32, open = false) => new THREE.CylinderGeometry(rad, rad, len, seg, 1, open).rotateZ(Math.PI / 2); // along x
+  const cylZ = (rad, len, seg = 32, open = false) => new THREE.CylinderGeometry(rad, rad, len, seg, 1, open).rotateX(Math.PI / 2); // along z
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const inward = (g) => { const n = g.attributes.normal, ix = g.index; for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i)); for (let i = 0; i < ix.count; i += 3) { const a = ix.getX(i + 1); ix.setX(i + 1, ix.getX(i + 2)); ix.setX(i + 2, a); } return g; };
+
+  /* --- materials: polished steel, brass and copper mirror the room; the frame and the flywheel in the accent colour, lined in gold --- */
+  const steel = std({ color: 0xc9cdd3, metalness: 1, roughness: 0.22 }, 1), brass = std({ color: 0xd4a84e, metalness: 1, roughness: 0.27 }, 1), copper = std({ color: 0xc47b4f, metalness: 1, roughness: 0.32 }, 1);
+  const paint = std({ roughness: 0.3 }, 0.45), iron = std({ color: 0x24282c, roughness: 0.55 }, 0.3), stone = std({ color: 0xb4a994, roughness: 0.85 });
+  const wood = std({ map: keep(steamLagging(THREE)), roughness: 0.38 }, 0.5), board = std({ color: 0x5c2c1c, roughness: 0.45 }, 0.3);
+  const cover = std({ map: keep(steamCover(THREE)), metalness: 1, roughness: 0.25 }, 1);
+
+  /* --- light: the sun through the windows (the moon at night) casts real shadows; gas light and the boiler's fire at night --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.position.copy(SUN).multiplyScalar(45); sun.target.position.set(0, 0, 0);
+  if (!preview) {
+    sun.castShadow = true; sun.shadow.mapSize.set(1536, 1536); // the frustum hugs what the camera sees in the sun's view (floor, wall, engine): 2.3 × 1 cm a texel
+    Object.assign(sun.shadow.camera, { left: -18, right: 17, top: 10.5, bottom: -6, near: 15, far: 75 });
+    sun.shadow.camera.updateProjectionMatrix(); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+  }
+  const lamps = [[-3.2, 4.7, 0.6], [2.4, 4.7, 0.6]].map(([x, y, z]) => { const l = new THREE.PointLight(0xffb468, 0, 16, 2); l.position.set(x, y, z); scene.add(l); return l; });
+  const fill = new THREE.DirectionalLight(0xfff1dc, 0); // daylight bouncing back from the open hall behind us: the wall and the engine's faces
+  fill.position.set(5, 6, 20); fill.target.position.set(0, 2, 0);
+  const fire = new THREE.PointLight(0xff7a30, 0, 10, 2);
+  fire.position.set(DOOR, 1.4, WALL_Z - 2.0);
+  scene.add(hemi, sun, sun.target, fill, fill.target, fire);
+  scene.fog = new THREE.Fog(0xffffff, 14, 46);
+
+  /* --- the engine house: tiled floor round the flywheel pit, the windowed back wall, the roof that shades the sun --- */
+  const floorMat = std({ map: keep(steamFloor(THREE)), roughness: 0.36 }, 0.35);
+  const PIT = [0.55, 8.65, -2.45, -1.35]; // x0 x1 z0 z1
+  const floorRect = (x0, x1, z0, z1) => { const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2), uv = g.attributes.uv, p = g.attributes.position; for (let i = 0; i < uv.count; i++) uv.setXY(i, (p.getX(i) + (x0 + x1) / 2) / 2.4, -(p.getZ(i) + (z0 + z1) / 2) / 2.4); return [g, at((x0 + x1) / 2, 0, (z0 + z1) / 2)]; };
+  const floor = new THREE.Mesh(keep(mergeParts(THREE, [floorRect(-16, PIT[0], WALL_Z, 14), floorRect(PIT[1], 16, WALL_Z, 14), floorRect(PIT[0], PIT[1], PIT[3], 14), floorRect(PIT[0], PIT[1], WALL_Z, PIT[2])])), floorMat);
+  floor.receiveShadow = !preview; scene.add(floor);
+  const pitMat = std({ color: 0x2a2521, roughness: 0.9 });
+  put(box(PIT[1] - PIT[0], 0.05, PIT[3] - PIT[2]), pitMat, (PIT[0] + PIT[1]) / 2, -2.45, (PIT[2] + PIT[3]) / 2);
+  for (const [w, d, x, z] of [[PIT[1] - PIT[0], 0.05, (PIT[0] + PIT[1]) / 2, PIT[2]], [PIT[1] - PIT[0], 0.05, (PIT[0] + PIT[1]) / 2, PIT[3]], [0.05, PIT[3] - PIT[2], PIT[0], (PIT[2] + PIT[3]) / 2], [0.05, PIT[3] - PIT[2], PIT[1], (PIT[2] + PIT[3]) / 2]]) put(box(w, 2.45, d), pitMat, x, -1.225, z);
+  const wallMat = std({ map: keep(steamWall(THREE, preview ? 1024 : 2048)), alphaTest: 0.5, roughness: 0.75, side: THREE.DoubleSide }, 0.15);
+  const wall = new THREE.Mesh(keep(new THREE.PlaneGeometry(28, 9.6)), wallMat);
+  wall.position.set(0, 4.8, WALL_Z); wall.castShadow = wall.receiveShadow = !preview; scene.add(wall);
+  const plain = std({ color: 0xcfc3aa, roughness: 0.85 });
+  put(box(34, 0.4, 22), plain, 0, 9.8, 4); // the roof: only the windows let the sun in
+  put(box(0.4, 10, 22), plain, -14.2, 5, 4); put(box(0.4, 10, 22), plain, 14.2, 5, 4); // the side walls meet the back wall's ends
+  put(box(34, 2.6, 0.4), plain, 0, 11.1, WALL_Z - 0.1);
+  for (const z of [-3.2, 0.8, 4.8, 8.8, 12.8]) { put(box(32, 0.34, 0.3), iron, 0, 9.43, z); for (const x of [-12, -6, 0, 6, 12]) put(box(0.16, 0.16, 4), iron, x, 9.52, z + 2); } // the roof's tie beams and purlins
+  for (const [x, z] of [[-11.4, -3.9], [11.6, -3.9]]) { put(new THREE.CylinderGeometry(0.17, 0.21, 9.6, 24), iron, x, 4.8, z); put(new THREE.CylinderGeometry(0.3, 0.3, 0.12, 24), brass, x, 1.25, z); put(new THREE.CylinderGeometry(0.34, 0.26, 0.4, 24), iron, x, 9.4, z); } // cast-iron columns, seen on wide screens
+  const outU = { uMask: { value: keep(steamOutside(THREE)) }, uSkyLow: { value: new THREE.Color() }, uSkyHigh: { value: new THREE.Color() }, uBody: { value: new THREE.Color() }, uLit: { value: new THREE.Color() } };
+  const outside = new THREE.Mesh(keep(new THREE.PlaneGeometry(36, 10.5)), shader(LANTERN_LAYER_VS, STEAM_OUTSIDE_FS, outU));
+  outside.position.set(0, 5.25, WALL_Z - 4.6); scene.add(outside);
+  // the boiler room behind the doorway: a Lancashire boiler's front with its two fire doors
+  const sooty = std({ color: 0x5a4334, roughness: 0.95, side: THREE.DoubleSide }); // brick, blackened
+  const room = inward(box(3.8, 4.4, 3.2)); room.setIndex([...room.index.array.slice(0, 24), ...room.index.array.slice(30)]); // open towards the doorway
+  put(room, sooty, DOOR, 2.2, WALL_Z - 1.65);
+  put(cylZ(1.45, 0.3, 40), iron, DOOR, 1.75, WALL_Z - 3.05);
+  for (const dx of [-0.55, 0.55]) put(new THREE.TorusGeometry(0.3, 0.04, 8, 24), brass, DOOR + dx, 1.05, WALL_Z - 2.89);
+  const fireMat = keep(new THREE.MeshBasicMaterial({ color: 0xff8a3a })), fireBase = new THREE.Color();
+  const fireDoors = new THREE.Mesh(keep(mergeParts(THREE, [-0.55, 0.55].map((dx) => [new THREE.CircleGeometry(0.27, 24), at(DOOR + dx, 1.05, WALL_Z - 2.88)]))), fireMat);
+  scene.add(fireDoors);
+
+  /* --- the engine: bed, cylinder, guides, crosshead, rod, crank, flywheel, governor --- */
+  const BED = [-7.4, 2.4];
+  put(box(BED[1] - BED[0] + 0.3, 0.16, 1.6), stone, (BED[0] + BED[1]) / 2, 0.08, 0); // the stone plinth
+  put(box(BED[1] - BED[0], 0.9, 1.24), paint, (BED[0] + BED[1]) / 2, 0.61, 0); // the bed
+  put(box(BED[1] - BED[0] + 0.08, 0.08, 1.32), paint, (BED[0] + BED[1]) / 2, 1.02, 0); // its top moulding
+  for (const y of [0.92, 0.26]) put(box(BED[1] - BED[0] - 0.3, 0.025, 0.01), brass, (BED[0] + BED[1]) / 2, y, 0.625); // gold lining in panels
+  for (let x = BED[0] + 0.15; x <= BED[1] - 0.1; x += (BED[1] - BED[0] - 0.3) / 4) put(box(0.025, 0.66, 0.01), brass, x, 0.59, 0.625);
+  put(box(3.4, 0.16, 1.1), stone, 3.85, 0.08, -0.95); put(box(3.2, 0.9, 0.8), paint, 3.85, 0.61, -0.95); put(box(3.28, 0.08, 0.88), paint, 3.85, 1.02, -0.95); // the bed's arm to the main bearing
+  const plate = new THREE.Mesh(keep(new THREE.PlaneGeometry(1.4, 0.35)), std({ map: keep(steamPlate(THREE)), metalness: 0.6, roughness: 0.35 }, 0.8));
+  plate.position.set(BED[0] + 0.15 + (BED[1] - BED[0] - 0.3) * 0.625, 0.59, 0.627); scene.add(plate); // in the middle of the third panel
+  put(cylX(0.78, 3.6, 48, true), wood, -5.1, AX, 0); // the cylinder in its mahogany lagging
+  for (const x of [-6.6, -5.6, -4.6, -3.6]) put(new THREE.TorusGeometry(0.79, 0.035, 8, 48), brass, x, AX, 0, 0, Math.PI / 2, 0);
+  for (const [x, sd] of [[-6.97, -1], [-3.23, 1]]) { put(cylX(0.84, 0.14, 48, true), steel, x, AX, 0); put(new THREE.CircleGeometry(0.84, 48), cover, x + sd * 0.07, AX, 0, 0, sd * Math.PI / 2, 0); }
+  put(cylX(0.17, 0.26, 24), brass, -3.05, AX, 0); // the gland
+  put(box(2.8, 0.42, 0.9), paint, -5.1, AX + 0.99, 0); put(box(2.86, 0.05, 0.96), brass, -5.1, AX + 1.22, 0); // the valve chest
+  put(new THREE.CylinderGeometry(0.09, 0.11, 0.3, 16), brass, -4.2, AX + 1.4, 0); put(new THREE.SphereGeometry(0.1, 14, 8), brass, -4.2, AX + 1.58, 0); // a lubricator
+  for (const y of [AX + 0.33, AX - 0.33]) put(box(3.2, 0.1, 0.32), steel, 0.1, y, 0); // the slide bars
+  for (const x of [-1.45, 1.65]) for (const z of [0.3, -0.3]) put(box(0.22, AX + 0.38 - 1.06, 0.08), paint, x, (1.06 + AX + 0.38) / 2, z); // their cheeks
+  const crosshead = new THREE.Group(); scene.add(crosshead);
+  const ch = bucket();
+  ch.put(box(0.6, 0.5, 0.46), steel); for (const y of [0.255, -0.255]) ch.put(box(0.62, 0.035, 0.3), brass, 0, y, 0);
+  ch.put(cylZ(0.075, 0.62, 16), steel); ch.put(new THREE.CylinderGeometry(0.06, 0.07, 0.18, 12), brass, 0, 0.36, 0); // the pin, an oil cup
+  ch.flush(crosshead);
+  const pistonRod = new THREE.Mesh(keep(cylX(0.075, 1, 16)), steel); pistonRod.position.y = AX; pistonRod.castShadow = pistonRod.receiveShadow = !preview; scene.add(pistonRod);
+  const rod = new THREE.Group(); scene.add(rod); // the connecting rod, from the crosshead pin to the crank pin
+  const rb = bucket();
+  rb.put(new THREE.CylinderGeometry(0.13, 0.1, L - 0.72, 20).rotateZ(-Math.PI / 2), steel, L / 2, 0, 0);
+  rb.put(box(0.42, 0.38, 0.32), steel); rb.put(box(0.6, 0.6, 0.34), steel, L, 0, 0);
+  for (const y of [0.33, -0.33]) rb.put(box(0.64, 0.08, 0.36), brass, L, y, 0);
+  rb.flush(rod);
+  const crank = new THREE.Group(); crank.position.set(CRANK, AX, 0); scene.add(crank); // an overhung disc crank, polished at the rim
+  const cb = bucket();
+  cb.put(cylZ(1.1, 0.3, 56), paint, 0, 0, -0.32); cb.put(new THREE.TorusGeometry(1.1, 0.03, 6, 56), steel, 0, 0, -0.17);
+  cb.put(new THREE.CylinderGeometry(0.95, 0.95, 0.4, 32, 1, false, Math.PI, Math.PI).rotateX(Math.PI / 2), paint, 0, 0, -0.32); // the counterweight, opposite the pin
+  cb.put(cylZ(0.12, 0.5, 20), steel, R, 0, -0.04); cb.put(cylZ(0.24, 0.16, 24), steel, 0, 0, -0.1);
+  cb.flush(crank);
+  put(cylZ(0.2, 3.1, 32), steel, CRANK, AX, -1.75); // the crankshaft through the flywheel
+  put(box(1.25, 1.2, 0.8), stone, CRANK, 0.6, -2.95); // the outer bearing's pedestal; the main bearing sits on the bed's arm
+  for (const [z, y0] of [[-0.95, 1.06], [-2.95, 1.2]]) { put(box(0.9, 1.92 - y0, 0.5), paint, CRANK, (y0 + 1.92) / 2, z); put(box(0.62, 0.16, 0.52), brass, CRANK, 2.0, z); put(new THREE.CylinderGeometry(0.06, 0.07, 0.2, 12), brass, CRANK, 2.18, z); }
+  const fly = new THREE.Group(); fly.position.set(CRANK, AX, FLY_Z); scene.add(fly);
+  const ropeTex = keep(steamRope(THREE)); ropeTex.repeat.set(36, 1);
+  const fb = bucket();
+  fb.put(new THREE.CylinderGeometry(FLY_R, FLY_R, 0.6, 120, 1, true).rotateX(Math.PI / 2), std({ map: ropeTex, metalness: 0.9, roughness: 0.35 }, 0.8));
+  fb.put(inward(new THREE.CylinderGeometry(FLY_R - 0.45, FLY_R - 0.45, 0.6, 120, 1, true)).rotateX(Math.PI / 2), paint);
+  for (const z of [0.3, -0.3]) { fb.put(new THREE.RingGeometry(FLY_R - 0.45, FLY_R, 120), paint, 0, 0, z, 0, z > 0 ? 0 : Math.PI, 0); fb.put(new THREE.TorusGeometry(FLY_R - 0.22, 0.018, 6, 160), brass, 0, 0, z * 1.01); }
+  for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2, m = (0.6 + FLY_R - 0.45) / 2; fb.put(new THREE.CylinderGeometry(0.1, 0.17, FLY_R - 1.05, 14).scale(1, 1, 1.6), paint, Math.cos(a) * m, Math.sin(a) * m, 0, 0, 0, a - Math.PI / 2); }
+  fb.put(cylZ(0.66, 0.92, 40), paint); fb.put(cylZ(0.4, 0.96, 32), steel);
+  fb.flush(fly);
+  // the governor on the end of the bed, its balls flying out as the engine runs
+  const GOV = [2.1, -0.42];
+  put(box(0.5, 0.12, 0.5), paint, GOV[0], 1.12, GOV[1]); put(new THREE.CylinderGeometry(0.09, 0.14, 1.3, 16), paint, GOV[0], 1.83, GOV[1]); put(new THREE.CylinderGeometry(0.18, 0.13, 0.16, 16), brass, GOV[0], 2.56, GOV[1]);
+  const gov = new THREE.Group(); gov.position.set(GOV[0], 2.64, GOV[1]); scene.add(gov);
+  const gb = bucket();
+  gb.put(new THREE.CylinderGeometry(0.022, 0.022, 1.2, 10), steel, 0, 0.6, 0); gb.put(new THREE.SphereGeometry(0.05, 12, 8), brass, 0, 1.22, 0);
+  gb.flush(gov);
+  const armGeo = (len, rad) => new THREE.CylinderGeometry(rad, rad, len, 8).translate(0, -len / 2, 0);
+  const arms = [-1, 1].map((sd) => { const pivot = new THREE.Group(); pivot.position.set(0, 1.1, 0); gov.add(pivot); const b = bucket(); b.put(armGeo(0.5, 0.016), steel); b.put(new THREE.SphereGeometry(0.1, 20, 14), brass, 0, -0.52, 0); b.flush(pivot); pivot.userData.side = sd; return pivot; });
+  const links = [-1, 1].map(() => { const m = new THREE.Mesh(keep(armGeo(1, 0.012)), steel); m.castShadow = !preview; gov.add(m); return m; });
+  const sleeve = new THREE.Mesh(keep(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 14)), brass); sleeve.castShadow = !preview; gov.add(sleeve);
+  // the gauge board by the cylinder: steam and vacuum
+  put(new THREE.CylinderGeometry(0.05, 0.08, 1.75, 12), iron, -2.15, 0.88, 1.45); put(box(0.98, 0.52, 0.06), board, -2.15, 1.98, 1.45, 0, 0.2, 0);
+  const dialMat = std({ map: keep(steamDials(THREE)), roughness: 0.3 }, 0.6), dialParts = [];
+  const needles = [["STEAM", -0.23, 0.62], ["VACUUM", 0.23, 0.45]].map(([, dx, base], i) => {
+    const x = -2.15 + dx * Math.cos(0.2), z = 1.49 - dx * Math.sin(0.2);
+    const g = new THREE.CircleGeometry(0.18, 40), uv = g.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setX(k, (uv.getX(k) + i) / 2);
+    dialParts.push([g, at(x, 1.98, z, 0, 0.2, 0)]);
+    put(new THREE.TorusGeometry(0.185, 0.022, 8, 40), brass, x + 0.012 * Math.sin(0.2), 1.98, z + 0.012 * Math.cos(0.2), 0, 0.2, 0);
+    const n = new THREE.Mesh(keep(new THREE.BoxGeometry(0.008, 0.14, 0.004).translate(0, 0.06, 0)), iron); n.position.set(x + 0.02 * Math.sin(0.2), 1.98, z + 0.02 * Math.cos(0.2)); n.rotation.order = "YXZ"; n.rotation.y = 0.2; scene.add(n);
+    return { n, base, ph: r(0, 6) };
+  });
+  scene.add(new THREE.Mesh(keep(mergeParts(THREE, dialParts)), dialMat));
+  // the steam main from the wall, its stop valve and handwheel
+  put(cylZ(0.11, 5.7, 20), copper, -5.1, 6.15, -3.15); put(cylZ(0.2, 0.06, 20), brass, -5.1, 6.15, WALL_Z + 0.03); put(new THREE.TorusGeometry(0.3, 0.11, 12, 24, Math.PI / 2), copper, -5.1, 5.85, -0.3, 0, -Math.PI / 2, 0);
+  put(new THREE.CylinderGeometry(0.11, 0.11, 3.0, 20), copper, -5.1, 4.35, 0); put(new THREE.SphereGeometry(0.24, 20, 14), brass, -5.1, 3.95, 0);
+  for (const y of [5.6, 3.0]) put(new THREE.CylinderGeometry(0.16, 0.16, 0.06, 20), brass, -5.1, y, 0); // flanges
+  put(cylZ(0.025, 0.42, 8), steel, -5.1, 3.95, 0.21); put(new THREE.TorusGeometry(0.28, 0.025, 8, 36), iron, -5.1, 3.95, 0.42);
+  for (let k = 0; k < 4; k++) put(box(0.56, 0.025, 0.025), iron, -5.1, 3.95, 0.42, 0, 0, (k * Math.PI) / 4);
+  // the engine-house clock between the middle windows, on real time; its minute hand jumps once a minute, like a slave clock's
+  const CK = [0, 6.5, WALL_Z];
+  put(cylZ(0.7, 0.12, 48), board, CK[0], CK[1], CK[2] + 0.06); put(new THREE.TorusGeometry(0.6, 0.035, 8, 48), brass, CK[0], CK[1], CK[2] + 0.125);
+  const clockFace = new THREE.Mesh(keep(new THREE.CircleGeometry(0.58, 48)), std({ map: keep(steamClockFace(THREE)), roughness: 0.35 }, 0.4));
+  clockFace.position.set(CK[0], CK[1], CK[2] + 0.122); scene.add(clockFace);
+  const hand = (w, len, z) => { const m = new THREE.Mesh(keep(new THREE.BoxGeometry(w, len, 0.012).translate(0, len / 2 - 0.08, 0)), iron); m.position.set(CK[0], CK[1], CK[2] + z); scene.add(m); return m; };
+  const hourHand = hand(0.05, 0.42, 0.135), minuteHand = hand(0.032, 0.6, 0.15);
+  let clockMin = -1;
+  const setClock = () => { const d = new Date(), m = d.getHours() * 60 + d.getMinutes(); if (m === clockMin) return; clockMin = m; minuteHand.rotation.z = -(d.getMinutes() / 60) * Math.PI * 2; hourHand.rotation.z = -((m % 720) / 720) * Math.PI * 2; };
+  setClock();
+  // railings round the pit and along the engine's front
+  const rail = (x0, z0, x1, z1) => { const len = Math.hypot(x1 - x0, z1 - z0), a = Math.atan2(z1 - z0, x1 - x0); for (const y of [1.0, 0.55]) put(new THREE.CylinderGeometry(0.025, 0.025, len, 8).rotateZ(Math.PI / 2), brass, (x0 + x1) / 2, y, (z0 + z1) / 2, 0, -a, 0); for (let k = 0, n = Math.max(1, Math.round(len / 1.8)); k <= n; k++) put(new THREE.CylinderGeometry(0.028, 0.032, 1.0, 8), iron, x0 + ((x1 - x0) * k) / n, 0.5, z0 + ((z1 - z0) * k) / n); };
+  const [px0, px1, pz0, pz1] = [PIT[0] - 0.15, PIT[1] + 0.15, PIT[2] - 0.15, PIT[3] + 0.15];
+  rail(px0, pz1, 2.15, pz1); rail(5.55, pz1, px1, pz1); rail(px0, pz0, CRANK - 0.75, pz0); rail(CRANK + 0.75, pz0, px1, pz0); rail(px0, pz0, px0, pz1); rail(px1, pz0, px1, pz1);
+  rail(-7.2, 1.9, -2.7, 1.9);
+  // gas lamps: two pendants over the engine, brackets on the wall between the windows and over the boiler-room door
+  const globeMat = std({ color: 0xf2e6d0, roughness: 0.2 }, 0.5), shadeMat = std({ color: 0x2a4a38, roughness: 0.45, side: THREE.DoubleSide }, 0.4);
+  const glowPts = [];
+  for (const l of lamps) { const { x, y, z } = l.position; quiet.put(new THREE.CylinderGeometry(0.012, 0.012, 9.6 - (y + 0.25), 6), iron, x, (9.6 + y + 0.25) / 2, z); quiet.put(new THREE.ConeGeometry(0.44, 0.3, 28, 1, true), shadeMat, x, y + 0.15, z); quiet.put(new THREE.SphereGeometry(0.11, 16, 10), globeMat, x, y - 0.02, z); glowPts.push([x, y - 0.02, z, 1.6]); }
+  for (const [x, y] of [[0, 3.55], [6, 3.55], [DOOR, 4.6]]) { quiet.put(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6).rotateX(Math.PI / 2), brass, x, y - 0.15, WALL_Z + 0.25); quiet.put(new THREE.SphereGeometry(0.12, 16, 10), globeMat, x, y, WALL_Z + 0.5); glowPts.push([x, y, WALL_Z + 0.5, 1.4]); }
+  still.flush(); quiet.flush(scene, false);
+  const glowQuad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(glowQuad.index); glowGeo.setAttribute("position", glowQuad.attributes.position); glowGeo.setAttribute("uv", glowQuad.attributes.uv);
+  glowGeo.setAttribute("aGlow", new THREE.InstancedBufferAttribute(new Float32Array(glowPts.flat()), 4)); glowGeo.instanceCount = glowPts.length;
+  const glowMesh = new THREE.Mesh(glowGeo, shader(VENICE_GLOW_VS, VENICE_GLOW_FS, { uMap: { value: glow }, uColor: { value: new THREE.Color("#ffbf78") }, uTime: time }, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glowMesh.frustumCulled = false; glowMesh.renderOrder = 20; scene.add(glowMesh);
+  const fireGeo = keep(new THREE.InstancedBufferGeometry()); // the glow of the fire doors, seen through the doorway only
+  fireGeo.setIndex(glowQuad.index); fireGeo.setAttribute("position", glowQuad.attributes.position); fireGeo.setAttribute("uv", glowQuad.attributes.uv);
+  fireGeo.setAttribute("aGlow", new THREE.InstancedBufferAttribute(new Float32Array([DOOR - 0.55, 1.05, WALL_Z - 2.8, 1.5, DOOR + 0.55, 1.05, WALL_Z - 2.8, 1.5, DOOR, 2.6, WALL_Z - 1.8, 3.6]), 4)); fireGeo.instanceCount = 3; // the doors, and the firelight in the room
+  const fireGlowU = { uMap: { value: glow }, uColor: { value: new THREE.Color("#ff7a30") }, uTime: time };
+  const fireGlow = new THREE.Mesh(fireGeo, shader(VENICE_GLOW_VS, VENICE_GLOW_FS, fireGlowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  fireGlow.frustumCulled = false; fireGlow.renderOrder = 20; scene.add(fireGlow);
+
+  /* --- sunbeams through the four windows, and the dust floating in them --- */
+  const shaftPos = [], shaftUv = [], dustPos = [], dustAttr = [];
+  for (const cx of [-9, -3, 3, 9]) {
+    const len = 4.4, dustLen = 13;
+    for (const [a, b] of [[[cx - 1.3, 4.7, WALL_Z], [cx + 1.3, 4.7, WALL_Z]], [[cx, 2.1, WALL_Z], [cx, 7.4, WALL_Z]]]) {
+      const a2 = [a[0] + D.x * len, a[1] + D.y * len, a[2] + D.z * len], b2 = [b[0] + D.x * len, b[1] + D.y * len, b[2] + D.z * len];
+      for (const [p, uv] of [[a, [0, 0]], [b, [0, 1]], [b2, [1, 1]], [a, [0, 0]], [b2, [1, 1]], [a2, [1, 0]]]) { shaftPos.push(...p); shaftUv.push(...uv); }
+    }
+    for (let k = 0; k < (preview ? 60 : 240); k++) { // motes inside the beam's volume all the way to the floor, brighter near the glass
+      const t = r(0.03, 0.97) * dustLen, px = cx + r(-1.25, 1.25) + D.x * t, py = r(2.2, 7.3) + D.y * t, pz = WALL_Z + D.z * t;
+      if (py < 0.2) continue;
+      dustPos.push(px, py, pz); dustAttr.push(r(0, 6.28), r(0.6, 1.4), r(0.012, 0.03), Math.pow(1 - t / dustLen, 0.8) * r(0.4, 1));
+    }
+  }
+  const shaftGeo = keep(new THREE.BufferGeometry());
+  shaftGeo.setAttribute("position", new THREE.Float32BufferAttribute(shaftPos, 3)); shaftGeo.setAttribute("aShaft", new THREE.Float32BufferAttribute(shaftUv, 2));
+  const shaftU = { uNoise: { value: noise }, uTime: time, uColor: { value: new THREE.Color("#ffe2b4") }, uAmt: { value: 0 } };
+  const shafts = new THREE.Mesh(shaftGeo, shader(STEAM_SHAFT_VS, STEAM_SHAFT_FS, shaftU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  shafts.frustumCulled = false; shafts.renderOrder = 10; scene.add(shafts);
+  const dustGeo = keep(new THREE.BufferGeometry());
+  dustGeo.setAttribute("position", new THREE.Float32BufferAttribute(dustPos, 3)); dustGeo.setAttribute("aDust", new THREE.Float32BufferAttribute(dustAttr, 4));
+  const dustU = { uTime: time, uPx: { value: 500 }, uColor: { value: new THREE.Color("#fff0d0") }, uAmt: { value: 0 } };
+  const dust = new THREE.Points(dustGeo, shader(STEAM_DUST_VS, STEAM_DUST_FS, dustU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  dust.frustumCulled = false; dust.renderOrder = 11; scene.add(dust);
+  const buf = new THREE.Vector2();
+  dust.onBeforeRender = (renderer) => { renderer.getDrawingBufferSize(buf); dustU.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); };
+
+  /* --- steam: a puff from the drain cocks at each end of every stroke, a wisp at the stop valve --- */
+  const NPUFF = 26, puffQuad = keep(new THREE.PlaneGeometry(1, 1)), puffGeo = keep(new THREE.InstancedBufferGeometry());
+  puffGeo.setIndex(puffQuad.index); puffGeo.setAttribute("position", puffQuad.attributes.position); puffGeo.setAttribute("uv", puffQuad.attributes.uv);
+  const aPuff = new THREE.InstancedBufferAttribute(new Float32Array(NPUFF * 4), 4), aLife = new THREE.InstancedBufferAttribute(new Float32Array(NPUFF).fill(-1), 1);
+  aPuff.setUsage(THREE.DynamicDrawUsage); aLife.setUsage(THREE.DynamicDrawUsage);
+  puffGeo.setAttribute("aPuff", aPuff); puffGeo.setAttribute("aLife", aLife); puffGeo.instanceCount = NPUFF;
+  const puffU = { uMap: { value: keep(steamPuffTex(THREE)) }, uColor: { value: new THREE.Color() } };
+  const puffs = new THREE.Mesh(puffGeo, shader(STEAM_PUFF_VS, STEAM_PUFF_FS, puffU, { transparent: true, depthWrite: false }));
+  puffs.frustumCulled = false; puffs.renderOrder = 12; scene.add(puffs);
+  const life = new Float32Array(NPUFF).fill(-1), dur = new Float32Array(NPUFF).fill(2);
+  let nextPuff = 0;
+  const emit = (x, y, z, size, d) => { const i = nextPuff; nextPuff = (nextPuff + 1) % NPUFF; aPuff.setXYZW(i, x + r(-0.05, 0.05), y, z + r(-0.05, 0.05), size); life[i] = 0; dur[i] = d; };
+
+  // real shadows from the first draw; the engine moves, so the map follows it every frame
+  let shadowsOn = false, gone = false;
+  outside.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.enabled = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    env?.dispose(); env = steamEnv(THREE, d);
+    for (const m of envMats) m.envMap = env;
+    paint.color.set(p.accent).multiplyScalar(0.8);
+    sun.color.set(d ? "#8fa4d8" : "#ffe0b0"); sun.intensity = d ? 0.5 : preview ? 1.1 : 3.8; // the preview has no shadows: no roof to hold the sun off the floor
+    hemi.color.set(d ? "#1c2234" : "#d6c4a6"); hemi.groundColor.set(d ? "#0e0a08" : "#4a3a2c"); hemi.intensity = d ? 0.2 : 0.55;
+    fill.intensity = d ? 0 : 0.85;
+    for (const l of lamps) l.intensity = d ? 38 : 0;
+    globeMat.emissive.set(d ? "#ffc27a" : "#000000"); globeMat.emissiveIntensity = d ? 1.6 : 0;
+    glowMesh.visible = d;
+    fireBase.set(d ? "#ff8a3a" : "#c8642c"); fireGlowU.uColor.value.set(d ? "#ff7a30" : "#000000");
+    scene.fog.color.set(d ? "#0e0c10" : "#cbb89c"); scene.fog.near = d ? 10 : 14; scene.fog.far = d ? 34 : 46;
+    shaftU.uAmt.value = d ? 0.05 : 0.24; shaftU.uColor.value.set(d ? "#8fa4d8" : "#ffe2b4");
+    dustU.uAmt.value = d ? 0.2 : 1; dustU.uColor.value.set(d ? "#9fb0d8" : "#fff0d0");
+    outU.uSkyLow.value.set(d ? "#18233f" : "#f8f0e2"); outU.uSkyHigh.value.set(d ? "#070b1a" : "#d4e2ee"); outU.uBody.value.set(d ? "#0b0d14" : "#b9a594"); outU.uLit.value.set(d ? "#ffc070" : "#000000").multiplyScalar(0.85);
+    puffU.uColor.value.set(d ? "#b8a898" : "#f4f0ea");
+  }
+  applyPalette(pal);
+
+  const look = new THREE.Vector3(), V = new THREE.Vector3();
+  let theta = 0.6, gspin = 0, sway = 0, lastTurn = Math.floor(theta / Math.PI);
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 50 + k * 12;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 0.25;
+    camera.position.set(1.2 + k * 2.6 + s, 2.75 + k * 0.25, 9.8 + k * 1.9); // a phone stands a step back, before the crank and the flywheel
+    camera.lookAt(look.set(0.6 + k * 3.3 + s * 0.4, 2.1 + k * 0.3, 0));
+    camera.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt, t) {
+    time.value = t;
+    sway = t * 0.05;
+    const w = 1.9 * (1 + 0.025 * Math.sin(t * 0.31)); // about 18 rpm, the governor holding it
+    theta += w * dt;
+    const px = CRANK + R * Math.cos(theta), py = AX + R * Math.sin(theta), cx = px - Math.sqrt(L * L - (py - AX) * (py - AX)); // the crank pin; the crosshead pin
+    crosshead.position.set(cx, AX, 0);
+    const rodStart = -3.05, rodEnd = cx - 0.3; pistonRod.position.x = (rodStart + rodEnd) / 2; pistonRod.scale.x = rodEnd - rodStart;
+    rod.position.set(cx, AX, 0); rod.rotation.z = Math.atan2(py - AX, px - cx);
+    crank.rotation.z = theta; fly.rotation.z = theta;
+    gspin += dt * w * 7.2; gov.rotation.y = gspin;
+    const alpha = 0.62 + 0.05 * Math.sin(t * 0.31 - 0.6); // the balls fly out as the engine runs fast
+    for (const a of arms) a.rotation.z = a.userData.side * alpha;
+    const sy = 0.38 + (1 - Math.cos(alpha)) * 0.6; sleeve.position.y = sy;
+    for (const [i, a] of arms.entries()) { const sd = a.userData.side, mx = sd * Math.sin(alpha) * 0.25, my = 1.1 - Math.cos(alpha) * 0.25, ln = links[i]; V.set(sd * 0.06 - mx, sy - my, 0); ln.position.set(mx, my, 0); ln.scale.y = V.length(); ln.rotation.z = Math.atan2(V.x, -V.y); } // the links from the arms down to the sleeve
+    for (const g of needles) g.n.rotation.z = -(g.base - 0.5) * 4.7 + 0.03 * Math.sin(t * 7 + g.ph) + 0.02 * Math.sin(t * 2.3 + g.ph * 2);
+    setClock();
+    const turn = Math.floor(theta / Math.PI); // a stroke ends: steam from the drain cock at that end
+    if (turn !== lastTurn) { lastTurn = turn; const front = turn % 2 === 0; emit(front ? -3.45 : -6.75, 1.15, 0.85, 0.95, 2.4); }
+    if (r() < dt * 1.4) emit(-5.1 + r(-0.05, 0.05), 3.75, 0.25, 0.4, 1.8); // the stop valve's gland
+    if (r() < dt * 0.9) emit(-2.88, AX + 0.06, 0.12, 0.2, 1.4); // and the piston rod's
+    for (let i = 0; i < NPUFF; i++) { if (life[i] < 0) continue; life[i] += dt / dur[i]; if (life[i] >= 1) life[i] = -1; aLife.setX(i, life[i]); }
+    aLife.needsUpdate = aPuff.needsUpdate = true;
+    const f = 0.78 + 0.22 * Math.sin(t * 9.1) * Math.sin(t * 3.7 + 1.3); // the fire breathing
+    if (pal.dark) { fire.intensity = 46 * f; for (const [i, l] of lamps.entries()) l.intensity = 38 * (0.96 + 0.04 * Math.sin(t * 5.3 + i * 2)); } else fire.intensity = 8 * f;
+    fireMat.color.copy(fireBase).multiplyScalar(0.7 + 0.3 * f);
+  }
+  frame(0, 0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { rpm: +((1.9 * 60) / (2 * Math.PI)).toFixed(1), crank: +(theta % (2 * Math.PI)).toFixed(2), crosshead: +crosshead.position.x.toFixed(2), puffs: Array.from(life).filter((v) => v >= 0).length, dust: dustPos.length / 3, shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
