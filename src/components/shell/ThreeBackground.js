@@ -14401,7 +14401,670 @@ function v8engine(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine };
+/* ---------- Rocket launch: a seaside launch complex; the next rocket is rolled out and raised, the clock counts down, liftoff on fire and smoke ---------- */
+// The rocket stands on its mount above the flame trench; a transporter-erector brings it up the ramp and raises it on hydraulic rams.
+// Smoke is a few hundred lit puffs: each flies an analytic path from where and when it was born (drag, wind, hot gas rising, cold
+// vapour sinking), grows and fades; they are drawn far-to-near, shaded as little spheres by the sun and by the engines' fire.
+const ROCKET_SMOKE_VS = /* glsl */ `
+  uniform float uTime; uniform vec3 uWind; uniform vec4 uFire; uniform vec3 uSunDir;
+  attribute vec3 aP0; attribute vec3 aV0; attribute vec4 aT; attribute vec4 aK; // start, speed; birth, life, size from, size to; drag, rise, opacity, seed
+  varying vec2 vQ; varying float vA; varying float vFire; varying vec3 vFireDir; varying vec3 vSunV; varying float vSeed; varying float vShade;
+  void main() {
+    float tau = uTime - aT.x, life = aT.y;
+    vQ = position.xy * 2.0; vSeed = aK.w;
+    if (tau < 0.0 || tau > life) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vA = 0.0; return; }
+    float k = aK.x;
+    vec3 p = aP0 + aV0 * (1.0 - exp(-k * tau)) / k + uWind * tau + vec3(0.0, aK.y * tau * tau / (1.0 + 0.05 * tau), 0.0);
+    p.y = max(p.y, 0.4 + 0.5 * aT.z);
+    float size = aT.z + (aT.w - aT.z) * (1.0 - exp(-tau * 0.35));
+    vA = aK.z * smoothstep(0.0, 0.06 * life + 0.05, tau) * (1.0 - smoothstep(0.45 * life, life, tau));
+    vec4 mv = viewMatrix * vec4(p, 1.0);
+    float c = cos(aK.w * 6.28 + tau * 0.05), s = sin(aK.w * 6.28 + tau * 0.05);
+    mv.xy += mat2(c, s, -s, c) * position.xy * size;
+    vec3 toF = uFire.xyz - p; float d = length(toF);
+    vFire = uFire.w / (1.0 + d * d / 2200.0);
+    vFireDir = normalize(mat3(viewMatrix) * toF);
+    vSunV = normalize(mat3(viewMatrix) * uSunDir);
+    vShade = clamp(0.35 + p.y / (size * 3.0 + 40.0), 0.35, 1.0); // the bottom of a cloud bank is in its own shade
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const ROCKET_SMOKE_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform vec3 uAlbedo; uniform vec3 uAmb; uniform vec3 uSunCol; uniform vec3 uFireCol;
+  varying vec2 vQ; varying float vA; varying float vFire; varying vec3 vFireDir; varying vec3 vSunV; varying float vSeed; varying float vShade;
+  void main() {
+    if (vA < 0.004) discard;
+    vec2 uv = vQ * 0.5 + 0.5;
+    vec4 t = texture2D(uMap, uv * 0.5 + vec2(step(0.5, fract(vSeed * 7.3)), step(0.5, fract(vSeed * 3.1))) * 0.5); // one of four puffs
+    float a = t.a * vA;
+    if (a < 0.004) discard;
+    vec3 n = normalize(vec3(vQ, 0.9 - 0.5 * dot(vQ, vQ)));
+    float sun = max(dot(n, vSunV), 0.0) * 0.75 + 0.25;
+    float fire = vFire * (0.45 + 0.55 * max(dot(n, vFireDir), 0.0));
+    vec3 col = uAlbedo * (uAmb * vShade + uSunCol * sun * (0.45 + 0.55 * vShade)) * (0.78 + 0.22 * t.r) + uFireCol * fire;
+    vec4 o = linearToOutputTexel(vec4(col, 1.0)); // to the screen's colours first, then premultiplied: stacked puffs keep their shading
+    gl_FragColor = vec4(o.rgb * a, a);
+  }
+`;
+// the exhaust: an open cone below the engines, a white-hot core fading to orange, flickering
+const ROCKET_PLUME_VS = /* glsl */ `
+  varying vec2 vUv; varying float vFacing;
+  void main() {
+    vUv = uv;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vec3 n = normalize(normalMatrix * normal);
+    vFacing = abs(dot(n, normalize(-mv.xyz)));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const ROCKET_PLUME_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uAmt;
+  varying vec2 vUv; varying float vFacing;
+  void main() {
+    float along = 1.0 - vUv.y; // 0 at the nozzles
+    float n = texture2D(uNoise, vec2(vUv.x * 3.0 + uTime * 0.7, along * 2.0 - uTime * 6.0)).r;
+    float core = pow(vFacing, 2.2);
+    float a = pow(1.0 - along, 1.4) * (0.55 + 0.45 * n) * (0.25 + 0.75 * core) * smoothstep(0.0, 0.04, along + 0.02);
+    vec3 col = mix(vec3(1.0, 0.36, 0.06), vec3(1.0, 0.8, 0.45), clamp(core * (1.0 - along * 0.9) + 0.15 * (1.0 - along), 0.0, 1.0)); // kerosene: yellow-white at the core, orange outside
+    gl_FragColor = vec4(col * a * uAmt * 2.2, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the flag by the clock: a cloth in the accent colour with the app's check mark, rippling in the sea breeze
+const ROCKET_FLAG_VS = /* glsl */ `
+  uniform float uTime;
+  varying vec2 vUv; varying float vShade;
+  void main() {
+    vUv = uv;
+    float x = uv.x, ph = x * 6.5 - uTime * 3.6 + uv.y * 0.8, w = sin(ph) * 0.42 * x + sin(x * 14.0 - uTime * 5.3 + uv.y * 2.5) * 0.09 * x;
+    vec3 p = position + vec3(-x * 0.25 * (1.0 - cos(ph)) * 0.3, -x * x * 0.3, w);
+    vShade = 0.62 + 0.38 * (0.5 + 0.5 * cos(ph)) * (0.6 + 0.4 * x) + 0.2 * (1.0 - x); // the folds catch the light and fall into shade
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }
+`;
+const ROCKET_FLAG_FS = /* glsl */ `
+  uniform sampler2D uMark; uniform vec3 uAccent; uniform vec3 uLight;
+  varying vec2 vUv; varying float vShade;
+  void main() {
+    float m = texture2D(uMark, vUv).r;
+    vec3 col = mix(uAccent, vec3(1.0), m) * uLight * vShade;
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// floodlight beams at night: soft additive cones from the lamps to the rocket, brightest near the lamp, fading at the edges
+const ROCKET_BEAM_FS = /* glsl */ `
+  uniform float uAmt; uniform vec3 uColor;
+  varying vec2 vS; varying vec3 vWorld;
+  void main() {
+    float along = vS.x, across = abs(vS.y - 0.5) * 2.0;
+    float soft = 1.0 - smoothstep(0.0, 1.0, across);
+    float a = pow(1.0 - along, 1.8) * soft * soft * smoothstep(0.0, 0.08, along) * uAmt;
+    gl_FragColor = vec4(uColor * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** The rocket's skin, u round it (0 facing +z), v up it (0 at the engines, 1 at the fairing's tip, `HT` metres): white panels with weld
+ *  rings and seams, the black engine section and interstage, the accent stripes and the vertical wordmark. Redrawn for each accent. */
+function rocketLivery(THREE, HT) {
+  const W = 512, H = 2048, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c), r = koiRng(1957);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; tex.wrapS = THREE.RepeatWrapping;
+  const Y = (m) => (1 - m / HT) * H;
+  const grain = Array.from({ length: 1400 }, () => [r(0, W), r(0, H), r(2, 9), r(1, 3), r(0.012, 0.035)]);
+  const draw = (accent) => {
+    g.fillStyle = "#eef0f1"; g.fillRect(0, 0, W, H);
+    for (const [x, y, w, h, a] of grain) { g.fillStyle = `rgba(120,128,138,${a})`; g.fillRect(x, y, w, h); }
+    for (let m = 2.2; m < 59; m += 3.6) { g.fillStyle = "rgba(150,156,164,0.55)"; g.fillRect(0, Y(m), W, 2); g.fillStyle = "rgba(255,255,255,0.7)"; g.fillRect(0, Y(m) + 2, W, 1); } // weld rings
+    g.fillStyle = "rgba(150,156,164,0.4)"; for (const u of [0.18, 0.43, 0.68, 0.93]) g.fillRect(u * W, Y(59), 2, Y(0) - Y(59));
+    g.fillStyle = "#26272a"; g.fillRect(0, Y(1.6), W, Y(0) - Y(1.6) + 2); // the engine section's heat shield
+    const ig = g.createLinearGradient(0, Y(47), 0, Y(41)); ig.addColorStop(0, "#1c1d20"); ig.addColorStop(1, "#141517"); g.fillStyle = ig; g.fillRect(0, Y(47), W, Y(41) - Y(47)); // the interstage, carbon
+    g.fillStyle = "rgba(255,255,255,0.05)"; for (let x = 0; x < W; x += 6) g.fillRect(x, Y(47), 2, Y(41) - Y(47));
+    g.fillStyle = accent; g.fillRect(0, Y(39.9), W, Y(38.6) - Y(39.9)); g.fillRect(0, Y(61.6), W, Y(60.7) - Y(61.6)); // stripes under the interstage and round the fairing
+    g.fillStyle = "rgba(150,156,164,0.55)"; for (const u of [0.25, 0.75]) g.fillRect(u * W - 1, Y(HT), 3, Y(59.5) - Y(HT)); // the fairing's halves
+    g.fillRect(0, Y(59.6), W, 3);
+    for (const x0 of [0.035 * W, 0.035 * W - W]) { // the wordmark, reading upwards on the side facing the view
+      g.save(); g.translate(x0, Y(12.5)); g.rotate(-Math.PI / 2);
+      g.fillStyle = accent; g.font = "bold 58px Helvetica, Arial, sans-serif"; g.textBaseline = "middle"; g.textAlign = "left";
+      const sx = (Y(12.5) - Y(36.8)) / g.measureText("TASK PORTAL").width; g.scale(sx, 1.2); g.fillText("TASK PORTAL", 0, 0); g.restore();
+    }
+    g.fillStyle = "#3a3d42"; g.font = "bold 22px Helvetica, Arial, sans-serif"; g.textAlign = "center"; g.fillText("TP-9", 0.035 * W, Y(52)); // the vehicle's name on the second stage
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** The pad's deck, 110 × 90 m: concrete slabs, stains, painted lines, scorched round the mount and along the trench. */
+function rocketDeck(THREE) {
+  const r = koiRng(39);
+  return canvasTexture(THREE, 1024, 1024, (g, w, h) => {
+    const sx = w / 110, sz = h / 90, X = (x) => (x + 55) * sx, Z = (z) => (z + 45) * sz;
+    g.fillStyle = "#b9b6ae"; g.fillRect(0, 0, w, h);
+    for (let x = -55; x < 55; x += 6) for (let z = -45; z < 45; z += 6) { g.fillStyle = `rgba(${r() < 0.5 ? "120,116,108" : "220,216,206"},${r(0.04, 0.12)})`; g.fillRect(X(x), Z(z), 6 * sx, 6 * sz); }
+    g.strokeStyle = "rgba(90,88,82,0.5)"; g.lineWidth = 1; for (let x = -55; x <= 55; x += 6) { g.beginPath(); g.moveTo(X(x), 0); g.lineTo(X(x), h); g.stroke(); } for (let z = -45; z <= 45; z += 6) { g.beginPath(); g.moveTo(0, Z(z)); g.lineTo(w, Z(z)); g.stroke(); }
+    for (let i = 0; i < 9000; i++) { g.fillStyle = `rgba(${r() < 0.6 ? "70,66,60" : "240,236,228"},${r(0.03, 0.08)})`; g.fillRect(r(0, w), r(0, h), r(1, 3), r(1, 3)); }
+    const sc = g.createRadialGradient(X(0), Z(0), 0, X(0), Z(0), 26 * sx); sc.addColorStop(0, "rgba(28,24,20,0.85)"); sc.addColorStop(0.5, "rgba(40,34,28,0.45)"); sc.addColorStop(1, "rgba(40,34,28,0)"); g.fillStyle = sc; g.fillRect(0, 0, w, h); // scorched round the mount
+    const tr = g.createLinearGradient(X(-6), 0, X(-55), 0); tr.addColorStop(0, "rgba(30,26,22,0.7)"); tr.addColorStop(1, "rgba(30,26,22,0.15)"); g.fillStyle = tr; g.fillRect(X(-60), Z(-9), X(-6) - X(-60), 18 * sz); // and along the trench
+    g.fillStyle = "#e3b62e"; for (const [x0, z0, x1, z1] of [[-8, -8, 8, -7.6], [-8, 7.6, 8, 8], [-8, -8, -7.6, 8], [7.6, -8, 8, 8]]) g.fillRect(X(x0), Z(z0), (x1 - x0) * sx, (z1 - z0) * sz); // the keep-clear square
+    g.fillStyle = "rgba(240,240,236,0.8)"; for (const z of [-3.6, 3.6]) g.fillRect(X(4), Z(z) - 1, X(55) - X(4), 3); // the rail bed's edge lines
+  });
+}
+/** Coastal scrub seen from a distance, repeating every 40 m: greens and browns in drifts, sandy patches. */
+function rocketGround(THREE) {
+  const r = koiRng(77);
+  const tex = canvasTexture(THREE, 512, 512, (g, w, h) => {
+    g.fillStyle = "#6f7a4a"; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 260; i++) { const x = r(0, w), y = r(0, h), rad = r(14, 60), gr = g.createRadialGradient(x, y, 0, x, y, rad), c = ["86,98,56", "104,108,64", "122,112,74", "70,84,50", "150,140,104"][Math.floor(r(0, 5))]; gr.addColorStop(0, `rgba(${c},0.55)`); gr.addColorStop(1, `rgba(${c},0)`); g.fillStyle = gr; for (const dx of [-w, 0, w]) for (const dy of [-h, 0, h]) g.fillRect(x - rad + dx, y - rad + dy, rad * 2, rad * 2); }
+    for (let i = 0; i < 14000; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "40,52,30" : "170,166,120"},${r(0.05, 0.16)})`; g.fillRect(r(0, w), r(0, h), r(1, 3), r(1, 3)); }
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return tex;
+}
+/** The countdown clock's face: amber seven-segment-like digits on black. */
+function rocketClock(THREE) {
+  const c = document.createElement("canvas"); c.width = 1024; c.height = 256;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  const draw = (text) => {
+    g.fillStyle = "#050506"; g.fillRect(0, 0, 1024, 256);
+    g.font = "bold 168px 'Courier New', ui-monospace, Menlo, monospace"; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillStyle = "rgba(255,170,40,0.08)"; g.fillText("8:88:88", 512, 132); // the unlit segments
+    g.shadowColor = "rgba(255,170,40,0.85)"; g.shadowBlur = 18; g.fillStyle = "#ffb52e"; g.fillText(text, 512, 132); g.shadowBlur = 0;
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** A cabbage palm's fan leaf (alpha): stiff segments radiating from the stalk, drooping tips. */
+function rocketFrond(THREE) {
+  const r = koiRng(12);
+  const tex = canvasTexture(THREE, 256, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    const ox = w / 2, oy = h * 0.93;
+    for (let i = 0; i < 46; i++) {
+      const a = -Math.PI / 2 + ((i / 45) - 0.5) * 2.5, len = h * r(0.62, 0.86), droop = 0.25 + 0.5 * Math.abs((i / 45) - 0.5);
+      g.strokeStyle = ["#4d6b2c", "#5b7a33", "#456126", "#6a873b"][i % 4]; g.lineWidth = r(3, 5); g.lineCap = "round";
+      g.beginPath(); g.moveTo(ox, oy); const ex = ox + Math.cos(a) * len, ey = oy + Math.sin(a) * len;
+      g.quadraticCurveTo(ox + Math.cos(a) * len * 0.6, oy + Math.sin(a) * len * 0.6, ex, ey + droop * len * 0.25); g.stroke();
+    }
+    g.fillStyle = "#3d5522"; g.beginPath(); g.arc(ox, oy, 7, 0, Math.PI * 2); g.fill();
+  });
+  return tex;
+}
+/** Four puffs of smoke in a 2 × 2 atlas: alpha = a billowy blob, red = its texture. */
+function rocketPuffs(THREE) {
+  const r = koiRng(404);
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d"), img = g.createImageData(256, 256), d = img.data;
+  for (let q = 0; q < 4; q++) {
+    const ox = (q % 2) * 128, oy = Math.floor(q / 2) * 128, blobs = Array.from({ length: 14 }, () => [r(-0.42, 0.42), r(-0.42, 0.42), r(0.22, 0.48)]);
+    for (let y = 0; y < 128; y++) for (let x = 0; x < 128; x++) {
+      const u = (x + 0.5) / 64 - 1, v = (y + 0.5) / 64 - 1;
+      let a = 0, lum = 0;
+      for (const [bx, by, br] of blobs) { const t = 1 - ((u - bx) ** 2 + (v - by) ** 2) / (br * br); if (t > 0) { a += t * t; lum += t * (0.5 + 0.5 * (by < 0 ? 1 : 0.7)); } }
+      const edge = Math.max(0, 1 - Math.hypot(u, v)), o = ((oy + y) * 256 + ox + x) * 4;
+      d[o] = Math.min(255, 150 + lum * 60); d[o + 1] = d[o]; d[o + 2] = d[o];
+      d[o + 3] = Math.min(255, Math.pow(Math.min(1, a * 0.9), 1.2) * Math.pow(edge, 0.6) * 255);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** The flag's emblem (red channel): the app's check mark in a rounded square, on the fly side's middle. */
+function rocketFlagMark(THREE) {
+  const tex = canvasTexture(THREE, 256, 160, (g, w, h) => {
+    g.fillStyle = "#000"; g.fillRect(0, 0, w, h);
+    g.strokeStyle = "#fff"; g.lineWidth = 9; g.lineJoin = "round"; g.lineCap = "round";
+    const cx = w * 0.5, cy = h * 0.5, s = 46;
+    g.beginPath(); g.moveTo(cx - s + 12, cy - s); g.lineTo(cx + s - 12, cy - s); g.quadraticCurveTo(cx + s, cy - s, cx + s, cy - s + 12); g.lineTo(cx + s, cy + s - 12); g.quadraticCurveTo(cx + s, cy + s, cx + s - 12, cy + s); g.lineTo(cx - s + 12, cy + s); g.quadraticCurveTo(cx - s, cy + s, cx - s, cy + s - 12); g.lineTo(cx - s, cy - s + 12); g.quadraticCurveTo(cx - s, cy - s, cx - s + 12, cy - s); g.stroke();
+    g.lineWidth = 13; g.beginPath(); g.moveTo(cx - 22, cy + 2); g.lineTo(cx - 5, cy + 19); g.lineTo(cx + 25, cy - 17); g.stroke();
+  });
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the rocket's paint and the steel mirror: the dusk sky (the twilight band over the sea), or the night with the floodlights. */
+function rocketEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#5f86c4"); gr.addColorStop(0.36, dark ? "#0b1430" : "#d9b4c4"); gr.addColorStop(0.49, dark ? "#1a2850" : "#f3c69f"); gr.addColorStop(0.52, dark ? "#0a0b0c" : "#8a8a72"); gr.addColorStop(1, dark ? "#050506" : "#4d5038");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    if (dark) for (let k = 0; k < 4; k++) { const x = w * (0.12 + k * 0.25), s = g.createRadialGradient(x, h * 0.44, 0, x, h * 0.44, 22); s.addColorStop(0, "rgba(240,246,255,1)"); s.addColorStop(1, "rgba(220,230,255,0)"); g.fillStyle = s; g.fillRect(x - 22, h * 0.44 - 22, 44, 44); }
+    else { const s = g.createRadialGradient(w * 0.62, h * 0.4, 0, w * 0.62, h * 0.4, 60); s.addColorStop(0, "rgba(255,226,180,1)"); s.addColorStop(1, "rgba(255,200,150,0)"); g.fillStyle = s; g.fillRect(0, 0, w, h * 0.5); } // the low sun behind us
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+/** Tree canopies for distant hammocks, four in a 2 × 2 atlas (alpha cut-out): leafy clumps lit from above. */
+function rocketCanopy(THREE) {
+  const r = koiRng(808);
+  const tex = canvasTexture(THREE, 512, 512, (g) => {
+    g.clearRect(0, 0, 512, 512);
+    for (let q = 0; q < 4; q++) {
+      const ox = (q % 2) * 256, oy = Math.floor(q / 2) * 256, pine = q === 3;
+      const blobs = pine ? Array.from({ length: 6 }, (_, i) => [128 + r(-30, 30), 40 + i * 22, r(26, 40)]) : Array.from({ length: 9 }, () => [128 + r(-62, 62), 118 + r(-60, 40), r(34, 62)]);
+      for (const [bx, by, br] of blobs) for (let i = 0; i < (pine ? 140 : 220); i++) {
+        const a = r(0, Math.PI * 2), d = Math.sqrt(r()) * br, x = bx + Math.cos(a) * d, y = by + Math.sin(a) * d * 0.8, lit = 1 - (y - (by - br)) / (2 * br);
+        const c = pine ? [38 + lit * 40, 58 + lit * 46, 34 + lit * 22] : [44 + lit * 52, 62 + lit * 58, 30 + lit * 26];
+        g.fillStyle = `rgb(${c.map((v) => Math.round(v * r(0.8, 1.15))).join(",")})`; g.beginPath(); g.arc(ox + x, oy + y, r(3, 7), 0, Math.PI * 2); g.fill();
+      }
+      g.fillStyle = "#4a3c2c"; if (pine) g.fillRect(ox + 124, oy + 150, 8, 106); else g.fillRect(ox + 120, oy + 190, 14, 66); // the trunk below
+    }
+  });
+  return tex;
+}
+function rocketlaunch(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1969);
+  const PAD_Y = 8, BASE = 15, HT = 73.5, RR = 1.85, RF = 2.6, CYCLE = 240, T_LIFT = 170; // the deck, the rocket's foot on its mount, its height and radii; a launch every four minutes
+  camera.fov = 38; camera.near = 0.5; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const beam = (a, b, t, list, hex) => { const d = new THREE.Vector3().subVectors(b, a), len = d.length(); list.push([new THREE.BoxGeometry(t, len, t), new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(UP, d.normalize()), ONE), hex]); }; // a member from a to b
+  const shadowMats = [], envMats = [];
+  const std = (o, env = 0) => { const m = keep(new THREE.MeshStandardMaterial(o)); shadowMats.push(m); if (env) { m.envMapIntensity = env; envMats.push(m); } return m; };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const mk = (geo, mat, parent = scene, cast = true, recv = true) => { const m = new THREE.Mesh(keep(geo), mat); m.castShadow = cast && !preview; m.receiveShadow = recv && !preview; parent.add(m); return m; };
+  const SUN = new THREE.Vector3(-0.92, 0.19, 0.34).normalize(), MOON = new THREE.Vector3(0.42, 0.24, -0.88).normalize();
+  const STEEL = 0x7d858d, DARK = 0x2a2c2f, WHITE = 0xe9eaeb, CONC = 0xa9a59c, RED = 0xb8382c;
+
+  /* --- the sky, the night's stars and moon, a deck of cloud far out over the sea --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#fff0c8") }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 40, 20)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 300 : 1100, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.04, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false })));
+  moon.position.copy(MOON).multiplyScalar(30000); moon.scale.setScalar(620); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(4200); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(80000, 80000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudUni, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2600, -21000); clouds.renderOrder = -6; clouds.frustumCulled = false; scene.add(clouds);
+
+  /* --- the sea beyond the dunes --- */
+  const seaUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uGlint: { value: 1 }, uDeep: { value: new THREE.Color() }, uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uBoats: { value: [0, 1, 2].map(() => new THREE.Vector4(0, 0, 0, 0)) } };
+  const sea = new THREE.Mesh(keep(new THREE.PlaneGeometry(60000, 30000).rotateX(-Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_SEA_FS, seaUni));
+  sea.position.set(0, 0, -15440); sea.frustumCulled = false; scene.add(sea);
+
+  /* --- the land: scrub plain, the pad's mound with its ramp and flame trench, dunes and the beach --- */
+  const groundTex = keep(rocketGround(THREE)), wgU = { value: noise };
+  const groundMat = std({ map: groundTex, roughness: 0.96 });
+  groundMat.onBeforeCompile = (sh) => { // a slow variation over hundreds of metres, so the repeat never shows
+    sh.uniforms.uMacro = wgU;
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec2 vGW;").replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\nvGW = (modelMatrix * vec4(transformed, 1.0)).xz;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nvarying vec2 vGW; uniform sampler2D uMacro;").replace("#include <map_fragment>", "#include <map_fragment>\nfloat pa = texture2D(uMacro, vGW * 0.0105).g, pb = texture2D(uMacro, vGW * 0.0041 + 0.37).r;\ndiffuseColor.rgb *= (0.78 + 0.44 * texture2D(uMacro, vGW * 0.0021).r) * (0.86 + 0.28 * texture2D(uMacro, vGW * 0.29).g);\ndiffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.62, 0.72, 0.55), smoothstep(0.52, 0.66, pa));\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.58, 0.4), smoothstep(0.6, 0.74, pb) * 0.55);");
+  };
+  const wuv = (g, s) => { const p = g.attributes.position, uv = g.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / s, -p.getZ(i) / s); return g; };
+  const plain = new THREE.PlaneGeometry(6000, 3430, 1, 1).rotateX(-Math.PI / 2).translate(0, 0, 1285);
+  const land = mk(wuv(plain, 40), groundMat, scene, false); land.renderOrder = 0;
+  const moundH = (x, z) => { // the mound (deck 8 m up, grassy slopes), the ramp the rails climb, the trench cut through to the west
+    const dx = Math.max(Math.abs(x) - 55, 0), dz = Math.max(Math.abs(z) - 45, 0);
+    let h = Math.max(0, PAD_Y - Math.hypot(dx, dz) * 0.42);
+    if (x > 50 && x < 176) { const top = PAD_Y * (1 - Math.min(1, Math.max(0, (x - 72) / 100))); h = Math.max(h, top - Math.max(0, Math.abs(z) - 8) * 0.45); }
+    if (x < -4 && Math.abs(z) < 6.5) h = Math.min(h, 0.6);
+    return h + 0.05;
+  };
+  const railH = (x) => (x <= 72 ? PAD_Y : x >= 172 ? 0.35 : PAD_Y + (0.35 - PAD_Y) * ((x - 72) / 100));
+  { // the mound's slopes as a height field (the deck itself is its own mesh)
+    const g = new THREE.PlaneGeometry(280, 170, 224, 136).rotateX(-Math.PI / 2).translate(50, 0, 0), p = g.attributes.position, idx = [], ix = g.index.array;
+    for (let i = 0; i < p.count; i++) p.setY(i, moundH(p.getX(i), p.getZ(i)));
+    const inTop = (i) => Math.abs(p.getX(i)) < 54.9 && Math.abs(p.getZ(i)) < 44.9 && !(p.getX(i) < -4 && Math.abs(p.getZ(i)) < 6.5);
+    for (let t = 0; t < ix.length; t += 3) if (!(inTop(ix[t]) && inTop(ix[t + 1]) && inTop(ix[t + 2]))) idx.push(ix[t], ix[t + 1], ix[t + 2]);
+    g.setIndex(idx); g.computeVertexNormals(); wuv(g, 40);
+    mk(g, groundMat, scene, false);
+  }
+  const deckShape = new THREE.Shape(); deckShape.moveTo(-55, -45); deckShape.lineTo(55, -45); deckShape.lineTo(55, 45); deckShape.lineTo(-55, 45); deckShape.lineTo(-55, -45);
+  { const h = new THREE.Path(); h.moveTo(-4, -6.5); h.lineTo(-4, 6.5); h.lineTo(-55, 6.5); h.lineTo(-55, -6.5); h.lineTo(-4, -6.5); deckShape.holes.push(h); }
+  const deckGeo = new THREE.ShapeGeometry(deckShape, 1).rotateX(-Math.PI / 2).translate(0, PAD_Y + 0.06, 0);
+  { const p = deckGeo.attributes.position, uv = deckGeo.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, (p.getX(i) + 55) / 110, 1 - (p.getZ(i) + 45) / 90); }
+  mk(deckGeo, std({ map: keep(rocketDeck(THREE)), roughness: 0.88 }, 0.1), scene, false);
+  const sooty = std({ color: 0x1d1b19, roughness: 0.95, side: THREE.DoubleSide });
+  { const parts = []; for (const s of [1, -1]) parts.push([new THREE.PlaneGeometry(52, 7.6), at(-30, 4.3, s * 6.5, 0, s > 0 ? Math.PI : 0, 0)]); parts.push([new THREE.PlaneGeometry(52, 13).rotateX(-Math.PI / 2), at(-30, 0.62, 0)]); parts.push([new THREE.PlaneGeometry(13, 7.6), at(-4, 4.3, 0, 0, -Math.PI / 2, 0)]); mk(mergeParts(THREE, parts), sooty, scene, false); } // the trench's walls and floor
+  { // dunes behind the beach, the beach sloping into the surf
+    const g = new THREE.PlaneGeometry(6000, 46, 600, 4).rotateX(-Math.PI / 2).translate(0, 0, -402), p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), u = (z + 425) / 46; p.setY(i, Math.max(0, Math.sin(Math.PI * u) * (2.6 + 1.6 * Math.sin(x * 0.013) * Math.sin(x * 0.031 + 1))) + 0.04); }
+    g.computeVertexNormals(); wuv(g, 40); mk(g, groundMat, scene, false);
+    const b = new THREE.PlaneGeometry(6000, 48, 2, 4).rotateX(-Math.PI / 2).translate(0, 0, -449), bp = b.attributes.position;
+    for (let i = 0; i < bp.count; i++) bp.setY(i, 0.12 - ((-bp.getZ(i)) - 425) * 0.022);
+    b.computeVertexNormals(); mk(b, std({ color: 0xd8c9a6, roughness: 0.9 }), scene, false);
+  }
+  // roads: the ring round the mound, the road towards us, the coast road; the rails' bed up the ramp to the hangar
+  const roadParts = [], road = (x0, z0, x1, z1, w) => { const len = Math.hypot(x1 - x0, z1 - z0); roadParts.push([new THREE.PlaneGeometry(len, w).rotateX(-Math.PI / 2), at((x0 + x1) / 2, 0.09, (z0 + z1) / 2, 0, -Math.atan2(z1 - z0, x1 - x0), 0)]); };
+  road(-84, 74, 84, 74, 7); road(-84, -74, 84, -74, 7); road(-84, -74, -84, 74, 7); road(84, -74, 84, 10, 7); road(20, 74, 20, 600, 7); road(-2000, -372, 2000, -372, 7); road(-84, 0, -400, 0, 6);
+  mk(mergeParts(THREE, roadParts), std({ color: 0x55565a, roughness: 0.9 }), scene, false);
+  { // the rails' concrete bed and the two rails, following the ramp
+    const bed = [], rails = [];
+    for (let x = 4; x < 320; x += 4) { const y0 = railH(x), y1 = railH(x + 4), mid = new THREE.Vector3(x + 2, (y0 + y1) / 2 + 0.06, 0), ang = Math.atan2(y1 - y0, 4); bed.push([new THREE.BoxGeometry(4.05, 0.16, 11), new THREE.Matrix4().compose(mid, Q.setFromEuler(E.set(0, 0, ang)), ONE)]); for (const z of [-3.5, 3.5]) rails.push([new THREE.BoxGeometry(4.05, 0.22, 0.24), new THREE.Matrix4().compose(V.set(x + 2, (y0 + y1) / 2 + 0.25, z), Q.setFromEuler(E.set(0, 0, ang)), ONE)]); }
+    mk(mergeParts(THREE, bed), std({ color: CONC, roughness: 0.85 }), scene, false); mk(mergeParts(THREE, rails), std({ color: 0x8c9196, roughness: 0.35, metalness: 0.8 }, 0.6), scene, false);
+  }
+
+  /* --- the launch mount, the fixed service structure with its crew access arm and hammerhead crane --- */
+  const steelParts = [], P = (geo, m, hex) => steelParts.push([geo, m, hex]);
+  for (const [x, z, w, d] of [[0, -4.5, 11, 2], [0, 4.5, 11, 2], [-4.5, 0, 2, 7], [4.5, 0, 2, 7]]) P(box(w, 1.4, d), at(x, BASE - 0.7, z), 0x5a5f64); // the mount's table round the flame hole
+  for (const sx of [-4.8, 4.8]) for (const sz of [-4.8, 4.8]) P(box(1.4, BASE - PAD_Y - 1.4, 1.4), at(sx, (BASE + PAD_Y - 1.4) / 2, sz), 0x4f5458);
+  for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2 + Math.PI / 8; P(box(0.9, 1.6, 0.5), at(Math.cos(a) * 2.3, BASE + 0.5, Math.sin(a) * 2.3, 0, -a, 0), 0x3b3e42); } // hold-down clamps
+  const TX = -15, TW = 9, TH = 84, TOP = PAD_Y + TH; // the tower: x centre, width, height
+  const cols = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => [TX + (sx * TW) / 2, sz * (TW / 2)]);
+  for (const [x, z] of cols) P(box(0.7, TH, 0.7), at(x, PAD_Y + TH / 2, z), STEEL);
+  for (let y = PAD_Y + 6; y <= TOP; y += 6) for (let i = 0; i < 4; i++) { const [x0, z0] = cols[i], [x1, z1] = cols[(i + 1) % 4]; beam(V.set(x0, y, z0).clone(), V2.set(x1, y, z1).clone(), 0.4, steelParts, STEEL); }
+  for (let y = PAD_Y; y < TOP - 1; y += 6) for (let i = 0; i < 4; i++) { const [x0, z0] = cols[i], [x1, z1] = cols[(i + 1) % 4]; beam(new THREE.Vector3(x0, y, z0), new THREE.Vector3(x1, y + 6, z1), 0.26, steelParts, STEEL); beam(new THREE.Vector3(x1, y, z1), new THREE.Vector3(x0, y + 6, z0), 0.26, steelParts, STEEL); }
+  for (let y = PAD_Y + 12; y <= TOP; y += 12) P(box(TW + 1.4, 0.35, TW + 1.4), at(TX, y, 0), 0x50565c); // the levels' gratings
+  P(box(3, TH + 4, 3), at(TX - 1.5, PAD_Y + (TH + 4) / 2, -1.5), 0xb9bcbf); // the elevator shaft
+  P(box(42, 1.6, 1.6), at(TX - 10, TOP + 3, 0), 0xc8cbce); P(box(4, 3, 3), at(TX - 29, TOP + 2, 0), 0x6a6e72); P(box(3, 4, 3), at(TX, TOP + 1.5, 0), 0xc8cbce); // the hammerhead crane
+  P(cyl(0.25, 0.4, 12, 8), at(TX, TOP + 9, 0), RED); // the lightning rod on top
+  for (const [x, z] of [[TX + TW / 2 + 0.2, -3], [TX + TW / 2 + 0.2, 3]]) P(box(0.4, 40, 0.4), at(x, PAD_Y + 20, z), 0x2f3236); // cables and pipes up the tower's face
+  const arm = new THREE.Group(); arm.position.set(TX + TW / 2, PAD_Y + 58, -1.2); scene.add(arm); // the crew access arm, hinged at the tower's corner
+  { const a = [], L = -TX - TW / 2 - RR - 0.25; // its length: tower face to the rocket's skin
+    for (const y of [-1.3, 1.3]) for (const z of [-1.2, 1.2]) a.push([box(L - 3, 0.3, 0.3), at((L - 3) / 2, y, z), STEEL]);
+    for (let x = 0; x < L - 3; x += 1.6) { for (const z of [-1.2, 1.2]) beam(new THREE.Vector3(x, -1.3, z), new THREE.Vector3(x + 1.6, 1.3, z), 0.16, a, STEEL); a.push([box(0.2, 2.6, 2.4), at(x, 0, 0), STEEL]); }
+    a.push([box(3, 3.2, 3.4), at(L - 1.5, 0.1, 0), WHITE], [box(0.1, 2.2, 1.2), at(L - 0.02, -0.2, 0), 0x3a3f46], [box(L - 3, 0.12, 2.3), at((L - 3) / 2, -1.25, 0), 0x50565c]);
+    mk(mergeColored(THREE, a), std({ vertexColors: true, roughness: 0.6, metalness: 0.4 }, 0.5), arm);
+  }
+
+  /* --- three lightning masts with their catenary wires, the water tower, floodlight towers, the hangar --- */
+  const MASTS = [[-72, -34], [66, -40], [12, -86]], MH = 112;
+  for (const [x, z] of MASTS) { P(cyl(0.55, 1.1, MH, 14), at(x, MH / 2, z), 0xd8dadc); for (const y of [MH - 3, MH - 9]) P(cyl(0.62, 0.62, 3, 14), at(x, y, z), RED); P(box(3, 1.2, 3), at(x, 0.6, z), CONC); }
+  const wirePts = [], sag = (a, b, s, n = 28) => { for (let i = 0; i < n; i++) { const t0 = i / n, t1 = (i + 1) / n; for (const t of [t0, t1]) wirePts.push(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - s * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t); } };
+  MASTS.forEach(([x, z], i) => { const [x2, z2] = MASTS[(i + 1) % 3]; sag([x, MH, z], [x2, MH, z2], 9); const out = new THREE.Vector2(x - 2, z + 13).normalize(); for (const da of [-0.5, 0.5]) { const c = Math.cos(da), s = Math.sin(da), ox = out.x * c - out.y * s, oz = out.x * s + out.y * c; sag([x, MH - 2, z], [x + ox * 95, 0.3, z + oz * 95], 3, 16); } });
+  const wireGeo = keep(new THREE.BufferGeometry()); wireGeo.setAttribute("position", new THREE.Float32BufferAttribute(wirePts, 3));
+  const wireMat = keep(new THREE.LineBasicMaterial({ color: 0x3a3d40, transparent: true, opacity: 0.7 }));
+  scene.add(new THREE.LineSegments(wireGeo, wireMat));
+  { const WX = -175, WZ = -64; P(new THREE.SphereGeometry(12, 28, 18), at(WX, 64, WZ), 0xe4e6e8); P(cyl(2.6, 2.6, 56, 16), at(WX, 28, WZ), 0xcfd2d5); P(cyl(12.2, 12.2, 1.2, 28), at(WX, 64, WZ), 0x9aa0a6); // the water tower
+    for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2, top = new THREE.Vector3(WX + Math.cos(a) * 10.5, 58, WZ + Math.sin(a) * 10.5), foot = new THREE.Vector3(WX + Math.cos(a) * 15, 0, WZ + Math.sin(a) * 15); beam(foot, top, 0.8, steelParts, 0xcfd2d5); }
+    for (const y of [18, 38]) for (let k = 0; k < 8; k++) { const a0 = (k / 8) * Math.PI * 2, a1 = ((k + 1) / 8) * Math.PI * 2, rr = 15 - (y / 58) * 4.5; beam(new THREE.Vector3(WX + Math.cos(a0) * rr, y, WZ + Math.sin(a0) * rr), new THREE.Vector3(WX + Math.cos(a1) * rr, y, WZ + Math.sin(a1) * rr), 0.4, steelParts, 0xcfd2d5); } }
+  const POLES = [[-78, 48], [80, 52], [-62, -60], [58, -66]], PH = 40, lampPts = [];
+  for (const [x, z] of POLES) { P(cyl(0.45, 0.8, PH, 10), at(x, PH / 2, z), 0x8d9297); P(box(5, 3.2, 0.8), at(x, PH + 1.2, z, 0, Math.atan2(x, z), 0), 0x6b7075); lampPts.push([x - Math.sin(Math.atan2(x, z)) * 0, PH + 1.2, z]); }
+  P(box(64, 34, 70), at(305, 17, 0), 0xd9dbdd); P(box(66, 3, 72), at(305, 35.5, 0), 0x7b8086); P(box(0.4, 26, 30), at(272.9, 13, 0), 0x1b1d20); // the hangar and its open door
+  mk(mergeColored(THREE, steelParts), std({ vertexColors: true, roughness: 0.62, metalness: 0.35 }, 0.45));
+
+  /* --- the transporter-erector: a trolley on the rails; the strongback hinged beside the mount (the rocket rides high on it); hydraulic rams --- */
+  const HX = 8, HY = 2, ROFF = [-8, BASE - PAD_Y - HY]; // the hinge on the trolley; the rocket's foot from the hinge when upright
+  const te = new THREE.Group(); scene.add(te);
+  { const t = []; for (const z of [-3.5, 3.5]) { t.push([box(68, 1.0, 1.2), at(34, 0.95, z), 0xcfd2d5]); for (let x = 4; x < 68; x += 8) t.push([box(3.2, 0.9, 1.6), at(x, 0.45, z), 0x3a3d40]); } for (let x = 4; x < 68; x += 6) t.push([box(0.8, 0.8, 7), at(x, 1.1, 0), 0xb9bcbf]); t.push([box(4, HY + 0.6, 6), at(HX, (HY + 0.6) / 2, 0), 0x9ea2a6], [box(5, 1.2, 8), at(26, 1.6, 0), 0x9ea2a6]); mk(mergeColored(THREE, t), std({ vertexColors: true, roughness: 0.55, metalness: 0.45 }, 0.5), te); }
+  const erector = new THREE.Group(); erector.position.set(HX, HY, 0); te.add(erector);
+  const sb = new THREE.Group(); erector.add(sb); // the strongback (retracts a few degrees about the hinge before launch)
+  { const s2 = [], SL = 66, X0 = -2.4, X1 = 0;
+    for (const x of [X0, X1]) for (const z of [-1.5, 1.5]) s2.push([box(0.4, SL, 0.4), at(x, SL / 2, z), WHITE]);
+    for (let y = 0; y < SL; y += 4) { s2.push([box(X1 - X0, 0.25, 0.25), at((X0 + X1) / 2, y, -1.5), WHITE], [box(X1 - X0, 0.25, 0.25), at((X0 + X1) / 2, y, 1.5), WHITE], [box(0.25, 0.25, 3), at(X0, y, 0), WHITE], [box(0.25, 0.25, 3), at(X1, y, 0), WHITE]); for (const z of [-1.5, 1.5]) beam(new THREE.Vector3(X0, y, z), new THREE.Vector3(X1, y + 4, z), 0.18, s2, WHITE); }
+    const reach = X0 - (ROFF[0] + RR + 0.15); // from the inner chord to the rocket's skin
+    for (const y of [ROFF[1] + 16, ROFF[1] + 34, ROFF[1] + 50]) { s2.push([box(reach, 0.6, 0.6), at(X0 - reach / 2, y, 0), 0xc8cbce], [box(0.4, 1.4, 2.4), at(ROFF[0] + RR + 0.35, y, 0), 0x55595e]); } // clamp arms reaching the rocket
+    s2.push([box(reach, 0.5, 0.5), at(X0 - reach / 2, ROFF[1] + 46, 0.9), 0x2f3236]); // an umbilical
+    mk(mergeColored(THREE, s2), std({ vertexColors: true, roughness: 0.55, metalness: 0.4 }, 0.5), sb);
+  }
+  const ramMat = std({ color: 0xb9bdc1, roughness: 0.3, metalness: 0.85 }, 0.8);
+  const rams = [-2.2, 2.2].map((z) => { const m = mk(new THREE.CylinderGeometry(0.45, 0.45, 1, 12).translate(0, 0.5, 0), ramMat, scene); return { m, z }; });
+
+  /* --- the rocket: a lathe-turned body in its livery, legs folded, grid fins, the raceway, nine engines; the plume below --- */
+  const prof = [[0.01, 0], [RR, 0], [RR, 59.0], [RF, 60.4], [RF, 66.2]];
+  for (let i = 1; i <= 14; i++) { const t = i / 14, rr = RF * Math.sqrt(Math.max(0, 1 - t * t)) * (1 - 0.06 * t); prof.push([Math.max(rr, 0.12 * (1 - t) + 0.01), 66.2 + (HT - 66.2) * (1 - Math.pow(1 - t, 1.0)) * (0.97 + 0.03 * t)]); }
+  prof.push([0.01, HT]);
+  const bodyGeo = new THREE.LatheGeometry(prof.map(([x, y]) => new THREE.Vector2(x, y)), 72);
+  { const p = bodyGeo.attributes.position, uv = bodyGeo.attributes.uv; for (let i = 0; i < p.count; i++) uv.setY(i, p.getY(i) / HT); }
+  const livery = rocketLivery(THREE, HT); keep(livery.tex);
+  const rocket = new THREE.Group(); scene.add(rocket);
+  const rocketMat = std({ map: livery.tex, roughness: 0.42, metalness: 0.04 }, 0.55);
+  mk(bodyGeo, rocketMat, rocket);
+  { const d = [];
+    for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + (k * Math.PI) / 2; d.push([box(0.5, 9.5, 1.0), at(Math.sin(a) * (RR + 0.2), 5.6, Math.cos(a) * (RR + 0.2), 0, a, 0), 0x1a1b1d], [box(0.7, 0.6, 1.4), at(Math.sin(a) * (RR + 0.35), 1.0, Math.cos(a) * (RR + 0.35), 0, a, 0), 0x1a1b1d]); } // landing legs, folded
+    for (let k = 0; k < 4; k++) { const a = (k * Math.PI) / 2; d.push([box(0.18, 1.7, 1.3), at(Math.sin(a) * (RR + 0.12), 45.4, Math.cos(a) * (RR + 0.12), 0, a, 0), 0x2b2c2e]); } // grid fins, folded
+    const ra = 1.25; d.push([box(0.4, 54, 0.3), at(Math.sin(ra) * (RR + 0.12), 30, Math.cos(ra) * (RR + 0.12), 0, ra, 0), 0xd8dadc]); // the raceway
+    d.push([cyl(0.6, 1.0, 1.2, 16), at(0, -0.6, 0), 0x2e2b29]); for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; d.push([cyl(0.24, 0.46, 1.4, 14), at(Math.sin(a) * 1.18, -0.7, Math.cos(a) * 1.18), 0x3a3633]); } // the engines
+    mk(mergeColored(THREE, d), std({ vertexColors: true, roughness: 0.5, metalness: 0.2 }, 0.4), rocket);
+  }
+  const plumeU = { uNoise: { value: noise }, uTime: time, uAmt: { value: 0 } };
+  const plume = new THREE.Mesh(keep(new THREE.CylinderGeometry(1.8, 4.0, 1, 28, 1, true).translate(0, -0.5, 0)), shader(ROCKET_PLUME_VS, ROCKET_PLUME_FS, plumeU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  plume.position.y = -1.3; plume.visible = false; plume.renderOrder = 15; rocket.add(plume);
+
+  /* --- the countdown clock and the flag by it, near us --- */
+  const CK = new THREE.Vector3(-6, 0, 182), ckYaw = Math.atan2(40 - CK.x, 250 - CK.z);
+  const cdClock = rocketClock(THREE); keep(cdClock.tex);
+  const ck = new THREE.Group(); ck.position.copy(CK); ck.rotation.y = ckYaw; scene.add(ck);
+  mk(mergeColored(THREE, [[box(11, 3.2, 0.6), at(0, 3.3, 0), 0x1b1c1e], [box(0.5, 1.8, 0.5), at(-3.5, 0.9, 0), 0x55595e], [box(0.5, 1.8, 0.5), at(3.5, 0.9, 0), 0x55595e], [box(11.4, 0.3, 0.8), at(0, 5.0, 0), 0x2a2c2f]]), std({ vertexColors: true, roughness: 0.6 }), ck);
+  const clockMat = keep(new THREE.MeshBasicMaterial({ map: cdClock.tex }));
+  const clockFace = new THREE.Mesh(keep(new THREE.PlaneGeometry(10.4, 2.6)), clockMat); clockFace.position.set(0, 3.3, 0.31); ck.add(clockFace);
+  const flagU = { uTime: time, uMark: { value: keep(rocketFlagMark(THREE)) }, uAccent: { value: new THREE.Color() }, uLight: { value: new THREE.Color(1, 1, 1) } };
+  const FP = new THREE.Vector3(10, 0, 186);
+  const flag = new THREE.Mesh(keep(new THREE.PlaneGeometry(4.2, 2.5, 28, 10).translate(2.1, 0, 0)), shader(ROCKET_FLAG_VS, ROCKET_FLAG_FS, flagU, { side: THREE.DoubleSide }));
+  flag.position.set(FP.x + 0.12, 11.4, FP.z); flag.rotation.y = 0.9; scene.add(flag);
+  mk(mergeColored(THREE, [[cyl(0.1, 0.15, 13, 10), at(FP.x, 6.5, FP.z), 0xd8dadc], [new THREE.SphereGeometry(0.24, 10, 8), at(FP.x, 13.1, FP.z), 0xd9b04a]]), std({ vertexColors: true, roughness: 0.4, metalness: 0.5 }, 0.5));
+
+  /* --- cabbage palms (full crowns: green fans in every direction, dead ones hanging) and saw-palmetto scrub --- */
+  const frondTex = keep(rocketFrond(THREE));
+  const palmParts = [], frondParts = [], deadParts = [];
+  const fan = (top, yaw, tilt, s, list) => list.push([new THREE.PlaneGeometry(1, 1).translate(0, 0.62, 0), new THREE.Matrix4().compose(top, new THREE.Quaternion().setFromEuler(E.set(0, yaw, 0)).multiply(new THREE.Quaternion().setFromEuler(E.set(tilt, 0, 0))), V.set(s * r(0.85, 1.1), s, s))]);
+  const palmAt = (x, z, h, lean, big = 1) => {
+    const top = new THREE.Vector3(x + Math.cos(lean) * h * 0.06, h, z + Math.sin(lean) * h * 0.06), rad = (0.26 + h * 0.008) * big;
+    palmParts.push([cyl(rad * 0.9, rad * 1.15, h, 9), new THREE.Matrix4().compose(new THREE.Vector3((x + top.x) / 2, h / 2, (z + top.z) / 2), new THREE.Quaternion().setFromUnitVectors(UP, V.set(top.x - x, h, top.z - z).normalize()), ONE), 0x77695a]);
+    palmParts.push([new THREE.SphereGeometry(rad * 1.6, 9, 7), at(top.x, top.y - 0.3, top.z), 0x5d5640]); // the boots at the crown
+    const nF = big > 1 ? 26 : 20;
+    for (let k = 0; k < nF; k++) { const t = k / (nF - 1); fan(top, (k * 2.4) % (Math.PI * 2) + r(-0.2, 0.2), 0.25 + 1.7 * t + r(-0.12, 0.12), r(3.3, 4.4) * big, frondParts); }
+    for (let k = 0; k < 4; k++) fan(V2.set(top.x, top.y - 0.6, top.z).clone(), r(0, 6.28), r(2.5, 2.9), r(2.6, 3.4) * big, deadParts);
+  };
+  const NP = preview ? 14 : 46;
+  for (let i = 0; i < NP; i++) {
+    const zone = i % 4, x = zone === 0 ? r(-80, -24) : zone === 1 ? r(56, 120) : zone === 2 ? r(-170, 160) : r(-420, 420), z = zone === 0 ? r(140, 205) : zone === 1 ? r(120, 200) : zone === 2 ? r(86, 128) : r(-405, -330);
+    if (Math.abs(x - 20) < 7 || Math.hypot(x - CK.x, z - CK.z) < 10) continue;
+    palmAt(x, z, r(8, 14), r(0, 6.28));
+  }
+  for (const [x, z, h] of [[-58, 214, 15], [-44, 230, 12], [128, 205, 16]]) palmAt(x, z, h, r(0, 6.28), 1.25); // close by, framing the view
+  mk(mergeColored(THREE, palmParts), std({ vertexColors: true, roughness: 0.95 }));
+  const frondMat = std({ map: frondTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.75 });
+  mk(mergeParts(THREE, frondParts), frondMat);
+  mk(mergeParts(THREE, deadParts), std({ map: frondTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.9, color: 0xb59a6a }));
+  const NB = preview ? 600 : 3200, clumpParts = [];
+  const nd = noise.image; // the same noise the ground's patches come from (a DataTexture: rows = v)
+  const thicket = (x, z) => { const u = (((x * 0.0105) % 1) + 1) % 1, v = (((z * 0.0105) % 1) + 1) % 1, i = (Math.floor(v * nd.height) * nd.width + Math.floor(u * nd.width)) * 4; return nd.data[i + 1] / 255; };
+  for (let k = 0; k < 8; k++) clumpParts.push([new THREE.PlaneGeometry(1, 1).translate(0, 0.55, 0), new THREE.Matrix4().compose(V.set(0, 0, 0), new THREE.Quaternion().setFromEuler(E.set(0, (k / 8) * Math.PI * 2 + (k % 2) * 0.3, 0)).multiply(new THREE.Quaternion().setFromEuler(E.set(0.55 + (k % 3) * 0.25, 0, 0))), V2.set(1, 1, 1))]);
+  const bushes = new THREE.InstancedMesh(keep(mergeParts(THREE, clumpParts)), std({ map: frondTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.85 }), NB);
+  { const c = new THREE.Color(); let n = 0;
+    for (let tries = 0; n < NB && tries < NB * 6; tries++) {
+      const x = r(-600, 600), z = r(-395, 245);
+      if (Math.abs(x) < 80 && Math.abs(z) < 70) continue; if (x > 50 && x < 320 && Math.abs(z) < 12) continue; if (Math.abs(x - 20) < 6 && z > 70) continue; if (Math.abs(z - 74) < 5 || Math.abs(z + 74) < 5) continue; if (Math.hypot(x - CK.x, z - CK.z) < 12) continue;
+      const th = thicket(x, z); if (th < 0.5 && r() > 0.12) continue; // most of it in the thickets (the dark patches of the ground)
+      const s2 = r(1.4, 3.0) * (z > 150 ? 0.85 : 1);
+      bushes.setMatrixAt(n, at(x, 0, z, 0, r(0, 6.28), 0).multiply(new THREE.Matrix4().makeScale(s2 * r(0.9, 1.3), s2 * r(0.7, 1.0), s2 * r(0.9, 1.3))));
+      bushes.setColorAt(n, c.set([0xd7e0c0, 0xc9d4a8, 0xe2dcb4, 0xbfc9a0][Math.floor(r(0, 4))])); n++;
+    }
+    bushes.count = n; bushes.receiveShadow = !preview; scene.add(bushes); keep(bushes);
+  }
+  { const canopy = keep(rocketCanopy(THREE)), treeParts = [], tree = (x, z, h, q) => { const u0 = (q % 2) * 0.5, v0 = q < 2 ? 0.5 : 0; for (const a of [0, Math.PI / 2]) { const g = new THREE.PlaneGeometry(h * (q === 3 ? 0.62 : 1.05), h).translate(0, h / 2, 0), uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5); treeParts.push([g, at(x, 0, z, 0, a + r(0, 0.6), 0)]); } };
+    for (let i = 0; i < (preview ? 160 : 620); i++) { const band = i % 3, x = band === 2 ? r(-700, -120) : r(-700, 700), z = band === 0 ? r(-330, -250) : band === 1 ? r(-240, -150) : r(-140, 60); if (Math.abs(x) < 95 && z > -100) continue; if (x > 60 && Math.abs(z) < 16) continue; const pine = r() < 0.35; tree(x, z, pine ? r(16, 24) : r(9, 15), pine ? 3 : Math.floor(r(0, 3))); }
+    for (let i = 0; i < (preview ? 20 : 60); i++) { const x = r(150, 600), z = r(-120, 120); if (Math.abs(z) < 16) continue; tree(x, z, r(9, 14), Math.floor(r(0, 3))); }
+    mk(mergeParts(THREE, treeParts), std({ map: canopy, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9 }), scene, true, false);
+  }
+  // the pad's propellant spheres and a low building or two
+  const tankParts = [];
+  for (const [x, z, rr] of [[-112, -38, 10], [118, -34, 9]]) { tankParts.push([new THREE.SphereGeometry(rr, 26, 16), at(x, rr + 3, z), 0xeeeff0], [new THREE.CylinderGeometry(rr * 1.02, rr * 1.02, 0.6, 26), at(x, rr + 3, z), 0xb9bdc1]); for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; tankParts.push([cyl(0.35, 0.35, rr + 3, 8), at(x + Math.cos(a) * rr * 0.62, (rr + 3) / 2, z + Math.sin(a) * rr * 0.62), 0x9aa0a6]); } tankParts.push([cyl(0.5, 0.5, Math.hypot(x, z) - rr - 10, 8).rotateZ(Math.PI / 2), at(x / 2 + Math.sign(-x) * 2, 1.2, z / 2, 0, -Math.atan2(z, x) + (x > 0 ? 0 : Math.PI), 0), 0xc8cbce]); }
+  tankParts.push([box(34, 7, 16), at(160, 3.5, 58), 0xd8d8d4], [box(34.6, 0.6, 16.6), at(160, 7.2, 58), 0x8b8f93], [box(12, 4, 9), at(-128, 2, 46), 0xcfcdc6]);
+  mk(mergeColored(THREE, tankParts), std({ vertexColors: true, roughness: 0.5, metalness: 0.2 }, 0.5));
+
+  /* --- glows: the engines, the floodlights' lamps, red beacons on the tower, the masts and the water tower --- */
+  const BEACONS = [[TX, TOP + 15, 0], ...MASTS.map(([x, z]) => [x, MH + 1, z]), ...MASTS.map(([x, z]) => [x, MH * 0.55, z]), [-175, 77, -64]];
+  const WORK = []; for (let y = PAD_Y + 12; y <= TOP; y += 12) for (const z of [-3.6, 3.6]) WORK.push([TX + TW / 2 + 0.3, y - 1.2, z]);
+  const NG = 1 + lampPts.length + BEACONS.length + WORK.length;
+  const glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NG * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NG * 3), 3);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage); glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.instanceCount = NG;
+  const glowU = { uMap: { value: glow }, uTime: time, uAmt: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(PARIS_GLOW_VS, PARIS_GLOW_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+  const poolMat = keep(new THREE.MeshBasicMaterial({ map: glow, color: 0x55607a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const pool = new THREE.Mesh(keep(new THREE.PlaneGeometry(120, 100).rotateX(-Math.PI / 2)), poolMat); pool.position.set(0, PAD_Y + 0.12, 0); pool.renderOrder = 3; scene.add(pool); // the floodlit deck at night
+  // the floodlights' beams at night
+  const beamPos = [], beamUv = [], AIM = new THREE.Vector3(0, 52, 0);
+  for (const [x, y, z] of lampPts) {
+    const a = new THREE.Vector3(x, y, z), d = AIM.clone().sub(a), L = d.length() * 1.1; d.normalize();
+    const side = new THREE.Vector3().crossVectors(d, UP).normalize(), up2 = new THREE.Vector3().crossVectors(side, d).normalize();
+    for (const ax of [side, up2]) { const w0 = 0.9, w1 = 17, p0 = a.clone().addScaledVector(ax, -w0), p1 = a.clone().addScaledVector(ax, w0), q0 = a.clone().addScaledVector(d, L).addScaledVector(ax, -w1), q1 = a.clone().addScaledVector(d, L).addScaledVector(ax, w1);
+      for (const [p, uv] of [[p0, [0, 0]], [p1, [0, 1]], [q1, [1, 1]], [p0, [0, 0]], [q1, [1, 1]], [q0, [1, 0]]]) { beamPos.push(p.x, p.y, p.z); beamUv.push(...uv); } }
+  }
+  const beamGeo = keep(new THREE.BufferGeometry()); beamGeo.setAttribute("position", new THREE.Float32BufferAttribute(beamPos, 3)); beamGeo.setAttribute("aShaft", new THREE.Float32BufferAttribute(beamUv, 2));
+  const beamU = { uAmt: { value: 0 }, uColor: { value: new THREE.Color("#dfe8ff") } };
+  const beams = new THREE.Mesh(beamGeo, shader(STEAM_SHAFT_VS, ROCKET_BEAM_FS, beamU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  beams.frustumCulled = false; beams.renderOrder = 12; scene.add(beams);
+
+  /* --- smoke: puffs that fly analytic paths (the vertex shader); drawn far-to-near --- */
+  const NS = preview ? 450 : 1900;
+  const puffGeo = keep(new THREE.InstancedBufferGeometry());
+  puffGeo.setIndex(quad.index); puffGeo.setAttribute("position", quad.attributes.position);
+  const aP0 = new THREE.InstancedBufferAttribute(new Float32Array(NS * 3), 3), aV0 = new THREE.InstancedBufferAttribute(new Float32Array(NS * 3), 3), aT = new THREE.InstancedBufferAttribute(new Float32Array(NS * 4), 4), aK = new THREE.InstancedBufferAttribute(new Float32Array(NS * 4), 4);
+  for (const a of [aP0, aV0, aT, aK]) { a.setUsage(THREE.DynamicDrawUsage); }
+  puffGeo.setAttribute("aP0", aP0); puffGeo.setAttribute("aV0", aV0); puffGeo.setAttribute("aT", aT); puffGeo.setAttribute("aK", aK); puffGeo.instanceCount = 0;
+  const smokeU = { uTime: time, uWind: { value: new THREE.Vector3(1.4, 0, 0.5) }, uFire: { value: new THREE.Vector4(0, 0, 0, 0) }, uSunDir: { value: SUN.clone() }, uMap: { value: keep(rocketPuffs(THREE)) }, uAlbedo: { value: new THREE.Color(0.86, 0.86, 0.85) }, uAmb: { value: new THREE.Color() }, uSunCol: { value: new THREE.Color() }, uFireCol: { value: new THREE.Color(1.0, 0.55, 0.22) } };
+  const smoke = new THREE.Mesh(puffGeo, shader(ROCKET_SMOKE_VS, ROCKET_SMOKE_FS, smokeU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor }));
+  smoke.frustumCulled = false; smoke.renderOrder = 14; scene.add(smoke);
+  const puffs = []; // live puffs: { p0, v0, birth, life, s0, s1, k, rise, a, seed }
+  const emit = (x, y, z, vx, vy, vz, life, s0, s1, k, rise, a) => { if (puffs.length >= NS) puffs.shift(); puffs.push({ x, y, z, vx, vy, vz, birth: clock, life, s0, s1, k, rise, a, seed: r(), d: 0 }); };
+  const puffAt = (q, tau, out) => { const f = (1 - Math.exp(-q.k * tau)) / q.k, w = smokeU.uWind.value; return out.set(q.x + q.vx * f + w.x * tau, Math.max(q.y + q.vy * f + (q.rise * tau * tau) / (1 + 0.05 * tau), 0.4 + 0.5 * q.s0), q.z + q.vz * f + w.z * tau); };
+
+  /* --- light: the low sun behind us (the moon at night) with shadows, the sky, floodlights at night, the engines' fire --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.set(0, 30, 0);
+  if (!preview) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; }
+  const floods = [0, 1].map((i) => { const [x, y, z] = lampPts[i], l = new THREE.SpotLight(0xe8f0ff, 0, 0, 0.32, 0.55, 1); l.position.set(x, y, z); l.target.position.set(0, 50, 0); scene.add(l, l.target); return l; });
+  const fire = new THREE.PointLight(0xffa860, 0, 0, 1.6); // bright on the pad, faint by the time it reaches us fire.position.set(0, BASE - 4, 0);
+  scene.add(hemi, sun, sun.target, fire);
+  scene.fog = new THREE.Fog(0xffffff, 500, 9000);
+  const shadowFit = () => { const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true); const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity); for (const x of [-110, 110]) for (const y of [0, 120]) for (const z of [-95, 90]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); } Object.assign(cam, { left: lo.x, right: hi.x, bottom: lo.y, top: hi.y, near: Math.max(1, -hi.z - 20), far: -lo.z + 20 }); cam.updateProjectionMatrix(); };
+  let shadowsOn = false, gone = false, rend = null, shadowDirty = true;
+  land.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true; rend = renderer;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    livery.draw("#" + new THREE.Color(p.accent).getHexString()); flagU.uAccent.value.set(p.accent);
+    env?.dispose(); env = rocketEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyUni.uZenith.value.set(d ? "#040815" : "#3f6db4"); skyUni.uMid.value.set(d ? "#0b1430" : "#93b5de"); skyUni.uHorizon.value.set(d ? "#1a2850" : "#e3d6c8"); skyUni.uGlow.value.set(d ? "#1d2440" : "#f3c9a2").multiplyScalar(d ? 0.35 : 0.22); skyUni.uSunDir.value.copy(SUN); skyUni.uSunColor.value.set("#ffd2a0"); skyUni.uSun.value = d ? 0 : 0.9;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudUni.uSunDir.value.copy(L); cloudUni.uLit.value.set(d ? "#2c3654" : "#fff0dc"); cloudUni.uShade.value.set(d ? "#141a2c" : "#a3aec4"); cloudUni.uGlow.value.set(d ? "#3a4870" : "#ffc48e").multiplyScalar(d ? 0.3 : 0.45); cloudUni.uHaze.value.set(d ? "#18233f" : "#d5d3d4");
+    seaUni.uSunDir.value.copy(L); seaUni.uSunCol.value.set(d ? "#c9d6ff" : "#ffd9b0").multiplyScalar(d ? 0.7 : 0.6); seaUni.uGlint.value = d ? 0.7 : 0.2;
+    seaUni.uDeep.value.set(d ? "#030a16" : "#24476e"); seaUni.uZenith.value.set(d ? "#0a1430" : "#4f7cbe"); seaUni.uHorizon.value.set(d ? "#1c2a50" : "#d6d3d0"); seaUni.uHaze.value.set(d ? "#16203c" : "#d9d4cf"); seaUni.uFoam.value.set(d ? "#4a5a78" : "#ffffff");
+    sun.position.copy(L).multiplyScalar(400).add(sun.target.position); sun.color.set(d ? "#9fb4e8" : "#ffd5a2"); sun.intensity = d ? 0.35 : 3.4;
+    hemi.color.set(d ? "#1b2440" : "#b9cdec"); hemi.groundColor.set(d ? "#0b0a09" : "#6f6a52"); hemi.intensity = d ? 0.3 : 0.8;
+    scene.fog.color.set(d ? "#0d1428" : "#d3d2d4"); scene.fog.near = d ? 400 : 600; scene.fog.far = d ? 7000 : 9500;
+    for (const l of floods) l.intensity = d ? 520 : 0;
+    beamU.uAmt.value = d ? 0.035 : 0; beams.visible = d; poolMat.opacity = d ? 1 : 0; pool.visible = d;
+    clockMat.color.setScalar(d ? 1 : 0.92);
+    flagU.uLight.value.set(d ? "#8f9bb8" : "#ffffff").multiplyScalar(d ? 0.26 : 1);
+    smokeU.uSunDir.value.copy(L); smokeU.uSunCol.value.set(d ? "#6f80b0" : "#ffe4c8").multiplyScalar(d ? 0.22 : 1.6); smokeU.uAmb.value.set(d ? "#18213c" : "#93a2c0").multiplyScalar(d ? 1.1 : 1.0); smokeU.uWind.value.set(d ? 1.0 : 1.4, 0, d ? 0.3 : 0.5);
+    shadowFit(); shadowDirty = true;
+  }
+  applyPalette(pal);
+
+  /* --- the cycle: roll-in, raise, countdown, launch, the empty erector goes back --- */
+  const ease = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  const look = new THREE.Vector3(), M = new THREE.Matrix4(), M2 = new THREE.Matrix4(), RQ = new THREE.Quaternion(), RP = new THREE.Vector3();
+  let clock = 100, sway = 0, camLift = 0, fovLift = 0, lastSec = -1, lastCycle = -1, flying = false;
+  const fly = { y: 0, v: 0, z: 0, x: 0, pitch: 0 };
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 38 + k * 18 + fovLift;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 0.6;
+    camera.position.set(40 + s - k * 44, 15 + k * 1, 250 - k * 12); // a phone stands behind the clock: the clock under the rocket, like the press site's
+    camera.lookAt(look.set(-14 + k * 12 + s * 0.3, 36 + k * 12 + camLift, 0));
+    camera.updateMatrixWorld();
+  }
+  scene.onBeforeRender = layout;
+  function frame(dt) {
+    clock += dt; time.value = clock; sway = clock * 0.03;
+    const cyc = Math.floor(clock / CYCLE), c = clock - cyc * CYCLE;
+    if (cyc !== lastCycle) { lastCycle = cyc; flying = false; fly.y = fly.v = fly.z = fly.x = fly.pitch = 0; rocket.visible = true; }
+    // the transporter-erector: along the rails, up the ramp; raises the rocket; retracts; lowers, goes back
+    const xT = c < 30 ? 300 * (1 - ease(c / 30)) : c < 214 ? 0 : 300 * ease((c - 214) / 26);
+    const h0 = railH(xT), h1 = railH(xT + 68);
+    te.position.set(xT, h0, 0); te.rotation.z = Math.atan2(h1 - h0, 68);
+    const raise = c < 30 ? 0 : c < 52 ? ease((c - 30) / 22) : c < 200 ? 1 : 1 - ease((c - 200) / 14);
+    erector.rotation.z = -(Math.PI / 2) * (1 - raise);
+    sb.rotation.z = -0.09 * ease((c - 160) / 4) * (c < 214 ? 1 : 0); // the strongback swings back before launch
+    arm.rotation.y = c < 56 ? Math.PI / 2 : c < 64 ? (Math.PI / 2) * (1 - ease((c - 56) / 8)) : c < 120 ? 0 : (Math.PI / 2) * ease((c - 120) / 8); // the access arm swings to the rocket, and back along the tower
+    te.updateMatrixWorld(true);
+    for (const rm of rams) { const A0 = te.localToWorld(V.set(26, 2.2, rm.z)), B0 = sb.localToWorld(V2.set(-1.2, 22, rm.z * 0.6)); rm.m.position.copy(A0); B0.sub(A0); rm.m.scale.set(1, B0.length(), 1); rm.m.quaternion.setFromUnitVectors(UP, B0.normalize()); }
+    // the rocket: on the erector, or flying
+    const tau = c - T_LIFT;
+    if (tau >= 0 && !flying) flying = true;
+    if (flying) {
+      const acc = 2.4 + 0.42 * tau; fly.v += acc * dt; fly.pitch = tau < 7 ? 0 : Math.min(0.85, 0.0022 * (tau - 7) ** 2);
+      fly.y += fly.v * Math.cos(fly.pitch) * dt; fly.z -= fly.v * Math.sin(fly.pitch) * dt;
+      rocket.position.set(0, BASE + fly.y, fly.z); rocket.rotation.set(-fly.pitch, 0, 0); rocket.visible = tau < 75;
+    } else { M.copy(erector.matrixWorld).multiply(M2.makeTranslation(ROFF[0], ROFF[1], 0)); M.decompose(RP, RQ, V); rocket.position.copy(RP); rocket.quaternion.copy(RQ); }
+    if (c >= 214) rocket.visible = false;
+    // the engines: ignition at T−2.5 s, full thrust at liftoff
+    const burn = c < T_LIFT - 2.5 ? 0 : Math.min(1, (c - (T_LIFT - 2.5)) / 1.2) * (tau < 75 ? 1 : 0);
+    plume.visible = burn > 0; plumeU.uAmt.value = burn * (0.92 + 0.08 * Math.sin(clock * 37) * Math.sin(clock * 23));
+    plume.scale.set(1 + Math.min(1.8, fly.y / 500), 30 + Math.min(80, fly.y / 10), 1 + Math.min(1.8, fly.y / 500));
+    rocket.updateMatrixWorld(true);
+    const nozzle = rocket.localToWorld(V.set(0, -2, 0)), tail = rocket.localToWorld(V2.set(0, -18, 0));
+    const fireI = burn * (pal.dark ? 2600 : 1300) * (0.85 + 0.15 * Math.sin(clock * 29) * Math.sin(clock * 17)) / (1 + fly.y / 120);
+    fire.position.copy(nozzle); fire.intensity = fireI;
+    smokeU.uFire.value.set(nozzle.x, nozzle.y - 6, nozzle.z, burn * ((pal.dark ? 3.4 : 1.5) / (1 + fly.y / 90)));
+    // smoke: the trench and the mount at ignition, the trail as it climbs, vapour while it stands
+    const rate = preview ? 0.35 : 1;
+    if (dt > 0 && burn > 0 && tau < 9) { const f = tau < 2 ? 1 : 1 - (tau - 2) / 7;
+      for (let i = 0, n = Math.round(dt * 70 * f * rate + r()); i < n; i++) emit(-64 + r(-3, 3), r(1, 5), r(-5, 5), -r(16, 34), r(3, 13), r(-10, 10), r(30, 55), r(5, 9), r(24, 46), 0.45, 0.07, 0.55);
+      for (let i = 0, n = Math.round(dt * 34 * f * rate + r()); i < n; i++) { const a = r(0, 6.28); emit(Math.cos(a) * 9, PAD_Y + 1, Math.sin(a) * 9, Math.cos(a) * r(8, 18), r(2, 9), Math.sin(a) * r(8, 18), r(22, 38), r(5, 8), r(18, 30), 0.55, 0.05, 0.5); }
+    }
+    if (dt > 0 && flying && tau < 32) for (let i = 0, n = Math.round(dt * 26 * rate + r()); i < n; i++) emit(tail.x + r(-1, 1), tail.y + r(-2, 2), tail.z + r(-1, 1), r(-1.5, 1.5), -r(1, 4), r(-1.5, 1.5), r(36, 60), r(3, 5), r(12, 22) * (1 + Math.min(1, fly.y / 1500)), 0.6, 0.012, 0.42);
+    if (dt > 0 && !flying && rocket.visible && raise > 0.98) { const heavy = c > 150 ? 1.7 : 1;
+      for (const [hy, a] of [[46.6, 0.5], [58.2, 0.8], [46.6, 3.7], [40.5, 1.9]]) if (r() < dt * 4 * heavy * rate) { const nx = Math.sin(a), nz = Math.cos(a); emit(nx * (RR + 0.1), BASE + hy, nz * (RR + 0.1), nx * r(0.6, 1.2), -r(0.3, 0.9), nz * r(0.6, 1.2), r(5, 7.5), 0.35, r(2.2, 3.6), 0.9, -0.07, 0.24); }
+    }
+    while (puffs.length && clock - puffs[0].birth > puffs[0].life) puffs.shift();
+    // the clock: T− to liftoff, then T+
+    const sec = Math.floor(c);
+    if (sec !== lastSec) { lastSec = sec; const T = Math.abs(T_LIFT - c), m = Math.floor(T / 60), s2 = Math.floor(T % 60); cdClock.draw(`${c < T_LIFT ? "T-" : "T+"}00:${String(m).padStart(2, "0")}:${String(s2).padStart(2, "0")}`); }
+    // the camera follows the climb, then settles back
+    const target = flying && tau < 22 ? Math.min(105, Math.max(0, fly.y * 0.5 - 10)) : 0;
+    camLift += (target - camLift) * Math.min(1, dt * (target > camLift ? 1.6 : 0.35)); fovLift = Math.min(14, camLift * 0.09);
+    // glows: engines, lamps at night, blinking beacons
+    let gi = 0;
+    aGlow.setXYZW(gi, nozzle.x, nozzle.y - 4, nozzle.z, burn * (pal.dark ? 46 : 24) / (1 + fly.y / 500)); aTint.setXYZ(gi++, 2.2, 1.3, 0.5);
+    for (const [x, y, z] of lampPts) { aGlow.setXYZW(gi, x, y, z, pal.dark ? 9 : 0); aTint.setXYZ(gi++, 2.2, 2.3, 2.5); }
+    for (const [x, y, z] of WORK) { aGlow.setXYZW(gi, x, y, z, pal.dark ? 2.2 : 0); aTint.setXYZ(gi++, 2.3, 2.1, 1.7); }
+    for (const [i, [x, y, z]] of BEACONS.entries()) { const on = (Math.floor(clock * 0.75 + i * 0.37) % 2 === 0 ? 1 : 0); aGlow.setXYZW(gi, x, y, z, on * (pal.dark ? 6 : 2.2)); aTint.setXYZ(gi++, 2.4, 0.25, 0.15); }
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    // the shadow map only when something moved
+    const moving = (c < 64) || (c > 118 && c < 130) || (c > 158 && c < 240);
+    if (rend && shadowsOn && (moving || shadowDirty)) { rend.shadowMap.needsUpdate = true; shadowDirty = false; }
+  }
+  function sortPuffs() { // far-to-near, written into the instance buffers
+    const n = puffs.length, t = clock;
+    if (!n) { puffGeo.instanceCount = 0; return; }
+    const vm = camera.matrixWorldInverse;
+    for (const q of puffs) { puffAt(q, t - q.birth, V); q.d = V.applyMatrix4(vm).z; }
+    const order = puffs.slice().sort((a, b) => a.d - b.d);
+    for (let i = 0; i < n; i++) { const q = order[i]; aP0.setXYZ(i, q.x, q.y, q.z); aV0.setXYZ(i, q.vx, q.vy, q.vz); aT.setXYZW(i, q.birth, q.life, q.s0, q.s1); aK.setXYZW(i, q.k, q.rise, q.a, q.seed); }
+    puffGeo.instanceCount = n;
+    for (const a of [aP0, aV0, aT, aK]) { a.clearUpdateRanges(); a.addUpdateRange(0, n * a.itemSize); a.needsUpdate = true; }
+  }
+  smoke.onBeforeRender = () => sortPuffs();
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { const c = clock % CYCLE; return { cycle: lastCycle, phase: +c.toFixed(1), T: +(c - T_LIFT).toFixed(1), rocketY: +(rocket.position.y).toFixed(1), flying, puffs: puffs.length, shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

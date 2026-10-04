@@ -55,6 +55,7 @@ export const BG_STYLES = [
   { value: "steamengine", label: "Steam engine room", desc: "3D Victorian engine house: a great steam engine at work, flywheel turning, crosshead sliding, governor spinning; sunbeams through tall windows by day, gas light at night", three: true },
   { value: "robotfactory", label: "Robot factory", desc: "3D car body shop: robot arms weld the bodies on a moving line, sparks flying, robot carts gliding past; LED lines and welding flashes at night", three: true },
   { value: "v8engine", label: "V8 engine", desc: "3D cutaway V8 on an engine stand: pistons pumping, crank and camshafts turning, valves opening, coils firing 1-8-4-3-6-5-7-2; workshop light by day, a work lamp at night", three: true },
+  { value: "rocketlaunch", label: "Rocket launch", desc: "3D seaside launch pad: the next rocket rolls out and is raised, the clock counts down, liftoff on fire and billowing smoke; floodlit at night", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
