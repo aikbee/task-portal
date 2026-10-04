@@ -15756,7 +15756,653 @@ function containerport(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport };
+/* ---------- Airport at dusk: from the tower over the apron, across the runway towards the setting sun; arrivals land out of the sunset, departures taxi out and take off ---------- */
+// One 120 s schedule drives everything (a landing and a take-off each cycle), computed from the clock alone. The paved surfaces are
+// wet: the world is drawn again mirrored into a texture the ground shows where it is wet, so every runway light and landing light
+// stands in the tarmac. Airfield lights never shrink below a point of light, so the runway's lines of lamps reach the horizon.
+const AIR_LIGHT_VS = /* glsl */ `
+  uniform float uPx; uniform float uMinK; // pixels per world unit at distance 1; the smallest sizes scaled to the canvas (a 900 px tall one is 1)
+  attribute vec4 aGlow; attribute vec3 aTint; attribute float aMin; // position, size; colour; the smallest it gets on screen, in pixels
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    vUv = uv; vTint = aTint;
+    if (aGlow.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec4 mv = modelViewMatrix * vec4(aGlow.xyz, 1.0);
+    float d = max(-mv.z, 0.5), px = aGlow.w * uPx / d, mn = aMin * uMinK, rp = max(px, mn);
+    vTint *= 0.55 + 0.45 * min(1.0, px / mn); // far lamps a little dimmer, never gone
+    mv.xy += position.xy * 2.0 * rp * d / uPx;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const AIR_LIGHT_FS = /* glsl */ `
+  uniform sampler2D uMap; uniform float uAmt;
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    gl_FragColor = vec4(texture2D(uMap, vUv).rgb * vTint * uAmt, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the dusk sky: the sun just below the horizon, its glow spreading along it (the lantern sky's disc would be far too big here)
+const AIR_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uGlow; uniform vec3 uSunDir; uniform vec3 uSunColor; uniform float uSun;
+  varying vec3 vDir;
+  void main() {
+    vec3 dir = vec3(vDir.x, abs(vDir.y), vDir.z);
+    float h = dir.y;
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.2, h));
+    col = mix(col, uZenith, smoothstep(0.16, 0.78, h));
+    col += uGlow * exp(-abs(h) * 14.0);
+    float az = max(dot(normalize(dir.xz), normalize(uSunDir.xz)), 0.0);
+    col += uSunColor * uSun * (pow(az, 5.0) * exp(-h * 8.0) * 0.55 + pow(az, 60.0) * exp(-h * 26.0) * 0.9);
+    float ang = acos(clamp(dot(normalize(dir), normalize(uSunDir)), -1.0, 1.0));
+    col = mix(col, vec3(1.0, 0.86, 0.6) * 1.3, (1.0 - smoothstep(0.0128, 0.0152, ang)) * uSun); // the disc, low and soft-edged
+    col += uSunColor * uSun * 0.5 * exp(-ang * 40.0);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// a landing light's beam in the dusk haze: crossed planes along the aircraft's nose, fading out ahead and at the sides
+const AIR_BEAM_VS = /* glsl */ `
+  varying vec2 vS; varying vec3 vCol;
+  void main() {
+    vS = uv; vCol = instanceColor;
+    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  }
+`;
+const AIR_BEAM_FS = /* glsl */ `
+  varying vec2 vS; varying vec3 vCol;
+  void main() {
+    float along = vS.x, across = abs(vS.y - 0.5) * 2.0;
+    float a = pow(1.0 - along, 1.6) * (1.0 - smoothstep(0.0, 1.0, across)) * smoothstep(0.0, 0.03, along);
+    gl_FragColor = vec4(vCol * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the airfield painted from world coordinates: grass, the runway with its markings, the taxiways and the rapid exit, the apron with
+// its stands; and how wet each spot is (the reflection mixes in by that)
+const AIR_GROUND_PARS = /* glsl */ `
+  float agLine(float v, float c, float hw) { float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(v - c)); }
+  float agRep(float v, float p, float hw) { float q = v - p * floor(v / p + 0.5); float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(q)); }
+  float agBox(vec2 w, vec2 lo, vec2 hi) { vec2 fw = fwidth(w) + 1e-4; vec2 a = smoothstep(lo - fw, lo + fw, w) * (1.0 - smoothstep(hi - fw, hi + fw, w)); return a.x * a.y; }
+  float agSeg(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }
+  float agRet(vec2 p) {
+    vec2 q[8] = vec2[8](vec2(350.0, 0.0), vec2(419.5, 6.08), vec2(486.8, 24.1), vec2(550.0, 53.6), vec2(797.3, 196.4), vec2(860.5, 225.9), vec2(927.8, 243.9), vec2(997.3, 250.0));
+    float d = 1e9;
+    for (int i = 0; i < 7; i++) d = min(d, agSeg(p, q[i], q[i + 1]));
+    return d;
+  }
+  float agHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  vec3 airGround(vec2 w, out float wet) {
+    float n = texture2D(uNoise, w * 0.0043).r, n2 = texture2D(uNoise, w * 0.031 + 0.4).g, n3 = texture2D(uNoise, w * 0.17).r;
+    float fwm = fwidth(w.x) + fwidth(w.y); // metres per pixel: fine markings fade before they shimmer
+    vec3 grass = mix(vec3(0.17, 0.2, 0.1), vec3(0.24, 0.25, 0.13), n) * (0.85 + 0.3 * n2);
+    grass = mix(grass, grass * vec3(1.12, 1.05, 0.8), agRep(w.y, 24.0, 6.0) * 0.25); // mowing stripes
+    // farmland beyond the fence: a patchwork of crops between hedgerows, evening out far off
+    vec2 fc = (w + vec2(37.0, 11.0)) / vec2(260.0, 190.0), fi = floor(fc), ff = fract(fc);
+    float h1 = agHash(fi), h2 = agHash(fi + 17.3);
+    vec3 crop = h1 < 0.28 ? vec3(0.25, 0.29, 0.11) : h1 < 0.5 ? vec3(0.4, 0.34, 0.16) : h1 < 0.7 ? vec3(0.18, 0.24, 0.1) : h1 < 0.86 ? vec3(0.33, 0.25, 0.15) : vec3(0.46, 0.4, 0.2);
+    crop *= 1.0 - 0.14 * (0.5 + 0.5 * sin((h2 < 0.5 ? w.x : w.y) * 1.4)) * (1.0 - smoothstep(0.3, 1.2, fwm)); // drill rows
+    crop *= 0.88 + 0.24 * n2;
+    vec2 de = min(ff, 1.0 - ff) * vec2(260.0, 190.0);
+    crop = mix(crop, vec3(0.1, 0.14, 0.07), (1.0 - smoothstep(2.5, 2.5 + fwm, min(de.x, de.y))) * (1.0 - smoothstep(30.0, 90.0, fwm)));
+    crop = mix(crop, vec3(0.27, 0.27, 0.13), smoothstep(40.0, 200.0, fwm));
+    grass = mix(crop, grass, agBox(w, vec2(-2700.0, -700.0), vec2(2900.0, 760.0)));
+    float rw = agBox(w, vec2(-1600.0, -22.5), vec2(1600.0, 22.5)), sh = agBox(w, vec2(-1660.0, -31.0), vec2(1660.0, 31.0));
+    float twA = agBox(w, vec2(-1672.0, 158.5), vec2(2900.0, 181.5)), twB = agBox(w, vec2(-1672.0, 238.5), vec2(2900.0, 261.5));
+    float cnW = agBox(w, vec2(-1672.0, 0.0), vec2(-1648.0, 261.5)), cnE = agBox(w, vec2(1688.0, 0.0), vec2(1712.0, 261.5));
+    float rd = agRet(w), ret = 1.0 - smoothstep(11.0, 12.5, rd);
+    float apron = max(max(agBox(w, vec2(-1470.0, 255.0), vec2(-80.0, 482.0)), agBox(w, vec2(-555.0, 482.0), vec2(-80.0, 548.0))), max(agBox(w, vec2(-1150.0, -235.0), vec2(-600.0, -80.0)), agBox(w, vec2(-812.0, -80.0), vec2(-788.0, 0.0)))); // the passenger apron, the service yard; the cargo apron and its link
+    float land = max(agBox(w, vec2(-1600.0, 548.0), vec2(-80.0, 560.0)), agBox(w, vec2(-1010.0, 560.0), vec2(-375.0, 606.0))); // landside: the forecourt road and the car park
+    float twy = max(max(twA, twB), max(max(cnW, cnE), ret));
+    float paved = max(max(sh, twy), max(apron, land));
+    vec3 asph = vec3(0.2, 0.205, 0.21) * (0.85 + 0.3 * n2), conc = vec3(0.48, 0.47, 0.45) * (0.9 + 0.2 * n2);
+    vec3 col = mix(grass, mix(asph * 1.25, asph, rw), paved);
+    col = mix(col, asph * 1.15, twy);
+    col = mix(col, conc, apron * (1.0 - twy));
+    vec3 wht = vec3(0.82), yel = vec3(0.78, 0.6, 0.14);
+    if (rw > 0.0) {
+      float ax = abs(w.x), ay = abs(w.y);
+      float m = agLine(ay, 21.5, 0.45);
+      m = max(m, agLine(w.y, 0.0, 0.45) * step(0.4, fract((w.x + 1600.0) / 50.0)) * step(ax, 1450.0));
+      m = max(m, step(1564.0, ax) * step(ax, 1594.0) * agRep(w.y, 3.6, 0.9) * step(3.0, ay) * step(ay, 20.5)); // thresholds
+      m = max(m, agBox(vec2(ax, ay), vec2(1155.0, 6.0), vec2(1200.0, 15.0))); // aiming points
+      for (int k = 0; k < 6; k++) { float x0 = 1450.0 - 150.0 * float(k); int bars = k < 2 ? 3 : k < 4 ? 2 : 1; for (int b = 0; b < 3; b++) if (b < bars) m = max(m, agBox(vec2(ax, ay), vec2(x0 - 22.5, 5.0 + 3.3 * float(b)), vec2(x0, 6.8 + 3.3 * float(b)))); } // touchdown zones
+      col = mix(col, col * 0.45, smoothstep(0.35, 0.75, n3) * step(900.0, ax) * step(ax, 1460.0) * (1.0 - smoothstep(6.0, 11.0, ay)) * 0.8); // rubber on the touchdown zones
+      col = mix(col, wht, m * rw);
+    }
+    float chev = agBox(w, vec2(-1660.0, -22.5), vec2(-1600.0, 22.5)) + agBox(w, vec2(1600.0, -22.5), vec2(1660.0, 22.5));
+    col = mix(col, yel, chev * agRep(abs(w.y) * 0.8 + abs(w.x) * 0.55, 9.0, 1.0)); // the blast pads' chevrons
+    float cl = max(max(agLine(w.y, 170.0, 0.35) * twA, agLine(w.y, 250.0, 0.35) * twB), max(agLine(w.x, -1660.0, 0.35) * cnW, agLine(rd, 0.0, 0.35) * ret));
+    cl = max(cl, cnE * agLine(w.x, 1700.0, 0.35));
+    cl = max(cl, cnW * (agLine(w.y, 88.0, 0.22) + agLine(w.y, 86.6, 0.22) + (agLine(w.y, 84.8, 0.22) + agLine(w.y, 83.4, 0.22)) * step(0.5, fract(w.x / 2.4)))); // the holding position
+    col = mix(col, yel, cl);
+    if (apron > 0.0) {
+      float st = 0.0;
+      float SX[14] = float[14](-1400.0, -1320.0, -1265.0, -1190.0, -1110.0, -1055.0, -980.0, -900.0, -845.0, -770.0, -690.0, -635.0, -505.0, -440.0);
+      for (int i = 0; i < 14; i++) st = max(st, agLine(w.x, SX[i], 0.3) * step(300.0, w.y) * step(w.y, 470.0));
+      st = max(st, agLine(w.y, 300.0, 0.3) * step(255.0, w.y));
+      col = mix(col, yel, st * apron);
+      col = mix(col, wht, apron * max(agLine(w.y, 383.0, 0.15), agLine(w.y, 397.0, 0.15)) * step(0.5, fract(w.x / 6.0)));
+      col *= 1.0 - 0.12 * apron * max(agRep(w.x, 7.5, 0.06), agRep(w.y, 7.5, 0.06)) * (1.0 - smoothstep(0.8, 2.5, fwm));
+    }
+    if (land > 0.0) { // the car park's bays in double rows, the forecourt road's centre line
+      float m = 0.0, inX = step(-1000.0, w.x) * step(w.x, -385.0);
+      for (int i = 0; i < 2; i++) { float zc = 570.0 + 24.0 * float(i); m = max(m, (agRep(w.x, 2.7, 0.08) * step(abs(w.y - zc), 8.0) + agLine(w.y, zc, 0.08)) * inX); }
+      m *= 1.0 - smoothstep(0.6, 2.0, fwm);
+      m = max(m, agLine(w.y, 554.0, 0.12) * step(0.5, fract(w.x / 6.0)));
+      col = mix(col, vec3(0.78), clamp(m, 0.0, 1.0) * land * 0.75);
+    }
+    wet = paved * clamp(0.1 + rw * 0.18 + smoothstep(0.5, 0.76, n + 0.35 * n2) * 0.72, 0.0, 1.0); // puddles, the runway's film
+    return col;
+  }
+`;
+/** The airline's livery in one atlas, redrawn for each accent. Top half: the fuselage (u tail → nose, v round from the top through
+ *  the right side): white, the windows, the cheatline in the accent, a grey belly, "TASK PORTAL" on both sides, the cockpit, the doors.
+ *  Bottom left: the fin, the accent with the check mark. A white patch for every part that takes its colour from the vertices. */
+function airLivery(THREE) {
+  const W = 2048, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  const Y = (deg) => 256 - (256 * deg) / 360, X = (t) => t * W;
+  const draw = (accent) => {
+    g.fillStyle = "#f4f5f6"; g.fillRect(0, 0, W, H);
+    g.fillStyle = "#b9bec4"; g.fillRect(0, Y(235), W, Y(125) - Y(235)); // the belly
+    g.fillStyle = accent; g.fillRect(X(0.08), Y(98), X(0.9) - X(0.08), Y(84) - Y(98)); g.fillRect(X(0.08), Y(276), X(0.9) - X(0.08), Y(262) - Y(276)); // the cheatline, both sides
+    g.fillStyle = "#1f2731";
+    for (const deg of [70, 290]) for (let t = 0.16; t < 0.86; t += 0.0105) if (Math.abs(t - 0.5) > 0.025) g.fillRect(X(t), Y(deg) - 3, 9, 6); // the windows
+    g.fillStyle = "#14191f"; g.fillRect(X(0.952), Y(75), X(0.975) - X(0.952), Y(38) - Y(75)); g.fillRect(X(0.952), Y(322), X(0.975) - X(0.952), Y(285) - Y(322)); // the cockpit
+    g.strokeStyle = "rgba(60,66,74,0.55)"; g.lineWidth = 2;
+    for (const t of [0.885, 0.13, 0.49, 0.515]) for (const deg of [62, 298]) g.strokeRect(X(t) - 8, Y(deg + 14) , 16, Y(deg - 14) - Y(deg + 14));
+    g.fillStyle = accent; g.font = "bold 30px Helvetica, Arial, sans-serif"; g.textBaseline = "middle";
+    g.save(); g.translate(X(0.42), Y(50)); g.scale(1.6, -1); g.fillText("TASK PORTAL", 0, 0); g.restore(); // the right side reads with the nose to the right, upright
+    g.save(); g.translate(X(0.62), Y(310)); g.scale(-1.6, 1); g.fillText("TASK PORTAL", 0, 0); g.restore(); // the left side, nose to the left
+    const fg = g.createLinearGradient(0, 256, 0, 512); fg.addColorStop(0, accent); fg.addColorStop(1, accent); g.fillStyle = fg; g.fillRect(0, 256, 512, 256); // the fin
+    g.fillStyle = "rgba(0,0,0,0.12)"; g.fillRect(0, 256, 512, 40);
+    g.strokeStyle = "#ffffff"; g.lineWidth = 14; g.lineJoin = "round"; g.lineCap = "round";
+    const cx = 300, cy = 384, s = 62;
+    g.beginPath(); g.moveTo(cx - s + 16, cy - s); g.lineTo(cx + s - 16, cy - s); g.quadraticCurveTo(cx + s, cy - s, cx + s, cy - s + 16); g.lineTo(cx + s, cy + s - 16); g.quadraticCurveTo(cx + s, cy + s, cx + s - 16, cy + s); g.lineTo(cx - s + 16, cy + s); g.quadraticCurveTo(cx - s, cy + s, cx - s, cy + s - 16); g.lineTo(cx - s, cy - s + 16); g.quadraticCurveTo(cx - s, cy - s, cx - s + 16, cy - s); g.stroke();
+    g.lineWidth = 20; g.beginPath(); g.moveTo(cx - 30, cy + 2); g.lineTo(cx - 6, cy + 26); g.lineTo(cx + 34, cy - 24); g.stroke();
+    g.fillStyle = "#ffffff"; g.fillRect(600, 300, 160, 160); // white for the vertex-coloured parts
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** The terminal's glass front (u along it, v up): blue-grey glazing between mullions and floor bands; and the lit interior for the night. */
+function airFacade(THREE) {
+  const r = koiRng(77), W = 1024, H = 128, lit = [];
+  const map = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#3a4a5c"; g.fillRect(0, 0, W, H);
+    for (let x = 0; x < W; x += 12) { g.fillStyle = "rgba(220,230,240,0.35)"; g.fillRect(x, 0, 2, H); if (r() < 0.55) lit.push(x); }
+    g.fillStyle = "#d9dde1"; g.fillRect(0, 0, W, 10); g.fillRect(0, 60, W, 6); g.fillRect(0, H - 8, W, 8);
+    const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, "rgba(255,255,255,0.14)"); gr.addColorStop(1, "rgba(255,255,255,0)"); g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  });
+  const emis = canvasTexture(THREE, W, H, (g) => { g.fillStyle = "#000"; g.fillRect(0, 0, W, H); for (const x of lit) { g.fillStyle = r() < 0.6 ? "#ffe2b0" : "#fff4e0"; g.fillRect(x + 2, 12, 10, 46); g.fillRect(x + 2, 68, 10, 50); } });
+  return { map, emis };
+}
+/** The night light from above over x −1700…100, z −400…680: the masts' pools, the stands' floodlights, the car park's lamps, the cargo side. */
+function airNightMap(THREE, pools, fills) {
+  const W = 1024, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 1700) / 1800) * W, Y = (z) => ((680 - z) / 1080) * H;
+  for (const [x0, z0, x1, z1, a] of fills) for (let i = 0; i < 8; i++) { const e = i * 6 - 24; g.fillStyle = `rgba(255,255,255,${a / 8})`; g.fillRect(X(x0 + e), Y(z1 - e), X(x1 - e) - X(x0 + e), Y(z0 + e) - Y(z1 - e)); } // an even wash, soft-edged
+  for (const [x, z, rad, a] of pools) { g.save(); g.translate(X(x), Y(z)); g.scale((rad / 1800) * W, (rad / 1080) * H); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); [[0, 1], [0.3, 0.7], [0.6, 0.3], [0.8, 0.1], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(255,255,255,${a * k})`)); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the airframes and the glass mirror: the dusk sky with the sun low ahead, or the night with the airfield's lights. */
+function airEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#3a5a94"); gr.addColorStop(0.36, dark ? "#0b1430" : "#c48fa4"); gr.addColorStop(0.49, dark ? "#1a2850" : "#ffb070"); gr.addColorStop(0.52, dark ? "#0a0b0c" : "#4a4440"); gr.addColorStop(1, dark ? "#050506" : "#2c2a28");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    if (dark) for (let k = 0; k < 9; k++) { const x = w * (0.05 + k * 0.11), s = g.createRadialGradient(x, h * 0.48, 0, x, h * 0.48, 10); s.addColorStop(0, "rgba(255,240,215,1)"); s.addColorStop(1, "rgba(255,220,180,0)"); g.fillStyle = s; g.fillRect(x - 10, h * 0.48 - 10, 20, 20); }
+    else { const s = g.createRadialGradient(w * 0.45, h * 0.47, 0, w * 0.45, h * 0.47, 90); s.addColorStop(0, "rgba(255,210,150,1)"); s.addColorStop(1, "rgba(255,170,110,0)"); g.fillStyle = s; g.fillRect(0, 0, w, h * 0.6); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function airport(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1903);
+  const CYC = 120, VAPP = 72, TD_X = -1200, THR_X = -1600, OFF = 64; // a landing and a take-off every two minutes; approach speed; touchdown; threshold; where the clock starts in the schedule
+  const C0 = new THREE.Vector3(-300, 88, 600), YAW = (-148 * Math.PI) / 180, PITCH = (-6.5 * Math.PI) / 180; // the tower's cab beside the terminal, looking over the apron and across the runway into the sunset
+  camera.fov = 40; camera.near = 1; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const envMats = [];
+  const world = new THREE.Group(); scene.add(world); // everything above the ground: drawn again, mirrored, for the wet tarmac
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph((-168 * Math.PI) / 180, (2 * Math.PI) / 180), MOON = sph((-140 * Math.PI) / 180, (7 * Math.PI) / 180);
+  const ACC = 0xff00ff, WHITE_UV = [0.332, 0.258];
+
+  /* --- the night light over the apron and the injected material code (accent marker, night pools, the fin's logo light) --- */
+  const STANDS = [[-1400, 1], [-1320, 0], [-1265, 0], [-1190, 1], [-1110, 0], [-1055, 0], [-980, 1], [-900, 0], [-845, 0], [-770, 1], [-690, 0], [-635, 0], [-505, 0, 1], [-440, 0, 1]]; // x, wide-body?, remote (no jet bridge)
+  const MASTS = [[-1420, 376], [-1220, 376], [-1020, 376], [-820, 376], [-620, 376], [-400, 360], [-230, 420]];
+  const LOTS = Array.from({ length: 10 }, (_, k) => [-960 + k * 60, 582]); // the car park's lamps
+  const CARGO_MASTS = [[-1080, -92], [-720, -92]];
+  const nightTex = keep(airNightMap(THREE, [...MASTS.map(([x, z]) => [x, z, 125, 0.5]), ...STANDS.map(([x]) => [x, 452, 30, 0.25]), ...LOTS.map(([x, z]) => [x, z, 28, 0.28]), [-480, 515, 55, 0.3], ...CARGO_MASTS.map(([x, z]) => [x, z - 50, 110, 0.5]), [-1450, -262, 45, 0.45], [-1290, -262, 45, 0.45]], [[-1470, 255, -80, 482, 0.13], [-555, 482, -80, 548, 0.12], [-1000, 560, -385, 604, 0.1], [-1150, -235, -600, -80, 0.08]]));
+  const nightU = { uNightMap: { value: nightTex }, uNight: { value: 0 }, uPoolCol: { value: new THREE.Color("#ffe6c8").multiplyScalar(0.95) } };
+  const accentU = { value: new THREE.Color() };
+  const NIGHT_PARS = `
+  uniform sampler2D uNightMap; uniform float uNight; uniform vec3 uPoolCol; uniform vec3 uAccent;
+  varying vec3 vPW;
+  vec3 airNight(vec3 albedo) { vec2 uv = vec2((vPW.x + 1700.0) / 1800.0, (vPW.z + 400.0) / 1080.0); float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); return albedo * uPoolCol * texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside * exp(-max(abs(vPW.y) - 2.0, 0.0) / 26.0) * uNight; }
+`;
+  const inject = (mat, key, { accent = false, fin = false } = {}) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, nightU, { uAccent: accentU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw;\n#endif\nvPW = (modelMatrix * pw).xyz; }");
+      let fs = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + NIGHT_PARS);
+      if (accent) fs = fs.replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, step(0.9, vColor.r) * step(0.9, vColor.b) * step(vColor.g, 0.1));");
+      let em = "totalEmissiveRadiance += airNight(diffuseColor.rgb);";
+      if (fin) em += "\n  totalEmissiveRadiance += diffuseColor.rgb * step(vMapUv.x, 0.25) * step(vMapUv.y, 0.5) * uNight * 0.55; // the logo lights on the fin";
+      sh.fragmentShader = fs.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  " + em);
+    };
+    mat.customProgramCacheKey = () => "air-" + key;
+    return mat;
+  };
+  const siteMat = inject(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 })), "site", { accent: true });
+  envMats.push(siteMat); siteMat.envMapIntensity = 0.4;
+
+  /* --- the sky: the sun on the horizon beyond the runway's far end; the night's stars and moon; clouds; hills and the city far off --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#ffd9a6") }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 40, 20)), shader(LANTERN_SKY_VS, AIR_SKY_FS, skyUni, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 300 : 1100, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(28000); moon.scale.setScalar(560); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(3800); moonHalo.renderOrder = -9;
+  world.add(moon, moonHalo);
+  const cloudUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudUni, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(-8000, 2600, -6000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+  const fwd = sph(YAW, 0);
+  const hillU = { uMask: { value: keep(santoriniIsle(THREE, preview ? 1024 : 2048, 128, (u) => 0.28 + 0.22 * Math.sin(u * 5.3 + 2) * Math.sin(u * 1.7 + 0.4) + 0.12 * Math.sin(u * 19) + 0.1 * Math.sin(u * 3.1), 30, 41)) }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uLights: { value: new THREE.Color() }, uTime: time };
+  const hills = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, SANTORINI_ISLE_FS, hillU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  V.copy(C0).addScaledVector(fwd, 11000); hills.position.set(V.x, 240, V.z); hills.scale.set(24000, 520, 1); hills.lookAt(C0.x, 240, C0.z); hills.renderOrder = -5; world.add(hills);
+  const cityU = { uMask: { value: keep(portCity(THREE)) }, uBody: { value: new THREE.Color() }, uWin: { value: new THREE.Color() }, uRed: { value: new THREE.Color() }, uTime: time };
+  const city = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, PORT_CITY_FS, cityU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  V.copy(C0).addScaledVector(sph(YAW + 0.32, 0), 6500); city.position.set(V.x, 120, V.z); city.scale.set(5200, 250, 1); city.lookAt(C0.x, 120, C0.z); city.renderOrder = -4; world.add(city);
+
+  /* --- the ground: the airfield painted in its shader, wet where it shines (the mirrored pass mixes in by the wetness) --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4));
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const groundU = { uNoise: { value: noise }, tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) } };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.92 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, nightU, groundU, { uAccent: accentU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\nvPW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; uniform sampler2D tReflect; uniform vec2 uRes;\n" + NIGHT_PARS + AIR_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float agWet = 0.0;\n  diffuseColor.rgb = airGround(vPW.xz, agWet);")
+      .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.3, agWet);")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += airNight(diffuseColor.rgb);")
+      .replace("#include <opaque_fragment>", `{ // the wet tarmac mirrors the world, smeared along the view by the water film
+    vec3 toEye = cameraPosition - vPW; float dist = length(toEye);
+    float fres = 0.04 + 0.96 * pow(1.0 - clamp(toEye.y / dist, 0.0, 1.0), 5.0);
+    vec2 suv = gl_FragCoord.xy / uRes; float jit = texture2D(uNoise, vPW.xz * 0.21).r - 0.5;
+    vec3 refl = vec3(0.0);
+    for (int i = 0; i < 4; i++) refl += texture2D(tReflect, clamp(suv + vec2(jit * 0.003, -float(i) * 0.0045), 0.001, 0.999)).rgb;
+    outgoingLight = mix(outgoingLight, refl * 0.25, clamp(agWet * fres * 0.95, 0.0, 0.9));
+  }
+  #include <opaque_fragment>`);
+  };
+  groundMat.customProgramCacheKey = () => "air-ground";
+  const ground = new THREE.Mesh(keep(new THREE.PlaneGeometry(26000, 16000).rotateX(-Math.PI / 2).translate(-2000, 0, -2500)), groundMat);
+  scene.add(ground); // not in the mirrored group: it shows the mirrored pass
+
+  /* --- the airliner: lofted fuselage, swept wings with dihedral and sharklets, engines, tail; landing gear on its own --- */
+  const mergeUVC = (parts) => { // [geometry with uv, matrix, colour] → one geometry with uv and vertex colours
+    const chunks = parts.map(([geo, m, hex]) => { const gg = geo.index ? geo.toNonIndexed() : geo; gg.applyMatrix4(m); if (!gg.attributes.normal) gg.computeVertexNormals(); return [gg, new THREE.Color(hex)]; });
+    const n = chunks.reduce((s, [gg]) => s + gg.attributes.position.count, 0), pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), uv = new Float32Array(n * 2), col = new Float32Array(n * 3);
+    let o = 0;
+    for (const [gg, c] of chunks) { const cnt = gg.attributes.position.count; pos.set(gg.attributes.position.array, o * 3); nrm.set(gg.attributes.normal.array, o * 3); if (gg.attributes.uv) uv.set(gg.attributes.uv.array, o * 2); else for (let i = 0; i < cnt; i++) uv.set(WHITE_UV, (o + i) * 2); for (let i = 0; i < cnt; i++) col.set([c.r, c.g, c.b], (o + i) * 3); o += cnt; gg.dispose(); }
+    const out = new THREE.BufferGeometry(); out.setAttribute("position", new THREE.BufferAttribute(pos, 3)); out.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); out.setAttribute("uv", new THREE.BufferAttribute(uv, 2)); out.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    return out;
+  };
+  const whiteUV = (gg) => { const uv = gg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, ...WHITE_UV); return gg; };
+  const slab = (pts, th, uvFn) => { // a plate: its mid-plane's four corners, a thickness; every face turned outwards
+    const P4 = pts.map((p) => new THREE.Vector3(...p)), n = new THREE.Vector3().subVectors(P4[1], P4[0]).cross(new THREE.Vector3().subVectors(P4[3], P4[0])).normalize().multiplyScalar(th / 2);
+    const top = P4.map((p) => p.clone().add(n)), bot = P4.map((p) => p.clone().sub(n)), cen = P4.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(0.25);
+    const tris = [[top[0], top[1], top[2]], [top[0], top[2], top[3]], [bot[0], bot[1], bot[2]], [bot[0], bot[2], bot[3]]];
+    for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; tris.push([top[i], bot[i], bot[j]], [top[i], bot[j], top[j]]); }
+    const pos = [], uv = [];
+    for (const t of tris) { const nn = new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])), c3 = t[0].clone().add(t[1]).add(t[2]).multiplyScalar(1 / 3); const tt = nn.dot(c3.sub(cen)) < 0 ? [t[0], t[2], t[1]] : t; for (const p of tt) { pos.push(p.x, p.y, p.z); uv.push(...(uvFn ? uvFn(p) : WHITE_UV)); } }
+    const gg = new THREE.BufferGeometry(); gg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); gg.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); gg.computeVertexNormals(); return gg;
+  };
+  function airliner(L, R, span, GEAR) {
+    const parts = [], gear = [], lights = {};
+    // the fuselage: rings along x with a radius and a centre height (tail cone swept up, nose drooping a little)
+    const NS = 44, NR = 28, pos = [], uv = [], idx = [];
+    const prof = (t) => { if (t < 0.22) { const u = t / 0.22; return [R * (0.1 + 0.9 * Math.pow(Math.sin((u * Math.PI) / 2), 0.9)), R * 0.42 * (1 - u) ** 1.5]; } if (t > 0.86) { const u = (t - 0.86) / 0.14; return [R * Math.sqrt(Math.max(0, 1 - Math.pow(u, 2.4))), -R * 0.1 * u]; } return [R, 0]; };
+    for (let i = 0; i <= NS; i++) { const t = i / NS, [rad, yc] = prof(t), x = -L / 2 + t * L; for (let j = 0; j <= NR; j++) { const th = (j / NR) * Math.PI * 2; pos.push(x, yc + rad * Math.cos(th), rad * Math.sin(th)); uv.push(t, 0.5 + 0.5 * (j / NR)); } }
+    for (let i = 0; i < NS; i++) for (let j = 0; j < NR; j++) { const a = i * (NR + 1) + j, b = a + NR + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
+    const fus = new THREE.BufferGeometry(); fus.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); fus.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); fus.setIndex(idx); fus.computeVertexNormals();
+    parts.push([fus, new THREE.Matrix4(), 0xffffff]);
+    // the wings
+    const wy = -R * 0.55, zr = R * 0.85, zt = span / 2 - 0.3, dih = 0.096, th = 0.011 * L;
+    const le = (z) => 0.06 * L + ((z - zr) / (zt - zr)) * (-0.205 * L - 0.06 * L), te = (z) => -0.12 * L + ((z - zr) / (zt - zr)) * (-0.255 * L + 0.12 * L), yAt = (z) => wy + (z - zr) * Math.tan(dih);
+    for (const s of [1, -1]) {
+      parts.push([slab([[le(zr), wy, s * zr], [te(zr), wy, s * zr], [te(zt), yAt(zt), s * zt], [le(zt), yAt(zt), s * zt]], th), new THREE.Matrix4(), 0xd3d7db]);
+      const hw = 0.062 * L; parts.push([slab([[le(zt) - 0.3, yAt(zt), s * zt], [te(zt) + 0.1, yAt(zt), s * zt], [te(zt) - 0.5, yAt(zt) + hw, s * (zt + 0.35)], [le(zt) - 0.012 * L * 6, yAt(zt) + hw, s * (zt + 0.35)]], th * 0.6), new THREE.Matrix4(), ACC]); // the sharklet
+      // the engine on its pylon
+      const ze = s * 0.16 * span, rn = 0.0305 * L, ln = 0.122 * L, xe = le(Math.abs(ze)) + 0.15 * ln, ye = yAt(Math.abs(ze)) - rn - 0.15 * (L / 37.6);
+      parts.push([whiteUV(cyl(rn, rn * 0.9, ln, 22).rotateZ(-Math.PI / 2)), at(xe, ye, ze), ACC]);
+      parts.push([whiteUV(cyl(rn * 1.03, rn * 1.03, 0.08 * ln, 22).rotateZ(-Math.PI / 2)), at(xe + ln / 2, ye, ze), 0xc8ccd0]);
+      parts.push([whiteUV(new THREE.CircleGeometry(rn * 0.96, 22).rotateY(Math.PI / 2)), at(xe + ln / 2 + 0.01, ye, ze), 0x24282d]);
+      parts.push([whiteUV(cyl(rn * 0.55, rn * 0.15, 0.3 * ln, 16).rotateZ(Math.PI / 2)), at(xe - ln / 2 - 0.13 * ln, ye, ze), 0x8c9096]);
+      parts.push([whiteUV(box(ln * 0.75, 0.9 * (L / 37.6), 0.35 * (L / 37.6))), at(xe - 0.08 * ln, ye + rn + 0.35 * (L / 37.6), ze), 0xc8ccd0]);
+      lights[s > 0 ? "navR" : "navL"] = [le(zt) - 0.4, yAt(zt) + 0.1, s * (zt + 0.2)];
+      lights[s > 0 ? "landR" : "landL"] = [0.07 * L, -R * 0.75, s * (R + 1.2)];
+      // the main gear
+      const zg = s * 0.105 * span, xg = -0.035 * L, wr = 0.0152 * L;
+      gear.push([cyl(0.0045 * L, 0.0045 * L, GEAR - R * 0.6 - wr, 8), at(xg, -R * 0.6 - (GEAR - R * 0.6 - wr) / 2, zg), 0x5b6066]);
+      for (const dz of [-0.4, 0.4]) for (const dx of span > 50 ? [-0.9, 0.9] : [0]) gear.push([cyl(wr, wr, 0.4, 14).rotateX(Math.PI / 2), at(xg + dx, -GEAR + wr, zg + dz * (L / 37.6)), 0x1c1d1f]);
+    }
+    for (const s of [1, -1]) parts.push([slab([[-0.37 * L, R * 0.3, s * R * 0.3], [-0.455 * L, R * 0.3, s * R * 0.3], [-0.485 * L, R * 0.3 + 0.1 * 0.165 * span, s * 0.165 * span], [-0.445 * L, R * 0.3 + 0.1 * 0.165 * span, s * 0.165 * span]], 0.006 * L), new THREE.Matrix4(), 0xe6e8ea]); // the stabilisers
+    const fy0 = R * 0.72, fy1 = R + 0.165 * L, fx0 = -0.5 * L, fx1 = -0.3 * L;
+    parts.push([slab([[-0.3 * L, fy0, 0], [-0.465 * L, fy0, 0], [-0.5 * L + 0.4, fy1, 0], [-0.42 * L, fy1, 0]], 0.008 * L, (p) => [(0.25 * (p.x - fx0)) / (fx1 - fx0), (0.5 * (p.y - fy0)) / (fy1 - fy0)]), new THREE.Matrix4(), 0xffffff]); // the fin, the livery's art on it
+    // the nose gear
+    const xn = 0.37 * L, wn = 0.0102 * L;
+    gear.push([cyl(0.0035 * L, 0.0035 * L, GEAR - R - wn, 8), at(xn, -R - (GEAR - R - wn) / 2, 0), 0x5b6066]);
+    for (const dz of [-0.28, 0.28]) gear.push([cyl(wn, wn, 0.3, 12).rotateX(Math.PI / 2), at(xn, -GEAR + wn, dz * (L / 37.6)), 0x1c1d1f]);
+    Object.assign(lights, { tail: [-L / 2 - 0.2, R * 0.42, 0], beaconT: [-0.05 * L, R + 0.15, 0], beaconB: [0.05 * L, -R - 0.15, 0], taxi: [xn, -GEAR + 1.4, 0] });
+    return { geo: mergeUVC(parts), gear: mergeColored(THREE, gear), lights, L, span, GEAR };
+  }
+  const NARROW = airliner(37.6, 1.98, 35.8, 4.0), WIDE = airliner(64, 3.0, 64, 6.3);
+  const livery = airLivery(THREE); keep(livery.tex);
+  const frameMat = inject(keep(new THREE.MeshStandardMaterial({ map: livery.tex, vertexColors: true, roughness: 0.32, metalness: 0.12 })), "frame", { accent: true, fin: true });
+  envMats.push(frameMat); frameMat.envMapIntensity = 0.7;
+  const gearMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.4 }));
+  const NMOVE = 7; // three arrivals, four departures can be on the map at once
+  const NN = STANDS.filter((s) => !s[1]).length, NW = STANDS.length - NN; // parked narrow- and wide-bodies (and two freighters)
+  const nMesh = new THREE.InstancedMesh(keep(NARROW.geo), frameMat, NMOVE + NN), wMesh = new THREE.InstancedMesh(keep(WIDE.geo), frameMat, NW + 2);
+  const nGear = new THREE.InstancedMesh(keep(NARROW.gear), gearMat, NMOVE + NN), wGear = new THREE.InstancedMesh(keep(WIDE.gear), gearMat, NW + 2);
+  for (const m of [nMesh, wMesh, nGear, wGear]) { m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); }
+  // soft dark patches under the aircraft on the ground (no shadow maps at dusk: the sun is on the horizon)
+  const blobTex = keep(canvasTexture(THREE, 128, 128, (g) => { const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64); gr.addColorStop(0, "rgba(255,255,255,0.75)"); gr.addColorStop(0.6, "rgba(255,255,255,0.35)"); gr.addColorStop(1, "rgba(255,255,255,0)"); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); }));
+  const blobs = new THREE.InstancedMesh(keep(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)), keep(new THREE.MeshBasicMaterial({ map: blobTex, color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false })), NMOVE + STANDS.length + 2);
+  blobs.frustumCulled = false; blobs.renderOrder = 2; world.add(blobs); keep(blobs);
+  const EA = new THREE.Euler(0, 0, 0, "YZX"); // an aircraft's attitude: heading outermost, then pitch, then roll
+  const place = (mesh, gearMesh, i, x, y, z, yaw, pitch, roll, gearDown) => {
+    const m = new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(EA.set(roll, yaw, pitch)), ONE);
+    mesh.setMatrixAt(i, m); gearMesh.setMatrixAt(i, gearDown ? m : HIDE);
+    return m;
+  };
+  const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
+  // the parked ones: noses to the terminal (the remote two to the service yard), two freighters on the cargo apron
+  { let ni = NMOVE, wi = 0; const blobAt = (j, x, z, T) => blobs.setMatrixAt(j, new THREE.Matrix4().compose(V.set(x, 0.06, z), Q.identity(), V2.set(T.span * 0.75, 1, T.L * 0.95)));
+    STANDS.forEach(([sx, wide], i) => { const T = wide ? WIDE : NARROW; place(wide ? wMesh : nMesh, wide ? wGear : nGear, wide ? wi++ : ni++, sx, T.GEAR, 470 - T.L / 2, -Math.PI / 2, 0, 0, true); blobAt(NMOVE + i, sx, 470 - T.L / 2, T); });
+    [-1010, -880].forEach((x, k) => { place(wMesh, wGear, wi++, x, WIDE.GEAR, -150, Math.PI / 2, 0, 0, true); blobAt(NMOVE + STANDS.length + k, x, -150, WIDE); }); }
+
+  /* --- the terminal, jet bridges, hangars, the radar, the fuel farm, masts, trees --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]);
+  const B = (a, b, w, h, hex) => { const A0 = new THREE.Vector3(...a), B0 = new THREE.Vector3(...b), d = B0.clone().sub(A0), len = d.length(); S.push([box(w, h, len), new THREE.Matrix4().compose(A0.clone().add(B0).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), d.normalize()), ONE), hex]); };
+  P(box(900, 16, 60), at(-1010, 8, 515), 0xb8bdc2); for (const z of [479.2, 550.8]) P(box(912, 1.2, 0.9), at(-1010, 16.2, z), ACC); // the terminal's hall, an accent fascia along both eaves
+  STANDS.forEach(([sx, wide, remote]) => { if (remote) return; const T = wide ? WIDE : NARROW, dz = 470 - 0.115 * T.L, dx = sx + (wide ? 3.3 : 2.3); P(cyl(3.2, 3.2, 6, 14), at(sx + 15, 5, 488), 0xc9cdd1); B([sx + 15, 5.2, 486], [dx + 1.8, 5.2, dz], 3.2, 3.0, 0xd6dadd); B([dx + 1.8, 5.2, dz], [dx + 0.2, 5.2, dz], 3.6, 3.4, 0xb9bec3); P(box(1.2, 4.2, 1.2), at((sx + 15 + dx) / 2, 2.1, (488 + dz) / 2), 0x5a5f65); }); // jet bridges
+  for (const [sx, , remote] of STANDS) if (remote) { // the remote stands: stairs at both doors, a bus waiting, the fuel bowser under the wing
+    for (const dz of [465.6, 437.4]) { B([sx + 9.5, 0.9, dz], [sx + 2.4, 3.5, dz], 1.5, 0.35, 0xdcdfe2); P(box(4.2, 1.5, 2.1), at(sx + 11.4, 0.9, dz), 0xe9eaeb); }
+    P(box(2.6, 3.1, 12.5), at(sx + 17, 1.8, 462), 0xf0f0ee); P(box(2.65, 0.6, 12.55), at(sx + 17, 1.3, 462), ACC);
+    P(box(2.5, 2.4, 9), at(sx + 10.5, 1.5, 447), 0xd7d6cf); P(box(2.5, 2.2, 2.4), at(sx + 10.5, 1.4, 453.6), 0x9a3b2e);
+  }
+  for (let k = 0; k < 4; k++) { P(box(12.5, 3.1, 2.6), at(-520, 1.8, 497 + k * 5.5), 0xf0f0ee); P(box(12.55, 0.6, 2.65), at(-520, 1.3, 497 + k * 5.5), ACC); } // the service yard: buses, baggage carts, bowsers
+  for (let k = 0; k < 10; k++) P(box(2.2, 1.8, 3.2), at(-490 + k * 3.4, 1.1, 528), 0x8a9096);
+  for (let k = 0; k < 3; k++) P(box(2.6, 2.6, 10), at(-420 + k * 6, 1.6, 525), 0xd7d6cf);
+  for (const [x, z] of LOTS) { P(cyl(0.2, 0.3, 10, 6), at(x, 5, z), 0x9aa0a6); P(box(1.6, 0.4, 0.8), at(x, 10.1, z), 0x2a2c2f); } // the car park's lamp posts
+  for (const [hx, hz] of [[-1450, -330], [-1290, -330]]) { P(box(140, 34, 90), at(hx, 17, hz), 0xc6cacd); P(box(124, 27, 1), at(hx, 14, hz + 45.6), 0x7d8fa1); P(box(141, 2, 91), at(hx, 34.6, hz), ACC); } // hangars
+  P(box(260, 10, 60), at(-900, 5, -265), 0xb3b0a8); P(box(80, 8, 40), at(-650, 4, -255), 0xb7bcc0); // cargo sheds
+  for (let k = 0; k < 6; k++) P(cyl(13, 13, 15, 24), at(-1900 + (k % 3) * 34, 7.5, -380 - Math.floor(k / 3) * 34), 0xe6e7e6); // the fuel farm
+  P(box(4, 24, 4), at(-2300, 12, -700), 0x9aa0a6); // the radar's tower
+  P(box(1.2, 14, 1.2), at(-1250, 7, -150), 0xd8d8d8); P(box(3, 2, 1), at(-1250, 13, -150), 0xd8d8d8); // the glide slope
+  P(box(0.3, 7, 0.3), at(-1400, 3.5, -62), 0xc8c8c8); // the windsock's pole
+  for (const [x, z] of [...MASTS, ...CARGO_MASTS]) { P(cyl(0.4, 0.7, 30, 8), at(x, 15, z), 0x9aa0a6); P(box(3.6, 1.2, 3.6), at(x, 30.4, z), 0x2a2c2f); }
+  for (let x = -2500; x <= -1630; x += 30) P(box(0.25, 1.2, 0.25), at(x, 0.6, 0), 0x6a6e72); // the approach lights' posts
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), siteMat); world.add(site);
+  const trainGeo = mergeColored(THREE, [[box(3.2, 1.7, 1.9), at(4.6, 1.05, 0), ACC], [box(1.3, 0.9, 1.7), at(4.2, 2.3, 0), 0x2a3340], ...[0, 1, 2].map((k) => [box(3.4, 1.9, 2.1), at(-0.4 - k * 4.1, 1.15, 0), 0xb8bec4])]);
+  const NTRAIN = 6, trainsM = new THREE.InstancedMesh(keep(trainGeo), siteMat, NTRAIN); trainsM.frustumCulled = false; trainsM.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(trainsM); keep(trainsM);
+  // the terminal's barrel roof (standing-seam metal mirroring the sky), its skylights and glazed ends; the glass fronts (lit at night)
+  const seamTex = keep(canvasTexture(THREE, 64, 64, (g) => { g.fillStyle = "#eef0f2"; g.fillRect(0, 0, 64, 64); g.fillStyle = "#aab0b7"; g.fillRect(0, 0, 4, 64); }));
+  seamTex.wrapS = seamTex.wrapT = THREE.RepeatWrapping; seamTex.anisotropy = 8;
+  const roofMat = inject(keep(new THREE.MeshStandardMaterial({ map: seamTex, color: 0xc9ced4, metalness: 0.55, roughness: 0.34 })), "roof");
+  envMats.push(roofMat); roofMat.envMapIntensity = 0.9;
+  const RX0 = -1466, RX1 = -554, RZ0 = 479.5, RZ1 = 550.5, RY0 = 16.4, RY1 = 25, NA = 16, arcY = (t) => RY0 + (RY1 - RY0) * Math.sin(Math.PI * t);
+  const roofGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], uv = [], idx = []; for (let i = 0; i <= NA; i++) { const t = i / NA, z = RZ0 + (RZ1 - RZ0) * t, y = arcY(t); pos.push(RX0, y, z, RX1, y, z); uv.push(0, t * 9, (RX1 - RX0) / 9, t * 9); } for (let i = 0; i < NA; i++) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } roofGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); roofGeo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); roofGeo.setIndex(idx); roofGeo.computeVertexNormals(); }
+  world.add(new THREE.Mesh(roofGeo, roofMat));
+  const facing = (tris, nrm) => { const pos = []; for (const t of tris) { const [a, b, c] = t.map((q) => new THREE.Vector3(...q)), nn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)); for (const q of nn.dot(nrm) < 0 ? [a, c, b] : [a, b, c]) pos.push(q.x, q.y, q.z); } const gg = new THREE.BufferGeometry(); gg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); gg.computeVertexNormals(); return gg; };
+  const lunette = (x, s) => facing(Array.from({ length: NA }, (_, i) => { const z0 = RZ0 + ((RZ1 - RZ0) * i) / NA, z1 = RZ0 + ((RZ1 - RZ0) * (i + 1)) / NA; return [[[x, 16, z0], [x, arcY(i / NA), z0], [x, arcY((i + 1) / NA), z1]], [[x, 16, z0], [x, arcY((i + 1) / NA), z1], [x, 16, z1]]]; }).flat(), new THREE.Vector3(s, 0, 0));
+  const glassMat = keep(new THREE.MeshStandardMaterial({ color: 0x2c3846, roughness: 0.12, metalness: 0.7 })); envMats.push(glassMat); glassMat.envMapIntensity = 1.0;
+  world.add(new THREE.Mesh(keep(mergeColored(THREE, [[lunette(-559.9, 1), new THREE.Matrix4(), 0xffffff], [lunette(-1460.1, -1), new THREE.Matrix4(), 0xffffff], ...Array.from({ length: 88 }, (_, i) => [box(14, 0.3, 2.4), at(-1440 + Math.floor(i / 2) * 20, 25, i % 2 ? 518.5 : 511.5), 0xffffff])])), glassMat)); // the skylights in panels
+  // the car park: rows of cars in the bays the ground shader paints
+  const carMat = inject(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.5 })), "car"); envMats.push(carMat); carMat.envMapIntensity = 0.6;
+  const carSlots = []; for (const zc of [570, 594]) for (const dz of [-4, 4]) for (let x = -998.65; x < -386; x += 2.7) if (r() < 0.66) carSlots.push([x, zc + dz]);
+  const cars = new THREE.InstancedMesh(keep(mergeColored(THREE, [[box(1.8, 0.75, 4.3), at(0, 0.55, 0), 0xffffff], [box(1.6, 0.6, 2.3), at(0, 1.2, -0.2), 0x50565e]])), carMat, carSlots.length);
+  { const c = new THREE.Color(); carSlots.forEach(([x, z], i) => { cars.setMatrixAt(i, at(x, 0, z, 0, r() < 0.5 ? 0 : Math.PI, 0)); cars.setColorAt(i, c.setHex([0xf2f2f2, 0xc0c4c8, 0x24272b, 0x2f4058, 0x8a1c1c, 0x5d6066, 0xe7e1d0][Math.floor(r(0, 7))])); }); world.add(cars); keep(cars); }
+  const facade = airFacade(THREE); keep(facade.map); keep(facade.emis);
+  facade.map.wrapS = facade.emis.wrapS = THREE.RepeatWrapping;
+  const facadeMat = keep(new THREE.MeshStandardMaterial({ map: facade.map, emissiveMap: facade.emis, emissive: 0x000000, roughness: 0.15, metalness: 0.5 })); envMats.push(facadeMat); facadeMat.envMapIntensity = 1.0;
+  const facadeGeo = (w, rep) => { const gg = new THREE.PlaneGeometry(w, 16), uv = gg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * rep); return keep(gg); };
+  const facE = new THREE.Mesh(facadeGeo(60, 1 / 3).rotateY(Math.PI / 2), facadeMat); facE.position.set(-559.9, 8, 515); // the east end, towards the tower
+  const facN = new THREE.Mesh(facadeGeo(900, 5), facadeMat); facN.position.set(-1010, 8, 545.1); // the landside front
+  world.add(facE, facN);
+  // trees: along the hedgerows between the fields (the ground shader's grid), and a few woods
+  const NTR = preview ? 500 : 1800, trees = new THREE.InstancedMesh(keep(new THREE.IcosahedronGeometry(1, 0).scale(1, 0.75, 1).translate(0, 0.6, 0)), keep(new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true })), NTR);
+  { const c = new THREE.Color(), woods = Array.from({ length: 22 }, () => [r(-9000, 4000), r(-6000, 600)]); let n = 0;
+    for (let tries = 0; n < NTR && tries < NTR * 6; tries++) {
+      let x, z; const m = r();
+      if (m < 0.4) { x = Math.round(r(-34, 14)) * 260 - 37 + r(-3, 3); z = r(-6000, 2400); } else if (m < 0.75) { z = Math.round(r(-32, 12)) * 190 - 11 + r(-3, 3); x = r(-9000, 3800); } else { const [wx, wz] = woods[Math.floor(r(0, woods.length))]; x = wx + r(-110, 110); z = wz + r(-80, 80); }
+      if (x > -2760 && x < 2960 && z > -760 && z < 820) continue; // the airfield inside its fence
+      const s2 = r(5, 12); trees.setMatrixAt(n, new THREE.Matrix4().compose(V.set(x, 0, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s2, s2 * r(0.8, 1.25), s2))); trees.setColorAt(n, c.setHex([0x34452a, 0x3e5230, 0x2c3b24, 0x495a34][Math.floor(r(0, 4))])); n++;
+    }
+    trees.count = n; world.add(trees); keep(trees); }
+  const radar = new THREE.Mesh(keep(mergeColored(THREE, [[box(1.5, 3, 14), new THREE.Matrix4(), 0xd8dadc], [box(1, 1, 2), at(-1, -1.5, 0), 0x7a7f85]])), siteMat); radar.position.set(-2300, 25.5, -700); world.add(radar);
+  const sockGeo = mergeColored(THREE, [0, 1, 2, 3, 4].map((k) => [cyl(0.5 - k * 0.07, 0.43 - k * 0.07, 1.1, 10).rotateZ(Math.PI / 2), at(0.55 + k * 1.1, 0, 0), k % 2 ? 0xf2f2f2 : 0xe8601c]));
+  const sock = new THREE.Mesh(keep(sockGeo), siteMat); sock.position.set(-1400, 6.6, -62); world.add(sock);
+  const smokeMat = keep(new THREE.SpriteMaterial({ map: blobTex, color: 0xd5d7da, transparent: true, depthWrite: false, opacity: 0 }));
+  const smokes = [0, 1].map(() => { const sp = new THREE.Sprite(smokeMat); sp.scale.setScalar(0.1); world.add(sp); return sp; });
+
+  /* --- the airfield's lamps: one instanced draw; dynamic ones (aircraft, the approach flashers, the stop bar, the beacon) at the end --- */
+  const GL = []; // [x, y, z, size, r, g, b, smallest on screen (px)]
+  const L0 = (x, y, z, s, c, mn = 1.7) => GL.push([x, y, z, s, ...c, mn]);
+  const WH = [2.2, 2.1, 1.9], YE = [2.4, 1.7, 0.6], RE = [2.6, 0.25, 0.15], GR = [0.3, 2.4, 0.9], BL = [0.35, 0.7, 2.6];
+  for (let x = -1600; x <= 1600; x += 60) for (const z of [-23.5, 23.5]) L0(x, 0.5, z, 0.9, x > 1000 ? YE : WH); // runway edges
+  for (let x = -1585; x <= 1585; x += 30) L0(x, 0.2, 0, 0.6, x > 1300 ? RE : x > 700 && (Math.round(x / 30) % 2) ? RE : WH); // centre line
+  for (let x = -1570; x <= -700; x += 30) for (const z of [-12, -10.5, -9, 9, 10.5, 12]) L0(x, 0.2, z, 0.45, WH); // touchdown zone
+  for (let z = -22; z <= 22; z += 3) { L0(-1603, 0.4, z, 0.9, GR); L0(1603, 0.4, z, 0.9, RE); }
+  for (const z of [-35, -32, -29, -26, 26, 29, 32, 35]) L0(-1603, 0.5, z, 0.9, GR); // the threshold's wing bars
+  for (let x = -1630; x >= -2500; x -= 30) for (let z = -3; z <= 3; z += 1.5) L0(x, 1.3, z, 0.9, WH); // approach lights
+  for (let z = -15; z <= 15; z += 1.5) L0(-1900, 1.3, z, 0.9, WH);
+  [[-40, RE], [-49, RE], [-58, WH], [-67, WH]].forEach(([z, c]) => L0(-1250, 1, z, 1.2, c)); // PAPI
+  for (let x = -1700; x <= 2900; x += 50) for (const z of [157.5, 182.5, 237.5, 262.5]) if (!(z > 230 && x < -200)) L0(x, 0.5, z, 0.7, BL); // taxiway edges
+  for (let z = 10; z < 158; z += 40) for (const x of [-1673, -1647, 1687, 1713]) L0(x, 0.5, z, 0.7, BL);
+  { const rp = [[350, 0], [419.5, 6.08], [486.8, 24.1], [550, 53.6], [797.3, 196.4], [860.5, 225.9], [927.8, 243.9], [997.3, 250]]; for (let i = 0; i < rp.length - 1; i++) { const [ax, az] = rp[i], [bx, bz] = rp[i + 1], n = Math.ceil(Math.hypot(bx - ax, bz - az) / 15); for (let k = 0; k < n; k++) L0(ax + ((bx - ax) * k) / n, 0.3, az + ((bz - az) * k) / n, 0.5, GR); } } // the rapid exit's centre line
+  for (let z = 15; z < 165; z += 15) L0(-1660, 0.3, z, 0.5, GR);
+  for (const [x, z] of [...MASTS, ...CARGO_MASTS]) for (const dx of [-1.2, 0, 1.2]) L0(x + dx, 30, z - 1.4, 1.6, [2.3, 2.1, 1.8]); // apron masts
+  for (const hx of [-1450, -1290]) for (const dx of [-45, 0, 45]) L0(hx + dx, 29, -283, 1.1, [2.2, 2, 1.7]); // floodlights over the hangar doors
+  for (const [x, y, z] of [[-1520, 35.5, -285], [-1370, 35.5, -285], [-1220, 35.5, -285], [-2300, 27, -700], [-1462, 25.6, 515], [-558, 25.6, 515]]) L0(x, y, z, 1.4, RE); // obstacle lights
+  for (const [x, z] of LOTS) L0(x, 9.8, z, 1.0, [2.3, 1.9, 1.3]); // the car park's lamps
+  const NSTATIC = GL.length;
+  const RAB = 30, STOP = 6, AC_L = 11, NDYN = RAB + STOP + 1 + NTRAIN + NMOVE * AC_L; // the approach flashers, the stop bar, the beacon, the tugs' amber lights, the aircraft
+  for (let i = 0; i < NDYN; i++) GL.push([0, 0, 0, 0, 0, 0, 0, 1.7]);
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  const aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1); aMin.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+  // the landing lights' beams in the haze
+  const beamGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], uv = []; for (const [a, b] of [[[0, -0.5, 0], [0, 0.5, 0]], [[0, 0, -0.5], [0, 0, 0.5]]]) { const a2 = [1, a[1] * 18, a[2] * 18], b2 = [1, b[1] * 18, b[2] * 18]; for (const [p, u] of [[a, [0, 0]], [b, [0, 1]], [b2, [1, 1]], [a, [0, 0]], [b2, [1, 1]], [a2, [1, 0]]]) { pos.push(...p); uv.push(...u); } } beamGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); beamGeo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); }
+  const beams = new THREE.InstancedMesh(beamGeo, shader(AIR_BEAM_VS, AIR_BEAM_FS, {}, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }), NMOVE);
+  beams.frustumCulled = false; beams.renderOrder = 15; beams.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(beams); keep(beams);
+  beams.setColorAt(0, new THREE.Color()); beams.instanceColor.setUsage(THREE.DynamicDrawUsage);
+
+  /* --- light: the sky, the sun on the horizon (the moon at night) --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.set(0, 0, 0); world.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 1500, 14000);
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); livery.draw("#" + new THREE.Color(p.accent).getHexString());
+    env?.dispose(); env = airEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyUni.uZenith.value.set(d ? "#040815" : "#34528c"); skyUni.uMid.value.set(d ? "#0b1430" : "#c58da6"); skyUni.uHorizon.value.set(d ? "#1a2850" : "#ffb26e"); skyUni.uGlow.value.set(d ? "#1d2440" : "#ff9050").multiplyScalar(d ? 0.35 : 0.55); skyUni.uSunDir.value.copy(SUN); skyUni.uSunColor.value.set("#ffb36a"); skyUni.uSun.value = d ? 0 : 1.0;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudUni.uSunDir.value.copy(L); cloudUni.uLit.value.set(d ? "#2c3654" : "#ffc8a0"); cloudUni.uShade.value.set(d ? "#141a2c" : "#8c7896"); cloudUni.uGlow.value.set(d ? "#3a4870" : "#ff9a5a").multiplyScalar(d ? 0.3 : 0.7); cloudUni.uHaze.value.set(d ? "#18233f" : "#e8b0a0");
+    hillU.uBody.value.set(d ? "#0b111f" : "#6d6178"); hillU.uRim.value.set("#ffb070").multiplyScalar(d ? 0 : 0.25); hillU.uLights.value.set(d ? "#ffc070" : "#000000");
+    cityU.uBody.value.set(d ? "#0a1020" : "#86788c"); cityU.uWin.value.set(d ? "#ffcf8a" : "#ffcf8a").multiplyScalar(d ? 0.9 : 0.25); cityU.uRed.value.set("#ff3020").multiplyScalar(d ? 1 : 0.5);
+    sun.position.copy(L).multiplyScalar(500); sun.color.set(d ? "#9fb4e8" : "#ffb071"); sun.intensity = d ? 0.25 : 1.9;
+    hemi.color.set(d ? "#1b2440" : "#a6b4d6"); hemi.groundColor.set(d ? "#0b0a09" : "#3e3630"); hemi.intensity = d ? 0.3 : 0.8;
+    scene.fog.color.set(d ? "#0d1428" : "#d9a99c"); scene.fog.near = d ? 1200 : 1500; scene.fog.far = d ? 12000 : 15000;
+    nightU.uNight.value = d ? 1 : 0;
+    facadeMat.emissive.set(d ? "#ffffff" : "#000000"); facadeMat.emissiveIntensity = d ? 1.1 : 0;
+    glassMat.emissive.set(d ? "#ffd2a0" : "#000000"); glassMat.emissiveIntensity = d ? 0.5 : 0;
+    glowU.uAmt.value = d ? 1 : 0.8;
+  }
+  applyPalette(pal);
+
+  /* --- the schedule: arrival c touches down at T(c), departure c starts its roll at T(c) + 52 --- */
+  const poly = (pts, step = 4) => { const out = [pts[0]]; for (let i = 1; i < pts.length; i++) { const [ax, az] = pts[i - 1], [bx, bz] = pts[i], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / step)); for (let k = 1; k <= n; k++) out.push([ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n]); } const len = [0]; for (let i = 1; i < out.length; i++) len.push(len[i - 1] + Math.hypot(out[i][0] - out[i - 1][0], out[i][1] - out[i - 1][1])); return { p: out, len, L: len[len.length - 1] }; };
+  const arc = (cx, cz, rad, a0, a1, n = 12) => Array.from({ length: n + 1 }, (_, k) => { const a = a0 + ((a1 - a0) * k) / n; return [cx + rad * Math.cos(a), cz + rad * Math.sin(a)]; });
+  const RET = poly([...arc(350, 400, 400, -Math.PI / 2, -Math.PI / 3), [797.3, 196.4], ...arc(997.3, -150, 400, (2 * Math.PI) / 3, Math.PI / 2), [2900, 250]]);
+  const DEP = poly([[2900, 170], ...arc(-1630, 140, 30, Math.PI / 2, Math.PI), [-1660, 75]]);
+  const LUP = poly([[-1660, 75], ...arc(-1620, 40, 40, Math.PI, (3 * Math.PI) / 2), [-1600, 0]], 2);
+  const along = (path, s, out) => { let i = 1; const len = path.len; let lo = 1, hi = len.length - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (len[mid] < s) lo = mid + 1; else hi = mid; } i = lo; const t = Math.min(1, Math.max(0, (s - len[i - 1]) / Math.max(1e-6, len[i] - len[i - 1]))), a = path.p[i - 1], b = path.p[i]; out.x = a[0] + (b[0] - a[0]) * t; out.z = a[1] + (b[1] - a[1]) * t; out.yaw = Math.atan2(-(b[1] - a[1]), b[0] - a[0]); return out; };
+  const S1 = { x: 0, z: 0, yaw: 0 };
+  const TR = (VAPP - 18) / ((VAPP * VAPP - 18 * 18) / (2 * 1550)), ADEC = (VAPP * VAPP - 18 * 18) / (2 * 1550); // the rollout's length in time, its deceleration
+  const glide = (dd) => (dd > 320 ? dd * 0.0524 : 320 * 0.0524 * Math.pow(dd / 320, 1.7));
+  function arrival(c, t) { // where arrival c is at time t (null: not on the map)
+    const tau = t - (c * CYC + OFF);
+    if (tau < -110) return null;
+    if (tau < 0) { const dd = -tau * VAPP; return { x: TD_X - dd, y: NARROW.GEAR + glide(dd), z: 0, yaw: 0, pitch: 0.045 + (dd < 320 ? 0.045 * (1 - dd / 320) : 0), gear: dd < 3200, land: true, strobe: true, air: true }; }
+    if (tau < TR) return { x: TD_X + VAPP * tau - (ADEC * tau * tau) / 2, y: NARROW.GEAR, z: 0, yaw: 0, pitch: 0.09 * Math.max(0, 1 - tau / 3), gear: true, land: tau < 28, strobe: true, smoke: tau };
+    const tp = tau - TR, s = tp < 47 ? 18 * tp - (3 * tp * tp) / 47 : 705 + 12 * (tp - 47);
+    if (s > RET.L) return null;
+    along(RET, s, S1); return { x: S1.x, y: NARROW.GEAR, z: S1.z, yaw: S1.yaw, pitch: 0, gear: true, land: false, strobe: false, taxi: true };
+  }
+  const DEP_T = DEP.L / 16 + 3, VT = 16, TB = 6, braked = (tau) => (tau <= TB ? (VT * tau * tau) / (2 * TB) : VT * tau - (VT * TB) / 2);
+  const A_TO = 3.4, T_ROT = 18.8, T_LIFT = 21, X_LIFT = THR_X + 0.5 * A_TO * T_LIFT * T_LIFT, V_LIFT = A_TO * T_LIFT; // the take-off roll: rotate, lift off where it shows
+  function departure(c, t) {
+    const R0 = c * CYC + OFF + 52, tau = t - R0;
+    if (tau < -24) { // taxiing out along A (arriving at the holding point at R0 − 30), then holding
+      const left = -30 - tau; if (left > DEP_T) return null;
+      const s = left <= 0 ? DEP.L : DEP.L - braked(left); if (s < 0) return null;
+      along(DEP, s, S1); return { x: S1.x, y: NARROW.GEAR, z: S1.z, yaw: S1.yaw, pitch: 0, gear: true, land: false, strobe: false, taxi: true, hold: left <= 0 };
+    }
+    if (tau < -4) { const u = (tau + 24) / 20, e = u * u * (3 - 2 * u); along(LUP, e * LUP.L, S1); return { x: S1.x, y: NARROW.GEAR, z: S1.z, yaw: S1.yaw, pitch: 0, gear: true, land: true, strobe: true, lineup: true }; }
+    if (tau < 0) return { x: THR_X, y: NARROW.GEAR, z: 0, yaw: 0, pitch: 0, gear: true, land: true, strobe: true };
+    if (tau < T_LIFT) { const pitch = tau < T_ROT ? 0 : Math.min(0.14, ((tau - T_ROT) / (T_LIFT - T_ROT)) * 0.14); return { x: THR_X + 0.5 * A_TO * tau * tau, y: NARROW.GEAR, z: 0, yaw: 0, pitch, gear: true, land: true, strobe: true }; }
+    const tp = tau - T_LIFT; if (tp > 70) return null;
+    const s = V_LIFT * tp + 0.25 * tp * tp, climb = s < 330 ? (0.1217 * s * s) / 660 : 0.1217 * (s - 165);
+    return { x: X_LIFT + s * 0.993, y: NARROW.GEAR + climb, z: 0, yaw: 0, pitch: 0.14, gear: tp < 5, land: tp < 40, strobe: true, air: true };
+  }
+
+  /* --- the camera, the wet tarmac's mirrored pass --- */
+  const look = new THREE.Vector3();
+  let clock = 0, sway = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 0.004, yaw = YAW + s - k * 0.087, pitch = PITCH - k * 0.044; // a phone looks a little further left (the sun, the touchdown) and down
+    camera.position.copy(C0);
+    camera.lookAt(look.copy(C0).add(V.set(Math.cos(pitch) * Math.cos(yaw), Math.sin(pitch), Math.cos(pitch) * Math.sin(yaw))));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf); groundU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    const minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+    world.scale.y = -1; ground.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    world.scale.y = 1; ground.visible = true; glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  const lightAt = (m, p, out) => out.set(p[0], p[1], p[2]).applyMatrix4(m);
+  function frame(dt) {
+    clock += dt; time.value = clock; sway = clock * 0.05;
+    const n = Math.floor((clock - OFF) / CYC);
+    const slotsA = [null, null, null], slotsD = [null, null, null, null];
+    for (let c = n - 3; c <= n + 4; c++) { if (c < -3) continue; const a = arrival(c, clock); if (a) slotsA[((c % 3) + 3) % 3] = a; const d = departure(c, clock); if (d) slotsD[((c % 4) + 4) % 4] = d; }
+    const moving = [...slotsA, ...slotsD];
+    let gi = NSTATIC + RAB + STOP + 1 + NTRAIN, holdBar = true, smokeOn = -1;
+    moving.forEach((st, i) => {
+      const base = gi + i * AC_L;
+      if (!st) { nMesh.setMatrixAt(i, HIDE); nGear.setMatrixAt(i, HIDE); blobs.setMatrixAt(i, HIDE); beams.setMatrixAt(i, HIDE); for (let k = 0; k < AC_L; k++) aGlow.setW(base + k, 0); return; }
+      const m = place(nMesh, nGear, i, st.x, st.y, st.z, st.yaw, st.pitch, 0, st.gear, NARROW);
+      const alt = st.y - NARROW.GEAR;
+      blobs.setMatrixAt(i, alt < 15 ? new THREE.Matrix4().compose(V.set(st.x, 0.06, st.z), Q.setFromEuler(E.set(0, st.yaw, 0)), V2.set(NARROW.L * 0.95, 1, NARROW.span * 0.75)) : HIDE);
+      if (st.lineup) holdBar = false;
+      if (st.smoke !== undefined && st.smoke < 2.2) smokeOn = st.smoke;
+      const night = pal.dark ? 1 : 0.55, blinkB = Math.floor(clock * 1.1 + i * 0.3) % 2 === 0 ? 1 : 0, strobe = st.strobe && (clock * 0.85 + i * 0.17) % 1 < 0.06 ? 1 : 0;
+      const Ls = NARROW.lights, put = (k, p, size, c, mn = 1.7) => { lightAt(m, p, V); aGlow.setXYZW(base + k, V.x, V.y, V.z, size); aTint.setXYZ(base + k, ...c); aMin.setX(base + k, mn); };
+      put(0, Ls.navL, 0.7, RE); put(1, Ls.navR, 0.7, GR); put(2, Ls.tail, 0.6, WH);
+      put(3, Ls.beaconT, 0.9 * blinkB, RE); put(4, Ls.beaconB, 0.9 * blinkB, RE);
+      put(5, Ls.navL, 1.6 * strobe, [3, 3, 3], 4); put(6, Ls.navR, 1.6 * strobe, [3, 3, 3], 4); put(7, Ls.tail, 1.2 * strobe, [3, 3, 3], 3);
+      put(8, Ls.landL, st.land ? 2.6 : 0, [3, 2.9, 2.6], 6.5); put(9, Ls.landR, st.land ? 2.6 : 0, [3, 2.9, 2.6], 6.5); put(10, Ls.taxi, st.taxi || st.land ? 1.6 : 0, [2.6, 2.5, 2.2], 3.5);
+      if (st.land) { beams.setMatrixAt(i, new THREE.Matrix4().copy(m).multiply(new THREE.Matrix4().compose(V.set(0.07 * NARROW.L, -NARROW.L * 0.04, 0), Q.identity(), V2.set(320, 1, 1)))); beams.setColorAt(i, V.set(1, 0.95, 0.85).multiplyScalar(0.05 * night)); } else beams.setMatrixAt(i, HIDE);
+    });
+    // the approach lights' running flash, the stop bar, the airport beacon
+    let k = NSTATIC; const rab = Math.floor(((clock * 2) % 1) * RAB);
+    for (let j = 0; j < RAB; j++) aGlow.setXYZW(k + j, -2500 + j * 30, 1.6, 0, j === rab ? 2.4 : 0), aTint.setXYZ(k + j, 3, 3, 3), aMin.setX(k + j, 4);
+    k += RAB;
+    for (let j = 0; j < STOP; j++) aGlow.setXYZW(k + j, -1672 + j * 4.8, 0.4, 84, holdBar ? 0.8 : 0), aTint.setXYZ(k + j, ...RE);
+    k += STOP;
+    const bc = (clock * 0.5) % 1; aGlow.setXYZW(k, -1290, 37, -330, bc < 0.08 || (bc > 0.5 && bc < 0.58) ? 2.6 : 0); aTint.setXYZ(k, ...(bc < 0.5 ? [3, 3, 3] : [0.3, 3, 0.9]));
+    aGlow.needsUpdate = aTint.needsUpdate = aMin.needsUpdate = true;
+    for (const m of [nMesh, nGear, blobs, beams]) m.instanceMatrix.needsUpdate = true;
+    beams.instanceColor.needsUpdate = true;
+    smokes.forEach((sp, j) => { if (smokeOn >= 0) { sp.position.set(TD_X + VAPP * smokeOn - 6, 1 + smokeOn * 1.2, (j ? 1 : -1) * 3.8); sp.scale.setScalar(4 + smokeOn * 9); smokeMat.opacity = 0.55 * (1 - smokeOn / 2.2); } else smokeMat.opacity = 0; });
+    const TRB = NSTATIC + RAB + STOP + 1;
+    for (let k = 0; k < NTRAIN; k++) { // baggage trains on the service road, the tugs' amber lights flashing
+      const dir = k % 2 ? -1 : 1, span = 1300, u = (((clock * 5.5 + k * 251) % span) + span) % span, x = dir > 0 ? -1420 + u : -120 - u, z = dir > 0 ? 386 : 395;
+      trainsM.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, 0, z), Q.setFromEuler(E.set(0, dir > 0 ? 0 : Math.PI, 0)), ONE));
+      aGlow.setXYZW(TRB + k, x + 4.6 * dir, 3.1, z, Math.floor(clock * 2.4 + k * 0.37) % 2 === 0 ? 0.5 : 0); aTint.setXYZ(TRB + k, 2.6, 1.5, 0.2);
+    }
+    trainsM.instanceMatrix.needsUpdate = aGlow.needsUpdate = aTint.needsUpdate = true;
+    radar.rotation.y = clock * 1.4;
+    sock.rotation.set(0, 2.2 + Math.sin(clock * 0.6) * 0.15, -0.12 + Math.sin(clock * 2.3) * 0.04);
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { const n = Math.floor((clock - OFF) / CYC), tc = (clock - OFF) - n * CYC; return { cycle: n, t: +tc.toFixed(1), lamps: NSTATIC, accent: "#" + accentU.value.getHexString(), night: nightU.uNight.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
