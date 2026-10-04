@@ -15064,7 +15064,699 @@ function rocketlaunch(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch };
+/* ---------- Container port: a container terminal at golden hour; ship-to-shore cranes work a big ship, trucks shuttle the boxes, a tug passes ---------- */
+// Everything above the water lives in one group drawn twice: the second time mirrored (scale.y = −1) into a texture the harbour
+// water shows through its ripples, so the hull, the cranes and at night every lamp stand in the water. The cranes work in dual
+// cycles (a box off the ship onto a truck, then an export box off another truck into the same slot), so the ship never empties.
+const PORT_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNoise; uniform float uTime;
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uGlint; uniform vec3 uDeep; uniform vec3 uFoam; uniform vec3 uHaze; uniform vec4 uBoats[2];
+  varying vec3 vWorld;
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz;
+    vec2 p1 = mat2(0.8, -0.6, 0.6, 0.8) * p, p2 = mat2(0.36, 0.93, -0.93, 0.36) * p, p3 = mat2(-0.5, 0.87, -0.87, -0.5) * p;
+    float nearby = 1.0 - smoothstep(180.0, 800.0, dist);
+    vec2 s = (texture2D(uNoise, p1 * 0.0062 + uTime * vec2(0.0012, 0.0018)).rg - 0.5) * 0.5
+           + (texture2D(uNoise, p2 * 0.027 - uTime * vec2(0.0048, 0.0036)).rg - 0.5) * 0.7
+           + (texture2D(uNoise, p3 * 0.1 + uTime * vec2(0.011, -0.013)).rg - 0.5) * 0.6 * nearby;
+    float calm = 1.0 / (1.0 + dist * 0.0014);
+    vec3 N = normalize(vec3(s.x * 0.32 * calm, 1.0, s.y * 0.32 * calm));
+    float fres = 0.05 + 0.95 * pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    // the mirrored scene, pushed about by the waves: the ripples stretch it towards the eye
+    float k = clamp(110.0 / (dist + 60.0), 0.1, 1.0);
+    vec2 uv = gl_FragCoord.xy / uRes + vec2(s.x * 0.018, s.y * 0.085) * k;
+    vec3 refl = texture2D(tReflect, clamp(uv, 0.001, 0.999)).rgb;
+    vec3 col = mix(uDeep, refl * 0.9, clamp(0.16 + 0.74 * fres, 0.0, 1.0)); // darker water close by, a mirror further off
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    float sd = max(dot(R, uSunDir), 0.0);
+    col += uSunCol * (pow(sd, 900.0) * 9.0 * uGlint + pow(sd, 60.0) * 0.25 * uGlint);
+    for (int i = 0; i < 2; i++) { // wakes: a V of two arms at the Kelvin angle and a churned trail
+      vec2 q = p - uBoats[i].xy; float c = cos(uBoats[i].z), sn = sin(uBoats[i].z);
+      float behind = -(c * q.x + sn * q.y), across = -sn * q.x + c * q.y;
+      if (behind > -4.0 && behind < 170.0) { // soft and short: long thin arms read as rays
+        float fade = 1.0 - clamp(behind / 170.0, 0.0, 1.0), b = max(behind, 0.0);
+        float arms = exp(-abs(abs(across) - b * 0.34) * 0.3) * fade * fade * fade * smoothstep(0.0, 6.0, b);
+        float trail = exp(-abs(across) * (0.32 - 0.12 * fade)) * exp(-b * 0.022);
+        col = mix(col, uFoam, clamp((arms * 0.22 + trail * 0.62) * uBoats[i].w, 0.0, 0.7));
+      }
+    }
+    col = mix(col, uHaze, smoothstep(1500.0, 9000.0, dist) * 0.7);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the terminal's night light from above (portNightMap): r = high-mast pools, fading with height; g = the cranes' work lights over the
+// apron and the ship; b = sodium lamps. Added as emission to what lies under them: one texture lights the whole site.
+const PORT_NIGHT_PARS = /* glsl */ `
+  uniform sampler2D uNightMap; uniform float uNight; uniform vec3 uMastCol; uniform vec3 uWorkCol; uniform vec3 uSodiumCol;
+  varying vec3 vPW;
+  vec3 portNight(vec3 albedo, vec3 nView) {
+    vec3 m = texture2D(uNightMap, vec2((vPW.x + 620.0) / 1340.0, (vPW.z + 430.0) / 520.0)).rgb;
+    float h = abs(vPW.y), hf = exp(-max(h - 4.0, 0.0) / 24.0), wf = 1.0 - smoothstep(46.0, 54.0, h);
+    float up = 0.4 + 0.6 * abs((vec4(nView, 0.0) * viewMatrix).y);
+    return albedo * (uMastCol * m.r * hf + uWorkCol * m.g * wf + uSodiumCol * m.b * hf) * up * uNight;
+  }
+`;
+// the terminal's ground, painted from world coordinates: the apron's concrete with its lane lines and rail beds, the yard's asphalt
+// with the container slots marked out, rough ground beyond the fence
+const PORT_GROUND_PARS = /* glsl */ `
+  float pgLine(float v, float c, float hw) { float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(v - c)); }
+  float pgRep(float v, float p, float hw) { float q = v - p * floor(v / p + 0.5); float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(q)); }
+  vec3 portGround(vec2 w) {
+    float n = texture2D(uNoise, w * 0.011).r, n2 = texture2D(uNoise, w * 0.093 + 0.3).g, n3 = texture2D(uNoise, w * 0.0021).r;
+    bool inT = w.x > -740.0 && w.x < 600.0 && w.y > -405.0;
+    vec3 col = inT ? vec3(0.3, 0.305, 0.31) : mix(vec3(0.3, 0.33, 0.24), vec3(0.4, 0.38, 0.31), n3);
+    if (inT && w.y > -62.0) col = vec3(0.56, 0.55, 0.52);
+    col *= (0.86 + 0.28 * n) * (0.93 + 0.14 * n2);
+    if (!inT) return col;
+    vec3 yel = vec3(0.82, 0.64, 0.12), wht = vec3(0.86);
+    if (w.y > -62.0) {
+      col *= 1.0 - 0.12 * max(pgRep(w.x, 6.0, 0.05), pgRep(w.y, 6.0, 0.05)); // slab joints
+      col = mix(col, yel, max(pgLine(w.y, -1.0, 0.16), pgLine(w.y, -61.0, 0.14)));
+      float dash = step(0.5, fract(w.x / 12.0));
+      for (int i = 0; i < 6; i++) col = mix(col, wht, pgLine(w.y, -6.0 - 5.0 * float(i), 0.09) * dash);
+      col = mix(col, vec3(0.2, 0.2, 0.21), max(pgLine(w.y, -3.0, 0.75), pgLine(w.y, -33.0, 0.75))); // the rail beds
+    } else {
+      float d = -72.0 - w.y, i = floor(d / 30.0), zz = d - 30.0 * i;
+      float xx = -1.0;
+      if (w.x > -720.0 && w.x < -488.0) xx = w.x + 720.0; else if (w.x > -460.0 && w.x < -228.0) xx = w.x + 460.0; else if (w.x > -200.0 && w.x < 32.0) xx = w.x + 200.0; else if (w.x > 60.0 && w.x < 292.0) xx = w.x - 60.0; else if (w.x > 320.0 && w.x < 552.0) xx = w.x - 320.0;
+      if (d > 0.0 && i < 10.0 && xx >= 0.0) {
+        if (zz < 15.1) col = mix(col, wht, max(pgRep(zz, 2.52, 0.06), pgRep(xx, 12.9, 0.07)) * 0.7);
+        else col = mix(col, yel, pgLine(zz, 22.5, 0.08) * step(0.5, fract(w.x / 10.0)));
+      }
+    }
+    return col;
+  }
+`;
+// the city across the bay: buildings in the haze, lit windows and blinking red lights at night
+const PORT_CITY_FS = /* glsl */ `
+  uniform sampler2D uMask; uniform vec3 uBody; uniform vec3 uWin; uniform vec3 uRed; uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec3 m = texture2D(uMask, vUv).rgb;
+    if (m.r < 0.02) discard;
+    float blink = step(0.45, fract(uTime * 0.55 + floor(vUv.x * 40.0) * 0.37));
+    vec3 col = uBody * (0.9 + 0.1 * vUv.y) + uWin * m.g + uRed * m.b * blink;
+    gl_FragColor = vec4(col, m.r);
+    #include <colorspace_fragment>
+  }
+`;
+/** One atlas for every container: the long sides (left half: corrugation, rails, corner posts, rust, the code), the doors (top right)
+ *  and the roof (bottom right). Painted light grey: each instance's colour tints it. */
+function portBoxTex(THREE) {
+  const r = koiRng(2024);
+  const tex = canvasTexture(THREE, 512, 256, (g) => {
+    g.fillStyle = "#e6e6e4"; g.fillRect(0, 0, 512, 256);
+    for (let x = 9; x < 248; x += 6) { g.fillStyle = "rgba(0,0,0,0.16)"; g.fillRect(x, 16, 3, 224); g.fillStyle = "rgba(255,255,255,0.2)"; g.fillRect(x + 3, 16, 1, 224); } // the corrugation
+    g.fillStyle = "rgba(0,0,0,0.3)"; g.fillRect(0, 0, 256, 16); g.fillRect(0, 240, 256, 16); // top and bottom rails
+    g.fillStyle = "rgba(0,0,0,0.42)"; g.fillRect(0, 0, 9, 256); g.fillRect(247, 0, 9, 256); // corner posts
+    for (let i = 0; i < 30; i++) { const x = r(10, 246), y = r(16, 140), len = r(24, 110), gr = g.createLinearGradient(0, y, 0, y + len); gr.addColorStop(0, "rgba(96,52,26,0.42)"); gr.addColorStop(1, "rgba(96,52,26,0)"); g.fillStyle = gr; g.fillRect(x, y, r(1, 3), len); } // rust streaks
+    g.fillStyle = "rgba(255,255,255,0.8)"; g.fillRect(190, 28, 46, 7); g.fillRect(190, 39, 34, 6); g.fillRect(20, 28, 28, 6); // the box's code, the owner's mark
+    // the doors (x 256…512, y 0…128): two leaves, four locking bars, hinges, the plate
+    g.fillStyle = "#dcdcda"; g.fillRect(256, 0, 256, 128);
+    g.fillStyle = "rgba(0,0,0,0.42)"; g.fillRect(256, 0, 256, 9); g.fillRect(256, 119, 256, 9); g.fillRect(256, 0, 10, 128); g.fillRect(502, 0, 10, 128); g.fillRect(381, 0, 6, 128);
+    for (const x of [300, 352, 412, 466]) { g.fillStyle = "rgba(0,0,0,0.5)"; g.fillRect(x, 9, 4, 110); g.fillStyle = "rgba(0,0,0,0.6)"; g.fillRect(x - 3, 60, 10, 5); }
+    g.fillStyle = "rgba(255,255,255,0.7)"; g.fillRect(270, 20, 40, 6); g.fillRect(420, 96, 22, 14);
+    // the roof (x 256…512, y 128…256): dented panels across
+    g.fillStyle = "#d8d8d6"; g.fillRect(256, 128, 256, 128);
+    for (let y = 136; y < 250; y += 8) { g.fillStyle = "rgba(0,0,0,0.1)"; g.fillRect(256, y, 256, 3); }
+    for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(80,60,40,${r(0.05, 0.16)})`; g.beginPath(); g.ellipse(r(260, 508), r(132, 252), r(4, 16), r(3, 9), 0, 0, Math.PI * 2); g.fill(); }
+  });
+  tex.anisotropy = 8;
+  return tex;
+}
+/** A box whose faces map into that atlas (BoxGeometry faces: ±x the ends, ±y roof and floor, ±z the long sides). */
+function portBoxGeo(THREE, L, H, W) {
+  const g = new THREE.BoxGeometry(L, H, W), uv = g.attributes.uv;
+  for (let i = 0; i < 24; i++) {
+    const f = i >> 2, u = uv.getX(i), v = uv.getY(i);
+    if (f <= 1) uv.setXY(i, 0.5 + u * 0.5, 0.5 + v * 0.5); else if (f <= 3) uv.setXY(i, 0.5 + u * 0.5, v * 0.5); else uv.setXY(i, u * 0.5, v);
+  }
+  return g;
+}
+/** The ship's side, bow (u 0) to stern (u 1), waterline (v 0) to the deck edge (v 1, 16.3 m): dark hull plating with seams and rust
+ *  runs, the red boot topping, draft marks, the bulb and thruster signs, and her name on the bow. */
+function portHullTex(THREE) {
+  const W = 4096, H = 256, r = koiRng(88);
+  const X = (x) => ((x + 136) / 306) * W, Y = (y) => H - ((y + 0.3) / 16.3) * H;
+  const tex = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#1d2a3b"; g.fillRect(0, 0, W, H);
+    for (let x = -130; x < 170; x += 10.5) { g.fillStyle = "rgba(255,255,255,0.05)"; g.fillRect(X(x), 0, 2, H); }
+    for (const y of [4.2, 8.6, 12.4]) { g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0, Y(y), W, 2); }
+    for (let i = 0; i < 160; i++) { const x = r(0, W), y = r(0, H * 0.5), len = r(20, 120), gr = g.createLinearGradient(0, y, 0, y + len); gr.addColorStop(0, "rgba(120,62,30,0.4)"); gr.addColorStop(1, "rgba(120,62,30,0)"); g.fillStyle = gr; g.fillRect(x, y, r(2, 5), len); } // rust runs from the scuppers
+    g.fillStyle = "#9b2f27"; g.fillRect(0, Y(1.6), W, H - Y(1.6)); // the boot topping
+    g.fillStyle = "rgba(0,0,0,0.25)"; for (let i = 0; i < 400; i++) g.fillRect(r(0, W), r(Y(1.6), H), r(3, 12), 1);
+    g.fillStyle = "#f2f2ee"; g.font = "bold 46px Helvetica, Arial, sans-serif"; g.textBaseline = "alphabetic";
+    g.save(); g.translate(X(-117), Y(10.8)); g.scale(1.25, 1); g.fillText("TASK PORTAL", 0, 0); g.restore(); // her name
+    g.font = "bold 13px Helvetica, Arial, sans-serif";
+    for (const x of [-128, 18, 165]) for (let m = 2; m <= 14; m += 2) g.fillText(`${m}M`, X(x), Y(m - 0.3)); // draft marks
+    g.strokeStyle = "#f2f2ee"; g.lineWidth = 3; g.beginPath(); g.arc(X(-123), Y(2.6), 9, 0, Math.PI * 2); g.stroke(); // the bulbous bow sign
+    g.beginPath(); g.moveTo(X(-112) - 10, Y(2.6)); g.lineTo(X(-112) + 10, Y(2.6)); g.moveTo(X(-112) - 10, Y(2.6) - 7); g.lineTo(X(-112) - 10, Y(2.6) + 7); g.moveTo(X(-112) + 10, Y(2.6) - 7); g.lineTo(X(-112) + 10, Y(2.6) + 7); g.stroke(); // the bow thruster sign
+    g.fillStyle = "rgba(255,255,255,0.75)"; g.fillRect(X(-34), Y(15.4), X(30) - X(-34), 3); // a white line along the deck edge
+  });
+  tex.anisotropy = 8;
+  return tex;
+}
+/** The deckhouse's faces: white steel, eleven decks of windows, the bridge's dark band at the top; and its lit windows for the night. */
+function portHouseTex(THREE) {
+  const r = koiRng(301), W = 512, H = 1024, lit = [];
+  const map = canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#eceeef"; g.fillRect(0, 0, W, H);
+    for (let d = 0; d < 11; d++) { const y = 70 + d * 86; g.fillStyle = "rgba(0,0,0,0.08)"; g.fillRect(0, y + 60, W, 3); for (let x = 22; x < W - 30; x += 46) { g.fillStyle = "#2a3644"; g.fillRect(x, y, 26, 34); if (r() < 0.45) lit.push([x, y]); } }
+    g.fillStyle = "#1c2632"; g.fillRect(0, 8, W, 46); // the bridge windows
+  });
+  const emis = canvasTexture(THREE, W, H, (g) => { g.fillStyle = "#000"; g.fillRect(0, 0, W, H); for (const [x, y] of lit) { g.fillStyle = r() < 0.7 ? "#ffd9a0" : "#fff3dc"; g.fillRect(x + 2, y + 2, 22, 30); } g.fillStyle = "#3a4a5a"; g.fillRect(0, 10, W, 42); });
+  return { map, emis };
+}
+/** The funnel: grey, a broad band in the accent with the check mark in white, the black top. Redrawn for each accent. */
+function portFunnel(THREE) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 512;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const draw = (accent) => {
+    g.fillStyle = "#8d949b"; g.fillRect(0, 0, 256, 512);
+    g.fillStyle = "#16181a"; g.fillRect(0, 0, 256, 70);
+    g.fillStyle = accent; g.fillRect(0, 110, 256, 170);
+    g.strokeStyle = "#ffffff"; g.lineWidth = 16; g.lineCap = "round"; g.lineJoin = "round"; g.beginPath(); g.moveTo(84, 196); g.lineTo(116, 228); g.lineTo(176, 162); g.stroke();
+    g.fillStyle = "rgba(0,0,0,0.12)"; for (let y = 300; y < 512; y += 40) g.fillRect(0, y, 256, 3);
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** The terminal's night light seen from above, over x −620…720, z −430…90: r = the high masts' pools, g = the cranes' work lights
+ *  over the apron and the ship, b = the older sodium lamps in the yard. */
+function portNightMap(THREE, masts, works, sodium) {
+  const W = 1024, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 620) / 1340) * W, Y = (z) => ((90 - z) / 520) * H;
+  const pool = (x, z, rx, rz, rgb, a) => { g.save(); g.translate(X(x), Y(z)); g.scale((rx / 1340) * W, (rz / 520) * H); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, `rgba(${rgb},${a})`); gr.addColorStop(0.45, `rgba(${rgb},${a * 0.5})`); gr.addColorStop(1, `rgba(${rgb},0)`); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); };
+  for (const [x, z] of masts) pool(x, z, 62, 62, "255,0,0", 0.9);
+  for (const x of works) { pool(x, -17, 20, 26, "0,255,0", 0.8); pool(x, 27, 19, 36, "0,255,0", 1); }
+  for (const [x, z] of sodium) pool(x, z, 42, 42, "0,0,255", 0.8);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** The city across the bay as masks: r = buildings (and another terminal's cranes at the left end), g = lit windows, b = red lights. */
+function portCity(THREE) {
+  const W = 2048, H = 256, r = koiRng(64), c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const tops = [];
+  let x = 260;
+  while (x < W - 10) {
+    const w = r(14, 46), towers = x > 900 && x < 1500, h = towers && r() < 0.35 ? r(110, 230) : r(28, towers ? 110 : 70);
+    g.fillStyle = "rgb(255,0,0)"; g.fillRect(x, H - h, w, h);
+    if (h > 140) { g.fillRect(x + w / 2 - 1, H - h - r(10, 26), 2, 26); tops.push([x + w / 2, H - h - 22]); }
+    for (let yy = H - h + 6; yy < H - 4; yy += 7) for (let xx = x + 3; xx < x + w - 3; xx += 6) if (r() < 0.42) { g.fillStyle = "rgb(0,255,0)"; g.fillRect(xx, yy, 2, 3); }
+    x += w + r(0, 8);
+  }
+  g.fillStyle = "rgb(255,0,0)"; g.fillRect(0, H - 14, 270, 14); // the far terminal's quay and its cranes
+  for (let k = 0; k < 5; k++) { const cx = 30 + k * 48; g.fillRect(cx - 9, H - 70, 3, 56); g.fillRect(cx + 9, H - 70, 3, 56); g.fillRect(cx - 40, H - 74, 70, 4); g.fillRect(cx - 2, H - 100, 3, 28); g.beginPath(); g.moveTo(cx, H - 100); g.lineTo(cx - 34, H - 73); g.lineTo(cx - 31, H - 72); g.closePath(); g.fill(); }
+  for (const [tx, ty] of tops) { g.fillStyle = "rgb(0,0,255)"; g.fillRect(tx - 1, ty, 3, 3); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the paint and the steel mirror: the golden-hour sky (the low sun to the right), or the night with the terminal's lights. */
+function portEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 512, 256, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#5f86c4"); gr.addColorStop(0.38, dark ? "#0b1430" : "#b9c9df"); gr.addColorStop(0.49, dark ? "#1a2850" : "#f1d2b0"); gr.addColorStop(0.52, dark ? "#0a0b0c" : "#5c6066"); gr.addColorStop(1, dark ? "#050506" : "#3c3f43");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    if (dark) for (let k = 0; k < 7; k++) { const x = w * (0.08 + k * 0.13), s = g.createRadialGradient(x, h * 0.47, 0, x, h * 0.47, 14); s.addColorStop(0, "rgba(255,240,215,1)"); s.addColorStop(1, "rgba(255,220,180,0)"); g.fillStyle = s; g.fillRect(x - 14, h * 0.47 - 14, 28, 28); }
+    else { const s = g.createRadialGradient(w * 0.9, h * 0.43, 0, w * 0.9, h * 0.43, 70); s.addColorStop(0, "rgba(255,226,180,1)"); s.addColorStop(1, "rgba(255,200,150,0)"); g.fillStyle = s; g.fillRect(0, 0, w, h * 0.55); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function containerport(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4041);
+  const TIER = 2.59, BL = 12.19, BW = 2.44, HATCH = 18, Y_TRAVEL = 42, CHASSIS = 5.625, CZ = 27; // a 40 ft box; the hatch covers' top; the spreader's travel height; a truck's deck; the ship's centre line
+  const C0 = new THREE.Vector3(-235, 95, 300); // where the camera stands, on the hill across the harbour (for sorting and hiding what it never sees)
+  camera.fov = 42; camera.near = 1; camera.far = 40000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shadowMats = [], envMats = [];
+  const reg = (m, env = 0) => { keep(m); shadowMats.push(m); if (env) { m.envMapIntensity = env; envMats.push(m); } return m; };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const world = new THREE.Group(); scene.add(world); // everything above the water: drawn again, mirrored, for the harbour's reflection
+  const mk = (geo, mat, parent = world, cast = true, recv = true) => { const m = new THREE.Mesh(keep(geo), mat); m.castShadow = cast && !preview; m.receiveShadow = recv && !preview; parent.add(m); return m; };
+  const SUN = new THREE.Vector3(0.7, 0.24, 0.67).normalize(), MOON = new THREE.Vector3(0.72, 0.1, -0.69).normalize(); // rising over the hills to the right
+  const ACC = 0xff00ff, WHITE = 0xe9ebec, GREY = 0x8d9399, DARK = 0x2a2c2f, YEL = 0xdcb02a, BLACK = 0x18191b, GLASS = 0x1c2632; // ACC: painted in the accent
+
+  /* --- the night light over the whole site, and the materials that take it (and the accent) --- */
+  const BAYS = []; for (let k = 0; k < 15; k++) BAYS.push(-98.3 + 13.4 * k); BAYS.push(120.5, 133.9);
+  const ROWS = Array.from({ length: 19 }, (_, i) => CZ + (i - 9) * 2.52);
+  const CRANES = [2, 6, 10, 13].map((b, c) => ({ c, x: BAYS[b], bay: b, lane: -8.5 - 5 * c, off: 40 + c * 23.3, cols: [4 + c, 9 + (c % 2), 14 - c], sw: 0, sv: 0, slots: [] }));
+  const IDLES = [-168, 232, 290]; // cranes at rest, booms raised
+  const MASTS = [];
+  for (const x of [-300, -160, -40, 90, 210, 330, 460]) MASTS.push([x, -66]);
+  for (const x of [-600, -330, -90, 170, 430]) for (const z of [-185, -275, -365]) MASTS.push([x, z]);
+  const SODIUM = [[-420, -150], [-380, -260], [520, -200]];
+  const nightU = { uNightMap: { value: keep(portNightMap(THREE, MASTS, CRANES.map((cr) => cr.x), SODIUM)) }, uNight: { value: 0 }, uMastCol: { value: new THREE.Color("#ffe9cc").multiplyScalar(1.5) }, uWorkCol: { value: new THREE.Color("#fff3e0").multiplyScalar(1.9) }, uSodiumCol: { value: new THREE.Color("#ff9c40").multiplyScalar(1.2) } };
+  const accentU = { value: new THREE.Color() };
+  const lit = (mat, key, { accent = false, ground = false } = {}) => { // the night light (and the accent marker, the ground's markings) injected into a standard material
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, nightU, { uAccent: accentU, uNoise: { value: noise } });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw;\n#endif\nvPW = (modelMatrix * pw).xyz; }");
+      let fs = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform sampler2D uNoise;\n" + PORT_NIGHT_PARS + (ground ? PORT_GROUND_PARS : ""));
+      if (accent) fs = fs.replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, step(0.9, vColor.r) * step(0.9, vColor.b) * step(vColor.g, 0.1));");
+      if (ground) fs = fs.replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = portGround(vPW.xz);");
+      sh.fragmentShader = fs.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += portNight(diffuseColor.rgb, normal);");
+    };
+    mat.customProgramCacheKey = () => "port-" + key; // one program per variant: three keys programs by the callback's text otherwise
+    return mat;
+  };
+  const siteMat = lit(reg(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.28 }), 0.45), "site", { accent: true });
+
+  /* --- the sky: golden hour, the sun low to the right; the night's stars and moon; a deck of cloud --- */
+  const skyUni = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color("#ffd8a8") }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(30000, 40, 20)), shader(LANTERN_SKY_VS, LANTERN_SKY_FS, skyUni, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 300 : 1000, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.04, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 25000, Math.sin(e) * 25000, Math.sin(a) * Math.cos(e) * 25000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(24000); moon.scale.setScalar(520); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(3600); moonHalo.renderOrder = -9;
+  world.add(moon, moonHalo);
+  const cloudUni = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(80000, 80000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudUni, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2400, -12000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+
+  /* --- far away: hills behind the terminal, the city and another terminal across the bay --- */
+  const F = new THREE.Vector3(250, 0, -270).normalize(), RIGHT = new THREE.Vector3(-F.z, 0, F.x);
+  const hillsTex = keep(santoriniIsle(THREE, preview ? 1024 : 2048, 128, (u) => 0.35 + 0.3 * Math.sin(u * 7.1 + 1) * Math.sin(u * 2.3) + 0.2 * Math.sin(u * 23) * 0.4 + 0.15 * Math.sin(u * 3.7), 40, 12));
+  const hillU = { uMask: { value: hillsTex }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uLights: { value: new THREE.Color() }, uTime: time };
+  const hills = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, SANTORINI_ISLE_FS, hillU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  V.copy(C0).addScaledVector(F, 7000); hills.position.set(V.x, 230, V.z); hills.scale.set(15000, 480, 1); hills.lookAt(C0.x, 230, C0.z); hills.renderOrder = -5; world.add(hills);
+  const cityU = { uMask: { value: keep(portCity(THREE)) }, uBody: { value: new THREE.Color() }, uWin: { value: new THREE.Color() }, uRed: { value: new THREE.Color() }, uTime: time };
+  const city = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, PORT_CITY_FS, cityU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  V.copy(F).addScaledVector(RIGHT, 0.95).normalize(); V2.copy(C0).addScaledVector(V, 2900); city.position.set(V2.x, 110, V2.z); city.scale.set(3300, 230, 1); city.lookAt(C0.x, 110, C0.z); city.renderOrder = -4; world.add(city);
+
+  /* --- the harbour water (not in the mirrored group: it shows the mirrored pass) --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4));
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const waterU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uGlint: { value: 1 }, uDeep: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uBoats: { value: [new THREE.Vector4(), new THREE.Vector4()] } };
+  const water = new THREE.Mesh(keep(new THREE.PlaneGeometry(30000, 30000).rotateX(-Math.PI / 2)), shader(LANTERN_LAKE_VS, PORT_WATER_FS, waterU));
+  water.frustumCulled = false; scene.add(water);
+
+  /* --- the land: the terminal's ground (markings painted in its shader), the quay wall, fenders, bollards, rails --- */
+  const groundMat = lit(reg(new THREE.MeshStandardMaterial({ roughness: 0.9 })), "ground", { ground: true });
+  const ground = mk(new THREE.PlaneGeometry(7000, 3500).rotateX(-Math.PI / 2).translate(0, 4, -1750), groundMat, world, false);
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // everything that stands still, in one draw
+  const B = (a, b, t, hex) => { const A0 = new THREE.Vector3(...a), B0 = new THREE.Vector3(...b), d = B0.clone().sub(A0), len = d.length(); S.push([box(t, len, t), new THREE.Matrix4().compose(A0.clone().add(B0).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(UP, d.normalize()), ONE), hex]); };
+  { const g = new THREE.PlaneGeometry(7000, 4.3, 1, 2), c = []; for (const y of [0, 1, 2]) for (let k = 0; k < 2; k++) c.push(...(y === 0 ? [0.66, 0.65, 0.61] : y === 1 ? [0.52, 0.51, 0.47] : [0.2, 0.23, 0.18])); g.setAttribute("color", new THREE.Float32BufferAttribute(c, 3)); mk(g.translate(0, 1.85, 0), lit(reg(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 })), "wall"), world, false); }
+  for (let x = -600; x < 700; x += 22) { P(box(2.2, 3.0, 1.3), at(x, 2.1, 0.65), BLACK); P(cyl(0.42, 0.5, 0.9, 10), at(x + 11, 4.45, -1.6), BLACK); P(cyl(0.6, 0.6, 0.12, 10), at(x + 11, 4.95, -1.6), YEL); }
+  for (const z of [-3, -33]) P(box(1300, 0.16, 0.3), at(50, 4.08, z), 0x55585c); // crane rails
+
+  /* --- the ship: a lofted hull with a raked, flared bow; hatch covers, lashing bridges, forecastle, deckhouse, funnel --- */
+  const half = (x, h) => { const stem = -128 - 8 * h; if (x <= stem) return 0; const t = Math.min(1, (x - stem) / (-76 - stem)); return t >= 1 ? 24 : 24 * Math.pow(1 - Math.pow(1 - t, 2.2), 0.72) * (0.84 + 0.16 * h + (1 - 0.84 - 0.16 * h) * t); };
+  const hullGeo = (() => {
+    const xs = []; for (let i = 0; i <= 44; i++) xs.push(-136 + i * (60 / 44)); for (let x = -70; x <= 170; x += 20) xs.push(x);
+    const hs = [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.88, 1], parts = [];
+    for (const sd of [1, -1]) {
+      const pos = [], uv = [], idx = [];
+      for (const x of xs) for (const h of hs) { pos.push(x, -0.3 + 16.3 * h, CZ + sd * half(x, h)); uv.push((x + 136) / 306, h); }
+      const ny = hs.length;
+      for (let i = 0; i < xs.length - 1; i++) for (let j = 0; j < ny - 1; j++) { const a = i * ny + j, b = a + ny; if (sd > 0) idx.push(a, b, a + 1, a + 1, b, b + 1); else idx.push(a, a + 1, b, a + 1, b + 1, b); }
+      const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals(); parts.push([g, new THREE.Matrix4()]);
+    }
+    const dpos = [], duv = [], didx = [];
+    xs.forEach((x, i) => { const w = half(x, 1); dpos.push(x, 16, CZ + w, x, 16, CZ - w); duv.push(0.5, 0.95, 0.5, 0.95); if (i) { const a = (i - 1) * 2; didx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } }); // facing up
+    const dg = new THREE.BufferGeometry(); dg.setAttribute("position", new THREE.Float32BufferAttribute(dpos, 3)); dg.setAttribute("uv", new THREE.Float32BufferAttribute(duv, 2)); dg.setIndex(didx); dg.computeVertexNormals(); parts.push([dg, new THREE.Matrix4()]);
+    parts.push([new THREE.PlaneGeometry(48, 16.3).rotateY(Math.PI / 2), at(170, 7.85, CZ)]);
+    return mergeParts(THREE, parts);
+  })();
+  const hullMat = lit(reg(new THREE.MeshStandardMaterial({ map: keep(portHullTex(THREE)), roughness: 0.55, metalness: 0.2 }), 0.5), "hull");
+  mk(hullGeo, hullMat);
+  BAYS.forEach((x) => P(box(12.8, 2.0, 44), at(x, 17, CZ), 0x4b5753)); // hatch covers
+  BAYS.forEach((x, b) => { if (b < BAYS.length - 1 && b !== 14) for (const z of [CZ - 21, CZ - 7, CZ + 7, CZ + 21]) P(box(1.2, 6.2, 1.2), at(x + 6.7, 21.1, z), 0x9aa0a6); if (b < BAYS.length - 1 && b !== 14) P(box(1.2, 0.6, 44), at(x + 6.7, 24.1, CZ), 0x9aa0a6); }); // lashing bridges
+  { const s = new THREE.Shape(); const xs = []; for (let x = -133; x <= -106; x += 1.5) xs.push(x); s.moveTo(-133, CZ); xs.forEach((x) => s.lineTo(x, CZ + half(x, 1) - 0.2)); for (let i = xs.length - 1; i >= 0; i--) s.lineTo(xs[i], CZ - half(xs[i], 1) + 0.2); P(new THREE.ExtrudeGeometry(s, { depth: 2.6, bevelEnabled: false }).rotateX(Math.PI / 2).translate(0, 18.6, 0), new THREE.Matrix4(), 0xc9cccf); } // the forecastle
+  P(box(1.2, 5.6, 42), at(-105.8, 18.8, CZ), WHITE); P(cyl(0.35, 0.45, 18, 8), at(-124, 27.6, CZ), WHITE); P(box(3, 1.4, 3), at(-118, 19.3, CZ - 8), DARK); P(box(3, 1.4, 3), at(-118, 19.3, CZ + 8), DARK); // breakwater, bow mast, windlasses
+  const house = portHouseTex(THREE); keep(house.map); keep(house.emis);
+  const houseMat = lit(reg(new THREE.MeshStandardMaterial({ map: house.map, emissiveMap: house.emis, emissive: 0x000000, roughness: 0.5 }), 0.3), "house");
+  mk(box(16, 32, 38), houseMat).position.set(105, 32, CZ);
+  P(box(12, 3.4, 48.4), at(104, 49.7, CZ), WHITE); P(box(12.2, 1.4, 48.6), at(104, 50, CZ), GLASS); P(box(1.2, 9, 1.2), at(104, 56, CZ), WHITE); P(box(1, 0.4, 7), at(104, 58.6, CZ), DARK); P(box(10, 0.5, 8), at(104, 51.6, CZ), 0xd5d8da); // bridge, radar mast
+  const funnel = portFunnel(THREE); keep(funnel.tex);
+  mk(box(10, 26, 14), lit(reg(new THREE.MeshStandardMaterial({ map: funnel.tex, roughness: 0.5 }), 0.3), "funnel")).position.set(151, 29, CZ);
+  for (const dz of [-3, 0, 3]) P(cyl(0.9, 0.9, 3, 12), at(150, 43.5, CZ + dz), BLACK);
+  P(box(12, 3.4, 46), at(163, 17.7, CZ), WHITE); P(box(8, 3, 3.4), at(166, 22, CZ - 18), 0xe0661c); P(box(9, 0.5, 4.5), at(166, 20.3, CZ - 18, 0, 0, 0.35), GREY); // poop deck, the lifeboat on its ramp
+
+  /* --- the containers: the ship's deck stacks and the yard's blocks (only the boxes the camera can see), sorted nearest first --- */
+  const BOXC = [[0x8b2e22, 10], [0xa23b28, 6], [0x1f4e8c, 9], [0x2c6aa8, 5], [0x16676c, 4], [0x3e7a3e, 3], [0x8d9399, 7], [0x6b7076, 4], [0xe6e6e1, 6], [0xd8701c, 4], [0xd9ad1f, 3], [0x6b4a33, 3], [0x6e2130, 3], [0x1d2b48, 4], [0xc5b28a, 2], [0x5a8fc6, 2]];
+  const WSUM = BOXC.reduce((s, [, w]) => s + w, 0);
+  const hashC = (a, b) => { let h = (a * 374761393 + b * 668265263) ^ 0x5bd1e995; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  const pickC = (u) => { let s = u * WSUM; for (const [c, w] of BOXC) { if ((s -= w) < 0) return c; } return BOXC[0][0]; };
+  const accentBox = (u) => u < 0.05;
+  const shipBoxes = [], yardBoxes = [];
+  const Hs = BAYS.map((x, b) => ROWS.map((z, i) => { let h = b <= 1 ? 4 + b : 7; if (i === 0 || i === 18) h -= 1; if (r() < 0.35) h -= 1; if (r() < 0.06) h -= 2; return Math.max(3, h); }));
+  for (const cr of CRANES) for (let i = 0; i < 4; i++) Hs[cr.bay][i] = Math.max(2, Hs[cr.bay][i] - 3); // rows already worked
+  const craneBay = new Set(CRANES.map((cr) => cr.bay));
+  BAYS.forEach((x, b) => ROWS.forEach((z, i) => {
+    const h = Hs[b][i];
+    for (let t = 0; t < h; t++) {
+      const show = craneBay.has(b) || t === h - 1 || i === 18 || Hs[b][i + 1] <= t || b === 0 || Hs[b - 1][i] <= t;
+      if (!show) continue;
+      const u = r(), item = { x, y: HATCH + t * TIER + TIER / 2, z, col: pickC(u), acc: accentBox(r()) };
+      shipBoxes.push(item);
+      for (const cr of CRANES) if (cr.bay === b && t === h - 1) { const j = cr.cols.indexOf(i); if (j >= 0) { cr.slots[j] = { item, x, z, top: HATCH + h * TIER }; item.acc = false; } }
+    }
+  }));
+  const SEGS = [-720, -460, -200, 60, 320];
+  for (let bi = 0; bi < (preview ? 5 : 10); bi++) for (const x0 of SEGS) {
+    const zb = -72 - 30 * bi, empties = x0 === 320 && bi > 2, H2 = [];
+    for (let rw = 0; rw < 6; rw++) { H2.push([]); for (let b = 0; b < 18; b++) H2[rw].push(empties ? (r() < 0.15 ? 0 : 5) : r() < 0.08 ? 0 : Math.floor(r(1, 5.6))); }
+    const camSide = x0 + 116 > C0.x ? -1 : 1;
+    for (let rw = 0; rw < 6; rw++) for (let b = 0; b < 18; b++) {
+      const h = H2[rw][b], x = x0 + 6.45 + b * 12.9, z = zb - 1.26 - rw * 2.52, bn = b + camSide;
+      for (let t = 0; t < h; t++) {
+        const show = t === h - 1 || rw === 0 || H2[rw - 1][b] <= t || bn < 0 || bn > 17 || H2[rw][bn] <= t;
+        if (!show) continue;
+        const u = empties ? hashC(x0, b + rw * 3) * 0.3 : r();
+        yardBoxes.push({ x, y: 4 + t * TIER + TIER / 2, z, col: pickC(u), acc: !empties && accentBox(r()) });
+      }
+    }
+  }
+  const boxGeo = keep(portBoxGeo(THREE, BL, TIER, BW));
+  const boxMat = lit(reg(new THREE.MeshStandardMaterial({ map: keep(portBoxTex(THREE)), roughness: 0.6, metalness: 0.25 }), 0.3), "box");
+  const stack = (items) => {
+    items.sort((a, b) => (a.x - C0.x) ** 2 + (a.z - C0.z) ** 2 - ((b.x - C0.x) ** 2 + (b.z - C0.z) ** 2));
+    const m = new THREE.InstancedMesh(keep(boxGeo.clone()), boxMat, items.length), c = new THREE.Color();
+    items.forEach((it, i) => { it.i = i; m.setMatrixAt(i, at(it.x, it.y, it.z)); m.setColorAt(i, c.setHex(it.col)); });
+    m.castShadow = m.receiveShadow = !preview; m.frustumCulled = false; world.add(m); keep(m);
+    return m;
+  };
+  const shipStack = stack(shipBoxes), yardStack = stack(yardBoxes);
+
+  /* --- the cranes: four at work over the ship, one at rest with its boom raised --- */
+  function addCrane(cx, raised) {
+    for (const lz of [-3, -33]) { P(box(26, 2.4, 2.4), at(cx, 6.3, lz), ACC); for (const lx of [-11, -6.5, 6.5, 11]) P(box(3.4, 2.0, 1.9), at(cx + lx, 5.0, lz), DARK); }
+    for (const lx of [-8.5, 8.5]) for (const lz of [-3, -33]) P(box(2.2, 43.5, 2.2), at(cx + lx, 29.25, lz), ACC); // the legs
+    for (const lx of [-8.5, 8.5]) P(box(2.0, 2.6, 32.2), at(cx + lx, 48.2, -18), ACC);
+    for (const lz of [-3, -33]) P(box(19, 2.4, 2.2), at(cx, 49.4, lz), ACC);
+    B([cx - 8.5, 9, -33], [cx + 8.5, 46, -33], 1.1, ACC); B([cx + 8.5, 9, -33], [cx - 8.5, 46, -33], 1.1, ACC); // the landside X-brace
+    for (const lx of [-8.5, 8.5]) B([cx + lx, 38, -33], [cx + lx, 47, -22], 1.0, ACC);
+    for (const gx of [-3.6, 3.6]) P(box(1.6, 3.0, 67), at(cx + gx, 52, -29.5), ACC); // the girders over the land
+    const ang = raised ? 1.36 : 0, dy = Math.sin(ang), dz = Math.cos(ang);
+    const bm = (s, gx = 0, up = 0) => [cx + gx, 52 + dy * s + up * dz, 4 + dz * s - up * dy]; // a point s metres out along the boom (up = off its axis)
+    const bq = (s, gx = 0, up = 0) => new THREE.Matrix4().compose(new THREE.Vector3(...bm(s, gx, up)), Q.setFromEuler(E.set(-ang, 0, 0)), ONE);
+    for (const gx of [-3.6, 3.6]) P(box(1.6, 3.0, 58), bq(29, gx), ACC); // the boom over the water
+    for (let s = 3; s < 58; s += 6.5) P(box(7.2, 0.7, 0.7), bq(s, 0, -1.2), ACC);
+    for (let zz = -60; zz < 4; zz += 6.5) P(box(7.2, 0.7, 0.7), at(cx, 50.8, zz), ACC);
+    P(box(9.6, 3.6, 2.6), bq(58.6), WHITE);
+    for (const gx of [-5.1, 5.1]) { P(box(1.1, 0.2, 66), at(cx + gx, 50.6, -29.5), GREY); P(box(1.1, 0.2, 57), bq(29, gx, -1.4), GREY); P(box(0.08, 1.1, 66), at(cx + gx * 1.1, 51.3, -29.5), GREY); }
+    for (const gx of [-4.2, 4.2]) { B([cx + gx, 53.5, -3], [cx + gx, 84, -9], 1.7, ACC); B([cx + gx, 53.5, -33], [cx + gx, 84, -9], 1.7, ACC); } // the A-frame
+    P(box(10.2, 2.2, 2.4), at(cx, 84.6, -9), ACC); P(box(7, 3, 4), at(cx, 87.1, -9), WHITE);
+    for (const gx of [-4.2, 4.2]) { for (const s of [20, 44]) B([cx + gx, 84, -9], bm(s, gx * 0.86, 1.5), 0.55, WHITE); B([cx + gx, 84, -9], [cx + gx * 0.86, 53.5, -60], 0.55, WHITE); } // fore- and backstays
+    P(box(11, 7, 15), at(cx, 57.5, -49), WHITE); P(box(11.05, 0.9, 15.05), at(cx, 59.2, -49), ACC); P(box(6.5, 3.2, 9), at(cx, 48.6, -55), WHITE); // machinery house, electrical room
+    P(box(2.4, 42, 2.4), at(cx + 11.2, 27, -33), GREY); // the stair tower
+    if (raised) { P(box(9, 2.2, 8), at(cx, 54.6, -40), GREY); P(box(12.2, 0.6, 2.4), at(cx, 44, -40), YEL); } // trolley parked over the land
+    return bm;
+  }
+  const GLOWS = []; // { p, s, c: [r, g, b], k: "night" | "red" | "tug" }
+  const glowAt = (p, s, c, k) => GLOWS.push({ p: new THREE.Vector3(...p), s, c, k });
+  for (const cr of CRANES) { const bm = addCrane(cr.x, false); for (const s of [12, 32, 52]) glowAt([cr.x, 49.4, bm(s)[2]], 2.6, [2.3, 2.25, 2.1], "night"); glowAt([cr.x, 49.4, -20], 2.6, [2.3, 2.25, 2.1], "night"); glowAt([cr.x, 89, -9], 1.4, [2.4, 0.2, 0.12], "red"); glowAt(bm(60.5, 0, 1.6), 1.2, [2.4, 0.2, 0.12], "red"); }
+  for (const ix of IDLES) { const bm = addCrane(ix, true); glowAt([ix, 89, -9], 1.4, [2.4, 0.2, 0.12], "red"); glowAt(bm(60.5, 0, 1.6), 1.2, [2.4, 0.2, 0.12], "red"); }
+
+  /* --- high masts, the yard's RTG cranes, buildings, a tank farm --- */
+  for (const [x, z] of MASTS) { P(cyl(0.45, 0.8, 34, 10), at(x, 21, z), 0x9aa0a6); P(box(4.4, 1.2, 4.4), at(x, 38.4, z), DARK); glowAt([x, 37.8, z], 3.2, [2.3, 2.15, 1.9], "night"); }
+  const RTGS = [{ x: -150, zb: -102 }, { x: 140, zb: -72 }, { x: 410, zb: -132 }];
+  for (const g of RTGS) {
+    const zf = g.zb + 1.4, zk = g.zb - 21.5, zc = (zf + zk) / 2;
+    for (const lx of [-6.4, 6.4]) { for (const lz of [zf, zk]) { P(box(1.3, 21, 1.6), at(g.x + lx, 15.5, lz), WHITE); P(cyl(1.0, 1.0, 1.2, 12).rotateX(Math.PI / 2), at(g.x + lx, 5, lz), BLACK); } P(box(1.3, 1.9, zf - zk + 1.6), at(g.x + lx, 27, zc), ACC); P(box(1.5, 1.2, zf - zk), at(g.x + lx, 6.3, zc), WHITE); }
+    for (const lz of [zf, zk]) P(box(14.1, 1.4, 1.4), at(g.x, 27, lz), ACC);
+    P(box(3.6, 3, 5), at(g.x + 8.5, 24, zk + 3), WHITE);
+    g.zf = zf; g.zk = zk;
+  }
+  P(box(6, 36, 6), at(-262, 22, -36), 0xbfc2c4); P(box(11, 5, 11), at(-262, 42.5, -36), GLASS); P(box(12, 1, 12), at(-262, 45.5, -36), WHITE); glowAt([-262, 42.5, -30], 4, [2.2, 2.0, 1.6], "night"); // the operations tower
+  for (let f = 0; f < 4; f++) { P(box(42, 2.6, 20), at(-335, 5.3 + f * 4, -44), WHITE); P(box(42.2, 1.4, 20.2), at(-335, 7.3 + f * 4, -44), 0x2c3a48); } // the office
+  P(box(70, 16, 36), at(640, 12, -130), 0xb7bcc0); P(box(71, 1.5, 37), at(640, 20.6, -130), 0x3b5a7a); // workshop
+  for (let k = 0; k < 6; k++) { const x = 820 + (k % 3) * 40, z = -170 - Math.floor(k / 3) * 42; P(cyl(16, 16, 18, 24), at(x, 13, z), 0xe4e5e4); P(cyl(16.3, 16.3, 0.8, 24), at(x, 22.4, z), 0xb7bbbf); } // a tank farm
+  for (let k = 0; k < 4; k++) { P(box(110, 12, 34), at(-640, 10, -110 - k * 52), 0xa9a49a); P(box(111, 1, 35), at(-640, 16.5, -110 - k * 52), 0x6b5a4c); } // old warehouses
+  const site = mk(mergeColored(THREE, S), siteMat);
+  { // beyond the fence: sheds, warehouses and works thinning out towards the hills, clumps of trees, the streets' lamps
+    const bldMat = lit(reg(new THREE.MeshStandardMaterial({ roughness: 0.85 })), "bld"), inner = bldMat.onBeforeCompile;
+    bldMat.onBeforeCompile = (sh) => { inner(sh); sh.fragmentShader = sh.fragmentShader.replace("totalEmissiveRadiance += portNight(diffuseColor.rgb, normal);", "totalEmissiveRadiance += portNight(diffuseColor.rgb, normal);\n  { vec3 wn = (vec4(normal, 0.0) * viewMatrix).xyz; vec2 cell = floor(vec2(vPW.x + vPW.z, vPW.y) / vec2(4.2, 3.4)); vec2 f = fract(vec2(vPW.x + vPW.z, vPW.y) / vec2(4.2, 3.4)); float lit = step(0.62, fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453)) * step(0.25, f.x) * step(f.x, 0.75) * step(0.3, f.y) * step(f.y, 0.75) * step(abs(wn.y), 0.5) * step(5.5, vPW.y);\n    totalEmissiveRadiance += vec3(1.0, 0.78, 0.48) * lit * uNight * 1.3; }"); }; // windows lit at night
+    const NBLD = preview ? 260 : 900, bld = new THREE.InstancedMesh(keep(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)), bldMat, NBLD), c = new THREE.Color();
+    let n = 0;
+    for (let tries = 0; n < NBLD && tries < NBLD * 4; tries++) {
+      const x = r(-2600, 2600), z = -430 - Math.pow(r(), 1.6) * 2600;
+      if (x > 600 && x < 1100 && z > -330) continue;
+      const far = (-430 - z) / 2600, w = r(18, 90) * (1 - far * 0.3), d2 = r(16, 60), h = r(6, 24) * (r() < 0.06 ? 2.2 : 1);
+      bld.setMatrixAt(n, new THREE.Matrix4().compose(V.set(x, 4, z), Q.setFromEuler(E.set(0, r() < 0.7 ? 0 : r(-0.4, 0.4), 0)), V2.set(w, h, d2)));
+      bld.setColorAt(n, c.setHex([0xc9c6be, 0xb4b1aa, 0xd9d6cf, 0x9fa3a6, 0xa66a52, 0x7d8b97, 0xc2b49a][Math.floor(r(0, 7))]));
+      if (r() < 0.25) glowAt([x + r(-20, 20), 10, z + d2 / 2 + 4], 2.2 + far * 4, [2.2, 1.6, 0.9], "night");
+      n++;
+    }
+    bld.count = n; bld.castShadow = false; bld.receiveShadow = !preview; world.add(bld); keep(bld);
+    const NTR = preview ? 300 : 1100, trees = new THREE.InstancedMesh(keep(new THREE.IcosahedronGeometry(1, 0).scale(1, 0.7, 1).translate(0, 0.6, 0)), lit(reg(new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true })), "tree"), NTR);
+    for (let i = 0; i < NTR; i++) {
+      const cx2 = r(-2600, 2600), cz2 = -420 - Math.pow(r(), 1.3) * 2400, s2 = r(5, 11);
+      trees.setMatrixAt(i, new THREE.Matrix4().compose(V.set(cx2 + r(-30, 30), 4, cz2 + r(-30, 30)), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s2, s2 * r(0.8, 1.3), s2)));
+      trees.setColorAt(i, c.setHex([0x4c6a34, 0x5a7a3a, 0x3f5a2c, 0x6b7f45][Math.floor(r(0, 4))]));
+    }
+    trees.receiveShadow = !preview; world.add(trees); keep(trees);
+  }
+
+  /* --- the moving parts: trolleys, spreaders, ropes, the boxes they carry, trucks, the tug --- */
+  const trolleyGeo = mergeColored(THREE, [[box(9.4, 2.2, 8), at(0, 0, 0), GREY], [box(9.6, 0.4, 8.4), at(0, 1.25, 0), DARK], [box(1.2, 6.4, 1.2), at(-1.4, -4.2, 2.4), GREY], [box(2.8, 3.0, 3.2), at(-1.4, -8.4, 2.6), WHITE], [box(2.6, 1.5, 0.12), at(-1.4, -8.1, 4.25), GLASS], [box(2.6, 0.12, 2.9), at(-1.4, -9.95, 2.6), GLASS]]);
+  const trolleys = new THREE.InstancedMesh(keep(trolleyGeo), siteMat, CRANES.length + RTGS.length);
+  const spreaderGeo = mergeColored(THREE, [[box(12.2, 0.5, 2.4), at(0, 0.25, 0), YEL], [box(12.4, 0.3, 0.3), at(0, 0.6, 1.05), YEL], [box(12.4, 0.3, 0.3), at(0, 0.6, -1.05), YEL], [box(3, 1.3, 2.1), at(0, 1.3, 0), DARK]]);
+  const spreaders = new THREE.InstancedMesh(keep(spreaderGeo), siteMat, CRANES.length + RTGS.length);
+  const NT = CRANES.length * 6, NMOVE = CRANES.length + NT + RTGS.length;
+  const movers = new THREE.InstancedMesh(keep(boxGeo.clone()), boxMat, NMOVE);
+  const truckGeo = mergeColored(THREE, [[box(3.4, 2.6, 2.5), at(7.6, 2.4, 0), 0xe7e9ea], [box(1.0, 1.0, 2.4), at(9.4, 1.5, 0), 0xe7e9ea], [box(3.0, 0.9, 2.55), at(7.9, 3.0, 0), GLASS], [box(16.6, 0.45, 1.0), at(1.4, 0.95, 0), DARK], [box(12.5, 0.35, 2.44), at(-0.6, 1.45, 0), 0x3a3c3f], ...[8.6, 6.4, -4.4, -5.8].flatMap((x) => [-1.05, 1.05].map((z) => [cyl(0.5, 0.5, 0.36, 12).rotateX(Math.PI / 2), at(x, 0.5, z), BLACK]))]);
+  const trucks = new THREE.InstancedMesh(keep(truckGeo), siteMat, NT);
+  for (const m of [trolleys, spreaders, movers, trucks]) { m.castShadow = m.receiveShadow = !preview; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); }
+  movers.setColorAt(0, new THREE.Color()); movers.instanceColor.setUsage(THREE.DynamicDrawUsage);
+  const ropePos = new Float32Array((CRANES.length + RTGS.length) * 8 * 3), ropeGeo = keep(new THREE.BufferGeometry());
+  ropeGeo.setAttribute("position", new THREE.BufferAttribute(ropePos, 3)); ropeGeo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+  const ropes = new THREE.LineSegments(ropeGeo, keep(new THREE.LineBasicMaterial({ color: 0x2c2e30 }))); ropes.frustumCulled = false; world.add(ropes);
+  { // mooring lines and the cranes' handrails: still lines
+    const L = [], sagLine = (a, b, sag, n = 14) => { for (let i = 0; i < n; i++) for (const t of [i / n, (i + 1) / n]) L.push(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - sag * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t); };
+    for (const [a, b] of [[[-125, 17.5, 3.6], [-163, 4.9, -1.6]], [[-123, 17.5, 3.6], [-141, 4.9, -1.6]], [[-96, 16.5, 3.2], [-53, 4.9, -1.6]], [[160, 17.5, 3.6], [195, 4.9, -1.6]], [[162, 17.5, 3.6], [173, 4.9, -1.6]], [[122, 16.5, 3.2], [85, 4.9, -1.6]]]) sagLine(a, b, 1.6);
+    const lg = keep(new THREE.BufferGeometry()); lg.setAttribute("position", new THREE.Float32BufferAttribute(L, 3));
+    world.add(new THREE.LineSegments(lg, keep(new THREE.LineBasicMaterial({ color: 0x3a3226 }))));
+  }
+  const tug = new THREE.Group(); world.add(tug);
+  { const T = [], hull = (y0, h, hex) => { const s = new THREE.Shape(); s.moveTo(-14, -5.4); s.lineTo(8, -5.4); s.quadraticCurveTo(15, -5, 16.5, 0); s.quadraticCurveTo(15, 5, 8, 5.4); s.lineTo(-14, 5.4); s.quadraticCurveTo(-15.2, 0, -14, -5.4); T.push([new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false }).rotateX(-Math.PI / 2).translate(0, y0, 0), new THREE.Matrix4(), hex]); };
+    hull(-0.3, 1.9, 0xa3302a); hull(1.6, 1.9, 0x1e1f21); hull(3.5, 0.5, ACC);
+    T.push([box(10, 3, 7.4), at(-2, 5.4, 0), WHITE], [box(5.6, 2.8, 6.4), at(1.5, 8.2, 0), WHITE], [box(5.8, 1.0, 6.6), at(1.5, 8.5, 0), GLASS], [box(0.35, 6.5, 0.35), at(0.8, 12.6, 0), YEL], [box(1.2, 2.4, 1.2), at(-4.2, 7.9, 1.8), BLACK], [box(1.2, 2.4, 1.2), at(-4.2, 7.9, -1.8), BLACK], [box(2.4, 1.6, 3), at(-10, 4.6, 0), DARK], [box(2.2, 1.3, 9.2), at(14.2, 3.2, 0), BLACK]);
+    mk(mergeColored(THREE, T), siteMat, tug, false);
+  }
+  glowAt([0, 15.6, 0], 1.1, [2.3, 2.3, 2.2], "tug"); glowAt([0, 14.6, 0], 1.0, [2.3, 2.3, 2.2], "tug"); glowAt([2.2, 9.6, 3.6], 0.9, [2.4, 0.2, 0.15], "tug"); glowAt([2.2, 9.6, -3.6], 0.9, [0.2, 2.2, 0.6], "tug"); glowAt([-14, 5, 0], 0.9, [2.3, 2.3, 2.2], "tug");
+  for (const [x, y, z] of [[-124, 37, CZ], [104, 60.5, CZ], [97, 46, CZ + 20], [97, 46, CZ - 8], [170, 20, CZ], [-104, 22, CZ + 22], [-40, 26, CZ + 23], [40, 26, CZ + 23]]) glowAt([x, y, z], 1.6, [2.3, 2.1, 1.7], "night"); // the ship's lights
+  for (const [x, z] of [[-900, 520], [-760, 640]]) glowAt([x, 12, z], 2.2, x < -800 ? [0.2, 2.2, 0.6] : [2.4, 0.2, 0.15], "red"); // the harbour entrance
+  const gullGeo = keep(lhGull(THREE)), NGULL = preview ? 3 : 6, aGull = new THREE.InstancedBufferAttribute(new Float32Array(NGULL * 2), 2);
+  aGull.setUsage(THREE.DynamicDrawUsage); gullGeo.setAttribute("aGull", aGull);
+  const gullMesh = new THREE.InstancedMesh(gullGeo, shader(LH_GULL_VS, LH_GULL_FS, { uBody: { value: new THREE.Color("#f5f7f9") }, uWing: { value: new THREE.Color("#c2c9d1") }, uTip: { value: new THREE.Color("#1c2025") } }, { side: THREE.DoubleSide }), NGULL);
+  gullMesh.frustumCulled = false; gullMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(gullMesh); keep(gullMesh);
+  const gulls = Array.from({ length: NGULL }, () => ({ a: r(0, 6.28), R: r(25, 55), w: (r() < 0.5 ? -1 : 1) * r(0.06, 0.11), h: r(46, 70), cx: r(-80, 60), cz: r(0, 50), beat: r(0, 6.28), amp: 0.3, flap: r() < 0.5, timer: r(1, 4) }));
+  // the glows, all in one instanced draw (double-sided: the mirrored pass turns them round)
+  const NG = GLOWS.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NG * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NG * 3), 3);
+  aGlow.setUsage(THREE.DynamicDrawUsage); glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.instanceCount = NG;
+  GLOWS.forEach((gl, i) => aTint.setXYZ(i, ...gl.c));
+  const glowU = { uMap: { value: glow }, uTime: time, uAmt: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(PARIS_GLOW_VS, PARIS_GLOW_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- light: the low sun from the sea side (the moon at night) with shadows, the sky --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.set(0, 20, -40);
+  if (!preview) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.06; }
+  world.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 700, 9000);
+  const shadowFit = () => { const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true); const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity); for (const x of [-210, 240]) for (const y of [0, 92]) for (const z of [-160, 60]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); } Object.assign(cam, { left: lo.x, right: hi.x, bottom: lo.y, top: hi.y, near: Math.max(1, -hi.z - 50), far: -lo.z + 50 }); cam.updateProjectionMatrix(); };
+  let shadowsOn = false, gone = false, rend = null, shadowDirty = true, shadowClock = 0;
+  ground.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true; rend = renderer;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); funnel.draw("#" + new THREE.Color(p.accent).getHexString());
+    const c = new THREE.Color();
+    for (const [m, items] of [[shipStack, shipBoxes], [yardStack, yardBoxes]]) { for (const it of items) if (it.acc) m.setColorAt(it.i, c.set(p.accent).multiplyScalar(0.85)); m.instanceColor.needsUpdate = true; }
+    env?.dispose(); env = portEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyUni.uZenith.value.set(d ? "#040815" : "#4a73b8"); skyUni.uMid.value.set(d ? "#0b1430" : "#9fbde3"); skyUni.uHorizon.value.set(d ? "#1a2850" : "#efd5bb"); skyUni.uGlow.value.set(d ? "#1d2440" : "#f6c79a").multiplyScalar(d ? 0.35 : 0.3); skyUni.uSunDir.value.copy(SUN); skyUni.uSun.value = d ? 0 : 1.1;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudUni.uSunDir.value.copy(L); cloudUni.uLit.value.set(d ? "#2c3654" : "#fff1de"); cloudUni.uShade.value.set(d ? "#141a2c" : "#a6b2c8"); cloudUni.uGlow.value.set(d ? "#3a4870" : "#ffc690").multiplyScalar(d ? 0.3 : 0.5); cloudUni.uHaze.value.set(d ? "#18233f" : "#dcd6d2");
+    hillU.uBody.value.set(d ? "#0e1424" : "#8d97a8"); hillU.uRim.value.set("#ffd29a").multiplyScalar(d ? 0 : 0.18); hillU.uLights.value.set(d ? "#ffc070" : "#000000");
+    cityU.uBody.value.set(d ? "#0c1222" : "#9aa4b4"); cityU.uWin.value.set(d ? "#ffcf8a" : "#000000").multiplyScalar(0.9); cityU.uRed.value.set(d ? "#ff3020" : "#000000");
+    waterU.uSunDir.value.copy(L); waterU.uSunCol.value.set(d ? "#c9d6ff" : "#ffdcb0").multiplyScalar(d ? 0.35 : 1.0); waterU.uGlint.value = d ? 0.1 : 1;
+    waterU.uDeep.value.set(d ? "#02060c" : "#1d3a44"); waterU.uFoam.value.set(d ? "#3a4a62" : "#f4f6f4"); waterU.uHaze.value.set(d ? "#0d1428" : "#d7d3cf");
+    sun.position.copy(L).multiplyScalar(500).add(sun.target.position); sun.color.set(d ? "#9fb4e8" : "#ffd3a0"); sun.intensity = d ? 0.3 : 3.0;
+    hemi.color.set(d ? "#1b2440" : "#b4c8e8"); hemi.groundColor.set(d ? "#0b0a09" : "#6f685a"); hemi.intensity = d ? 0.32 : 0.95;
+    scene.fog.color.set(d ? "#0d1428" : "#d6d3d0"); scene.fog.near = d ? 500 : 520; scene.fog.far = d ? 6500 : 5600;
+    nightU.uNight.value = d ? 1 : 0;
+    houseMat.emissive.set(d ? "#ffffff" : "#000000");
+    glowU.uAmt.value = 1;
+    shadowFit(); shadowDirty = true;
+  }
+  applyPalette(pal);
+
+  /* --- the cranes' program: a dual cycle (import off the ship onto a truck, export off another truck into the same slot) --- */
+  const PH = [[10, 1, 0], [6, 0, 2], [1.5, 0, 0], [6, 0, 1], [10, 2, 0], [5, 0, 3], [1.5, 0, 0], [4, 0, 1], [6, 0, 0], [4, 0, 3], [1.5, 0, 0], [5, 0, 1], [10, 1, 0], [6, 0, 2], [1.5, 0, 0], [5, 0, 1], [10, 2, 0]]; // seconds, trolley to (1 slot, 2 lane), hoist to (1 travel, 2 the slot, 3 a truck)
+  const PT = []; let CYCLE = 0; for (const [d] of PH) { PT.push(CYCLE); CYCLE += d; }
+  const Y_TRUCK = CHASSIS + TIER;
+  function craneAt(cr, tc, slot) {
+    let z = cr.lane, y = Y_TRAVEL;
+    for (let i = 0; i < PH.length; i++) {
+      const [d, tz, ty] = PH[i], z1 = tz === 1 ? slot.z : tz === 2 ? cr.lane : z, y1 = ty === 1 ? Y_TRAVEL : ty === 2 ? slot.top : ty === 3 ? Y_TRUCK : y;
+      if (tc < PT[i] + d) { const u = (tc - PT[i]) / d, e = u * u * (3 - 2 * u); return { ph: i, z: z + (z1 - z) * e, y: y + (y1 - y) * e, acc: ((z1 - z) * (6 - 12 * u)) / (d * d) }; }
+      z = z1; y = y1;
+    }
+    return { ph: PH.length - 1, z, y, acc: 0 };
+  }
+  const exportColor = (cr, n) => pickC(hashC(cr.c * 977 + 13, n));
+  const colorBefore = (cr, j, n) => (n - 3 >= 0 ? exportColor(cr, n - 3) : cr.slots[j].item.col); // what stands in column j when cycle n comes to it
+  // the trucks' roads: in from the yard at x 306, along the crane's lane to the crane, on, and out into the yard at x −214
+  const roadPts = (pts) => { const out = [pts[0]]; for (let i = 1; i < pts.length - 1; i++) { const [ax, az] = pts[i - 1], [bx, bz] = pts[i], [cx2, cz2] = pts[i + 1], r1 = 8, d1 = Math.hypot(bx - ax, bz - az), d2 = Math.hypot(cx2 - bx, cz2 - bz); const p0 = [bx + ((ax - bx) / d1) * r1, bz + ((az - bz) / d1) * r1], p2 = [bx + ((cx2 - bx) / d2) * r1, bz + ((cz2 - bz) / d2) * r1]; for (let k = 0; k <= 6; k++) { const t = k / 6; out.push([(1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * bx + t * t * p2[0], (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * bz + t * t * p2[1]]); } } out.push(pts[pts.length - 1]); const len = [0]; for (let i = 1; i < out.length; i++) len.push(len[i - 1] + Math.hypot(out[i][0] - out[i - 1][0], out[i][1] - out[i - 1][1])); return { p: out, len, L: len[len.length - 1] }; };
+  for (const cr of CRANES) { cr.pin = roadPts([[306, -430], [306, cr.lane], [cr.x - 0.6, cr.lane]]); cr.pout = roadPts([[cr.x - 0.6, cr.lane], [-214, cr.lane], [-214, -430]]); } // stops with its box under the spreader
+  const along = (path, s, out) => { let i = 1; while (i < path.len.length - 1 && path.len[i] < s) i++; const t = Math.min(1, Math.max(0, (s - path.len[i - 1]) / Math.max(1e-6, path.len[i] - path.len[i - 1]))), a = path.p[i - 1], b = path.p[i]; out.x = a[0] + (b[0] - a[0]) * t; out.z = a[1] + (b[1] - a[1]) * t; out.yaw = Math.atan2(-(b[1] - a[1]), b[0] - a[0]); return out; };
+  const VT = 8, TB = 4, dist = (tau) => (tau <= TB ? (VT * tau * tau) / (2 * TB) : VT * tau - (VT * TB) / 2);
+  const HIDE = new THREE.Matrix4().makeScale(0, 0, 0), mT = new THREE.Matrix4(), mB = new THREE.Matrix4(), P3 = { x: 0, z: 0, yaw: 0 }, col3 = new THREE.Color();
+  const slotState = new Map();
+  function truckAt(cr, arr, dep, t) { // where a truck that stops under the crane from arr to dep is at t (null: not on the map)
+    if (t < arr) { const s = cr.pin.L - dist(arr - t); return s < 0 ? null : along(cr.pin, s, P3); }
+    if (t <= dep) return along(cr.pin, cr.pin.L, P3);
+    const s = dist(t - dep); return s > cr.pout.L ? null : along(cr.pout, s, P3);
+  }
+  const look = new THREE.Vector3();
+  let clock = 0, sway = 0, tugA = -1.3;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 42 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const s = Math.sin(sway) * 3;
+    camera.position.set(C0.x + s - k * 40, C0.y + k * 12, C0.z - k * 40);
+    camera.lookAt(look.set(30 - k * 85 + s * 0.4, 6 + k * 14, -70));
+    camera.updateMatrixWorld();
+  }
+  // the reflection: before each frame the world is drawn mirrored (half resolution, no shadows looked up, the far yard left out)
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    if (rend && shadowsOn && shadowDirty) { renderer.shadowMap.needsUpdate = true; shadowDirty = false; }
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf); waterU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    const su = renderer.shadowMap.needsUpdate; renderer.shadowMap.needsUpdate = false;
+    world.scale.y = -1; water.visible = false; yardStack.visible = false; sun.shadow.intensity = 0;
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    world.scale.y = 1; water.visible = true; yardStack.visible = true; sun.shadow.intensity = 1;
+    world.updateMatrixWorld(true);
+    renderer.shadowMap.needsUpdate = su;
+    reflecting = false;
+  };
+
+  function frame(dt) {
+    clock += dt; time.value = clock; sway = clock * 0.02;
+    let ri = 0;
+    const rope = (x0, y0, z0, x1, y1, z1) => { ropePos.set([x0, y0, z0, x1, y1, z1], ri); ri += 6; };
+    CRANES.forEach((cr, ci) => {
+      const tt = clock + cr.off, n = Math.floor(tt / CYCLE), tc = tt - n * CYCLE, j = n % 3, slot = cr.slots[j], st = craneAt(cr, tc, slot);
+      const Lr = Math.max(4, 53 - st.y);
+      cr.sv += (-(9.81 / Lr) * cr.sw - 0.4 * cr.sv - st.acc / Lr) * dt; cr.sw += cr.sv * dt; cr.sw = Math.max(-0.05, Math.min(0.05, cr.sw)); // the spreader swings a little as the trolley starts and stops
+      const sz = st.z + Lr * cr.sw;
+      trolleys.setMatrixAt(ci, mT.makeTranslation(cr.x, 54.6, st.z));
+      spreaders.setMatrixAt(ci, mT.makeTranslation(cr.x, st.y, sz));
+      for (const [dx, dz] of [[-1.1, -0.9], [1.1, -0.9], [-1.1, 0.9], [1.1, 0.9]]) rope(cr.x + dx, 53.4, st.z + dz, cr.x + dx * 0.5, st.y + 1.9, sz + dz * 0.5);
+      const carryI = st.ph >= 3 && st.ph <= 6, carryX = st.ph >= 11 && st.ph <= 14;
+      if (carryI || carryX) { movers.setMatrixAt(ci, mT.makeTranslation(cr.x, st.y - TIER / 2, sz)); movers.setColorAt(ci, col3.setHex(carryI ? colorBefore(cr, j, n) : exportColor(cr, n))); } else movers.setMatrixAt(ci, HIDE);
+      cr.slots.forEach((s2, jj) => { // the worked columns' top boxes: gone while the crane has the box, the new colour once it is down
+        let show = true, c;
+        if (jj === j) { if (st.ph >= 3 && st.ph <= 14) show = false; c = st.ph < 3 ? colorBefore(cr, j, n) : exportColor(cr, n); }
+        else { const m = n - ((n - jj + 3) % 3); c = m >= 0 ? exportColor(cr, m) : s2.item.col; }
+        const key = show ? c : -1;
+        if (slotState.get(s2.item) !== key) { slotState.set(s2.item, key); shipStack.setMatrixAt(s2.item.i, show ? at(s2.item.x, s2.item.y, s2.item.z) : HIDE); if (show) shipStack.setColorAt(s2.item.i, col3.setHex(c)); shipStack.instanceMatrix.needsUpdate = true; shipStack.instanceColor.needsUpdate = true; }
+      });
+      for (let m = n - 1; m <= n + 1; m++) { // this cycle's trucks and its neighbours'
+        const T0 = m * CYCLE - cr.off, slotI = ci * 6 + (((m % 3) + 3) % 3) * 2;
+        for (const kind of [0, 1]) {
+          const idx = slotI + kind, arr = T0 + (kind ? PT[9] - 0.3 : PT[5] - 1.0), dep = T0 + (kind ? PT[12] + 0.3 : PT[8] + 0.2), p = m < 0 ? null : truckAt(cr, arr, dep, clock);
+          if (!p) { trucks.setMatrixAt(idx, HIDE); movers.setMatrixAt(CRANES.length + idx, HIDE); continue; }
+          mT.compose(V.set(p.x, 4, p.z), Q.setFromEuler(E.set(0, p.yaw, 0)), ONE); trucks.setMatrixAt(idx, mT);
+          const loaded = kind ? clock < T0 + PT[11] : clock >= T0 + PT[7];
+          if (loaded) { mB.copy(mT).multiply(new THREE.Matrix4().makeTranslation(-0.6, 1.625 + TIER / 2, 0)); movers.setMatrixAt(CRANES.length + idx, mB); movers.setColorAt(CRANES.length + idx, col3.setHex(kind ? exportColor(cr, m) : colorBefore(cr, ((m % 3) + 3) % 3, m))); } else movers.setMatrixAt(CRANES.length + idx, HIDE);
+        }
+      }
+    });
+    RTGS.forEach((g, k) => { // the yard cranes stack and unstack, slowly
+      const u = (clock * 0.025 + k * 0.37) % 1, zt = g.zk + 3 + (g.zf - g.zk - 6) * (0.5 - 0.5 * Math.cos(u * Math.PI * 2)), ys = 15 + 6 * Math.sin(u * Math.PI * 4 + k);
+      trolleys.setMatrixAt(CRANES.length + k, mT.compose(V.set(g.x, 28.6, zt), Q.identity(), V2.set(0.62, 0.6, 0.5)));
+      spreaders.setMatrixAt(CRANES.length + k, mT.makeTranslation(g.x, ys, zt));
+      movers.setMatrixAt(CRANES.length + NT + k, mT.makeTranslation(g.x, ys - TIER / 2, zt)); movers.setColorAt(CRANES.length + NT + k, col3.setHex(pickC(hashC(k, 7))));
+      for (const [dx, dz] of [[-0.9, -0.7], [0.9, -0.7], [-0.9, 0.7], [0.9, 0.7]]) rope(g.x + dx, 27.8, zt + dz, g.x + dx * 0.5, ys + 1.9, zt + dz * 0.5);
+    });
+    for (const m of [trolleys, spreaders, movers, trucks]) m.instanceMatrix.needsUpdate = true;
+    movers.instanceColor.needsUpdate = true; ropeGeo.attributes.position.needsUpdate = true;
+    // the tug runs a long loop round the basin
+    tugA += dt * 0.0125;
+    const ta = 420, tb = 95, tx = 90 + ta * Math.cos(tugA), tz = 215 + tb * Math.sin(tugA), vx = -ta * Math.sin(tugA), vz = tb * Math.cos(tugA), head = Math.atan2(vz, vx);
+    tug.position.set(tx, Math.sin(clock * 0.9) * 0.15, tz); tug.rotation.set(Math.sin(clock * 0.7) * 0.012, -head, Math.sin(clock * 1.1) * 0.02);
+    waterU.uBoats.value[0].set(tx + Math.cos(head) * 14, tz + Math.sin(head) * 14, head, 1);
+    tug.updateMatrixWorld(true);
+    // gulls by day
+    gullMesh.visible = !pal.dark;
+    gulls.forEach((g, i) => {
+      if ((g.timer -= dt) <= 0) { g.flap = !g.flap; g.timer = g.flap ? r(1.2, 2.5) : r(3, 7); }
+      g.amp += ((g.flap ? 0.5 : 0.05) - g.amp) * Math.min(1, dt * 3); g.beat += dt * (g.flap ? 8 : 2); g.a += g.w * dt;
+      V.set(g.cx + Math.cos(g.a) * g.R, g.h + Math.sin(g.a * 0.6) * 3, g.cz + Math.sin(g.a) * g.R);
+      const gvx = -Math.sin(g.a) * g.R * g.w, gvz = Math.cos(g.a) * g.R * g.w;
+      E.set(0, Math.atan2(-gvx, -gvz), g.w > 0 ? 0.3 : -0.3, "YXZ");
+      gullMesh.setMatrixAt(i, mT.compose(V, Q.setFromEuler(E), V2.setScalar(2.2))); aGull.setXY(i, g.beat, g.amp);
+      E.order = "XYZ";
+    });
+    gullMesh.instanceMatrix.needsUpdate = aGull.needsUpdate = true;
+    // the glows: the lamps at night, aviation lights always (blinking), the tug's lights with the tug
+    const night = pal.dark ? 1 : 0, blink = Math.floor(clock * 0.9) % 2 === 0 ? 1 : 0.15;
+    GLOWS.forEach((gl, i) => {
+      let p = gl.p, s = gl.s;
+      if (gl.k === "tug") { p = V.copy(gl.p).applyMatrix4(tug.matrixWorld); s *= night; }
+      else if (gl.k === "red") s *= blink * (night ? 1 : 0.55);
+      else s *= night;
+      aGlow.setXYZW(i, p.x, p.y, p.z, s);
+    });
+    aGlow.needsUpdate = true;
+    if ((shadowClock += dt) > 0.3) { shadowClock = 0; shadowDirty = true; }
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { const cyc = CRANES.map((cr) => { const tt = clock + cr.off, n = Math.floor(tt / CYCLE); return `${n}:${craneAt(cr, tt - n * CYCLE, cr.slots[n % 3]).ph}`; }); return { cranes: cyc.join(" "), boxes: shipBoxes.length + yardBoxes.length, tug: +tug.position.x.toFixed(1), accent: "#" + accentU.value.getHexString(), night: nightU.uNight.value, shadows: shadowsOn }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; scene.onBeforeRender = () => {}; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

@@ -56,6 +56,7 @@ export const BG_STYLES = [
   { value: "robotfactory", label: "Robot factory", desc: "3D car body shop: robot arms weld the bodies on a moving line, sparks flying, robot carts gliding past; LED lines and welding flashes at night", three: true },
   { value: "v8engine", label: "V8 engine", desc: "3D cutaway V8 on an engine stand: pistons pumping, crank and camshafts turning, valves opening, coils firing 1-8-4-3-6-5-7-2; workshop light by day, a work lamp at night", three: true },
   { value: "rocketlaunch", label: "Rocket launch", desc: "3D seaside launch pad: the next rocket rolls out and is raised, the clock counts down, liftoff on fire and billowing smoke; floodlit at night", three: true },
+  { value: "containerport", label: "Container port", desc: "3D container terminal at golden hour: cranes unload and load a big ship, trucks shuttle the boxes, a tug passes; floodlit and mirrored in the harbour at night", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
