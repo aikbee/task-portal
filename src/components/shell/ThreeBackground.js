@@ -16402,7 +16402,692 @@ function airport(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport };
+/* ---------- Mountain railway: an alpine valley at sunset — a train in the accent livery crosses a curved stone viaduct, vanishes into a tunnel and stops at a mountain station ---------- */
+// One stateless schedule (the clock alone) brings a train down the valley side, stops it at the station, takes it over the viaduct
+// and into the tunnel, and later runs one the other way. The valley floor lies in the evening shade while the railway and the
+// peaks still catch the sun (a shade line in the lighting, no shadow map needed for the mountains).
+const MR_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uBelt; uniform vec3 uShadow; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uSun;
+  varying vec3 vDir;
+  void main() {
+    vec3 dir = normalize(vDir);
+    float h = abs(dir.y);
+    vec3 col = mix(uShadow, uBelt, smoothstep(0.004, 0.075, h)); // the earth's shadow low down, the pink belt above it
+    col = mix(col, uMid, smoothstep(0.07, 0.26, h));
+    col = mix(col, uZenith, smoothstep(0.22, 0.85, h));
+    float s = max(dot(dir, normalize(uSunDir)), 0.0);
+    col += uSunCol * uSun * (pow(s, 4.0) * 0.3 + pow(s, 24.0) * 0.45); // towards the sun, behind the camera
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// shared by every lit material: where the evening shade ends (the valley floor is already out of the sun) and the night's light pools
+const MR_COMMON_PARS = /* glsl */ `
+  uniform float uShadeY; uniform float uNight; uniform sampler2D uNightMap; uniform vec3 uPoolCol;
+  varying vec3 vPW;
+  float mrLit(vec3 p) { float line = uShadeY - 0.1 * p.x + 14.0 * sin(p.x * 0.0061 + p.z * 0.0043) + 9.0 * sin(p.x * 0.017 - p.z * 0.011); return smoothstep(line - 22.0, line + 22.0, p.y); }
+  vec3 mrPools(vec3 albedo) { if (uNight <= 0.0) return vec3(0.0); vec2 uv = vec2((vPW.x + 220.0) / 520.0, (vPW.z + 280.0) / 640.0); float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); return albedo * uPoolCol * texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside * uNight; }
+`;
+// the ground: meadows on the valley floor, forest on the slopes (the cover the trees were planted by), pasture, rock, snow; the
+// river's gravel and the village road
+const MR_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise;
+  varying vec3 vWN; varying vec3 vCover;
+  float mrRiverX(float z) { return 10.0 * sin(z / 160.0) + 5.0 * sin(z / 57.0 + 1.3); }
+  vec3 mrGround(vec3 p, vec3 n, out float snowAmt) {
+    float slope = 1.0 - n.y;
+    float n1 = texture2D(uNoise, p.xz * 0.0031).r, n2 = texture2D(uNoise, p.xz * 0.027 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.11 + 0.7).r;
+    vec3 meadow = mix(vec3(0.26, 0.38, 0.1), vec3(0.37, 0.44, 0.13), n1) * (0.86 + 0.28 * n2);
+    meadow = mix(meadow, meadow * vec3(1.1, 1.06, 0.85), vCover.y * 0.5 * step(0.5, fract(p.x * 0.09 + p.z * 0.02))); // hay meadows, mown in strips
+    vec3 alp = mix(vec3(0.42, 0.43, 0.2), vec3(0.33, 0.38, 0.16), n2) * (0.9 + 0.2 * n3); // the pasture above the trees
+    vec3 forest = vec3(0.06, 0.095, 0.05) * (0.8 + 0.4 * n3);
+    if (vCover.x > 0.02) forest *= 0.55 + 0.9 * texture2D(uNoise, p.xz * 0.21).g; // the canopy seen from afar: crowns and gaps
+    vec3 rock = mix(vec3(0.33, 0.32, 0.3), vec3(0.5, 0.48, 0.44), n3) * (0.8 + 0.4 * n2);
+    vec3 snow = vec3(0.92, 0.94, 0.97);
+    float tl = smoothstep(300.0, 460.0, p.y + 120.0 * (n1 - 0.5));
+    vec3 col = mix(meadow, alp, tl);
+    col = mix(col, forest, vCover.x);
+    float rk = max(smoothstep(0.4, 0.58, slope + 0.14 * (n2 - 0.5)), vCover.z);
+    if (rk > 0.01) { rock *= 0.86 + 0.2 * smoothstep(0.25, 0.75, fract(p.y * 0.19 + n2 * 0.9 + n1 * 0.6)) - 0.2 * smoothstep(0.58, 0.92, texture2D(uNoise, vec2(p.x + p.z, p.y * 0.25) * 0.06).r); col = mix(col, rock, rk); } // strata and cracks
+    float sl = 1150.0 + 280.0 * (n1 - 0.5) + 60.0 * (n3 - 0.5) - 420.0 * smoothstep(-4000.0, -7500.0, p.z); // lower on the range at the valley head
+    snowAmt = smoothstep(sl, sl + 80.0, p.y) * (1.0 - smoothstep(0.52, 0.74, slope + 0.12 * n2));
+    col = mix(col, snow, snowAmt);
+    float rx = mrRiverX(p.z), dr = abs(p.x - rx);
+    col = mix(col, vec3(0.5, 0.49, 0.46) * (0.82 + 0.36 * n3), (1.0 - smoothstep(9.0, 15.0, dr)) * (1.0 - vCover.x) * (1.0 - snowAmt) * smoothstep(-2700.0, -2500.0, p.z)); // gravel banks
+    float road = (1.0 - smoothstep(2.6, 3.4, abs(p.x - rx - 46.0))) * step(-300.0, p.z) * step(p.z, 900.0);
+    col = mix(col, vec3(0.25, 0.25, 0.26), road);
+    return col;
+  }
+`;
+// the river: glacial green-grey water streaming towards the camera, the sky in it at a grazing angle
+const MR_WATER_VS = /* glsl */ `
+  #include <fog_pars_vertex>
+  varying vec3 vPW; varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vPW = w.xyz;
+    vec4 mvPosition = viewMatrix * w;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+const MR_WATER_FS = /* glsl */ `
+  #include <fog_pars_fragment>
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uDeep; uniform vec3 uSky; uniform vec3 uFoam; uniform vec3 uGlint;
+  varying vec3 vPW; varying vec2 vUv;
+  void main() {
+    vec2 q = vec2(vPW.x * 0.06, vPW.z * 0.02 - uTime * 0.09);
+    float n = texture2D(uNoise, q).r * 0.6 + texture2D(uNoise, q * 2.7 + vec2(0.3, -uTime * 0.05)).g * 0.4;
+    vec3 toEye = normalize(cameraPosition - vPW);
+    float fres = 0.04 + 0.96 * pow(1.0 - clamp(toEye.y, 0.0, 1.0), 5.0);
+    vec3 col = mix(uDeep * (0.8 + 0.4 * n), uSky, clamp(fres * 0.7 + 0.06, 0.0, 1.0));
+    float edge = abs(vUv.y - 0.5) * 2.0;
+    col = mix(col, uFoam, smoothstep(0.82, 1.05, n + 0.3 * edge) * 0.35); // riffles and the white water along the banks
+    col += uGlint * smoothstep(0.8, 0.97, n) * 0.25;
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+  }
+`;
+/** Ashlar: courses of dressed stone in grey and ochre with mortar joints and weathering, tiling 8 m × 4 m (the viaduct, portals, walls). */
+function mrStone(THREE) {
+  const r = koiRng(311), W = 512, H = 256;
+  return canvasTexture(THREE, W, H, (g) => {
+    g.fillStyle = "#6f6a61"; g.fillRect(0, 0, W, H); // the mortar
+    const course = H / 8;
+    for (let row = 0; row < 8; row++) {
+      let x = -r(0, 60);
+      while (x < W) {
+        const w = r(38, 92), t = r(), base = [[150, 142, 128], [132, 126, 114], [160, 150, 132], [120, 116, 108], [142, 132, 112]][Math.floor(t * 5)];
+        const k = r(0.88, 1.08);
+        g.fillStyle = `rgb(${base[0] * k},${base[1] * k},${base[2] * k})`;
+        g.fillRect(x + 1.5, row * course + 1.5, w - 3, course - 3);
+        if (x + w > W) { g.fillRect(x + 1.5 - W, row * course + 1.5, w - 3, course - 3); } // wrap
+        g.fillStyle = "rgba(255,255,255,0.07)"; g.fillRect(x + 1.5, row * course + 1.5, w - 3, 3);
+        x += w;
+      }
+    }
+    for (let k = 0; k < 40; k++) { const x = r(0, W), w = r(4, 14); const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, "rgba(40,36,30,0)"); gr.addColorStop(r(0.3, 0.9), "rgba(40,36,30,0.16)"); gr.addColorStop(1, "rgba(40,36,30,0)"); g.fillStyle = gr; g.fillRect(x, 0, w, H); } // rain streaks
+  });
+}
+/** The train's livery in one atlas, redrawn for each accent: a coach side and the locomotive's side (top two bands), the cab front,
+ *  a coach end, the roof and a dark and a white patch; and the same atlas lit for the night (the windows only). */
+function mrLivery(THREE) {
+  const W = 2048, H = 1024, mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return c; };
+  const cA = mk(), cE = mk(), g = cA.getContext("2d"), e = cE.getContext("2d");
+  const tex = new THREE.CanvasTexture(cA), emis = new THREE.CanvasTexture(cE);
+  tex.colorSpace = emis.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = emis.anisotropy = 8;
+  const draw = (accent) => {
+    g.fillStyle = "#1c1f24"; g.fillRect(0, 0, W, H); e.fillStyle = "#000"; e.fillRect(0, 0, W, H);
+    // the coach side (0…256): body, a white band, the window band, two doors at the ends, the skirt
+    const side = (y0, loco) => {
+      g.fillStyle = accent; g.fillRect(0, y0, W, 256);
+      g.fillStyle = "rgba(0,0,0,0.18)"; g.fillRect(0, y0 + 226, W, 30); // the skirt in shadow
+      g.fillStyle = "#f2f2ef"; g.fillRect(0, y0 + 150, W, 12); // the white line
+      g.fillStyle = "rgba(255,255,255,0.12)"; g.fillRect(0, y0 + 4, W, 10);
+      if (!loco) {
+        g.fillStyle = "#20262e"; g.fillRect(150, y0 + 52, W - 300, 84); // the window band
+        e.fillStyle = "#000"; e.fillRect(150, y0 + 52, W - 300, 84);
+        for (let x = 150; x < W - 150; x += 118) { g.fillStyle = "#c9ccd0"; g.fillRect(x, y0 + 52, 8, 84); e.fillStyle = Math.sin(x * 12.9898) > -0.6 ? "#ffd59a" : "#ffe9c6"; e.fillRect(x + 12, y0 + 58, 100, 72); }
+        g.fillStyle = "rgba(255,255,255,0.18)"; g.fillRect(150, y0 + 52, W - 300, 10);
+        for (const x of [40, W - 120]) { g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(x, y0 + 30, 80, 196); g.fillStyle = "#2a3038"; g.fillRect(x + 14, y0 + 44, 52, 70); e.fillStyle = "#ffcf8a"; e.fillRect(x + 16, y0 + 46, 48, 66); } // doors
+      } else {
+        for (const [x, w] of [[30, 150], [W - 180, 150]]) { g.fillStyle = "#20262e"; g.fillRect(x, y0 + 40, w, 90); e.fillStyle = "#c8b896"; e.fillRect(x + 8, y0 + 46, w - 16, 78); } // the cabs' side windows
+        for (let x = 320; x < W - 330; x += 46) { g.fillStyle = "rgba(0,0,0,0.28)"; g.fillRect(x, y0 + 46, 30, 92); } // the grilles
+        g.fillStyle = "#f2f2ef"; g.font = "bold 74px Helvetica, Arial, sans-serif"; g.textBaseline = "middle"; g.textAlign = "center"; g.fillText("TASK PORTAL", W / 2, y0 + 196);
+      }
+    };
+    side(0, false); side(256, true);
+    // the cab front (0…256 × 512…768): the windscreen, the white face line, three headlamps
+    g.fillStyle = accent; g.fillRect(0, 512, 256, 256);
+    g.fillStyle = "#20262e"; g.fillRect(22, 548, 212, 82); e.fillStyle = "#6a5a40"; e.fillRect(28, 554, 200, 70);
+    g.fillStyle = "#f2f2ef"; g.fillRect(0, 662, 256, 12);
+    g.fillStyle = "#e8e8e2"; for (const [x, y] of [[40, 700], [216, 700], [128, 530]]) { g.beginPath(); g.arc(x, y, 12, 0, Math.PI * 2); g.fill(); }
+    // the coach end (256…512): the gangway bellows
+    g.fillStyle = accent; g.fillRect(256, 512, 256, 256); g.fillStyle = "#24272b"; g.fillRect(320, 530, 128, 238);
+    for (let y = 540; y < 768; y += 14) { g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(320, y, 128, 4); }
+    // the roof (512…1024): pale grey with seams; a dark patch and a white patch
+    g.fillStyle = "#9ea3a8"; g.fillRect(512, 512, 512, 256); for (let x = 512; x < 1024; x += 32) { g.fillStyle = "rgba(0,0,0,0.12)"; g.fillRect(x, 512, 3, 256); }
+    g.fillStyle = "#2b2e33"; g.fillRect(1040, 520, 64, 64); g.fillStyle = "#ffffff"; g.fillRect(1120, 520, 64, 64);
+    tex.needsUpdate = true; emis.needsUpdate = true;
+  };
+  // atlas regions in uv (u0, v0, u1, v1), v up
+  const R = (x0, y0, x1, y1) => [x0 / W, 1 - y1 / H, x1 / W, 1 - y0 / H];
+  return { tex, emis, draw, regions: { coach: R(0, 0, W, 256), loco: R(0, 256, W, 512), front: R(0, 512, 256, 768), end: R(256, 512, 512, 768), roof: R(512, 512, 1024, 768), dark: R(1048, 528, 1096, 576), white: R(1128, 528, 1176, 576) } };
+}
+/** The station's and the village's light at night from above, x −220…300, z −280…360: lamps' pools, the church floodlit. */
+function mrNightMap(THREE, pools) {
+  const W = 512, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 220) / 520) * W, Y = (z) => ((360 - z) / 640) * H;
+  for (const [x, z, rad, a] of pools) { g.save(); g.translate(X(x), Y(z)); g.scale((rad / 520) * W, (rad / 640) * H); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); [[0, 1], [0.3, 0.7], [0.6, 0.3], [0.8, 0.1], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(255,255,255,${a * k})`)); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the train's paint and the glass mirror: the evening sky over dark slopes, or the night. */
+function mrEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 256, 128, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#5f86c4"); gr.addColorStop(0.38, dark ? "#0a1430" : "#c9a8c4"); gr.addColorStop(0.49, dark ? "#16233f" : "#f2c9a8"); gr.addColorStop(0.52, dark ? "#06080a" : "#2c3424"); gr.addColorStop(1, dark ? "#030405" : "#1c2118");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function mountainrailway(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4417);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  const C0 = new THREE.Vector3(0, 102, 455), LOOK = new THREE.Vector3(-14, 55, 0); // across the village to the viaduct, the valley head beyond
+  camera.fov = 40; camera.near = 1; camera.far = 40000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 2; // the ground reads it four times per pixel at grazing angles: 8× anisotropy cost ~0.8 ms
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(2.42, 0.16), MOON = sph(-1.33, 0.165); // the sun low behind the camera's left shoulder; the moon up the valley, right
+  const ACC = 0xff00ff;
+
+  /* --- noise (fixed seed), the river, the track, the ground --- */
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const ridged = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { const k = 1 - Math.abs(vnoise(x, y) * 2 - 1); s += a * k * k; n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 17.3; y = (x * 0.6 + y * 0.8) * 2.03 - 9.1; x = nx; } return s / n; };
+  const riverX = (z) => 10 * Math.sin(z / 160) + 5 * Math.sin(z / 57 + 1.3);
+  const floorY = (z) => (z > 0 ? -0.01 * z : 0.03 * -z);
+  // the track: out of a tunnel in a sheer rock face straight onto the viaduct's arc over the gorge, a curve onto the right side and the
+  // straight up the valley
+  const RV = (150 * 150 + 17 * 17) / 34, OZ = 12 - RV, PHI = Math.asin(150 / RV); // the arc through (−150, −5), (0, 12), (150, −5)
+  const OUT = new THREE.Vector2(Math.cos(PHI), Math.sin(PHI)), PORT = new THREE.Vector2(-150, -5); // the tunnel's mouth at the viaduct's left end, facing along it
+  const H1 = new THREE.Vector2(Math.cos(PHI), -Math.sin(PHI)), R1 = 90, C1 = new THREE.Vector2(150 + R1 * H1.y, -5 - R1 * H1.x), A1 = Math.atan2(-5 - C1.y, 150 - C1.x), XS = C1.x + R1;
+  const yT = (z) => 60 + 0.012 * Math.max(0, -260 - z); // level to the station, then climbing up the valley
+  const TRACK = [];
+  const NT = 320, NV = Math.round(RV * 2 * PHI), NC = Math.round(R1 * A1), NS = 1300;
+  for (let i = 0; i < NT; i++) { const t = NT - i; TRACK.push([PORT.x - OUT.x * t, 60, PORT.y - OUT.y * t]); }
+  for (let i = 0; i < NV; i++) { const f = -PHI + (2 * PHI * i) / NV; TRACK.push([RV * Math.sin(f), 60, OZ + RV * Math.cos(f)]); }
+  for (let i = 0; i < NC; i++) { const a = A1 - (A1 * i) / NC; TRACK.push([C1.x + R1 * Math.cos(a), 60, C1.y + R1 * Math.sin(a)]); }
+  for (let i = 0; i <= NS; i++) { const z = C1.y - i; TRACK.push([XS, yT(z), z]); }
+  const S_PORTAL = NT, S_VEND = NT + NV, S_CEND = S_VEND + NC, S_SPUR = S_CEND + Math.round(652 + C1.y); // the spur tunnel's mouth up the valley at z −652
+  const trackAt = (s, out) => { const i = Math.max(0, Math.min(TRACK.length - 2, Math.floor(s))), f = Math.max(0, Math.min(1, s - i)), a = TRACK[i], b = TRACK[i + 1]; return out.set(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f); };
+  const trackXAt = (z) => (z >= -5 ? null : z > C1.y ? C1.x + Math.sqrt(Math.max(0, R1 * R1 - (z - C1.y) ** 2)) : XS);
+  const wallH = (d) => { if (d < 600) return 0.45 * d + 0.0002 * d * d; const e = Math.min(d, 2325) - 600; return 342 + e * (0.69 - 0.0002 * e); }; // a valley side's rise d metres beyond the floor: ~24° steepening to ~33°, easing off towards the ridges
+  const wallD = (h) => (-0.45 + Math.sqrt(0.2025 + 0.0008 * Math.max(0, h))) / 0.0004; // and back (below 342 m): where it reaches h
+  const WL = (z) => 25 + 115 * smooth(40, 180, z) + 120 * smooth(-40, -200, z) + 70 * smooth(-500, -900, z);
+  const WR = (z) => { const tx = trackXAt(z); if (tx === null) return 13 + 12 * smooth(-5, 40, z) + 115 * smooth(40, 180, z); const w = tx - riverX(z) - wallD(yT(z) - floorY(z)) - 6; return w + (215 - w) * smooth(-1700, -2200, z); }; // the right side's rail-level line a few metres beyond the track
+  const PEAKS = [[350, -8600, 3000, 1150], [-2000, -7600, 2600, 950], [-4300, -8300, 2800, 1050], [2500, -7300, 2400, 900], [4400, -8500, 2800, 1000]]; // the range closing the valley: a pyramid in the middle
+
+  function valleyH(x, z) {
+    const rx = riverX(z), left = x < rx, d = Math.abs(x - rx) - (left ? WL(z) : WR(z)), f = floorY(z);
+    let h = f + (fbm(x * 0.012, z * 0.012, 3) - 0.5) * 3;
+    if (d > 0) { // far up the valley the sides stay lower than the peaks at its head
+      const rg = ridged(x * 0.0021 + 3.1, z * 0.0021 - 1.7, 5), far = 1 - 0.42 * smooth(-1500, -3600, z);
+      h += (wallH(d) + Math.min(Math.max(0, d - 300), 1500) * 0.22 * (rg - 0.3)) * far + (fbm(x * 0.008, z * 0.008, 4) - 0.5) * 22 * smooth(0, 120, d);
+    }
+    const rw = 7 + 4 * smooth(0, 300, z);
+    h -= 2.2 * (1 - smooth(rw, rw + 7, Math.abs(x - rx))) * smooth(-2700, -2500, z); // the river's channel (ending where the water does)
+    let pk = 0;
+    for (const [px, pz, rad, ht] of PEAKS) { const q = 1 - Math.hypot(x - px, z - pz) / rad; if (q > 0) pk = Math.max(pk, ht * q ** 1.5); } // pyramids, faces steepening to the summit
+    if (pk > 1) h += pk * (0.82 + 0.36 * ridged(x * 0.0014 + 5.3, z * 0.0014 + 2.2, 5)) * smooth(-3000, -4500, z);
+    return h;
+  }
+  function groundH(x, z) {
+    let h = valleyH(x, z);
+    // the railway's bench where it runs on the ground: flat for the ballast (wider at the station), cut and fill slopes beyond
+    let bd = Infinity, by = 60, hill = 0;
+    const ax = x - C1.x, az = z - C1.y, ang = Math.atan2(az, ax);
+    if (ang > -0.08 && ang < A1 + 0.08) { bd = Math.abs(Math.hypot(ax, az) - R1); hill = Math.hypot(ax, az) > R1 ? 1 : -1; }
+    if (z < C1.y + 2 && z > -650 && Math.abs(x - XS) < bd) { bd = Math.abs(x - XS); by = yT(z); hill = x > XS ? 1 : -1; } // up to the spur's tunnel
+    if (bd < 140) {
+      const ty = by - 0.7, flat = 3.6 + (hill > 0 && z < -118 && z > -246 ? 13.5 : 0), e = bd - flat;
+      h = e <= 0 ? ty : h > ty ? Math.min(h, ty + e * 1.35) : Math.max(h, ty - e * 0.85);
+    }
+    // the spur the line tunnels through up the valley
+    const sp = Math.exp(-(((z + 706) / 48) ** 2)) * (1 - smooth(XS + 10, XS + 120, x)) * smooth(XS - 140, XS - 30, x);
+    if (sp > 0.01) h = Math.max(h, yT(z) + 9 + 22 * sp * (1 - smooth(XS - 60, XS - 140, x)) + 6 * fbm(x * 0.05, z * 0.05, 2) - 30 * (1 - sp));
+    // the cliff the tunnel enters: a rock face over the mouth, facing the camera
+    { // the rock face the line dives into: the valley side steepened into a cliff above the mouth, the abutment's ledge before it
+      const px = x - PORT.x, pz = z - PORT.y, a = px * OUT.x + pz * OUT.y, b = -px * OUT.y + pz * OUT.x, w = 1 - smooth(24, 52, Math.abs(b));
+      if (a < 0 && w > 0) h = Math.max(h, h + (108 + 0.25 * -a + 10 * fbm(x * 0.05, z * 0.05, 2) - 0.45 * Math.max(0, Math.abs(b) - 18) - h) * w * (1 - smooth(-75, -40, a))); // a rocky brow, then the valley side again
+      else if (a >= 0 && a < 30) h = Math.min(h, h + (57 - h) * (1 - smooth(5, 12, Math.abs(b))) * (1 - smooth(16, 30, a)));
+    }
+    return h;
+  }
+  const slopeNy = (x, z, h) => { const hx = groundH(x + 2, z) - h, hz = groundH(x, z + 2) - h; return 2 / Math.hypot(hx, 2, hz); };
+  const RIVER_W = (z) => 7 + 4 * smooth(0, 300, z);
+  const nearTrack = (x, z) => { const ax = x - C1.x, az = z - C1.y, ang = Math.atan2(az, ax); let d = ang > -0.08 && ang < A1 + 0.08 ? Math.abs(Math.hypot(ax, az) - R1) : Infinity; if (z < C1.y + 2 && z > -650) d = Math.min(d, Math.abs(x - XS)); return d; };
+  const VILLAGE = (x, z) => z > 110 && z < 360 && Math.abs(x - riverX(z)) < 150;
+  function coverAt(x, z, h, ny) { // forest, hay meadow, bare rock — the trees are planted by the same numbers
+    const slopeOK = smooth(0.995, 0.955, ny) * (1 - smooth(0.8, 0.7, ny));
+    const tl = 1 - smooth(300, 430, h + 120 * (fbm(x * 0.004, z * 0.004, 2) - 0.5)); // the forest's upper edge, pastures above
+    const patch = smooth(0.36, 0.48, fbm(x * 0.0045 + 7, z * 0.0045 - 3, 3) + 0.12 * (vnoise(x * 0.03, z * 0.03) - 0.5));
+    const clear = smooth(10, 22, nearTrack(x, z)) * (VILLAGE(x, z) ? 0.1 : 1) * smooth(RIVER_W(z) + 6, RIVER_W(z) + 20, Math.abs(x - riverX(z)));
+    const forest = slopeOK * tl * patch * clear;
+    const meadow = (1 - forest) * smooth(0.9, 0.97, ny) * (1 - smooth(60, 160, h - floorY(z)));
+    return [forest, meadow, 0];
+  }
+
+  /* --- the lit materials: the evening shade line, the light pools at night, the stone, the windows, the tunnels the train vanishes into --- */
+  const LAMPS = []; // [x, y, z, size, pool radius, pool strength]
+  const shadeU = { value: 40 }, nightU = { value: 0 }, floodU = { value: 0 }, accentU = { value: new THREE.Color() };
+  const stoneTex = keep(mrStone(THREE)); stoneTex.wrapS = stoneTex.wrapT = THREE.RepeatWrapping; stoneTex.anisotropy = 8;
+  const poolU = { value: new THREE.Color("#ffd8a6") }, nightMapU = { value: null };
+  const LIT_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= mrSunLit;");
+  const inject = (mat, key, { ground = false, stone = false, houses = false, train = false, accent = false } = {}) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uShadeY: shadeU, uNight: nightU, uNightMap: nightMapU, uPoolCol: poolU, uNoise: { value: noise }, tStone: { value: stoneTex }, uFlood: floodU, uAccent: accentU, uPortA: { value: PORT }, uOutA: { value: OUT }, uPortBZ: { value: -652 } });
+      let vs = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW; varying vec3 vWN;" + (ground ? "\nattribute vec3 aCover; varying vec3 vCover;" : ""));
+      vs = vs.replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0); vec3 nw = objectNormal;\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw; nw = mat3(instanceMatrix) * nw;\n#endif\nvPW = (modelMatrix * pw).xyz; vWN = normalize(mat3(modelMatrix) * nw); }" + (ground ? "\nvCover = aCover;" : ""));
+      sh.vertexShader = vs;
+      let fs = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; uniform sampler2D tStone; uniform float uFlood; uniform vec3 uAccent; uniform vec2 uPortA; uniform vec2 uOutA; uniform float uPortBZ;\nvarying vec3 vWN;\n" + MR_COMMON_PARS + (ground ? MR_GROUND_PARS.replace("uniform sampler2D uNoise;", "").replace("varying vec3 vWN; ", "") : ""));
+      if (train) fs = fs.replace("#include <clipping_planes_fragment>", "#include <clipping_planes_fragment>\n  if ((dot(vPW.xz - uPortA, uOutA) < 0.0 && vPW.x < uPortA.x + 30.0) || (vPW.z < uPortBZ && vPW.x > 100.0)) discard; // inside a tunnel");
+      let col = "";
+      if (ground) col += "\n  float mrSnow = 0.0;\n  diffuseColor.rgb = mrGround(vPW, normalize(vWN), mrSnow);";
+      if (stone) col += "\n  { vec3 n = normalize(vWN), w = pow(abs(n), vec3(4.0)); w /= w.x + w.y + w.z; vec3 st = texture2D(tStone, vPW.zy * vec2(0.125, 0.25)).rgb * w.x + texture2D(tStone, vPW.xz * vec2(0.125, 0.125)).rgb * w.y + texture2D(tStone, vPW.xy * vec2(0.125, 0.25)).rgb * w.z; diffuseColor.rgb *= st * 1.7; }";
+      if (accent) col += "\n  diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.85, step(0.9, vColor.r) * step(0.9, vColor.b) * step(vColor.g, 0.1));";
+      let win = "";
+      if (houses) { // windows in a grid on the walls: dark glass by day, some lit at night
+        col += "\n  float mrWin = 0.0, mrLitW = 0.0;\n  { vec3 n = normalize(vWN); if (abs(n.y) < 0.3) { float u = abs(n.x) > abs(n.z) ? vPW.z : vPW.x; vec2 c = vec2(u / 3.3, (vPW.y + 3.0) / 3.0), f = fract(c); mrWin = step(0.32, f.x) * step(f.x, 0.68) * step(0.34, f.y) * step(f.y, 0.78); float hh = fract(sin(dot(floor(c) + floor(vPW.xz / 40.0), vec2(12.9898, 78.233))) * 43758.5453); mrLitW = mrWin * step(0.42, hh); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.06, 0.07), mrWin * 0.9); } }";
+        win = "\n  totalEmissiveRadiance += vec3(1.0, 0.72, 0.42) * mrLitW * uNight * 1.6;";
+      }
+      fs = fs.replace("#include <color_fragment>", "#include <color_fragment>" + col);
+      fs = fs.replace("#include <lights_fragment_begin>", "float mrSunLit = mrLit(vPW);\n" + LIT_BEGIN);
+      let em = "\n  totalEmissiveRadiance += mrPools(diffuseColor.rgb);" + win;
+      if (stone) em += "\n  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.74, 0.46) * uFlood * exp(-max(vPW.y + 2.0, 0.0) / 24.0) * clamp(normalize(vWN).z * 0.7 + 0.45, 0.0, 1.0); // floodlit from the foot of the piers";
+      if (ground) em += "\n  totalEmissiveRadiance += vec3(0.05, 0.07, 0.12) * mrSnow * uNight; // moonlit snow";
+      fs = fs.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>" + em);
+      sh.fragmentShader = fs;
+    };
+    mat.customProgramCacheKey = () => "mr-" + key;
+    return mat;
+  };
+  const envMats = [], shadowMats = [];
+
+  /* --- the ground mesh: fine around the railway, coarser out to the peaks; cover per vertex --- */
+  const axis = (lo, hi, c0, c1, fine, grow, cap) => { const out = []; for (let v = lo; v < hi; ) { out.push(v); const d = v < c0 ? c0 - v : v > c1 ? v - c1 : 0; v += Math.min(cap, fine + d * grow); } out.push(hi); return out; };
+  const XS_ = axis(-4600, 4600, -330, 430, preview ? 12 : 6, 0.06, 150), ZS_ = axis(-9200, 1100, -320, 470, preview ? 12 : 6, 0.05, 160);
+  const groundGeo = keep(new THREE.BufferGeometry());
+  {
+    const nx = XS_.length, nz = ZS_.length, pos = new Float32Array(nx * nz * 3), idx = [];
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const x = XS_[i], z = ZS_[j]; pos.set([x, groundH(x, z), z], (j * nx + i) * 3); }
+    for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1; idx.push(a, c, b, b, c, d); }
+    groundGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); groundGeo.setIndex(idx); groundGeo.computeVertexNormals();
+    const nrm = groundGeo.attributes.normal.array, cov = new Float32Array(nx * nz * 3);
+    for (let k = 0; k < nx * nz; k++) cov.set(coverAt(pos[k * 3], pos[k * 3 + 2], pos[k * 3 + 1], nrm[k * 3 + 1]), k * 3);
+    groundGeo.setAttribute("aCover", new THREE.BufferAttribute(cov, 3));
+  }
+  const groundMat = inject(keep(new THREE.MeshStandardMaterial({ roughness: 0.94 })), "ground", { ground: true });
+  const ground = new THREE.Mesh(groundGeo, groundMat); ground.receiveShadow = !preview; scene.add(ground); shadowMats.push(groundMat);
+  { // the sheer face over the tunnel's mouth: a jagged rock wall either side of the portal and above it, drawn as rock by the ground's shader
+    const pos = [], cov = [], idx = [], LAT = new THREE.Vector2(-OUT.y, OUT.x); let base = 0;
+    for (const [b0, b1, y0] of [[-46, -8, 47], [8, 46, 47], [-9, 9, 72.6]]) {
+      const NB = Math.round((b1 - b0) / 2), NY = 16;
+      for (let i = 0; i <= NB; i++) {
+        const b = b0 + ((b1 - b0) * i) / NB, px = PORT.x + LAT.x * b, pz = PORT.y + LAT.y * b, top = groundH(px - OUT.x * 4, pz - OUT.y * 4) + 2 - 0.25 * Math.max(0, Math.abs(b) - 20);
+        for (let j = 0; j <= NY; j++) { const y = y0 + ((Math.max(top, y0 + 4) - y0) * j) / NY, off = -1.2 + 2.6 * (fbm(b * 0.18 + 3, y * 0.14, 2) - 0.5) - 0.06 * Math.abs(b); pos.push(px + OUT.x * off, y, pz + OUT.y * off); cov.push(0, 0, 1); }
+      }
+      for (let i = 0; i < NB; i++) for (let j = 0; j < NY; j++) { const a0 = base + i * (NY + 1) + j, a1 = a0 + NY + 1; idx.push(a0, a1, a0 + 1, a0 + 1, a1, a1 + 1); }
+      base += (NB + 1) * (NY + 1);
+    }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("aCover", new THREE.Float32BufferAttribute(cov, 3)); g.setIndex(idx); g.computeVertexNormals();
+    { const n = g.attributes.normal; let fx = 0; for (let i = 0; i < n.count; i++) fx += n.getX(i) * OUT.x + n.getZ(i) * OUT.y; if (fx < 0) { for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } g.setIndex(idx); g.computeVertexNormals(); } } // facing out of the hill
+    const face = new THREE.Mesh(g, groundMat); face.castShadow = face.receiveShadow = !preview; scene.add(face);
+  }
+
+  /* --- the river --- */
+  const waterU = { uNoise: { value: noise }, uTime: time, uDeep: { value: new THREE.Color() }, uSky: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uGlint: { value: new THREE.Color() }, ...THREE.UniformsLib.fog };
+  {
+    const pos = [], uv = [], idx = []; let n = 0;
+    for (let z = -2600; z <= 1100; z += 6) { const rx = riverX(z), w = RIVER_W(z) + 4.5, y = floorY(z) - 1.0; pos.push(rx - w, y, z, rx + w, y, z); uv.push(z / 40, 0, z / 40, 1); if (n) { const a = (n - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } n++; }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+    scene.add(new THREE.Mesh(g, shader(MR_WATER_VS, MR_WATER_FS, waterU, { fog: true })));
+  }
+
+  /* --- the viaduct: eleven arches on tall piers along the arc, a parapet each side; the abutment; the tunnel portals --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // stone, one merged draw
+  const S2 = [], P2 = (geo, m, hex) => S2.push([geo, m, hex]); // painted things (houses, the station, masts, signs): one merged draw
+  const DECK = 59.3, SPANS = 11, PW = 6.2;
+  const vpt = (f) => new THREE.Vector3(RV * Math.sin(f), 0, OZ + RV * Math.cos(f));
+  const fAt = (k) => -PHI + (2 * PHI * k) / SPANS;
+  for (let i = 0; i < SPANS; i++) {
+    const A = vpt(fAt(i)), B2 = vpt(fAt(i + 1)), c = A.distanceTo(B2), half = c / 2, ra = (c - PW) / 2, vs = DECK - 2.4 - ra;
+    const sh = new THREE.Shape(); sh.moveTo(-half, vs); sh.lineTo(-ra, vs); sh.absarc(0, vs, ra, Math.PI, 0, true); sh.lineTo(half, vs); sh.lineTo(half, DECK); sh.lineTo(-half, DECK); sh.lineTo(-half, vs);
+    const g = new THREE.ExtrudeGeometry(sh, { depth: 5.2, bevelEnabled: false, curveSegments: 18 }).translate(0, 0, -2.6);
+    const M = A.clone().add(B2).multiplyScalar(0.5), D = B2.clone().sub(A).normalize();
+    P(g, at(M.x, 0, M.z, 0, Math.atan2(-D.z, D.x), 0), 0xffffff);
+    if (i > 0) { // the pier under the arches' springing, battered
+      const gy = groundH(A.x, A.z) - 4, top = vs + 1.5, hgt = top - gy, tap = 1 + hgt / (20 * PW), Dk = new THREE.Vector3(Math.cos(fAt(i)), 0, -Math.sin(fAt(i)));
+      P(cyl(0.7071, 0.7071 * tap, hgt, 4).rotateY(Math.PI / 4).scale(PW, 1, 6.8), at(A.x, gy + hgt / 2, A.z, 0, Math.atan2(-Dk.z, Dk.x), 0), 0xffffff);
+      P(box(PW + 0.6, 0.8, 7.4), at(A.x, vs + 0.6, A.z, 0, Math.atan2(-Dk.z, Dk.x), 0), 0xeeeeee); // the impost band
+    }
+  }
+  { // the deck's cornice and the parapets, following the arc; the right abutment
+    const pts = []; for (let k = 0; k <= 120; k++) pts.push(vpt(-PHI + (2 * PHI * k) / 120));
+    for (let k = 0; k < 120; k++) {
+      const A = pts[k], B2 = pts[k + 1], M = A.clone().add(B2).multiplyScalar(0.5), D = B2.clone().sub(A), len = D.length(); D.normalize();
+      const ry = Math.atan2(-D.z, D.x), nx = -D.z, nz = D.x;
+      P(box(len + 0.05, 0.6, 6.7), at(M.x, DECK - 0.3, M.z, 0, ry, 0), 0xe8e8e8);
+      for (const s of [-1, 1]) P(box(len + 0.05, 1.15, 0.45), at(M.x + nx * s * 2.95, DECK + 0.55, M.z + nz * s * 2.95, 0, ry, 0), 0xf2f2f2);
+    }
+    const Rr = vpt(PHI), gy = groundH(Rr.x + 4, Rr.z) - 3;
+    P(box(10, DECK - gy, 8), at(Rr.x + 4, (DECK + gy) / 2, Rr.z - 1, 0, Math.atan2(-H1.y, H1.x), 0), 0xffffff);
+  }
+  // the portal: a stone face set into the cliff, an arched bore going dark; and the spur tunnel's mouth up the valley
+  const portalGeo = (wid, hgt, below, open, archR) => { const sh = new THREE.Shape(); sh.moveTo(-wid / 2, -below); sh.lineTo(wid / 2, -below); sh.lineTo(wid / 2, hgt); sh.lineTo(-wid / 2, hgt); sh.lineTo(-wid / 2, -below); const hole = new THREE.Path(); hole.moveTo(-archR, -0.7); hole.lineTo(archR, -0.7); hole.lineTo(archR, open); hole.absarc(0, open, archR, 0, Math.PI, false); hole.lineTo(-archR, -0.7); sh.holes.push(hole); return new THREE.ExtrudeGeometry(sh, { depth: 3, bevelEnabled: false, curveSegments: 14 }).translate(0, 0, -3); };
+  const portalRy = Math.atan2(OUT.x, OUT.y);
+  P(portalGeo(17, 13, 14, 3.8, 2.7), at(PORT.x + OUT.x * 0.5, 60, PORT.y + OUT.y * 0.5, 0, portalRy, 0), 0xffffff);
+  P(box(18.5, 1, 4), at(PORT.x - OUT.x, 73.5, PORT.y - OUT.y, 0, portalRy, 0), 0xe0e0e0); // the cornice
+  P(portalGeo(13, 11, 8, 3.8, 2.7), at(XS, yT(-652), -652, 0, 0, 0), 0xffffff);
+  const stoneMat = inject(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 })), "stone", { stone: true });
+  const stone = new THREE.Mesh(keep(mergeColored(THREE, S)), stoneMat); stone.castShadow = stone.receiveShadow = !preview; scene.add(stone); shadowMats.push(stoneMat);
+  { // the bores: dark inside
+    const bore = keep(new THREE.MeshBasicMaterial({ color: 0x030303, side: THREE.BackSide }));
+    const b1 = new THREE.Mesh(keep(box(5.4, 8.5, 40)), bore); b1.position.set(PORT.x - OUT.x * 22, 63.6, PORT.y - OUT.y * 22); b1.rotation.y = portalRy; scene.add(b1);
+    const b2 = new THREE.Mesh(keep(box(5.4, 8.5, 40)), bore); b2.position.set(XS, yT(-672) + 3.6, -674); scene.add(b2);
+  }
+
+  /* --- the track: ballast with sleepers and rails on the deck and the bench; catenary masts and the wire --- */
+  const ballastTex = keep(canvasTexture(THREE, 64, 64, (g) => {
+    g.fillStyle = "#6b6760"; g.fillRect(0, 0, 64, 64);
+    for (let k = 0; k < 240; k++) { g.fillStyle = `rgba(${Math.random() < 0.5 ? "30,28,26" : "200,195,186"},0.18)`; g.fillRect(Math.random() * 64, Math.random() * 64, 2, 2); }
+    g.fillStyle = "#3b2f26"; g.fillRect(12, 20, 40, 22); // a sleeper
+    g.fillStyle = "#c9c7c2"; g.fillRect(22, 0, 2, 64); g.fillRect(40, 0, 2, 64); // the rails' heads
+  }));
+  ballastTex.wrapS = ballastTex.wrapT = THREE.RepeatWrapping; ballastTex.anisotropy = 8;
+  {
+    const pos = [], uv = [], idx = []; let n = 0;
+    for (let s = S_PORTAL - 40; s <= S_SPUR + 30; s += 2) {
+      const p = trackAt(s, V).clone(), q = trackAt(s + 1, V2), dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l;
+      for (const k of [-1, 1]) pos.push(p.x + nx * k * 1.9, p.y - 0.25, p.z + nz * k * 1.9);
+      uv.push(0, s / 0.65, 1, s / 0.65);
+      if (n) { const a = (n - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      n++;
+    }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
+    const m = inject(keep(new THREE.MeshStandardMaterial({ map: ballastTex, roughness: 0.9 })), "ballast");
+    const mesh = new THREE.Mesh(g, m); mesh.receiveShadow = !preview; scene.add(mesh); shadowMats.push(m);
+  }
+  const wirePts = [];
+  for (let s = S_PORTAL + 12, k = 0; s < S_SPUR - 5; s += 40, k++) {
+    const p = trackAt(s, V).clone(), q = trackAt(s + 1, V2), dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l, side = s < S_VEND ? 1 : -1, ry = Math.atan2(-dz, dx);
+    P2(box(0.32, 7.4, 0.32), at(p.x + nx * side * 3.1, p.y + 3.2, p.z + nz * side * 3.1, 0, ry, 0), 0x6d7177);
+    P2(box(0.14, 0.14, 3.4), at(p.x + nx * side * 1.5, p.y + 6.3, p.z + nz * side * 1.5, 0, ry, 0), 0x6d7177);
+    wirePts.push([p.x + nx * (k % 2 ? 0.25 : -0.25), p.y + 5.6, p.z + nz * (k % 2 ? 0.25 : -0.25)]);
+  }
+  {
+    const arr = []; for (let k = 0; k < wirePts.length - 1; k++) arr.push(...wirePts[k], ...wirePts[k + 1]);
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
+    scene.add(new THREE.LineSegments(g, keep(new THREE.LineBasicMaterial({ color: 0x2c2e31, transparent: true, opacity: 0.7 }))));
+  }
+
+  /* --- the station on the bench up the valley side; the village on the valley floor; a church, a bridge, lamps --- */
+  const roof = (w, d, h, oh) => { // a gable roof along x: two slopes and the gable ends, eaves overhanging
+    const x0 = -w / 2 - oh, x1 = w / 2 + oh, z0 = -d / 2 - oh, z1 = d / 2 + oh, tris = [];
+    tris.push([[x0, 0, z0], [x1, 0, z0], [x1, h, 0]], [[x0, 0, z0], [x1, h, 0], [x0, h, 0]], [[x0, 0, z1], [x0, h, 0], [x1, h, 0]], [[x0, 0, z1], [x1, h, 0], [x1, 0, z1]], [[x0, 0, z0], [x0, h, 0], [x0, 0, z1]], [[x1, 0, z0], [x1, 0, z1], [x1, h, 0]], [[x0, -0.3, z0], [x0, -0.3, z1], [x1, -0.3, z1]], [[x0, -0.3, z0], [x1, -0.3, z1], [x1, -0.3, z0]]);
+    const pos = [], cen = new THREE.Vector3(0, h * 0.3, 0); for (const t of tris) { const [a, b, c] = t.map((q) => new THREE.Vector3(...q)), nn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)), mid = a.clone().add(b).add(c).multiplyScalar(1 / 3).sub(cen); for (const q of nn.dot(mid) < 0 ? [a, c, b] : [a, b, c]) pos.push(q.x, q.y, q.z); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.computeVertexNormals(); return g;
+  };
+  // the station
+  const SY = 60, SZ = -178;
+  P2(box(4, 1.25, 104), at(XS + 3.7, SY - 0.28, SZ, 0, 0, 0), 0xb9b6ae); // the platform
+  P2(box(0.25, 0.06, 104), at(XS + 1.85, SY + 0.36, SZ, 0, 0, 0), 0xf2f2f2);
+  P2(box(9, 3.6, 16), at(XS + 12.5, SY + 1.8, SZ, 0, 0, 0), 0xd8d2c4); P2(box(9.2, 3.2, 16.2), at(XS + 12.5, SY + 5.2, SZ, 0, 0, 0), 0x8a5a36); // the station house: plaster below, timber above
+  P2(roof(16.2, 9.2, 3.6, 1.4).rotateY(Math.PI / 2), at(XS + 12.5, SY + 6.8, SZ, 0, 0, 0), 0x4a3b33);
+  P2(box(5.5, 0.35, 30), at(XS + 6.6, SY + 3.6, SZ, 0, 0, -0.08), 0x5a4a40); for (const dz of [-13, -4.5, 4.5, 13]) P2(box(0.3, 3.4, 0.3), at(XS + 4.6, SY + 1.9, SZ + dz, 0, 0, 0), 0x5a4a40); // the canopy
+  for (const dz of [-38, 38]) { P2(box(0.2, 2.6, 0.2), at(XS + 5.2, SY + 1.4, SZ + dz, 0, 0, 0), 0x3a3d42); P2(box(0.2, 0.7, 3.4), at(XS + 5.2, SY + 2.9, SZ + dz, 0, 0, 0), ACC); } // the station signs, in the accent
+  for (const dz of [-44, -22, 0, 22, 44]) { P2(box(0.18, 4.6, 0.18), at(XS + 5.2, SY + 2.3, SZ + dz, 0, 0, 0), 0x3a3d42); LAMPS.push([XS + 4.8, SY + 4.5, SZ + dz, 0.5, 14, 0.55]); }
+  // the village
+  const houses = [];
+  for (let tries = 0; houses.length < (preview ? 14 : 24) && tries < 600; tries++) {
+    const z = r(130, 345), x = riverX(z) + (r() < 0.5 ? -1 : 1) * r(24, 135);
+    if (Math.abs(x - riverX(z) - 46) < 10) continue;
+    if (houses.some((h) => Math.hypot(h.x - x, h.z - z) < 22)) continue;
+    houses.push({ x, z, y: groundH(x, z), w: r(9, 13), d: r(8, 11), h: r(5.8, 8.6), ry: (r() < 0.5 ? 0 : Math.PI / 2) + r(-0.15, 0.15) });
+  }
+  for (const h of houses) { // a chalet: plastered below, timber above with a balcony along the gable side, a low roof with deep eaves
+    const wood = r() < 0.6, cx = Math.cos(h.ry), sx = -Math.sin(h.ry), fx = -sx, fz = cx; // along the ridge; across it
+    P2(box(h.w, h.h * 0.45, h.d), at(h.x, h.y + h.h * 0.22, h.z, 0, h.ry, 0), 0xe9e4d8);
+    P2(box(h.w + 0.1, h.h * 0.56, h.d + 0.1), at(h.x, h.y + h.h * 0.72, h.z, 0, h.ry, 0), wood ? 0x6e4528 : 0xe2dccd);
+    for (const s of [-1, 1]) { const bx = h.x + fx * s * (h.d / 2 + 0.7), bz = h.z + fz * s * (h.d / 2 + 0.7); P2(box(h.w * 0.9, 0.25, 1.4), at(bx, h.y + h.h * 0.5, bz, 0, h.ry, 0), 0x5a3a22); P2(box(h.w * 0.9, 0.9, 0.12), at(bx + fx * s * 0.65, h.y + h.h * 0.5 + 0.55, bz + fz * s * 0.65, 0, h.ry, 0), 0x7a5232); }
+    P2(roof(h.w, h.d, h.d * 0.24, 1.8), at(h.x, h.y + h.h, h.z, 0, h.ry, 0), [0x4a3b33, 0x55504a, 0x3e3632][Math.floor(r(0, 3))]);
+    if (r() < 0.6) LAMPS.push([h.x + cx * (h.w / 2 + 0.6), h.y + 2.6, h.z + sx * (h.w / 2 + 0.6), 0.28, 6, 0.4]);
+  }
+  for (let k = 0, tries = 0; k < (preview ? 14 : 34) && tries < 900; tries++) { // hay barns on the meadows and the lower slopes
+    const z = r(-420, 360), x = riverX(z) + (r() < 0.5 ? -1 : 1) * r(30, 230), y = groundH(x, z);
+    if (y - floorY(z) > 70 || nearTrack(x, z) < 18 || houses.some((h) => Math.hypot(h.x - x, h.z - z) < 18) || Math.abs(x - riverX(z) - 46) < 8) continue;
+    const ry = r(0, 3.14), w = r(5, 7.5); P2(box(w, 3.4, 4.6), at(x, y + 1.4, z, 0, ry, 0), [0x5c3a22, 0x4e3420, 0x664328][k % 3]); P2(roof(w, 4.6, 1.6, 0.6), at(x, y + 3.1, z, 0, ry, 0), 0x5b5852); k++;
+  }
+  const S3 = []; // the church: whitewashed nave and tower, a slate spire, clock faces in the accent (no window grid)
+  { const cz = 200, cx = riverX(cz) - 70, cy = groundH(cx, cz), C = (geo, m, hex) => S3.push([geo, m, hex]);
+    C(box(11, 10, 22), at(cx, cy + 5, cz, 0, 0.1, 0), 0xf0ece4); C(roof(22, 11, 5, 0.8).rotateY(Math.PI / 2), at(cx, cy + 10, cz, 0, 0.1, 0), 0x4a4440);
+    for (const dz of [-6, 0, 6]) for (const s of [-1, 1]) C(box(0.3, 4.2, 1.6), at(cx + s * 5.55, cy + 5.5, cz + dz, 0, 0.1, 0), 0x2d3138); // the tall windows
+    C(box(6, 26, 6), at(cx + 0.9, cy + 13, cz + 13, 0, 0.1, 0), 0xf3efe7);
+    C(new THREE.ConeGeometry(4.6, 15, 4).rotateY(Math.PI / 4), at(cx + 0.9, cy + 33.5, cz + 13, 0, 0.1, 0), 0x3c3a3a);
+    C(box(2.6, 2.6, 6.3), at(cx + 0.9, cy + 22, cz + 13, 0, 0.1, 0), ACC); C(box(6.3, 2.6, 2.6), at(cx + 0.9, cy + 22, cz + 13, 0, 0.1, 0), ACC);
+    LAMPS.push([cx + 6, cy + 1.5, cz + 22, 0.6, 30, 0.6]); }
+  for (let z = 120; z <= 350; z += 38) { const x = riverX(z) + 42, y = groundH(x, z); P2(box(0.16, 5.2, 0.16), at(x, y + 2.6, z, 0, 0, 0), 0x3a3d42); LAMPS.push([x - 0.8, y + 5.1, z, 0.42, 10, 0.32]); }
+  { const bz = 262, rx = riverX(bz), by = floorY(bz) + 1.2; P2(box(34, 1.1, 5.5), at(rx, by, bz, 0, 0, 0), 0xc9c4b8); for (const s of [-1, 1]) P2(box(34, 0.9, 0.35), at(rx, by + 1, bz + s * 2.6, 0, 0, 0), 0xc9c4b8); } // the bridge
+  LAMPS.push([PORT.x + OUT.x * 1.2, 70.8, PORT.y + OUT.y * 1.2, 0.5, 0, 0], [XS, yT(-652) + 9.5, -651, 0.5, 0, 0]); // the portals' lamps
+  const nightTex = keep(mrNightMap(THREE, [...LAMPS.filter((l) => l[4] > 0).map((l) => [l[0], l[2], l[4], l[5]]), [-48, 214, 34, 0.35]]));
+  nightMapU.value = nightTex;
+  const paintMat = inject(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 })), "paint", { houses: true, accent: true });
+  const painted = new THREE.Mesh(keep(mergeColored(THREE, S2)), paintMat); painted.castShadow = painted.receiveShadow = !preview; scene.add(painted); shadowMats.push(paintMat);
+  const churchMat = inject(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })), "church", { accent: true });
+  const church = new THREE.Mesh(keep(mergeColored(THREE, S3)), churchMat); church.castShadow = church.receiveShadow = !preview; scene.add(church); shadowMats.push(churchMat);
+  // alders and willows along the river: round crowns turning yellow
+  const NRB = preview ? 60 : 170, bush = new THREE.InstancedMesh(keep(new THREE.IcosahedronGeometry(1, 1).scale(1, 1.15, 1).translate(0, 1, 0)), inject(keep(new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true })), "bush"), NRB);
+  { const c = new THREE.Color(); let n = 0; for (let tries = 0; n < NRB && tries < NRB * 8; tries++) { const z = r(-900, 380), side = r() < 0.5 ? -1 : 1, x = riverX(z) + side * (RIVER_W(z) + r(5, 16)); if (houses.some((h) => Math.hypot(h.x - x, h.z - z) < 12) || Math.abs(z - 262) < 14) continue; const y = groundH(x, z), s = r(2.4, 4.6); bush.setMatrixAt(n, new THREE.Matrix4().compose(V.set(x, y - 0.6, z), Q.setFromEuler(E.set(0, r(0, 6), 0)), V2.set(s, s * r(0.9, 1.4), s))); bush.setColorAt(n, c.setHSL(r(0.12, 0.24), r(0.4, 0.6), r(0.22, 0.36))); n++; } bush.count = n; }
+  scene.add(bush); shadowMats.push(bush.material); keep(bush);
+
+  /* --- the forest: spruce and a few larches turning gold, planted by the ground's cover --- */
+  const SIGHT = []; for (let s = S_PORTAL - 6; s < S_VEND; s += 14) SIGHT.push(trackAt(s, V).toArray().map((v, i) => v + (i === 1 ? 2 : 0))); // the mouth, the left curve, the viaduct
+  const treeGeo = keep(mergeParts(THREE, [[new THREE.ConeGeometry(3.3, 8.5, 6, 1, true), at(0, 4.6, 0)], [new THREE.ConeGeometry(2.6, 7, 6, 1, true), at(0, 9.2, 0)], [new THREE.ConeGeometry(1.8, 6.4, 6, 1, true), at(0, 13, 0)]]));
+  const NTR = preview ? 1300 : 5200, treeMat = inject(keep(new THREE.MeshStandardMaterial({ roughness: 0.92 })), "tree");
+  const trees = new THREE.InstancedMesh(treeGeo, treeMat, NTR);
+  {
+    const c = new THREE.Color(); let n = 0;
+    for (let tries = 0; n < NTR && tries < NTR * 12; tries++) {
+      const x = r(-760, 820), z = r(-1100, 380); // beyond, the ground's forest colour carries it
+      if (Math.hypot(x - C0.x, z - C0.z) < 90) continue;
+      const h = groundH(x, z), ny = slopeNy(x, z, h), [f] = coverAt(x, z, h, ny);
+      if (SIGHT.some(([tx, ty, tz]) => { const u = (C0.z - z) / (C0.z - tz); if (u <= 0 || u >= 1) return false; const lx = C0.x + (tx - C0.x) * u, ly = C0.y + (ty - C0.y) * u; return Math.abs(x - lx) < 12 + 16 * u && h + 22 > ly; })) continue; // keep the railway in sight
+      if (r() > f * (VILLAGE(x, z) ? 1 : 0.95)) continue;
+      const s = r(0.75, 1.55) * (1 - 0.3 * smooth(250, 420, h)), larch = r() < 0.18;
+      trees.setMatrixAt(n, new THREE.Matrix4().compose(V.set(x, h - 0.5, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s * (larch ? 0.8 : 1), s * r(0.9, 1.2), s * (larch ? 0.8 : 1))));
+      trees.setColorAt(n, larch ? c.setHSL(r(0.09, 0.13), 0.65, r(0.42, 0.52)) : c.setHSL(r(0.26, 0.33), r(0.3, 0.45), r(0.13, 0.2)));
+      n++;
+    }
+    trees.count = n;
+  }
+  scene.add(trees); shadowMats.push(treeMat); // compiled again once shadows are on (a program from before would bind a sampler over the shadow map's unit: INVALID_OPERATION, no trees)
+
+  /* --- the train: a locomotive and four coaches in the accent livery --- */
+  const livery = mrLivery(THREE); keep(livery.tex); keep(livery.emis);
+  const RG = livery.regions;
+  const mapUV = (geo, faces) => { // BoxGeometry faces (+x, −x, +y, −y, +z, −z) onto atlas regions
+    const uv = geo.attributes.uv;
+    for (let f = 0; f < 6; f++) { const rg = faces[f]; for (let k = 0; k < 4; k++) { const i = f * 4 + k; uv.setXY(i, rg[0] + uv.getX(i) * (rg[2] - rg[0]), rg[1] + uv.getY(i) * (rg[3] - rg[1])); } }
+    return geo;
+  };
+  const flatUV = (geo, rg) => { const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, (rg[0] + rg[2]) / 2, (rg[1] + rg[3]) / 2); return geo; };
+  const carGeo = (L, loco) => {
+    const parts = [];
+    parts.push([mapUV(box(L, 2.5, 2.65), [loco ? RG.front : RG.end, loco ? RG.front : RG.end, RG.roof, RG.dark, loco ? RG.loco : RG.coach, loco ? RG.loco : RG.coach]), at(0, 2.3, 0)]);
+    const rf = new THREE.CylinderGeometry(1.33, 1.33, L - 0.2, 12, 1, true, 0, Math.PI).rotateZ(Math.PI / 2); // the upper half, along the car
+    { const uv = rf.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, RG.roof[0] + uv.getX(i) * (RG.roof[2] - RG.roof[0]), RG.roof[1] + uv.getY(i) * (RG.roof[3] - RG.roof[1])); }
+    parts.push([rf.scale(1, 0.32, 1), at(0, 3.55, 0)]);
+    parts.push([flatUV(box(L - 3, 0.6, 2.3), RG.dark), at(0, 0.78, 0)]);
+    for (const s of [-1, 1]) parts.push([flatUV(box(2.7, 0.75, 2.2), RG.dark), at(s * L * 0.3, 0.45, 0)]);
+    if (loco) for (const s of [-1, 1]) { // single-arm pantographs, the head on the wire
+      const x0 = s * L * 0.27;
+      parts.push([flatUV(box(1.6, 0.22, 1.2), RG.dark), at(x0, 4.02, 0)]);
+      parts.push([flatUV(box(0.08, 1.15, 0.08), RG.white), at(x0 - s * 0.35, 4.55, 0, 0, 0, s * 0.7)]);
+      parts.push([flatUV(box(0.08, 1.15, 0.08), RG.white), at(x0 - s * 0.3, 5.15, 0, 0, 0, -s * 0.75)]);
+      parts.push([flatUV(box(0.25, 0.08, 1.9), RG.dark), at(x0 - s * 0.05, 5.57, 0)]);
+    }
+    return keep(mergeParts(THREE, parts));
+  };
+  const trainMat = inject(keep(new THREE.MeshStandardMaterial({ map: livery.tex, emissiveMap: livery.emis, emissive: 0x000000, roughness: 0.4, metalness: 0.2 })), "train", { train: true });
+  envMats.push(trainMat); trainMat.envMapIntensity = 0.6;
+  const CARS = [15.5, 18.5, 18.5, 18.5, 18.5], GAPC = 1.0, OFFS = []; { let o = 0; for (const L of CARS) { OFFS.push(o); o += L + GAPC; } }
+  const TRAIN_L = OFFS[CARS.length - 1] + CARS[CARS.length - 1];
+  const locoMesh = new THREE.InstancedMesh(carGeo(15.5, true), trainMat, 1), coachMesh = new THREE.InstancedMesh(carGeo(18.5, false), trainMat, 4);
+  for (const m of [locoMesh, coachMesh]) { m.frustumCulled = false; m.castShadow = m.receiveShadow = !preview; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); keep(m); }
+  shadowMats.push(trainMat);
+
+  /* --- lamps: one instanced draw (the airport's billboards); the train's lights at the end --- */
+  const GL = LAMPS.map(([x, y, z, s]) => [x, y, z, s, 2.5, 1.9, 1.2]);
+  for (let k = 0; k < 14; k++) { const x = r(-700, 800), z = r(-900, -200), h = groundH(x, z); if (h > 120 && h < 600) GL.push([x, h + 3, z, 0.6, 2.4, 1.8, 1.1]); } // farms on the valley sides
+  const NSTATIC = GL.length, NTL = 5;
+  for (let k = 0; k < NTL; k++) GL.push([0, 0, 0, 0, 0, 0, 0]);
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, i < NSTATIC ? 1.4 : 2.6); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  /* --- the sky: the evening away from the sun (the earth's shadow, the pink belt), clouds, the night's stars and moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uBelt: { value: new THREE.Color() }, uShadow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color("#ffb070") }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(30000, 40, 20)), shader(LANTERN_SKY_VS, MR_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 300 : 1100, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.05, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 25000, Math.sin(e) * 25000, Math.sin(a) * Math.cos(e) * 25000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(24000); moon.scale.setScalar(520); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(3600); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 3600, -9000); clouds.renderOrder = -6; clouds.frustumCulled = false; scene.add(clouds);
+
+  /* --- light: the low sun over the camera's shoulder with shadows on the railway; the moon at night --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  sun.target.position.set(40, 30, -110);
+  if (!preview) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.08; }
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 700, 18000);
+  const shadowFit = () => { // the orthographic shadow box fitted around the viaduct, the station and the line in light space
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [-215, 290]) for (const y of [-12, 82]) for (const z of [-275, 45]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x; cam.right = hi.x; cam.bottom = lo.y; cam.top = hi.y; cam.near = Math.max(1, -hi.z - 50); cam.far = -lo.z + 50; cam.updateProjectionMatrix();
+  };
+  let shadowsOn = false, gone = false, rend = null, shadowDirty = true;
+  ground.onBeforeRender = (renderer) => {
+    if (preview || shadowsOn) return;
+    shadowsOn = true; rend = renderer;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.enabled = true; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
+    setTimeout(() => { if (gone) return; for (const m of shadowMats) m.needsUpdate = true; renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); }, 0);
+  };
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); livery.draw("#" + new THREE.Color(p.accent).getHexString());
+    env?.dispose(); env = mrEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyU.uZenith.value.set(d ? "#030714" : "#4a72b4"); skyU.uMid.value.set(d ? "#0a1430" : "#91a6cf"); skyU.uBelt.value.set(d ? "#13203e" : "#e9b7bf"); skyU.uShadow.value.set(d ? "#0c1630" : "#8f95ba"); skyU.uSun.value = d ? 0 : 1;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudU.uSunDir.value.copy(L); cloudU.uLit.value.set(d ? "#28324e" : "#ffc6b4"); cloudU.uShade.value.set(d ? "#121828" : "#8c88aa"); cloudU.uGlow.value.set(d ? "#34426a" : "#ff9f86").multiplyScalar(d ? 0.3 : 0.6); cloudU.uHaze.value.set(d ? "#16203a" : "#c7bdd6");
+    sun.position.copy(L).multiplyScalar(900).add(sun.target.position); sun.color.set(d ? "#a8bce8" : "#ffad72"); sun.intensity = d ? 0.5 : 3.0;
+    hemi.color.set(d ? "#22304f" : "#a9bfe3"); hemi.groundColor.set(d ? "#0a0a0c" : "#4c4234"); hemi.intensity = d ? 0.45 : 0.74;
+    scene.fog.color.set(d ? "#0b1226" : "#b9b5d0"); scene.fog.near = d ? 600 : 700; scene.fog.far = d ? 14000 : 18000;
+    shadeU.value = d ? -5000 : 40; nightU.value = d ? 1 : 0; floodU.value = d ? 1 : 0;
+    waterU.uDeep.value.set(d ? "#050c0e" : "#1f4446"); waterU.uSky.value.set(d ? "#0d1730" : "#8aa0c8"); waterU.uFoam.value.set(d ? "#34404e" : "#c9d4d6"); waterU.uGlint.value.set(d ? "#28324a" : "#ffe2c0");
+    trainMat.emissive.set(d ? "#ffffff" : "#000000"); trainMat.emissiveIntensity = d ? 1.2 : 0;
+    glowU.uAmt.value = d ? 1 : 0.7;
+    for (let i = 0; i < NSTATIC; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    aGlow.needsUpdate = true;
+    if (!preview) shadowFit();
+    shadowDirty = true;
+  }
+  applyPalette(pal);
+
+  /* --- the schedule: down the valley side, a stop, over the viaduct into the tunnel; then one out of the tunnel and up the valley --- */
+  const VW = 15, AD = 0.6, DW = 18, AA = 0.45, VV = 12; // up-valley speed, braking, dwell, starting, the viaduct's speed
+  const S_STOP_W = S_CEND + 34, S_STOP_E = S_STOP_W + TRAIN_L; // the westbound head at the platform's lower end; the eastbound at its upper end
+  const SW0 = S_SPUR + 18, SBW = (VW * VW) / (2 * AD), SAV = (VV * VV) / (2 * AA);
+  const tW1 = (SW0 - (S_STOP_W + SBW)) / VW, tW2 = tW1 + VW / AD, tW3 = tW2 + DW, tW4 = tW3 + VV / AA, tW5 = tW4 + (S_STOP_W - SAV - (S_PORTAL - TRAIN_L - 12)) / VV;
+  const SE0 = S_PORTAL - 24, SBE = (VV * VV) / (2 * AD), SAE = (VW * VW) / (2 * AA);
+  const tE1 = (S_STOP_E - SBE - SE0) / VV, tE2 = tE1 + VV / AD, tE3 = tE2 + DW, tE4 = tE3 + VW / AA, tE5 = tE4 + (S_SPUR + TRAIN_L + 12 - (S_STOP_E + SAE)) / VW;
+  const PAUSE = 6, CYCLE = tW5 + PAUSE + tE5 + PAUSE;
+  const headW = (t) => (t < tW1 ? SW0 - VW * t : t < tW2 ? S_STOP_W + SBW - (VW * (t - tW1) - 0.5 * AD * (t - tW1) ** 2) : t < tW3 ? S_STOP_W : t < tW4 ? S_STOP_W - 0.5 * AA * (t - tW3) ** 2 : S_STOP_W - SAV - VV * (t - tW4));
+  const headE = (t) => (t < tE1 ? SE0 + VV * t : t < tE2 ? S_STOP_E - SBE + (VV * (t - tE1) - 0.5 * AD * (t - tE1) ** 2) : t < tE3 ? S_STOP_E : t < tE4 ? S_STOP_E + 0.5 * AA * (t - tE3) ** 2 : S_STOP_E + SAE + VW * (t - tE4));
+  const trainAt = (clock) => { const tc = ((clock % CYCLE) + CYCLE) % CYCLE; if (tc < tW5) return { head: headW(tc), dir: -1, t: tc }; const te = tc - tW5 - PAUSE; if (te >= 0 && te < tE5) return { head: headE(te), dir: 1, t: te }; return null; };
+
+  /* --- the camera --- */
+  const look = new THREE.Vector3();
+  let clock = 0, sway = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0).add(V.set(Math.sin(sway) * 2, 0, 0));
+    camera.lookAt(look.copy(LOOK).add(V.set(k * 10, -k * 6, 0)));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900));
+    if (rend && shadowsOn && shadowDirty) { renderer.shadowMap.needsUpdate = true; shadowDirty = false; }
+  };
+
+  const HIDE = new THREE.Matrix4().makeScale(0, 0, 0), mC = new THREE.Matrix4(), EA = new THREE.Euler(0, 0, 0, "YZX");
+  const pF = new THREE.Vector3(), pR = new THREE.Vector3();
+  let lastHead = null;
+  function frame(dt) {
+    clock += dt; time.value = clock; sway = clock * 0.03;
+    const st = trainAt(clock);
+    const base = NSTATIC;
+    if (!st) { locoMesh.setMatrixAt(0, HIDE); for (let i = 0; i < 4; i++) coachMesh.setMatrixAt(i, HIDE); for (let k = 0; k < NTL; k++) aGlow.setW(base + k, 0); }
+    else {
+      CARS.forEach((L, i) => { // each car from its bogies on the track: heading and pitch from the rear bogie to the front one
+        const front = st.head - st.dir * OFFS[i], rear = front - st.dir * L;
+        trackAt(front - st.dir * 0.2 * L, pF); trackAt(rear + st.dir * 0.2 * L, pR);
+        const dx = pF.x - pR.x, dy = pF.y - pR.y, dz = pF.z - pR.z;
+        mC.compose(V.set((pF.x + pR.x) / 2, (pF.y + pR.y) / 2, (pF.z + pR.z) / 2), Q.setFromEuler(EA.set(0, Math.atan2(-dz, dx), Math.atan2(dy, Math.hypot(dx, dz)))), ONE);
+        if (i === 0) locoMesh.setMatrixAt(0, mC); else coachMesh.setMatrixAt(i - 1, mC);
+      });
+      // the lights: three white at the head, two red at the tail
+      trackAt(st.head, pF); trackAt(st.head - st.dir * 1, pR); const hx = pF.x - pR.x, hz = pF.z - pR.z, hl = Math.hypot(hx, hz) || 1, nx = -hz / hl, nz = hx / hl;
+      const lit = [[-0.95, 1.3], [0.95, 1.3], [0, 3.4]];
+      lit.forEach(([o, y], k) => { aGlow.setXYZW(base + k, pF.x + nx * o + (hx / hl) * 0.15, pF.y + y, pF.z + nz * o + (hz / hl) * 0.15, 0.55); aTint.setXYZ(base + k, 2.6, 2.5, 2.2); });
+      const tail = st.head - st.dir * TRAIN_L; trackAt(tail, pF);
+      [-0.95, 0.95].forEach((o, k) => { aGlow.setXYZW(base + 3 + k, pF.x + nx * o, pF.y + 1.3, pF.z + nz * o, 0.32); aTint.setXYZ(base + 3 + k, 2.6, 0.25, 0.15); });
+      if (lastHead === null || Math.abs(st.head - lastHead) > 1e-4) shadowDirty = true;
+      lastHead = st.head;
+    }
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    locoMesh.instanceMatrix.needsUpdate = coachMesh.instanceMatrix.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { const st = trainAt(clock); return { cycle: +CYCLE.toFixed(1), t: +(((clock % CYCLE) + CYCLE) % CYCLE).toFixed(1), head: st ? +st.head.toFixed(1) : null, dir: st ? st.dir : 0, trees: trees.count, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { gone = true; scene.fog = null; scene.onBeforeRender = () => {}; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

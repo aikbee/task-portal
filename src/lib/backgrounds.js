@@ -58,6 +58,7 @@ export const BG_STYLES = [
   { value: "rocketlaunch", label: "Rocket launch", desc: "3D seaside launch pad: the next rocket rolls out and is raised, the clock counts down, liftoff on fire and billowing smoke; floodlit at night", three: true },
   { value: "containerport", label: "Container port", desc: "3D container terminal at golden hour: cranes unload and load a big ship, trucks shuttle the boxes, a tug passes; floodlit and mirrored in the harbour at night", three: true },
   { value: "airport", label: "Airport at dusk", desc: "3D airport from the tower at dusk: airliners land out of the sunset and take off, runway lights shining on wet tarmac; every lamp and landing light at night", three: true },
+  { value: "mountainrailway", label: "Mountain railway", desc: "3D alpine valley at sunset: a train in your colour crosses a stone viaduct, disappears into a tunnel and stops at the station; at night lit windows, the village and the floodlit viaduct", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
