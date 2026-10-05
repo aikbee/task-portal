@@ -17781,7 +17781,7 @@ function fairground(THREE, scene, camera, pal, preview) {
   for (let k = 0; k < 16; k++) { const t0 = (k / 16) * Math.PI * 2; STP.push([new THREE.ConeGeometry(7.2, 2.6, 2, 1, true, t0, Math.PI / 8), at(0, 2.1, 0), k % 2 ? 0xf6f0e2 : ACC]); }
   for (let k = 0; k < 12; k++) { const a = (k / 12) * Math.PI * 2; STP.push([rod([1.3 * Math.cos(a), 0.6, 1.3 * Math.sin(a)], [RA * Math.cos(a), 0, RA * Math.sin(a)], 0.07, 4), I4, 0xd8dce0]); }
   swingTop.add(new THREE.Mesh(keep(mergeColored(THREE, STP)), paintMat));
-  const seatGeo = keep(mergeColored(THREE, [[box(0.62, 0.12, 0.55), at(0, 0, 0), ACC], [box(0.1, 0.6, 0.55), at(-0.28, 0.32, 0), ACC], [new THREE.SphereGeometry(0.16, 8, 6), at(0.02, 0.86, 0), 0x3a2c24], [box(0.3, 0.42, 0.34), at(0.02, 0.45, 0), 0x6d8fbf]]));
+  const seatGeo = keep(mergeColored(THREE, [[box(0.55, 0.12, 0.62), at(0, 0, 0), ACC], [box(0.55, 0.6, 0.1), at(0, 0.32, -0.28), ACC], [new THREE.SphereGeometry(0.16, 8, 6), at(0, 0.86, 0.02), 0x3a2c24], [box(0.34, 0.42, 0.3), at(0, 0.45, 0.02), 0x6d8fbf]])); // the rider looks along +z: forward round the circle
   const seats = new THREE.InstancedMesh(seatGeo, paintMat, NSEAT); seats.frustumCulled = false; seats.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(seats); keep(seats);
   const chainPos = new Float32Array(NSEAT * 6), chainGeo = keep(new THREE.BufferGeometry()); chainGeo.setAttribute("position", new THREE.BufferAttribute(chainPos, 3)); chainGeo.attributes.position.setUsage(THREE.DynamicDrawUsage);
   const chainMat = keep(new THREE.LineBasicMaterial({ color: 0x8a9096, transparent: true, opacity: 0.8 }));
@@ -17953,6 +17953,7 @@ function fairground(THREE, scene, camera, pal, preview) {
     reflecting = false;
   };
 
+  const ES = new THREE.Euler(0, 0, 0, "YXZ"); // a chair: heading round the circle, then swung out about its own tangent (its own Euler: the shared one keeps XYZ)
   const mA = new THREE.Matrix4(), pT = new THREE.Vector3(), tT = new THREE.Vector3(), uT = new THREE.Vector3(), bT = new THREE.Vector3(), mB = new THREE.Matrix4();
   let wheelPhi = 0, coaster = { fi: 0, v: 0 }, swing = { phi: 0, w: 0, y: Y_IDLE };
   function frame(dt) {
@@ -17968,7 +17969,7 @@ function fairground(THREE, scene, camera, pal, preview) {
     cars.instanceMatrix.needsUpdate = true;
     // the carousel: a turn every 19 s, the horses rising and falling
     carRot.rotation.y = -clock * 0.33; horses.rotation.y = carRot.rotation.y;
-    HORSES.forEach((h, i) => horses.setMatrixAt(i, mA.compose(V.set(h.rad * Math.cos(h.a), 2.6 + 0.38 * Math.sin(clock * 2.1 + h.ph), h.rad * Math.sin(h.a)), Q.setFromEuler(E.set(0, -h.a - Math.PI / 2 + Math.PI, 0)), ONE)));
+    HORSES.forEach((h, i) => horses.setMatrixAt(i, mA.compose(V.set(h.rad * Math.cos(h.a), 2.6 + 0.38 * Math.sin(clock * 2.1 + h.ph), h.rad * Math.sin(h.a)), Q.setFromEuler(E.set(0, -h.a - Math.PI / 2, 0)), ONE))); // head first: the platform carries a horse at angle a along (−sin a, cos a)
     horses.instanceMatrix.needsUpdate = true;
     carousel.updateMatrix(); carRot.updateMatrix(); ROT[2].multiplyMatrices(carousel.matrix, carRot.matrix);
     // the swing ride: the top rises and spins, the chairs fly out as far as the spin throws them
@@ -17977,7 +17978,7 @@ function fairground(THREE, scene, camera, pal, preview) {
     const sway = swing.w < 0.05 ? 0.03 * Math.sin(clock * 1.3) : 0;
     for (let k = 0; k < NSEAT; k++) {
       const a = (k / NSEAT) * Math.PI * 2, rr = RA + CHAIN * Math.sin(al + sway);
-      const local = mB.compose(V.set(rr * Math.cos(a), -CHAIN * Math.cos(al + sway) - 0.15, rr * Math.sin(a)), Q.setFromEuler(E.set(0, -a, al, "YXZ")), ONE);
+      const local = mB.compose(V.set(rr * Math.cos(a), -CHAIN * Math.cos(al + sway) - 0.15, rr * Math.sin(a)), Q.setFromEuler(ES.set(0, -a, al)), ONE);
       seats.setMatrixAt(k, mA.multiplyMatrices(swingTop.matrix, local));
       V.set(RA * Math.cos(a), 0, RA * Math.sin(a)).applyMatrix4(swingTop.matrix); chainPos.set([V.x, V.y, V.z], k * 6);
       V.set(rr * Math.cos(a), -CHAIN * Math.cos(al + sway) + 0.55, rr * Math.sin(a)).applyMatrix4(swingTop.matrix); chainPos.set([V.x, V.y, V.z], k * 6 + 3);
