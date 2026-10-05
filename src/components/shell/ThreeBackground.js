@@ -18000,7 +18000,512 @@ function fairground(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground };
+/* ---------- Night race circuit: a harbourside street circuit from a terrace above the hairpin; the field brakes, turns and roars away, pit stops in turn ---------- */
+// The race is computed from the track alone: grip, power and brakes give a flying lap's speeds (a forward and a backward pass), a
+// pit lap takes the pit lane under its limiter and stops at the team's box. Twelve cars run a lap apart in twelve slots; the time a
+// stop costs is an odd number of half-slots, so a car rejoining never lands on another, and every car stops once in 24 laps.
+// The harbour mirrors the town, the yachts and at night the floodlights through a reflection pass.
+const RC_TRACK_PARS = /* glsl */ `
+  float rcLine(float v, float c, float hw) { float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(v - c)); }
+  vec3 rcTrack(vec2 uv, float kerb, vec3 wp, float pit) {
+    float n = texture2D(uNoise, wp.xz * 0.05).r, n2 = texture2D(uNoise, wp.xz * 0.37).g;
+    float fwv = fwidth(uv.y);
+    vec3 col = vec3(0.115, 0.12, 0.125) * (0.85 + 0.3 * n2);
+    if (pit > 0.5) { // the pit lane: lighter, the fast lane's line, the boxes' markings
+      col = vec3(0.2, 0.2, 0.21) * (0.85 + 0.3 * n2);
+      col = mix(col, vec3(0.85), rcLine(uv.x, 0.55, 0.012));
+      return col;
+    }
+    col *= 1.0 - 0.22 * (1.0 - smoothstep(0.06, 0.22, abs(uv.x - 0.5))) * (0.7 + 0.3 * n); // the rubbered line
+    col = mix(col, vec3(0.86), max(rcLine(uv.x, 0.03, 0.011), rcLine(uv.x, 0.97, 0.011))); // the edge lines
+    float side = 1.0 - smoothstep(0.075, 0.085, min(uv.x, 1.0 - uv.x)); // the kerbs: red and white, on both sides through the corners
+    col = mix(col, mix(vec3(0.82, 0.07, 0.05), vec3(0.92), step(0.5, fract(uv.y / 2.0))), side * kerb * (1.0 - smoothstep(0.4, 1.2, fwv)));
+    // the start/finish line under the gantry, chequered across, and the grid's boxes behind it
+    float sf = step(110.0, uv.y) * step(uv.y, 111.6);
+    col = mix(col, mix(vec3(0.06), vec3(0.92), mod(floor(uv.x * 16.0) + floor((uv.y - 110.0) / 0.8), 2.0)), sf);
+    float g = 106.0 - uv.y, slot = floor(g / 8.0), lane = mod(slot, 2.0);
+    float box = step(0.0, g) * step(g, 92.0) * rcLine(fract(g / 8.0) * 8.0, 0.2, 0.12) * step(abs(uv.x - (0.3 + 0.4 * lane)), 0.13);
+    col = mix(col, vec3(0.86), box * (1.0 - smoothstep(0.4, 1.0, fwv)));
+    return col;
+  }
+`;
+/** The circuit's night light from above, x −260…140, z −720…260: r = the floodlit track and its run-offs, g = warm town light. */
+function rcNightMap(THREE, paths, pools) {
+  const W = 512, H = 1024, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 260) / 400) * W, Y = (z) => ((260 - z) / 980) * H, S = W / 400;
+  for (const [pts, width, a] of paths) for (let pass = 0; pass < 3; pass++) { // a corridor along each path, soft-edged
+    g.strokeStyle = `rgba(255,0,0,${(a * [0.6, 0.25, 0.15][pass]).toFixed(3)})`; g.lineWidth = width * S * (1 + pass * 0.3); g.lineJoin = "round"; g.lineCap = "butt"; // full inside, a quick falloff beyond
+    g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(X(p.x), Y(p.y)) : g.moveTo(X(p.x), Y(p.y)))); g.stroke();
+  }
+  for (const [x, z, rad, r, gg] of pools) { g.save(); g.translate(X(x), Y(z)); g.scale(rad * S, rad * S); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); [[0, 1], [0.4, 0.6], [0.75, 0.2], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(${Math.round(255 * r * k)},${Math.round(255 * gg * k)},0,1)`)); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** The barriers' advertising boards in one strip, redrawn for each accent: "TASK PORTAL" in the accent between made-up sponsors. */
+function rcBoards(THREE) {
+  const W = 2048, H = 64, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 8;
+  const ADS = [["TASK PORTAL", null, "#ffffff"], ["VELOX", "#14161a", "#f2c200"], ["TASK PORTAL", null, "#ffffff"], ["NOVA FUEL", "#f4f4f2", "#c8102e"], ["TASK PORTAL", null, "#ffffff"], ["APEX TYRES", "#1c2a5c", "#ffffff"], ["TASK PORTAL", null, "#ffffff"], ["ORBIT", "#e8e8e6", "#14161a"]];
+  const draw = (accent) => {
+    const w = W / ADS.length;
+    ADS.forEach(([t, bg, fg], i) => { g.fillStyle = bg || accent; g.fillRect(i * w, 0, w, H); g.fillStyle = fg; g.font = "bold 34px Helvetica, Arial, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(t, i * w + w / 2, H / 2 + 2); g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(i * w, 0, 2, H); });
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** A grandstand's crowd: rows of seats, people in every colour. */
+function rcCrowd(THREE) {
+  const r = koiRng(911);
+  return canvasTexture(THREE, 512, 256, (g, w, h) => {
+    g.fillStyle = "#2b2f36"; g.fillRect(0, 0, w, h);
+    for (let row = 0; row < 16; row++) { g.fillStyle = "rgba(255,255,255,0.06)"; g.fillRect(0, row * 16 + 13, w, 3); for (let x = 2; x < w; x += 6) if (r() < 0.8) { g.fillStyle = `hsl(${Math.floor(r(0, 360))},${Math.floor(r(18, 50))}%,${Math.floor(r(38, 64))}%)`; g.fillRect(x + r(-1, 1), row * 16 + 4 + r(-1, 1), 4, 8); g.fillStyle = "#c9a888"; g.fillRect(x + 0.5, row * 16 + 1, 3, 3); } }
+  });
+}
+/** What the cars' paint and the yachts mirror: the golden sky over the sea, or the night with the floodlights. */
+function rcEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 256, 128, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#6a8cc6"); gr.addColorStop(0.36, dark ? "#0a1430" : "#e6b48e"); gr.addColorStop(0.49, dark ? "#1c2a4c" : "#ffcf94"); gr.addColorStop(0.52, dark ? "#0b0d12" : "#4a4a52"); gr.addColorStop(1, dark ? "#050608" : "#26282e");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < (dark ? 16 : 0); k++) { const x = w * (0.03 + k * 0.062), s = g.createRadialGradient(x, h * 0.42, 0, x, h * 0.42, 7); s.addColorStop(0, "rgba(255,245,225,1)"); s.addColorStop(1, "rgba(255,235,200,0)"); g.fillStyle = s; g.fillRect(x - 7, h * 0.42 - 7, 14, 14); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function racecircuit(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(5531);
+  const C0 = new THREE.Vector3(0, 24, 132), LOOK = new THREE.Vector3(12, -6, -260); // a balcony behind the hairpin, looking down both straights to the sea
+  camera.fov = 40; camera.near = 4; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 2;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), I4 = new THREE.Matrix4();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const rod = (a, b, rad, seg = 6) => { const A0 = new THREE.Vector3(...a), B0 = new THREE.Vector3(...b), d = B0.clone().sub(A0), len = d.length(); return new THREE.CylinderGeometry(rad, rad, len, seg, 1).applyMatrix4(new THREE.Matrix4().compose(A0.clone().add(B0).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()), ONE)); };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(-1.361, 0.087), MOON = sph(-1.832, 0.384); // the sun low over the sea ahead and right; the moon up on the left
+  const ACC = 0xff00ff, GLASS = 0x00ffff, LAMP = 0xffff00, WL = -0.6; // vertex-colour markers; the harbour's water level
+  const world = new THREE.Group(); scene.add(world); // everything above the water: drawn again, mirrored, for the harbour
+
+  /* --- the circuit: the pit straight, the far hairpin, the back straight with its chicane, the near hairpin under the stands; every 0.5 m --- */
+  const XS = 28, ZN = 40, ZF = -610, RH = 28, TW = 13; // the straights' x; the hairpins' centres' z; their radius; the track's width
+  const chicane = (z) => { const u = (z + 322) / 44; return u <= 0 || u >= 1 ? 0 : 3.5 * (1 - Math.cos(2 * Math.PI * u)); }; // a quick jink on the back straight
+  const raw = [];
+  for (let z = ZN; z > ZF; z -= 0.5) raw.push([XS, z]); // the pit straight, running away from the camera
+  for (let k = 0; k <= 180; k++) { const th = -(k / 180) * Math.PI; raw.push([RH * Math.cos(th), ZF + RH * Math.sin(th)]); } // the far hairpin
+  for (let z = ZF; z < ZN; z += 0.5) raw.push([-XS + chicane(z), z]); // the back straight, towards the camera
+  for (let k = 0; k <= 180; k++) { const th = Math.PI - (k / 180) * Math.PI; raw.push([RH * Math.cos(th), ZN + RH * Math.sin(th)]); } // the near hairpin
+  function resample(pts, ds, closed) { // a polyline → points every ds (about) along it
+    const P = pts.map(([x, z]) => new THREE.Vector2(x, z)); if (closed) P.push(P[0].clone());
+    const cum = [0]; for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + P[i].distanceTo(P[i - 1]));
+    const total = cum[cum.length - 1], n = Math.round(total / ds), step = total / n, out = [];
+    let j = 1;
+    for (let k = 0; k < (closed ? n : n + 1); k++) { const d = k * step; while (j < cum.length - 1 && cum[j] < d) j++; const f = (d - cum[j - 1]) / Math.max(1e-9, cum[j] - cum[j - 1]); out.push(P[j - 1].clone().lerp(P[j], Math.min(1, Math.max(0, f)))); }
+    return { pts: out, step, total };
+  }
+  const tangents = (pts, closed) => pts.map((p, i) => { const a = pts[closed ? (i - 1 + pts.length) % pts.length : Math.max(0, i - 1)], b = pts[closed ? (i + 1) % pts.length : Math.min(pts.length - 1, i + 1)]; return new THREE.Vector2().subVectors(b, a).normalize(); });
+  const curvatures = (T, ds, closed) => T.map((t, i) => { const n = T.length, a = T[closed ? (i - 2 + n) % n : Math.max(0, i - 2)], b = T[closed ? (i + 2) % n : Math.min(n - 1, i + 2)]; return (a.x * b.y - a.y * b.x) / (4 * ds); }); // signed: + turns left (towards −x when heading −z)
+  const MAIN = resample(raw, 0.5, true), TP = MAIN.pts, NT = TP.length, DS = MAIN.step;
+  const TT = tangents(TP, true), TK = curvatures(TT, DS, true);
+  const wrapT = (i) => ((i % NT) + NT) % NT;
+  // the fastest a car can go: held in the corners by grip, out of them by its power, into them by its brakes
+  const A_LAT = 34, V_TOP = 88, accel = (v) => 14 * (1 - (v / 92) ** 2), brake = (v) => 30 + 0.15 * v;
+  const VMAIN = new Float32Array(NT);
+  for (let i = 0; i < NT; i++) VMAIN[i] = Math.min(V_TOP, Math.sqrt(A_LAT / Math.max(1e-6, Math.abs(TK[i]))));
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < NT; i++) { const j = (i + 1) % NT; VMAIN[j] = Math.min(VMAIN[j], Math.sqrt(VMAIN[i] ** 2 + 2 * accel(VMAIN[i]) * DS)); }
+    for (let i = NT - 1; i >= 0; i--) { const j = (i + 1) % NT; VMAIN[i] = Math.min(VMAIN[i], Math.sqrt(VMAIN[j] ** 2 + 2 * brake(VMAIN[j]) * DS)); }
+  }
+  const TMAIN = new Float64Array(NT + 1); for (let i = 0; i < NT; i++) TMAIN[i + 1] = TMAIN[i] + DS / ((VMAIN[i] + VMAIN[(i + 1) % NT]) / 2);
+  const T_LAP = TMAIN[NT];
+  // straightness: 1 on the straights (cars spread across the track), 0 near corners (all on the racing line)
+  const STRAIGHT = new Float32Array(NT);
+  { const k = TK.map((v) => Math.abs(v)); for (let i = 0; i < NT; i++) { let m = 0; for (let d = -90; d <= 90; d += 3) m = Math.max(m, k[wrapT(i + d)]); STRAIGHT[i] = 1 - Math.min(1, Math.max(0, (m - 0.004) / 0.012)); }
+    for (let pass = 0; pass < 3; pass++) { const s = STRAIGHT.slice(); for (let i = 0; i < NT; i++) { let a = 0; for (let d = -24; d <= 24; d++) a += s[wrapT(i + d)]; STRAIGHT[i] = a / 49; } } } // eased: the field fans out and closes up over some 40 m
+  // the pit lane: off after the near hairpin, along the garages at x 15 under a 22 m/s limit, out 380 m down the straight into the
+  // inside lane, kept there until up to speed (the field passes on the racing line), then back onto the line
+  const nearMain = (x, z) => { let best = 0, bd = Infinity; TP.forEach((p, i) => { const d = (p.x - x) ** 2 + (p.y - z) ** 2; if (d < bd) { bd = d; best = i; } }); return best; };
+  const iB1 = nearMain(XS, 34), iB2 = nearMain(XS, -380), PX = 15, PZ0 = 2, PZ1 = -330, MERGE_TAIL = 700, IN_LANE = -4.5; // samples of main track after the merge; the inside lane
+  const shift = (u) => 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, u)));
+  const praw = [];
+  for (let z = 34; z >= -380; z -= 0.5) { const x = z > PZ0 ? XS - (XS - PX) * shift((34 - z) / (34 - PZ0)) : z > PZ1 ? PX : PX + (XS + IN_LANE - PX) * shift((PZ1 - z) / (PZ1 + 380)); praw.push([x, z]); }
+  const PITP = resample(praw, DS, false).pts, NPP = PITP.length; // the pit path itself
+  const laneG = (s) => 1 - shift((s - 150) / 60); // the merge path keeps to the inside lane, easing back to the centre line before the far hairpin
+  const CPTS = [...PITP, ...Array.from({ length: MERGE_TAIL }, (_, k) => { const m = wrapT(iB2 + 1 + k); return TP[m].clone().addScaledVector(new THREE.Vector2(-TT[m].y, TT[m].x), IN_LANE * laneG((k + 1) * DS)); })], NC = CPTS.length; // and the straight after the merge
+  const CT = tangents(CPTS, false), CK = curvatures(CT, DS, false);
+  const zBox = (team) => -84 - team * 26; // each team's box along the pit lane
+  const PIT_V = 22, TEAMS = 6;
+  function pitProfile(team) { // speeds and times along the pit path for a car stopping at its team's box (no time spent standing yet)
+    const v = new Float32Array(NC); let stop = 0, bd = Infinity;
+    for (let i = 0; i < NC; i++) {
+      let cap = Math.min(V_TOP, Math.sqrt(A_LAT / Math.max(1e-6, Math.abs(CK[i]))));
+      if (i < NPP && CPTS[i].y <= PZ0 && CPTS[i].y >= PZ1) cap = Math.min(cap, PIT_V);
+      if (i >= NPP) cap = Math.min(cap, VMAIN[wrapT(iB2 + 1 + (i - NPP))]);
+      v[i] = cap; const d = Math.abs(CPTS[i].y - zBox(team)); if (i < NPP && d < bd) { bd = d; stop = i; }
+    }
+    v[stop] = 0; v[0] = Math.min(v[0], VMAIN[iB1]);
+    for (let i = 0; i < NC - 1; i++) v[i + 1] = Math.min(v[i + 1], Math.sqrt(v[i] ** 2 + 2 * (i < NPP ? 9 : accel(v[i])) * DS));
+    for (let i = NC - 2; i >= 0; i--) v[i] = Math.min(v[i], Math.sqrt(v[i + 1] ** 2 + 2 * (i < NPP ? 11 : brake(v[i + 1])) * DS));
+    const t = new Float64Array(NC); for (let i = 1; i < NC; i++) t[i] = t[i - 1] + DS / Math.max(0.3, (v[i - 1] + v[i]) / 2);
+    const iEnd = wrapT(iB2 + MERGE_TAIL), lost = TMAIN[iB1] + t[NC - 1] - (iEnd >= iB1 ? TMAIN[iEnd] : TMAIN[iEnd] + T_LAP); // the time lost against a flying lap
+    let caught = NC - 1; while (caught > NPP && Math.abs(v[caught - 1] - VMAIN[wrapT(iB2 + caught - NPP)]) < 0.02) caught--; // from here it runs a flying lap's speeds
+    return { v, t, stop, lost, iEnd, caught };
+  }
+  const PITS = Array.from({ length: TEAMS }, (_, k) => pitProfile(k));
+  // the stop's length makes every team lose the same time, and that loss falls halfway between two cars' spacing (so a car rejoining
+  // never lands on another: the field keeps 12 slots a lap apart in time, and the loss is an odd number of half-slots)
+  const NCAR = 12, SLOT = T_LAP / NCAR, LAPS_PER_ROUND = 24;
+  const DELTA = (Math.ceil(Math.max(...PITS.map((q) => q.lost)) / SLOT + 2 / SLOT - 0.5) + 0.5) * SLOT;
+  PITS.forEach((q) => { q.dwell = DELTA - q.lost; });
+  const CYCLE = LAPS_PER_ROUND * T_LAP + DELTA;
+  const OFFS = Array.from({ length: NCAR }, (_, k) => k * SLOT + 0.22 * Math.sin(k * 2.3 + 1)); // the field, a little ragged
+  function carAt(k, clock) { // where car k is: on the main track (fractional sample) or in the pit path, and how fast
+    const team = Math.floor(k / 2), pitLap = (2 * k) % LAPS_PER_ROUND, u = clock - OFFS[k], r = u - Math.floor(u / CYCLE) * CYCLE, pitStart = pitLap * T_LAP;
+    let tl;
+    if (r < pitStart) tl = r % T_LAP;
+    else if (r < pitStart + T_LAP + DELTA) {
+      const tp = r - pitStart, q = PITS[team];
+      if (tp >= TMAIN[iB1]) { // in the pit path (or the straight after it)
+        let tc = tp - TMAIN[iB1]; const tStop = q.t[q.stop];
+        if (tc >= tStop + q.dwell) tc -= q.dwell; else if (tc >= tStop) return { pit: true, ci: q.stop, v: 0, stopped: true, team };
+        if (tc < q.t[NC - 1]) { let lo = 0, hi = NC - 1; while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (q.t[mid] <= tc) lo = mid; else hi = mid; } const f = (tc - q.t[lo]) / Math.max(1e-9, q.t[lo + 1] - q.t[lo]); return { pit: true, ci: lo + f, v: q.v[lo] + (q.v[lo + 1] - q.v[lo]) * f, team }; }
+        tl = (tp - DELTA) % T_LAP; // caught up with a flying lap's profile again
+      } else tl = tp;
+    } else tl = (r - pitStart - T_LAP - DELTA) % T_LAP;
+    let lo = 0, hi = NT; while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (TMAIN[mid] <= tl) lo = mid; else hi = mid; }
+    const f = (tl - TMAIN[lo]) / Math.max(1e-9, TMAIN[lo + 1] - TMAIN[lo]);
+    return { pit: false, ti: lo + f, v: VMAIN[lo] + (VMAIN[(lo + 1) % NT] - VMAIN[lo]) * f, team };
+  }
+  const SPREAD = Array.from({ length: NCAR }, (_, k) => -1.5 + 4.5 * ((k * 0.618034 + 0.31) % 1)); // each car's line down the straights: never the inside lane
+  const sideOf = (T) => new THREE.Vector2(-T.y, T.x); // the left normal: outwards on both straights
+  const tq = new THREE.Vector2(), pq = new THREE.Vector2();
+  function placeAt(k, pit, team, x, out) { // a car's position at sample x of its path (the pit path or the main track), its own line across the track included
+    if (pit) {
+      const c = Math.min(NC - 1.001, Math.max(0, x)), i = Math.floor(c), f = c - i; out.copy(CPTS[i]).lerp(CPTS[i + 1], f); tq.copy(CT[i]).lerp(CT[i + 1], f).normalize();
+      if (c >= NPP) { const q = PITS[team], s = (c - NPP + 1) * DS, m = wrapT(iB2 + 1 + Math.round(c - NPP)), b = Math.min(1, Math.max(0, (c - q.caught) / 120)); out.addScaledVector(sideOf(tq), IN_LANE * (1 - b - laneG(s)) + SPREAD[k] * STRAIGHT[m] * b); }
+      return out;
+    }
+    const i = Math.floor(x), f = x - i, a = wrapT(i), b = wrapT(i + 1);
+    out.copy(TP[a]).lerp(TP[b], f); tq.copy(TT[a]).lerp(TT[b], f).normalize();
+    return out.addScaledVector(sideOf(tq), SPREAD[k] * (STRAIGHT[a] + (STRAIGHT[b] - STRAIGHT[a]) * f));
+  }
+  function carPose(k, st, outP, outT) { // a car's position, and its heading: towards where it will be a metre on
+    const x = st.pit ? st.ci : st.ti, ahead = st.pit && x > NC - 3 ? -2 : 2;
+    placeAt(k, st.pit, st.team, x, outP); placeAt(k, st.pit, st.team, x + ahead, pq);
+    outT.subVectors(pq, outP).multiplyScalar(Math.sign(ahead)).normalize();
+  }
+
+
+  /* --- the lit materials: markers, windows, the floodlights' and the town's light at night --- */
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, nightMapU = { value: null }, floodU = { value: new THREE.Color() }, townU = { value: new THREE.Color() };
+  const NIGHT_GLSL = `
+  uniform sampler2D uNightMap; uniform vec3 uFlood; uniform vec3 uTown;
+  vec3 rcNight(vec3 albedo, vec3 wp) { vec2 uv = vec2((wp.x + 260.0) / 400.0, (wp.z + 720.0) / 980.0); float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); vec2 m = texture2D(uNightMap, clamp(uv, 0.0, 1.0)).rg * inside; return albedo * (uFlood * m.r + uTown * m.g) * exp(-max(wp.y, 0.0) / 30.0); }
+`;
+  const lit = (mat, key, { windows = false, markers = true, night = true } = {}) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uNightMap: nightMapU, uFlood: floodU, uTown: townU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW; varying vec3 vWN;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0); vec3 nw = objectNormal;\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw; nw = mat3(instanceMatrix) * nw;\n#endif\nvPW = (modelMatrix * pw).xyz; vWN = normalize(mat3(modelMatrix) * nw); }");
+      let fs = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight; varying vec3 vPW; varying vec3 vWN;\n" + NIGHT_GLSL);
+      let col = "\n  float rcGlass = 0.0, rcLamp = 0.0, rcWin = 0.0;";
+      if (markers) col += `
+  { vec3 c = vColor.rgb;
+    float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isGlass = step(c.r, 0.1) * step(0.9, c.g) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.85, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.07, 0.09, 0.12), isGlass); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.9, 0.7), isLamp); rcGlass = isGlass; rcLamp = isLamp; }`;
+      if (windows) col += `
+  { vec3 n = normalize(vWN); if (abs(n.y) < 0.3) { float u = abs(n.x) > abs(n.z) ? vPW.z : vPW.x; vec2 cc = vec2(u / 3.6, vPW.y / 3.3), f = fract(cc); float w = step(0.22, f.x) * step(f.x, 0.78) * step(0.3, f.y) * step(f.y, 0.78) * step(2.5, vPW.y - floor(vPW.y / 400.0) * 0.0); float hh = fract(sin(dot(floor(cc) + floor(vPW.xz / 50.0) * 7.0, vec2(12.9898, 78.233))) * 43758.5453); rcWin = w * step(0.4, hh); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.13, 0.16, 0.21), w * 0.7); } }`;
+      fs = fs.replace("#include <color_fragment>", "#include <color_fragment>" + col);
+      let em = "\n  totalEmissiveRadiance += vec3(1.0, 0.8, 0.52) * (rcGlass * uNight * 1.15 + rcLamp * (0.5 + 0.7 * uNight) + rcWin * uNight * 1.2);";
+      if (night) em += "\n  totalEmissiveRadiance += rcNight(diffuseColor.rgb, vPW);";
+      sh.fragmentShader = fs.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>" + em);
+    };
+    mat.customProgramCacheKey = () => "rc-" + key;
+    return mat;
+  };
+  const envMats = [];
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.15 })), "paint"); envMats.push(paintMat); paintMat.envMapIntensity = 0.5;
+
+  /* --- the sky, the sea and the harbour (mirroring), the land and the hillside town --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 48, 24)), shader(LANTERN_SKY_VS, WF_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 300 : 1100, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.05, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(28000); moon.scale.setScalar(620); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(4200); moonHalo.renderOrder = -9;
+  world.add(moon, moonHalo);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(2000, 2800, -12000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+  const headU = { uMask: { value: keep(santoriniIsle(THREE, preview ? 1024 : 2048, 128, (u) => 0.3 + 0.25 * Math.sin(u * 4.1 + 1.2) * Math.sin(u * 1.3 + 0.2) + 0.1 * Math.sin(u * 17), 31, 43)) }, uBody: { value: new THREE.Color() }, uRim: { value: new THREE.Color() }, uLights: { value: new THREE.Color() }, uTime: time };
+  const headland = new THREE.Mesh(quad, shader(LANTERN_LAYER_VS, SANTORINI_ISLE_FS, headU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  V.copy(C0).add(V2.set(Math.sin(0.62), 0, -Math.cos(0.62)).multiplyScalar(9000)); headland.position.set(V.x, 220, V.z); headland.scale.set(9000, 460, 1); headland.lookAt(C0.x, 220, C0.z); headland.renderOrder = -5; world.add(headland);
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4)); reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const seaU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uGlint: { value: 1 }, uDeep: { value: new THREE.Color() }, uSwell: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uBoat: { value: new THREE.Vector4(0, 0, 0, 0) } };
+  const sea = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(-Math.PI / 2).translate(0, WL, 0)), shader(WF_SEA_VS, WF_SEA_FS, seaU));
+  sea.frustumCulled = false; scene.add(sea);
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.9 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNightMap: nightMapU, uFlood: floodU, uTown: townU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\nvPW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; varying vec3 vPW;\n" + NIGHT_GLSL)
+      .replace("#include <color_fragment>", `#include <color_fragment>
+  { float n = texture2D(uNoise, vPW.xz * 0.013).r, n2 = texture2D(uNoise, vPW.xz * 0.11).g;
+    vec3 c = vec3(0.36, 0.35, 0.33) * (0.82 + 0.36 * n2); // streets and paving
+    c = mix(c, vec3(0.3, 0.33, 0.24) * (0.8 + 0.4 * n), smoothstep(0.62, 0.72, n) * step(vPW.x, -60.0)); // gardens between the houses
+    diffuseColor.rgb = c; }`)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += rcNight(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "rc-ground";
+  const ground = new THREE.Mesh(keep(new THREE.PlaneGeometry(3000, 1090).rotateX(-Math.PI / 2).translate(-1460, 0, -145)), groundMat); scene.add(ground);
+  // the hillside behind the town, rising to the west, houses up its slope
+  const hillH = (x, z) => { const d = Math.max(0, -x - 250); return d * 0.3 * (1 + 0.25 * Math.sin(z * 0.004 + 1.3) + 0.12 * Math.sin(x * 0.011 + z * 0.007)) - 10 * Math.exp(-(((z + 300) / 300) ** 2)) * Math.min(1, d / 200); };
+  { const NX = 50, NZ = 50, X0 = -1500, X1 = -240, Z0 = -1600, Z1 = 420, pos = [], col = [], idx = [], c = new THREE.Color();
+    for (let j = 0; j <= NZ; j++) for (let i = 0; i <= NX; i++) { const x = X0 + ((X1 - X0) * i) / NX, z = Z0 + ((Z1 - Z0) * j) / NZ, h = hillH(x, z); pos.push(x, h - 0.5, z); c.setRGB(0.3, 0.33, 0.22).multiplyScalar(0.75 + 0.5 * (0.5 + 0.5 * Math.sin(x * 0.05) * Math.sin(z * 0.043))); col.push(c.r, c.g, c.b); }
+    for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) { const a = j * (NX + 1) + i, b = a + 1, d = a + NX + 1, e2 = d + 1; idx.push(a, d, b, b, d, e2); }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx); g.computeVertexNormals();
+    world.add(new THREE.Mesh(g, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true })), "hill", { markers: false }))); }
+
+  /* --- the track and the pit lane: ribbons painted in their shader; barriers with boards, catch fences, floodlights, kerbs' tyres --- */
+  const ribbon = (pts, T, width, closed, kerbs) => {
+    const n = pts.length, rings = closed ? n + 1 : n, pos = new Float32Array(rings * 6), uv = new Float32Array(rings * 4), kb = new Float32Array(rings * 2), idx = [];
+    for (let k = 0; k < rings; k++) { const i = k % n, p = pts[i], t = T[i], nx = -t.y, nz = t.x, s = k * DS; pos.set([p.x + nx * width / 2, 0, p.y + nz * width / 2, p.x - nx * width / 2, 0, p.y - nz * width / 2], k * 6); uv.set([0, s, 1, s], k * 4); const kv = kerbs ? kerbs[i] : 0; kb.set([kv, kv], k * 2); if (k) { const a = (k - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uv, 2)); g.setAttribute("aKerb", new THREE.BufferAttribute(kb, 1)); g.setIndex(idx); g.computeVertexNormals();
+    return g;
+  };
+  const KERB = new Float32Array(NT); { const k = TK.map((v) => Math.abs(v)); for (let i = 0; i < NT; i++) { let m = 0; for (let d = -14; d <= 14; d++) m = Math.max(m, k[wrapT(i + d)]); KERB[i] = Math.min(1, Math.max(0, (m - 0.012) / 0.008)); } }
+  const trackMat = (pit) => { const m = keep(new THREE.MeshStandardMaterial({ roughness: 0.85, polygonOffset: true, polygonOffsetFactor: pit ? -1 : -2, polygonOffsetUnits: pit ? -1 : -2 }));
+    m.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uNoise: { value: noise }, uNightMap: nightMapU, uFlood: floodU, uTown: townU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aKerb; varying float vKerb; varying vec2 vRcUv; varying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\nvKerb = aKerb; vRcUv = uv; vPW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; varying float vKerb; varying vec2 vRcUv; varying vec3 vPW;\n" + NIGHT_GLSL + RC_TRACK_PARS)
+        .replace("#include <color_fragment>", `#include <color_fragment>\n  diffuseColor.rgb = rcTrack(vRcUv, vKerb, vPW, ${pit ? "1.0" : "0.0"});`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += rcNight(diffuseColor.rgb, vPW) * 1.3;");
+    };
+    m.customProgramCacheKey = () => "rc-track" + (pit ? "-pit" : "");
+    return m; };
+  const trackMesh = new THREE.Mesh(ribbon(TP, TT, TW, true, KERB), trackMat(false)); trackMesh.position.y = 0.03; scene.add(trackMesh);
+  const pitMesh = new THREE.Mesh(ribbon(PITP, tangents(PITP, false), 9, false, null), trackMat(true)); pitMesh.position.y = 0.02; scene.add(pitMesh);
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // what stands still, painted: one merged draw
+  const mergeAll = (geos) => { // geometries with position, normal and uv (and colour, if the first has it) → one
+    const parts = geos.map((g) => (g.index ? g.toNonIndexed() : g)), hasCol = !!parts[0].attributes.color;
+    const n = parts.reduce((s, g) => s + g.attributes.position.count, 0), pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), uv = new Float32Array(n * 2), col = hasCol ? new Float32Array(n * 3) : null;
+    let o = 0; for (const g of parts) { const c = g.attributes.position.count; pos.set(g.attributes.position.array, o * 3); nrm.set(g.attributes.normal.array, o * 3); uv.set(g.attributes.uv.array, o * 2); if (col) col.set(g.attributes.color.array, o * 3); o += c; }
+    new Set([...geos, ...parts]).forEach((g) => g.dispose());
+    const out = new THREE.BufferGeometry(); out.setAttribute("position", new THREE.BufferAttribute(pos, 3)); out.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); out.setAttribute("uv", new THREE.BufferAttribute(uv, 2)); if (col) out.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    return out;
+  };
+  const boards = rcBoards(THREE); keep(boards.tex);
+  const wallMat = lit(keep(new THREE.MeshStandardMaterial({ map: boards.tex, roughness: 0.7, vertexColors: true })), "wall", { markers: false });
+  { const f = wallMat.onBeforeCompile; wallMat.onBeforeCompile = (sh) => { f(sh); sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", "#ifdef USE_MAP\n  diffuseColor *= texture2D( map, gl_FrontFacing ? vMapUv : vec2( -vMapUv.x, vMapUv.y ) ); // the boards read the right way round from either side\n#endif"); }; }
+  const WALLS = [], FENCES = [];
+  const strip = (pts, h, y0, out, list) => { // a vertical band along a run of points, uv along it in metres; wound so its front reads the boards the right way (the back is flipped in the shader)
+    const pos = [], uv = [], col = [], idx = []; let s = 0;
+    pts.forEach((p, k) => { if (k) s += p.distanceTo(pts[k - 1]); pos.push(p.x, y0, p.y, p.x, y0 + h, p.y); uv.push(s / 128, 0, s / 128, 1); col.push(1, 1, 1, 1, 1, 1); if (k) { const a = (k - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } });
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx); g.computeVertexNormals(); list.push(g);
+  };
+  { // barriers each side of the track (gaps where the pit lane leaves and joins), the pit wall, catch fences on the outside
+    const edge = (side, off) => TP.map((p, i) => new THREE.Vector2(p.x - TT[i].y * side * off, p.y + TT[i].x * side * off));
+    const outer = edge(1, TW / 2 + 0.6), inner = edge(-1, TW / 2 + 0.6);
+    const runs = (pts, skip) => { const out = []; let cur = []; for (let i = 0; i <= pts.length; i += 4) { const k = i % pts.length; if (skip(k)) { if (cur.length > 1) out.push(cur); cur = []; } else cur.push(pts[k]); } if (cur.length > 1) out.push(cur); return out; };
+    for (const run of runs(outer, () => false)) { strip(run, 1.1, 0, true, WALLS); strip(run, 3.6, 1.1, true, FENCES); }
+    for (const run of runs(inner, (k) => TP[k].x > 20 && ((TP[k].y > 2 && TP[k].y < 36) || (TP[k].y < -330 && TP[k].y > -392)))) strip(run, 1.1, 0, false, WALLS);
+  }
+  const walls = new THREE.Mesh(keep(mergeAll(WALLS)), wallMat); walls.material.side = THREE.DoubleSide; world.add(walls);
+  const fenceTex = keep(canvasTexture(THREE, 64, 64, (g) => { g.clearRect(0, 0, 64, 64); g.strokeStyle = "rgba(220,226,232,0.9)"; g.lineWidth = 2; for (let k = -64; k < 128; k += 12) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k + 64, 64); g.stroke(); g.beginPath(); g.moveTo(k + 64, 0); g.lineTo(k, 64); g.stroke(); } g.fillStyle = "rgba(200,206,212,1)"; g.fillRect(0, 0, 64, 3); }));
+  fenceTex.wrapS = fenceTex.wrapT = THREE.RepeatWrapping; fenceTex.repeat.set(40, 1);
+  const fences = new THREE.Mesh(keep(mergeAll(FENCES)), keep(new THREE.MeshBasicMaterial({ map: fenceTex, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide, fog: true })));
+  world.add(fences);
+  const GL = []; // the lamps: [x, y, z, size, r, g, b, smallest px]
+  const FLOOD = [2.6, 2.55, 2.4], WARM = [2.5, 1.95, 1.25];
+  { // floodlight towers along the outside every 46 m, their heads leaning over the track
+    let acc = 0;
+    for (let i = 0; i < NT; i++) { acc += DS; if (acc < 46) continue; acc = 0; if (TP[i].y > -30) continue; const p = TP[i], t = TT[i], nx = -t.y, nz = t.x, bx = p.x + nx * (TW / 2 + 4.5), bz = p.y + nz * (TW / 2 + 4.5), ry = Math.atan2(-nz, nx);
+      P(cyl(0.3, 0.45, 24, 8), at(bx, 12, bz), 0x8a9096); P(box(1.2, 1.4, 5.2), at(bx - nx * 1.4, 24.2, bz - nz * 1.4, 0, ry, 0), 0x55595e); P(box(0.25, 1.1, 4.8), at(bx - nx * 2.05, 24.2, bz - nz * 2.05, 0, ry, 0), LAMP);
+      for (const s of [-1.6, 0, 1.6]) GL.push([bx - nx * 2.1 - t.x * s, 24.2, bz - nz * 2.1 - t.y * s, 0.5, ...FLOOD, 1.6]); }
+  }
+  for (let k = 0; k < 70; k++) { const th = Math.PI * (0.06 + 0.88 * (k / 69)), rr = RH + TW / 2 + 1.6; P(cyl(0.45, 0.45, 0.9, 10), at(rr * Math.cos(th), 0.45, ZN + rr * Math.sin(th)), 0x1e1f22); } // the tyre wall round the hairpin
+  P(box(0.8, 7.5, 0.8), at(20.3, 3.75, -70), 0x55595e); P(box(0.8, 7.5, 0.8), at(35.8, 3.75, -70), 0x55595e); P(box(16, 1.2, 1.2), at(28, 7.6, -70), 0x2a2c30); P(box(4, 0.9, 0.3), at(28, 7.6, -69.3), ACC); // the start gantry over the line
+
+  /* --- the stands, the pits and the paddock --- */
+  const crowdTex = keep(rcCrowd(THREE)); crowdTex.wrapS = THREE.RepeatWrapping;
+  const crowdMat = lit(keep(new THREE.MeshStandardMaterial({ map: crowdTex, roughness: 0.9 })), "crowd", { markers: false });
+  const STANDS = [];
+  const stand = (a0, a1, rise, run, rep) => { // a raked seating face from the front edge a0→a1 (low) back by run, up by rise
+    const A = new THREE.Vector3(...a0), B = new THREE.Vector3(...a1), dir = new THREE.Vector3().subVectors(B, A), back = new THREE.Vector3(dir.z, 0, -dir.x).normalize().multiplyScalar(run);
+    const C = A.clone().add(back).add(new THREE.Vector3(0, rise, 0)), D = B.clone().add(back).add(new THREE.Vector3(0, rise, 0));
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute([A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z, D.x, D.y, D.z], 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, rep, 0, 0, 1, rep, 1], 2)); g.setIndex([0, 1, 2, 1, 3, 2]); g.computeVertexNormals(); STANDS.push(g);
+    const mid = A.clone().add(B).multiplyScalar(0.5).add(back.clone().multiplyScalar(0.5)), len = dir.length(), ry = Math.atan2(-dir.z, dir.x);
+    P(box(len, rise, 0.6), at(mid.x + back.x * 0.5, rise / 2, mid.z + back.z * 0.5, 0, ry, 0), 0xcfd2d6); // the back wall
+    P(box(len + 1, 0.5, run + 3), at(mid.x + back.x * 0.08, rise + 4.2, mid.z + back.z * 0.08, 0, ry, 0), ACC); // the roof
+    for (const u of [0.05, 0.5, 0.95]) { const q = A.clone().lerp(B, u).add(back); P(cyl(0.2, 0.2, rise + 4.2, 6), at(q.x, (rise + 4.2) / 2, q.z), 0x8a9096); }
+    GL.push(...[0.2, 0.5, 0.8].map((u) => { const q = A.clone().lerp(B, u).add(back.clone().multiplyScalar(0.5)); return [q.x, rise + 3.8, q.z, 0.4, ...WARM, 1.4]; }));
+  };
+  stand([-46, 1.2, 58], [-46, 1.2, -72], 12, 14, 2); // along the back straight's outside, facing the track
+  const stands = new THREE.Mesh(keep(mergeAll(STANDS)), crowdMat); stands.material.side = THREE.DoubleSide; world.add(stands);
+  // the pit building: garages along the pit lane, each team's colour over its doors, lights inside; race control at the end
+  const TEAM_COL = [ACC, 0xc8102e, 0xc4c9ce, 0xff7a00, 0x1b2a6b, 0x0f5c3e];
+  P(box(9, 9, 184), at(4.5, 4.5, -150), 0xe6e8ea); P(box(9.4, 0.6, 184.4), at(4.5, 9.2, -150), 0xb9bec3);
+  for (let t = 0; t < TEAMS; t++) { const z = zBox(t); P(box(0.3, 1.2, 22), at(9.1, 6.4, z), TEAM_COL[t]); P(box(0.1, 3.2, 20), at(9.05, 2.0, z), LAMP); for (const dz of [-6, 0, 6]) GL.push([10.2, 4.6, z + dz, 0.3, ...WARM, 1.2]); }
+  P(box(10, 11, 12), at(4.5, 5.5, -50), 0xe9ebed); P(box(10.6, 3, 12.6), at(4.5, 12.5, -50), GLASS); P(box(10.8, 0.7, 12.8), at(4.5, 14.3, -50), ACC); // race control
+  for (let k = 0; k < 12; k++) { const z = -78 - k * 14, t = Math.floor(k / 2); P(box(4, 3.8, 10), at(-6, 1.9, z), 0xf2f3f4); P(box(4.05, 1.2, 10.05), at(-6, 2.2, z), TEAM_COL[t]); P(box(3.4, 3, 2.6), at(-6, 1.5, z + 6.4), 0x2a2d31); } // the transporters
+  for (let k = 0; k < 6; k++) { const z = -84 - k * 26; P(box(6.5, 7, 18), at(-15.5, 3.5, z), 0xe6e8ea); P(box(6.6, 0.7, 18.1), at(-15.5, 5.3, z), TEAM_COL[k]); } // the motorhomes
+
+  /* --- the town on the left, the marina on the right --- */
+  const BLD = [], taken = [];
+  const free = (x, z, w, d) => !taken.some(([a, b, c, e]) => Math.abs(a - x) < (c + w) / 2 + 4 && Math.abs(b - z) < (e + d) / 2 + 4);
+  for (let tries = 0; BLD.length < (preview ? 90 : 170) && tries < 4000; tries++) {
+    const x = r(-250, -60), z = r(-690, 240), w = r(16, 34), d = r(16, 34);
+    if (x + w / 2 > (z > -76 && z < 62 ? -66 : -44)) continue;
+    if (!free(x, z, w, d)) continue;
+    taken.push([x, z, w, d]); BLD.push([x, z, w, d, r(12, 30) + Math.max(0, -x - 120) * 0.12 + (z > 120 ? 8 : 0)]);
+  }
+  for (let tries = 0, n = 0; n < (preview ? 120 : 280) && tries < 5000; tries++) { const x = r(-1150, -270), z = r(-1300, 300), w = r(9, 16), d = r(9, 16); if (!free(x, z, w, d)) continue; taken.push([x, z, w, d]); BLD.push([x, z, w, d, r(6, 13), hillH(x, z)]); n++; }
+  const bldMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "bld", { windows: true, markers: false });
+  const blds = new THREE.InstancedMesh(keep(mergeColored(THREE, [[box(1, 1, 1).translate(0, 0.5, 0), I4, 0xffffff], [box(1.04, 0.025, 1.04).translate(0, 0.985, 0), I4, 0xe9e6e0], [box(1.02, 0.02, 1.02).translate(0, 0.012, 0), I4, 0xbcb6ac]])), bldMat, BLD.length); // walls, a cornice, a plinth
+  { const c = new THREE.Color(), PAL = [0xe9dcc4, 0xe6c9a8, 0xf0e6d6, 0xd9b48f, 0xefe2cf, 0xcfa98a, 0xf3eee6, 0xe3cfb5, 0xdcc3a0];
+    BLD.forEach(([x, z, w, d, h, y0 = 0], i) => { blds.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, y0 - 0.5, z), Q.identity(), V2.set(w, h + 0.5, d))); blds.setColorAt(i, c.setHex(PAL[Math.floor(r(0, PAL.length))])); }); }
+  world.add(blds); keep(blds);
+  for (let z = 150; z > -680; z -= 25) { P(cyl(0.12, 0.16, 6, 6), at(41, 3, z), 0x3d4146); GL.push([41, 6.1, z, 0.32, ...WARM, 1.3]); } // the quay's lamps
+  P(box(9, 2.6, 1090), at(40.5, -1.2, -145), 0x9a948a); // the quay wall
+  P(box(560, 4.5, 14), at(320, 0.2, -705), 0x8f8a82); P(cyl(3, 3.6, 18, 12), at(598, 9, -705), 0xf2f2f0); P(cyl(3.05, 3.05, 3, 12), at(598, 15, -705), 0xc8102e); // the breakwater, its light
+  const YACHTS = [], SAILS = [];
+  for (let z = 62; z > -650; ) { const sail = r() < 0.32, L = sail ? r(11, 18) : r(14, 42); (sail ? SAILS : YACHTS).push([46 + L * 0.55, z, L, 0]); z -= L * (sail ? 0.3 : 0.24) + r(2.5, 5); } // moored stern-to along the quay
+  for (let k = 0; k < (preview ? 8 : 14); k++) YACHTS.push([r(160, 460), r(-640, 40), r(35, 80), r(0, 6.28)]); // superyachts at anchor
+  const hull = (L0) => [[box(0.82, 0.075, 0.2), at(-0.03, 0.03, 0), 0xf4f5f6], [new THREE.ConeGeometry(0.1, 0.2, 4, 1).rotateX(Math.PI / 4).scale(1, 0.75, 1).rotateZ(-Math.PI / 2), at(0.47, 0.035, 0), 0xf4f5f6], [box(0.83, 0.014, 0.205), at(-0.03, -0.004, 0), L0]];
+  const yachtGeo = keep(mergeColored(THREE, [...hull(0x1b2a4a), [box(0.46, 0.055, 0.16), at(-0.05, 0.095, 0), 0xf6f7f8], [box(0.465, 0.022, 0.165), at(-0.05, 0.098, 0), GLASS], [box(0.28, 0.045, 0.13), at(-0.09, 0.145, 0), 0xf6f7f8], [box(0.285, 0.018, 0.135), at(-0.09, 0.148, 0), GLASS], [box(0.1, 0.03, 0.1), at(-0.05, 0.182, 0), 0xe1e4e7], [box(0.012, 0.07, 0.012), at(-0.05, 0.23, 0), 0xd9dcdf]]));
+  const sailGeo = keep(mergeColored(THREE, [...hull(0x274b73).map(([g, m, c]) => [g.scale(1, 0.75, 0.85), m, c]), [box(0.3, 0.04, 0.13), at(-0.08, 0.075, 0), 0xf2f2f0], [box(0.305, 0.012, 0.135), at(-0.08, 0.08, 0), GLASS], [box(0.012, 1.1, 0.012), at(0.06, 0.6, 0), 0xe8eaec], [box(0.42, 0.008, 0.008), at(-0.14, 0.14, 0), 0xe8eaec]]));
+  const yachts = new THREE.InstancedMesh(yachtGeo, paintMat, YACHTS.length), sails = new THREE.InstancedMesh(sailGeo, paintMat, SAILS.length);
+  for (const [list, mesh, mast] of [[YACHTS, yachts, 0.2], [SAILS, sails, 1.1]]) list.forEach(([x, z, L, ry], i) => { mesh.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, WL - 0.015 * L, z), Q.setFromEuler(E.set(0, ry, 0)), V2.set(L, L, L))); GL.push([x + Math.cos(ry) * L * 0.05, WL + L * (mast + 0.04), z - Math.sin(ry) * L * 0.05, mast > 1 ? 0.12 : 0.22, ...(mast > 1 ? [2.6, 2.6, 2.6] : WARM), 1.0]); });
+  world.add(yachts, sails); keep(yachts); keep(sails);
+  for (let k = 0; k < 4; k++) { const z = -10 - k * 15; P(box(10, 3.2, 11), at(-4, 1.6, z), 0xf4f4f2); P(new THREE.ConeGeometry(7.6, 2.4, 4, 1).rotateY(Math.PI / 4).scale(0.95, 1, 1.03), at(-4, 4.4, z), k % 2 ? ACC : 0xf4f4f2); GL.push([1.2, 2.6, z - 3, 0.25, ...WARM, 1.1], [1.2, 2.6, z + 3, 0.25, ...WARM, 1.1]); } // hospitality marquees
+  const TREES = []; for (const [x0, x1, z0, z1, n] of [[-17, 14, 8, 26, 9], [-17, -12, -70, -6, 6], [-60, -52, -640, 60, 22], [10, 16, -330, -250, 4]]) for (let k = 0; k < n; k++) TREES.push([r(x0, x1), r(z0, z1), r(0.8, 1.3)]);
+  const treeGeo = keep(mergeColored(THREE, [[cyl(0.22, 0.3, 3, 6), at(0, 1.5, 0), 0x5a4634], [new THREE.IcosahedronGeometry(2.4, 1).scale(1, 1.15, 1), at(0, 4.6, 0), 0x3c5a2e], [new THREE.IcosahedronGeometry(1.6, 1), at(0.8, 5.9, 0.4), 0x46663a]]));
+  const trees = new THREE.InstancedMesh(treeGeo, paintMat, TREES.length); TREES.forEach(([x, z, s], i) => trees.setMatrixAt(i, at(x, 0, z, 0, r(0, 6.28), 0).scale(V.set(s, s, s)))); world.add(trees); keep(trees);
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+
+  /* --- the cars: one instanced draw, each team's colour on white parts; the rear light, sparks off the plank at night --- */
+  const carGeo = keep(mergeColored(THREE, [
+    [box(4.6, 0.06, 1.5), at(-0.1, 0.1, 0), 0x18191c], [box(2.4, 0.46, 0.74), at(0.25, 0.42, 0), 0xffffff], [box(1.5, 0.24, 0.36), at(1.95, 0.32, 0, 0, 0, -0.06), 0xffffff],
+    [box(1.7, 0.44, 0.5), at(-0.95, 0.66, 0), 0xffffff], [box(1.2, 0.3, 0.05), at(-1.3, 0.96, 0), 0xffffff], [box(1.6, 0.4, 0.46), at(-0.4, 0.42, 0.58), 0xffffff], [box(1.6, 0.4, 0.46), at(-0.4, 0.42, -0.58), 0xffffff],
+    [new THREE.TorusGeometry(0.3, 0.04, 5, 12, Math.PI).rotateY(Math.PI / 2), at(0.2, 0.74, 0), 0x18191c], [new THREE.SphereGeometry(0.15, 8, 6), at(0.02, 0.8, 0), 0xffffff],
+    [box(0.42, 0.05, 1.9), at(2.55, 0.14, 0), 0x18191c], [box(0.5, 0.18, 0.04), at(2.55, 0.2, 0.95), 0xffffff], [box(0.5, 0.18, 0.04), at(2.55, 0.2, -0.95), 0xffffff],
+    [box(0.34, 0.06, 1.0), at(-2.4, 0.98, 0), 0x18191c], [box(0.55, 0.5, 0.04), at(-2.38, 0.78, 0.5), 0xffffff], [box(0.55, 0.5, 0.04), at(-2.38, 0.78, -0.5), 0xffffff],
+    ...[[1.6, 0.85, 0.34], [1.6, -0.85, 0.34], [-1.55, 0.82, 0.4], [-1.55, -0.82, 0.4]].map(([x, z, w]) => [cyl(0.36, 0.36, w, 14).rotateX(Math.PI / 2), at(x, 0.36, z), 0x141518]),
+  ]));
+  const carMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.35 })), "car", { markers: false }); envMats.push(carMat); carMat.envMapIntensity = 0.9;
+  const cars = new THREE.InstancedMesh(carGeo, carMat, NCAR); cars.frustumCulled = false; cars.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(cars); keep(cars);
+  const RIVALS = [0xc8102e, 0xc4c9ce, 0xff7a00, 0x24357e, 0x0f5c3e];
+  const paintCars = () => { const c = new THREE.Color(); for (let k = 0; k < NCAR; k++) { const t = Math.floor(k / 2); cars.setColorAt(k, t === 0 ? c.set(pal.accent) : c.setHex(RIVALS[t - 1])); } cars.instanceColor.needsUpdate = true; };
+  const NSTATIC = GL.length, NSPARK = 3;
+  for (let k = 0; k < NCAR * (1 + NSPARK); k++) GL.push([0, 0, 0, 0, 0, 0, 0, 1.2]);
+  nightMapU.value = keep(rcNightMap( THREE, [[TP.concat([TP[0]]), TW + 1.5, 0.95], [PITP, 9, 0.7]], [[4, -150, 30, 0.25, 0.25], [-46, -8, 40, 0.4, 0.15], [-150, -200, 160, 0, 0.35], [-150, 60, 110, 0, 0.35], [41, -260, 60, 0, 0.25]]));
+  nightMapU.value.generateMipmaps = false; nightMapU.value.minFilter = THREE.LinearFilter; // at grazing angles the mipmaps smeared the floodlit strip into a halo
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- light --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 900, 14000);
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); boards.draw("#" + new THREE.Color(p.accent).getHexString()); paintCars();
+    env?.dispose(); env = rcEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyU.uZenith.value.set(d ? "#02050f" : "#3f67a6"); skyU.uMid.value.set(d ? "#08112a" : "#c2a2b0"); skyU.uHorizon.value.set(d ? "#16224a" : "#ffc184"); skyU.uGlow.value.set(d ? "#1d2a50" : "#ff9a52").multiplyScalar(d ? 0.3 : 0.55); skyU.uSunDir.value.copy(SUN); skyU.uSunColor.value.set("#ffb46c"); skyU.uSun.value = d ? 0 : 1;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudU.uSunDir.value.copy(L); cloudU.uLit.value.set(d ? "#2a3452" : "#ffcaa0"); cloudU.uShade.value.set(d ? "#131a2c" : "#8a86a8"); cloudU.uGlow.value.set(d ? "#34426a" : "#ffa060").multiplyScalar(d ? 0.3 : 0.7); cloudU.uHaze.value.set(d ? "#16203a" : "#e8bca0");
+    headU.uBody.value.set(d ? "#0b111f" : "#7b6f86"); headU.uRim.value.set("#ffb070").multiplyScalar(d ? 0 : 0.3); headU.uLights.value.set(d ? "#ffc070" : "#000000");
+    seaU.uSunDir.value.copy(L); seaU.uSunCol.value.set(d ? "#9fb4e8" : "#ffd29a"); seaU.uGlint.value = d ? 0.35 : 1;
+    seaU.uDeep.value.set(d ? "#04080f" : "#14374c"); seaU.uSwell.value.set(d ? "#08121f" : "#245264"); seaU.uFoam.value.set(d ? "#3a4656" : "#e6ecee"); seaU.uHaze.value.set(d ? "#0e1a33" : "#f2bc94");
+    sun.position.copy(L).multiplyScalar(1000); sun.color.set(d ? "#9fb4e8" : "#ffc48a"); sun.intensity = d ? 0.3 : 2.2;
+    hemi.color.set(d ? "#1a2440" : "#b9c6e6"); hemi.groundColor.set(d ? "#060708" : "#4d4740"); hemi.intensity = d ? 0.3 : 0.75;
+    scene.fog.color.set(d ? "#0b1428" : "#f0c4a2"); scene.fog.near = d ? 700 : 900; scene.fog.far = d ? 11000 : 14000;
+    nightU.value = d ? 1 : 0; floodU.value.set(1, 0.97, 0.92).multiplyScalar(d ? 1.5 : 0.18); townU.value.set(1, 0.78, 0.5).multiplyScalar(d ? 0.8 : 0);
+    glowU.uAmt.value = d ? 1 : 0.6;
+  }
+  applyPalette(pal);
+
+  /* --- the camera, the mirrored pass --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0).add(V.set(0, 0, -40 * k)); // a phone stands nearer the hairpin and looks a little more down: the hairpin at the bottom, the sky at the top
+    camera.lookAt(look.copy(LOOK).add(V.set(-4 * k, -33 * k, -8 * k)));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf); seaU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    const mv = moon.visible; world.scale.y = -1; world.position.y = 2 * WL; sea.visible = ground.visible = trackMesh.visible = pitMesh.visible = false; moon.visible = moonHalo.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    world.scale.y = 1; world.position.y = 0; sea.visible = ground.visible = trackMesh.visible = pitMesh.visible = true; moon.visible = moonHalo.visible = mv; glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  const mA = new THREE.Matrix4(), cp = new THREE.Vector2(), ct = new THREE.Vector2(), states = new Array(NCAR);
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    for (let k = 0; k < NCAR; k++) {
+      const st = (states[k] = carAt(k, clock)); carPose(k, st, cp, ct);
+      cars.setMatrixAt(k, mA.compose(V.set(cp.x, 0.05, cp.y), Q.setFromEuler(E.set(0, Math.atan2(-ct.y, ct.x), 0)), ONE));
+      const base = NSTATIC + k * (1 + NSPARK), blink = st.pit && Math.floor(clock * 4) % 2 === 0;
+      aGlow.setXYZW(base, cp.x - ct.x * 2.65, 0.62, cp.y - ct.y * 2.65, pal.dark || blink ? 0.16 : 0.1); aTint.setXYZ(base, 2.6, 0.18, 0.12); aMin.setX(base, pal.dark ? 1.6 : 1.1);
+      for (let j = 0; j < NSPARK; j++) { // sparks off the plank at speed, at night
+        const h = Math.sin(clock * 37.1 + k * 3.7 + j * 11.3) * 43758.5453, on = pal.dark && st.v > 55 && h - Math.floor(h) > 0.55, dd = 2.8 + j * 1.6 + (h - Math.floor(h)) * 2;
+        aGlow.setXYZW(base + 1 + j, cp.x - ct.x * dd, 0.12, cp.y - ct.y * dd, on ? 0.14 : 0); aTint.setXYZ(base + 1 + j, 2.6, 1.6, 0.5); aMin.setX(base + 1 + j, 1.0);
+      }
+    }
+    cars.instanceMatrix.needsUpdate = true; aGlow.needsUpdate = aTint.needsUpdate = aMin.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { const s = states[0] || {}; return { lap: +T_LAP.toFixed(2), pitLoss: +DELTA.toFixed(2), car0: s.pit ? (s.stopped ? "stopped" : "pit lane") : "track", v0: +(s.v || 0).toFixed(1), lamps: NSTATIC, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
