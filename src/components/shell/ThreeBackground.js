@@ -17458,7 +17458,548 @@ function windfarm(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm };
+/* ---------- Fairground at dusk: a seaside fair — a Ferris wheel, a roller coaster with a loop, a carousel and a swing ride; the bulbs light up as night falls ---------- */
+// Every ride runs off the clock alone (the coaster from a time table built once from its track: chain lift, gravity, brakes, the
+// station). Everything above the paving is drawn again mirrored for the puddles and the sea. The bulbs are one instanced draw; the
+// ones on a ride turn with it in the vertex shader (one matrix per ride), and their chases and twinkles run there too.
+const FG_LIGHT_VS = /* glsl */ `
+  uniform float uPx; uniform float uMinK; uniform float uTime; uniform mat4 uRot[4]; uniform vec3 uAccentGlow;
+  attribute vec4 aGlow; attribute vec3 aTint; attribute vec4 aAnim; // position on its ride, size; colour (r < 0: the accent); ride, phase, pattern, smallest px
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    vUv = uv;
+    if (aGlow.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    int g = int(aAnim.x + 0.5);
+    vec4 wp = uRot[g] * vec4(aGlow.xyz, 1.0);
+    float k = 1.0, ph = aAnim.y, pat = aAnim.z;
+    if (pat > 0.5 && pat < 1.5) k = 0.22 + 0.78 * step(0.62, fract(ph - uTime * 0.9)); // chasing in threes
+    else if (pat > 1.5 && pat < 2.5) k = 0.62 + 0.38 * sin(uTime * (1.7 + 1.3 * fract(ph * 7.3)) + ph * 40.0); // twinkling
+    else if (pat > 2.5 && pat < 3.5) k = 0.25 + 0.75 * smoothstep(0.55, 1.0, sin(ph * 9.0 - uTime * 3.2)); // waves running out along the spokes
+    else if (pat > 3.5) k = 0.2 + 0.8 * step(0.5, fract(uTime * 0.55 + ph)); // two sets blinking in turn
+    vTint = (aTint.r < 0.0 ? uAccentGlow : aTint) * k;
+    vec4 mv = modelViewMatrix * wp;
+    float d = max(-mv.z, 0.5), px = aGlow.w * uPx / d, mn = aAnim.w * uMinK, rp = max(px, mn);
+    vTint *= 0.55 + 0.45 * min(1.0, px / mn); // far bulbs a little dimmer, never gone
+    mv.xy += position.xy * 2.0 * rp * d / uPx;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+// the ground: grey slabs, the avenue in brick, a lawn under the coaster, the promenade's boards by the sea wall; how wet each spot is
+const FG_GROUND_PARS = /* glsl */ `
+  float fgRep(float v, float p, float hw) { float q = v - p * floor(v / p + 0.5); float fw = fwidth(v) + 1e-4; return 1.0 - smoothstep(hw - fw, hw + fw, abs(q)); }
+  vec3 fgGround(vec2 w, out float wet) {
+    float n = texture2D(uNoise, w * 0.011).r, n2 = texture2D(uNoise, w * 0.05 + 0.3).g, n3 = texture2D(uNoise, w * 0.21).r;
+    float fwm = fwidth(w.x) + fwidth(w.y); // metres per pixel: fine joints fade before they shimmer
+    vec3 col = vec3(0.4, 0.39, 0.38) * (0.85 + 0.3 * n2);
+    col *= 1.0 - 0.22 * max(fgRep(w.x, 3.0, 0.05), fgRep(w.y, 3.0, 0.05)) * (1.0 - smoothstep(0.5, 2.0, fwm)); // the slabs' joints
+    float ave = (1.0 - smoothstep(7.0, 7.6, abs(w.x))) * step(-80.0, w.y); // the avenue in brick, a running bond
+    vec3 brick = vec3(0.47, 0.3, 0.23) * (0.84 + 0.32 * n3);
+    float bj = max(fgRep(w.y, 0.45, 0.03), fgRep(w.x + step(0.5, fract(w.y / 0.9)) * 0.55, 1.1, 0.03)) * (1.0 - smoothstep(0.12, 0.5, fwm));
+    col = mix(col, brick * (1.0 - 0.25 * bj), ave);
+    float lawn = smoothstep(-6.0, -12.0, w.x) * smoothstep(8.0, 2.0, w.y) * smoothstep(-128.0, -120.0, w.x) * smoothstep(-80.0, -74.0, w.y); // grass under the coaster
+    vec3 grass = mix(vec3(0.2, 0.27, 0.11), vec3(0.27, 0.32, 0.13), n) * (0.85 + 0.3 * n3);
+    col = mix(col, grass, lawn);
+    float prom = smoothstep(-79.0, -80.5, w.y); // the promenade's boards beyond z −80
+    vec3 boards = vec3(0.37, 0.29, 0.21) * (0.78 + 0.44 * texture2D(uNoise, vec2(w.x * 0.02, w.y * 0.7)).r);
+    col = mix(col, boards * (1.0 - 0.32 * fgRep(w.y, 0.32, 0.025) * (1.0 - smoothstep(0.1, 0.4, fwm))), prom);
+    float pn = texture2D(uNoise, w * 0.045 + 0.17).r * 0.65 + texture2D(uNoise, w * 0.16 + 0.61).g * 0.35;
+    wet = smoothstep(0.6, 0.7, pn + 0.12 * (n - 0.5)) * (1.0 - lawn) * (1.0 - 0.6 * prom); // puddles after the rain, the rest only damp
+    return col;
+  }
+`;
+/** The fair's night light from above, x −140…140, z −100…110: r = warm pools (lamps, stalls, the carousel), g = the accent's glow under the rides. */
+function fgNightMap(THREE, pools) {
+  const W = 512, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 140) / 280) * W, Y = (z) => ((110 - z) / 210) * H;
+  for (const [x, z, rad, warm, acc] of pools) {
+    g.save(); g.translate(X(x), Y(z)); g.scale((rad / 280) * W, (rad / 210) * H);
+    const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1);
+    [[0, 1], [0.3, 0.7], [0.6, 0.3], [0.8, 0.1], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(${Math.round(255 * warm * k)},${Math.round(255 * acc * k)},0,1)`));
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+/** What the paint, the steel and the glass mirror: the dusk sky over the sea, or the night with the fair's lights. */
+function fgEnv(THREE, dark) {
+  const tex = canvasTexture(THREE, 256, 128, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, dark ? "#03060f" : "#5d7fbe"); gr.addColorStop(0.36, dark ? "#0a1430" : "#d7a2b8"); gr.addColorStop(0.49, dark ? "#1a2546" : "#ffc08c"); gr.addColorStop(0.52, dark ? "#0b0c10" : "#4a4248"); gr.addColorStop(1, dark ? "#050506" : "#2a2628");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    if (dark) for (let k = 0; k < 14; k++) { const x = w * (0.03 + k * 0.07), s = g.createRadialGradient(x, h * 0.47, 0, x, h * 0.47, 6); s.addColorStop(0, "rgba(255,215,160,1)"); s.addColorStop(1, "rgba(255,200,140,0)"); g.fillStyle = s; g.fillRect(x - 6, h * 0.47 - 6, 12, 12); }
+  });
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+function fairground(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(3301);
+  const C0 = new THREE.Vector3(0, 14, 125), LOOK = new THREE.Vector3(4, 19, 0); // above the avenue, looking down the fair to the sea
+  camera.fov = 40; camera.near = 0.5; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 2; // the paving and the sea read it at grazing angles
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), I4 = new THREE.Matrix4();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const rod = (a, b, rad, seg = 6) => { const A0 = new THREE.Vector3(...a), B0 = new THREE.Vector3(...b), d = B0.clone().sub(A0), len = d.length(); return new THREE.CylinderGeometry(rad, rad, len, seg, 1).applyMatrix4(new THREE.Matrix4().compose(A0.clone().add(B0).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()), ONE)); };
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(-1.71, 0.019), MOON = sph(-1.48, 0.3); // the sun on the sea a little left of ahead; the moon high over the middle
+  const ACC = 0xff00ff, GLASS = 0x00ffff, LAMP = 0xffff00; // vertex-colour markers: the accent, windows lit at night, lamps lit from dusk
+  const world = new THREE.Group(); scene.add(world); // everything above the paving: drawn again, mirrored, for the puddles and the sea
+
+  /* --- the painted materials: the markers swapped for the accent, glass and lamps --- */
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 };
+  const lit = (mat, key) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU });
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float fgGlass = 0.0, fgLamp = 0.0;
+  { vec3 c = vColor.rgb;
+    float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isGlass = step(c.r, 0.1) * step(0.9, c.g) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.85, isAcc);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.07, 0.09, 0.11), isGlass); fgGlass = isGlass;
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.86, 0.62), isLamp); fgLamp = isLamp; }`)
+        .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
+  totalEmissiveRadiance += vec3(1.0, 0.76, 0.46) * (fgGlass * uNight * 1.1 + fgLamp * (0.45 + 0.55 * uNight));`);
+    };
+    mat.customProgramCacheKey = () => "fg-" + key;
+    return mat;
+  };
+  const envMats = [];
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.25 })), "paint");
+  envMats.push(paintMat); paintMat.envMapIntensity = 0.6;
+
+  /* --- the sky over the sea: the sun on the horizon, clouds; the night's stars and moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 48, 24)), shader(LANTERN_SKY_VS, WF_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 300 : 1100, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.04, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(28000); moon.scale.setScalar(620); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(4200); moonHalo.renderOrder = -9;
+  world.add(moon, moonHalo);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(-2000, 2600, -12000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+
+  /* --- the sea beyond the sea wall, the paving with its puddles: both show the mirrored pass --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4));
+  reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const seaU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uGlint: { value: 1 }, uDeep: { value: new THREE.Color() }, uSwell: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uBoat: { value: new THREE.Vector4(0, 0, 0, 0) } };
+  const sea = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 45000).rotateX(-Math.PI / 2).translate(0, -2.5, -22600)), shader(WF_SEA_VS, WF_SEA_FS, seaU));
+  sea.frustumCulled = false; scene.add(sea);
+  const POOLS = []; // [x, z, radius, warm, accent]
+  const nightMapU = { value: null }, poolAmtU = { value: 0 }, poolColU = { value: new THREE.Color(1, 0.8, 0.55).multiplyScalar(1.9) }, accentPoolU = { value: new THREE.Color() };
+  const groundU = { uNoise: { value: noise }, tReflect: { value: reflectRT.texture }, uRes: seaU.uRes };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.9 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, groundU, { uNightMap: nightMapU, uPoolAmt: poolAmtU, uPoolCol: poolColU, uAccentPool: accentPoolU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\nvPW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNightMap; uniform float uPoolAmt; uniform vec3 uPoolCol; uniform vec3 uAccentPool;\nvarying vec3 vPW;\n" + FG_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float fgWet = 0.0;\n  diffuseColor.rgb = fgGround(vPW.xz, fgWet);")
+      .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.25, fgWet);")
+      .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
+  { vec2 nuv = vec2((vPW.x + 140.0) / 280.0, (vPW.z + 100.0) / 210.0); // the canvas's top row (z 110) is the texture's top
+    vec2 m = texture2D(uNightMap, clamp(nuv, 0.0, 1.0)).rg * step(0.0, nuv.x) * step(nuv.x, 1.0) * step(0.0, nuv.y) * step(nuv.y, 1.0);
+    totalEmissiveRadiance += diffuseColor.rgb * (uPoolCol * m.r + uAccentPool * m.g) * uPoolAmt; }`)
+      .replace("#include <opaque_fragment>", `{ // the puddles mirror the fair, smeared along the view by the water
+    vec3 toEye = cameraPosition - vPW; float dist = length(toEye);
+    float fres = 0.04 + 0.96 * pow(1.0 - clamp(toEye.y / dist, 0.0, 1.0), 5.0);
+    vec2 suv = gl_FragCoord.xy / uRes; float jit = texture2D(uNoise, vPW.xz * 0.3).r - 0.5;
+    vec3 refl = vec3(0.0);
+    for (int i = 0; i < 4; i++) refl += texture2D(tReflect, clamp(suv + vec2(jit * 0.004, -float(i) * 0.004), 0.001, 0.999)).rgb;
+    outgoingLight = mix(outgoingLight, refl * 0.25, clamp(fgWet * (0.12 + 0.88 * fres), 0.0, 0.88));
+  }
+  #include <opaque_fragment>`);
+  };
+  groundMat.customProgramCacheKey = () => "fg-ground";
+  const ground = new THREE.Mesh(keep(new THREE.PlaneGeometry(700, 400).rotateX(-Math.PI / 2).translate(0, 0, 104)), groundMat);
+  scene.add(ground);
+
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // everything that stands still: one merged draw
+
+  /* --- the Ferris wheel: a frame of A-legs, two rims with their truss, spokes, gondolas that hang level --- */
+  const WC = new THREE.Vector3(54, 33, -12), WR = 26, NSP = 28, NG = 28;
+  const WYAW = Math.atan2(C0.x - WC.x, C0.z - WC.z) + 0.6; // turned a little away, so the two rims show
+  const wheel = new THREE.Group(); wheel.position.copy(WC); wheel.rotation.y = WYAW; world.add(wheel);
+  const wM = new THREE.Matrix4().compose(WC, new THREE.Quaternion().setFromEuler(E.set(0, WYAW, 0)), ONE);
+  for (const s of [-1, 1]) {
+    for (const lx of [-1, 1]) P(rod([lx * 16, -WC.y, s * 10.5], [0, 0, s * 5], 0.75, 10).applyMatrix4(wM), I4, 0xe6e9ec);
+    P(rod([-8.24, -17, s * 7.83], [8.24, -17, s * 7.83], 0.35, 8).applyMatrix4(wM), I4, 0xd8dce0);
+    P(rod([-12.5, -26, s * 9.3], [12.5, -26, s * 9.3], 0.3, 8).applyMatrix4(wM), I4, 0xd8dce0);
+  }
+  P(cyl(1.1, 1.1, 11, 18).rotateX(Math.PI / 2).applyMatrix4(wM), I4, 0xbfc4c9); // the axle
+  P(box(12, 2.4, 7).applyMatrix4(new THREE.Matrix4().makeTranslation(0, -WC.y + 1.2, 0).premultiply(wM)), I4, 0xcfc8bc); // the boarding deck
+  P(box(12.1, 0.5, 7.1).applyMatrix4(new THREE.Matrix4().makeTranslation(0, -WC.y + 2.2, 0).premultiply(wM)), I4, ACC);
+  const WRS = [];
+  for (const z of [-3, 3]) {
+    WRS.push([new THREE.TorusGeometry(WR, 0.34, 6, 168), at(0, 0, z), 0xf3f5f7], [new THREE.TorusGeometry(WR - 2.6, 0.2, 5, 140), at(0, 0, z), 0xe4e7ea]);
+    for (let k = 0; k < 84; k++) { const a0 = (k / 84) * 2 * Math.PI, a1 = ((k + 1) / 84) * 2 * Math.PI, ro = k % 2 ? WR : WR - 2.6, ri = k % 2 ? WR - 2.6 : WR; WRS.push([rod([ro * Math.cos(a0), ro * Math.sin(a0), z], [ri * Math.cos(a1), ri * Math.sin(a1), z], 0.09, 4), I4, 0xe4e7ea]); } // the truss between the rims
+    for (let k = 0; k < NSP; k++) { const a = (k / NSP) * 2 * Math.PI; WRS.push([rod([1.6 * Math.cos(a), 1.6 * Math.sin(a), z * 1.35], [(WR - 2.6) * Math.cos(a), (WR - 2.6) * Math.sin(a), z], 0.08, 4), I4, 0xd5d9de]); } // the spokes
+    WRS.push([cyl(2.3, 2.3, 0.6, 20).rotateX(Math.PI / 2), at(0, 0, z * 1.35), 0xc9cdd2]);
+  }
+  for (let k = 0; k < NG; k++) { const a = ((k + 0.5) / NG) * 2 * Math.PI; WRS.push([rod([WR * Math.cos(a), WR * Math.sin(a), -3], [WR * Math.cos(a), WR * Math.sin(a), 3], 0.16, 6), I4, 0xd5d9de]); } // the gondolas' axles
+  const wheelRot = new THREE.Mesh(keep(mergeColored(THREE, WRS)), paintMat); wheel.add(wheelRot);
+  const gondolaGeo = keep(mergeColored(THREE, [
+    [rod([0, 0.2, 0], [0, -1.2, 0], 0.07, 5), I4, 0x9aa0a6], [box(2.6, 0.32, 2.4), at(0, -1.35, 0), 0xf2f3f4],
+    [box(2.4, 1.0, 2.2), at(0, -2.0, 0), GLASS], [box(2.44, 1.25, 2.24), at(0, -3.1, 0), ACC], [box(2.0, 0.18, 1.8), at(0, -3.8, 0), 0x2a2d31],
+  ]));
+  const gondolas = new THREE.InstancedMesh(gondolaGeo, paintMat, NG); gondolas.frustumCulled = false; gondolas.instanceMatrix.setUsage(THREE.DynamicDrawUsage); wheel.add(gondolas); keep(gondolas);
+
+  /* --- the roller coaster: a closed track from control points — station, chain lift, first drop, a climbing banked turn, the loop, a camelback, the turn home --- */
+  const CP = [
+    [-80, 2.5, -20], [-70, 2.5, -20], [-62, 2.5, -20], [-56, 3.4, -20], [-50, 9, -20], [-43, 17, -20], [-36, 25.5, -20], [-31, 31, -20], [-27, 33.8, -20], [-23, 34.4, -20], // the station, the lift
+    [-19, 33, -20], [-14.5, 27, -20], [-10, 18.5, -20], [-5, 10.5, -20], [1, 5.4, -20], [8, 3.4, -20], [15, 3.0, -20], // the first drop, pulling out gently
+    [24, 5, -22], [32, 10, -29], [35.5, 14, -41], [29.5, 11.5, -53.5], [17, 6.5, -60.5], // a banked turn to the left, climbing and falling
+    [2, 3.2, -60.2], [-10, 2.7, -60], // the run into the loop
+    [-22, 3, -60.2], [-30.5, 6, -60.9], [-34.5, 13, -61.7], [-31, 20.4, -62.4], [-24, 22.4, -62.9], [-18.3, 18.6, -63.5], [-17.6, 11.5, -64.1], [-21.5, 5.6, -64.7], [-29.5, 3, -65.2], // the loop, 5 m to the side
+    [-37, 3.4, -65.2], [-45, 7.2, -65.2], [-61, 11.6, -65.2], [-77, 7.2, -65.2], [-85, 3.6, -65], // a long camelback: a moment's float
+    [-96, 3.4, -62.5], [-109, 4, -55], [-115.5, 4.4, -42], [-109.5, 3.8, -28.5], [-99, 3, -21.5], [-90, 2.6, -20], // the turn home, onto the brakes
+  ];
+  const curve = new THREE.CatmullRomCurve3(CP.map((p) => new THREE.Vector3(...p)), true, "centripetal");
+  const LEN = curve.getLength(), NS = Math.round(LEN / 0.5), DS = LEN / NS;
+  const TP = curve.getSpacedPoints(NS); TP.pop(); // NS points along the closed track, DS apart
+  const wrap = (i) => ((i % NS) + NS) % NS;
+  const TT = TP.map((p, i) => new THREE.Vector3().subVectors(TP[wrap(i + 1)], TP[wrap(i - 1)]).normalize());
+  const near = (x, y, z) => { let best = 0, bd = Infinity; TP.forEach((p, i) => { const d = (p.x - x) ** 2 + (p.y - y) ** 2 + (p.z - z) ** 2; if (d < bd) { bd = d; best = i; } }); return best; };
+  // the track's up: square to gravity everywhere but the loop; through the loop carried along without twisting from its entry, the
+  // small roll left at its exit spread over it
+  const UP = new THREE.Vector3(0, 1, 0), upRef = (i) => UP.clone().addScaledVector(TT[i], -TT[i].y).normalize();
+  const LA = wrap(near(-22, 3, -60.2) - 10), LB = wrap(near(-29.5, 3, -65.2) + 10), inLoop = (i) => (LA <= LB ? i >= LA && i <= LB : i >= LA || i <= LB);
+  const TN = TT.map((t, i) => upRef(i)), qq = new THREE.Quaternion();
+  { const seq = [LA]; for (let i = LA; i !== LB; ) { const j = wrap(i + 1); qq.setFromUnitVectors(TT[i], TT[j]); TN[j] = TN[i].clone().applyQuaternion(qq); TN[j].addScaledVector(TT[j], -TN[j].dot(TT[j])).normalize(); seq.push(j); i = j; }
+    const end = upRef(LB), tw = Math.atan2(new THREE.Vector3().crossVectors(TN[LB], end).dot(TT[LB]), TN[LB].dot(end));
+    seq.forEach((k, n) => TN[k].applyAxisAngle(TT[k], (tw * n) / (seq.length - 1))); }
+  // the ride: dispatched from the station, boosted to the chain, lifted at 3 m/s, then gravity (a little friction), brakes, the station
+  const iStop = near(-62, 2.5, -20), iTop = near(-23, 34.4, -20), iBr = near(-108, 4, -55), iSt = near(-82, 2.5, -20), G = 9.81, MU = 0.022, VL = 3, VB = 2.6;
+  const rel = (i) => wrap(i - iStop), sTop = rel(iTop) * DS, sBr = rel(iBr) * DS, sSt = rel(iSt) * DS, sEnd = NS * DS;
+  const hTop = TP[iTop].y, VEL = new Float32Array(NS + 1);
+  let vBr = 0;
+  for (let k = 0; k <= NS; k++) {
+    const s = k * DS, h = TP[wrap(iStop + k)].y; let v;
+    if (s < sTop) v = Math.min(VL, Math.sqrt(2 * 1.1 * s + 0.01));
+    else if (s < sBr) { v = Math.sqrt(Math.max(0.04, VL * VL + 2 * G * (hTop - h) - 2 * MU * G * (s - sTop))); vBr = v; }
+    else if (s < sSt) v = Math.sqrt(vBr * vBr + (VB * VB - vBr * vBr) * ((s - sBr) / Math.max(1e-6, sSt - sBr))); // magnetic brakes through the turn home: steady deceleration
+    else v = Math.min(VB, Math.sqrt(2 * 0.7 * Math.max(0, sEnd - s)));
+    VEL[k] = v;
+  }
+  const TTAB = new Float32Array(NS + 1); for (let k = 1; k <= NS; k++) TTAB[k] = TTAB[k - 1] + DS / Math.max(0.3, (VEL[k - 1] + VEL[k]) / 2);
+  const DWELL = 16, LAP = TTAB[NS] + DWELL;
+  // banking: the track rolls into a turn as far as the speed through it asks, smoothed
+  const BANK = new Float32Array(NS);
+  for (let i = 0; i < NS; i++) { if (inLoop(i)) continue; const kap = new THREE.Vector3().subVectors(TT[wrap(i + 4)], TT[wrap(i - 4)]).divideScalar(8 * DS), Bg = new THREE.Vector3().crossVectors(TT[i], UP).normalize(), v = VEL[rel(i)]; BANK[i] = Math.max(-1.25, Math.min(1.25, Math.atan((v * v * kap.dot(Bg)) / G))); } // only the sideways turning
+  for (let pass = 0; pass < 3; pass++) { const b = BANK.slice(); for (let i = 0; i < NS; i++) { let s = 0; for (let k = -10; k <= 10; k++) s += b[wrap(i + k)]; BANK[i] = s / 21; } }
+  const TB = new Array(NS), TU = new Array(NS);
+  for (let i = 0; i < NS; i++) { const B0 = new THREE.Vector3().crossVectors(TT[i], TN[i]); TU[i] = TN[i].clone().multiplyScalar(Math.cos(BANK[i])).addScaledVector(B0, Math.sin(BANK[i])).normalize(); TB[i] = new THREE.Vector3().crossVectors(TT[i], TU[i]).normalize(); }
+  { // the track: two rails and a box spine, ties, the chain on the lift; supports down to the ground; the loop held from both sides
+    const pos = [], nrm = [], col = [], RING = 6, C = new THREE.Color();
+    const tubes = [[0.6, 0.05, 0.11, 0xeef0f2], [-0.6, 0.05, 0.11, 0xeef0f2], [0, -0.62, 0.3, 0xd6dade]];
+    const ring = (i, [b, u, rad]) => { const out = []; for (let k = 0; k < RING; k++) { const th = (k / RING) * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th); const n = TU[i].clone().multiplyScalar(c).addScaledVector(TB[i], sn); out.push([TP[i].clone().addScaledVector(TB[i], b).addScaledVector(TU[i], u).addScaledVector(n, rad), n]); } return out; };
+    const STEP = 2;
+    for (const tb of tubes) {
+      C.setHex(tb[3]);
+      for (let i = 0; i < NS; i += STEP) {
+        const a = ring(i, tb), b = ring(wrap(i + STEP), tb);
+        for (let k = 0; k < RING; k++) { const k1 = (k + 1) % RING; for (const [p, n] of [a[k], b[k], b[k1], a[k], b[k1], a[k1]]) { pos.push(p.x, p.y, p.z); nrm.push(n.x, n.y, n.z); col.push(C.r, C.g, C.b); } }
+      }
+    }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    world.add(new THREE.Mesh(g, paintMat));
+    const basis = (i, off) => new THREE.Matrix4().makeBasis(TT[i], TU[i], TB[i]).setPosition(TP[i].clone().addScaledVector(TU[i], off));
+    for (let i = 0; i < NS; i += 3) { P(box(0.16, 0.14, 1.3).applyMatrix4(basis(i, -0.18)), I4, 0x9aa0a6); P(box(0.12, 0.42, 0.12).applyMatrix4(basis(i, -0.42)), I4, 0x9aa0a6); }
+    for (let i = rel(iStop) + iStop + 8; wrap(i) !== iTop; i++) if (i % 2 === 0) P(box(0.9, 0.08, 0.32).applyMatrix4(basis(wrap(i), 0.06)), I4, 0x2a2c30); // the lift's chain
+    for (let i = 0; i < NS; i += 12) {
+      if (inLoop(i)) continue;
+      const q = TP[i].clone().addScaledVector(TU[i], -0.62);
+      if (q.y < 1.4) continue;
+      P(rod([q.x, 0, q.z], [q.x, q.y, q.z], 0.26, 8), I4, 0xb3b9bf); P(box(0.9, 0.3, 0.9), at(q.x, 0.15, q.z), 0x8c9096);
+    }
+    for (const side of [1, -1]) { // the loop's two side towers, arms to its front and back
+      let best = 0, bx = side > 0 ? -Infinity : Infinity;
+      for (let i = 0; i < NS; i++) if (inLoop(i) && (side > 0 ? TP[i].x > bx : TP[i].x < bx)) { bx = TP[i].x; best = i; }
+      const q = TP[best].clone().addScaledVector(TU[best], -0.62);
+      for (const dz of [4.5, -4.5]) { P(rod([q.x + side * 2, 0, q.z + dz], [q.x + side * 2, q.y + 1, q.z + dz], 0.34, 8), I4, 0xb3b9bf); P(rod([q.x + side * 2, q.y, q.z + dz], [q.x, q.y, q.z], 0.22, 6), I4, 0xb3b9bf); }
+    }
+    // the station: a platform beside the track, a roof with an accent fascia and lamps under it
+    P(box(22, 1.0, 2.8), at(-71, 0.5, -17.2), 0xbdb6aa); P(box(25, 0.4, 7.4), at(-71, 5.7, -19.4), 0x6c7178); P(box(25.1, 0.7, 0.2), at(-71, 5.3, -15.7), ACC); P(box(22, 0.1, 0.4), at(-71, 5.45, -17.6), LAMP);
+    for (const x of [-82, -71, -60]) for (const z of [-16.2, -23]) P(box(0.3, 5.4, 0.3), at(x, 2.7, z), 0x6c7178);
+  }
+  const CAR_L = 2.6, CAR_GAP = 2.95, NCAR = 5;
+  const carGeo = keep(mergeColored(THREE, [
+    [box(2.5, 0.28, 1.4), at(0, 0.24, 0), 0x2a2d31], [box(2.45, 0.62, 1.62), at(-0.05, 0.68, 0), ACC], [box(0.5, 0.56, 1.62), at(1.12, 0.92, 0, 0, 0, 0.45), ACC], [box(1.7, 0.1, 1.3), at(-0.25, 1.0, 0), 0x1e2126],
+    ...[-0.38, 0.38].flatMap((z, k) => [[new THREE.SphereGeometry(0.19, 8, 6), at(-0.2, 1.5, z), 0x3a2c24], [box(0.36, 0.45, 0.32), at(-0.2, 1.17, z), [0x2f6fb5, 0xe2b13c][k]]]),
+  ]));
+  const cars = new THREE.InstancedMesh(carGeo, paintMat, NCAR); cars.frustumCulled = false; cars.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(cars); keep(cars);
+  const sample = (fi, outP, outT, outU, outB) => { const i0 = Math.floor(fi), f = fi - i0, a = wrap(i0), b = wrap(i0 + 1); outP.lerpVectors(TP[a], TP[b], f); outT.lerpVectors(TT[a], TT[b], f).normalize(); outU.lerpVectors(TU[a], TU[b], f).normalize(); outB.crossVectors(outT, outU).normalize(); };
+  function headAt(clock) { // the train's head on the track (fractional sample) and its speed
+    const tc = ((clock % LAP) + LAP) % LAP;
+    if (tc >= TTAB[NS]) return { fi: iStop, v: 0 };
+    let lo = 0, hi = NS; while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (TTAB[mid] <= tc) lo = mid; else hi = mid; }
+    const f = (tc - TTAB[lo]) / Math.max(1e-6, TTAB[lo + 1] - TTAB[lo]);
+    return { fi: iStop + lo + f, v: VEL[lo] + (VEL[lo + 1] - VEL[lo]) * f };
+  }
+
+  /* --- the carousel: a striped canopy, a mirrored centre, horses rising and falling as it turns --- */
+  const CC = new THREE.Vector3(-22, 0, 45);
+  P(cyl(9.5, 9.8, 0.9, 40), at(CC.x, 0.45, CC.z), 0xb7a68c); P(cyl(10.1, 10.1, 0.3, 40), at(CC.x, 0.15, CC.z), 0x9a8b74);
+  const carousel = new THREE.Group(); carousel.position.copy(CC); world.add(carousel);
+  const CR = [];
+  CR.push([cyl(8.8, 8.8, 0.24, 40), at(0, 1.02, 0), 0x8d6c4b], [cyl(1.35, 1.35, 6.2, 16), at(0, 4.1, 0), 0xd9c07a], [cyl(1.42, 1.42, 2.4, 16), at(0, 4.2, 0), 0xefe6cf]); // the centre: gilt, a pale panelled band
+  for (let k = 0; k < 24; k++) { const t0 = (k / 24) * Math.PI * 2, c = k % 2 ? 0xf6f0e2 : ACC; CR.push([new THREE.ConeGeometry(9.3, 3.0, 2, 1, true, t0, Math.PI / 12), at(0, 8.7, 0), c], [new THREE.CylinderGeometry(9.35, 9.35, 0.95, 2, 1, true, t0, Math.PI / 12), at(0, 6.75, 0), k % 2 ? ACC : 0xf6f0e2]); }
+  CR.push([new THREE.CircleGeometry(9.2, 32).rotateX(Math.PI / 2), at(0, 7.2, 0), LAMP], [cyl(1.0, 1.4, 1.1, 12), at(0, 10.6, 0), ACC], [new THREE.ConeGeometry(0.6, 1.4, 10), at(0, 11.8, 0), 0xd9c07a]); // the lit ceiling, the crown
+  const HORSES = [];
+  for (const [rad, n] of [[6.6, 14], [4.5, 10]]) for (let k = 0; k < n; k++) { const a = ((k + (rad < 5 ? 0.5 : 0)) / n) * Math.PI * 2; HORSES.push({ a, rad, ph: r(0, 6.28) }); CR.push([cyl(0.06, 0.06, 6.0, 6), at(rad * Math.cos(a), 4.1, rad * Math.sin(a)), 0xd9c07a]); }
+  const carRot = new THREE.Mesh(keep(mergeColored(THREE, CR)), paintMat); carousel.add(carRot);
+  const horseGeo = keep(mergeColored(THREE, [
+    [new THREE.SphereGeometry(0.5, 10, 8).scale(1.5, 0.78, 0.62), I4, 0xf4f1ea], [box(0.3, 0.9, 0.32), at(0.72, 0.42, 0, 0, 0, -0.5), 0xf4f1ea], [box(0.58, 0.26, 0.28), at(0.98, 0.82, 0, 0, 0, -0.25), 0xf4f1ea],
+    [box(0.13, 0.64, 0.13), at(0.6, -0.4, 0.16, 0, 0, 0.9), 0xf4f1ea], [box(0.13, 0.64, 0.13), at(0.6, -0.4, -0.16, 0, 0, 0.9), 0xf4f1ea], [box(0.13, 0.68, 0.13), at(-0.55, -0.5, 0.16, 0, 0, -0.35), 0xf4f1ea], [box(0.13, 0.68, 0.13), at(-0.55, -0.5, -0.16, 0, 0, -0.35), 0xf4f1ea],
+    [box(0.52, 0.12, 0.68), at(0, 0.38, 0), ACC], [box(0.26, 0.38, 0.1), at(-0.8, 0.12, 0, 0, 0, 0.7), 0xb08a3a], [box(0.32, 0.1, 0.34), at(0.62, 0.64, 0, 0, 0, -0.5), 0xd9c07a],
+  ]));
+  const horseMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.15 })), "horse"); envMats.push(horseMat); horseMat.envMapIntensity = 0.6;
+  const horses = new THREE.InstancedMesh(horseGeo, horseMat, HORSES.length); horses.frustumCulled = false; horses.instanceMatrix.setUsage(THREE.DynamicDrawUsage); carousel.add(horses); keep(horses);
+
+  /* --- the swing ride: a tower; the top rises and spins, the chairs fly out on their chains --- */
+  const SW = new THREE.Vector3(26, 0, 40), NSEAT = 24, CHAIN = 7, RA = 6;
+  P(cyl(0.75, 0.95, 21, 14), at(SW.x, 10.5, SW.z), 0xece4d2); P(cyl(3.2, 3.6, 0.8, 24), at(SW.x, 0.4, SW.z), 0xb7a68c); P(cyl(1.1, 0.8, 1.2, 12), at(SW.x, 21.4, SW.z), ACC);
+  const swingTop = new THREE.Group(); swingTop.position.set(SW.x, 8.2, SW.z); world.add(swingTop);
+  const STP = [[new THREE.TorusGeometry(RA, 0.12, 5, 64).rotateX(Math.PI / 2), I4, 0xd8dce0], [cyl(1.3, 1.3, 1.6, 16), at(0, 0.5, 0), 0xd8dce0]];
+  for (let k = 0; k < 16; k++) { const t0 = (k / 16) * Math.PI * 2; STP.push([new THREE.ConeGeometry(7.2, 2.6, 2, 1, true, t0, Math.PI / 8), at(0, 2.1, 0), k % 2 ? 0xf6f0e2 : ACC]); }
+  for (let k = 0; k < 12; k++) { const a = (k / 12) * Math.PI * 2; STP.push([rod([1.3 * Math.cos(a), 0.6, 1.3 * Math.sin(a)], [RA * Math.cos(a), 0, RA * Math.sin(a)], 0.07, 4), I4, 0xd8dce0]); }
+  swingTop.add(new THREE.Mesh(keep(mergeColored(THREE, STP)), paintMat));
+  const seatGeo = keep(mergeColored(THREE, [[box(0.62, 0.12, 0.55), at(0, 0, 0), ACC], [box(0.1, 0.6, 0.55), at(-0.28, 0.32, 0), ACC], [new THREE.SphereGeometry(0.16, 8, 6), at(0.02, 0.86, 0), 0x3a2c24], [box(0.3, 0.42, 0.34), at(0.02, 0.45, 0), 0x6d8fbf]]));
+  const seats = new THREE.InstancedMesh(seatGeo, paintMat, NSEAT); seats.frustumCulled = false; seats.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(seats); keep(seats);
+  const chainPos = new Float32Array(NSEAT * 6), chainGeo = keep(new THREE.BufferGeometry()); chainGeo.setAttribute("position", new THREE.BufferAttribute(chainPos, 3)); chainGeo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+  const chainMat = keep(new THREE.LineBasicMaterial({ color: 0x8a9096, transparent: true, opacity: 0.8 }));
+  const chains = new THREE.LineSegments(chainGeo, chainMat); chains.frustumCulled = false; world.add(chains);
+  const T_IDLE = 14, T_UP = 9, T_RUN = 24, T_DOWN = 11, CYC_S = T_IDLE + T_UP + T_RUN + T_DOWN, W_MAX = 1.05, Y_IDLE = 8.2, Y_RUN = 15, PHI_C = W_MAX * (T_UP / 2 + T_RUN + T_DOWN / 2);
+  const ease = (u) => u * u * (3 - 2 * u);
+  function swingAt(clock) { // spin angle, spin rate, the top's height
+    const n = Math.floor(clock / CYC_S); let t = clock - n * CYC_S, phi = n * PHI_C;
+    if (t < T_IDLE) return { phi, w: 0, y: Y_IDLE };
+    t -= T_IDLE;
+    if (t < T_UP) { const u = t / T_UP; return { phi: phi + (W_MAX * T_UP * u * u) / 2, w: W_MAX * u, y: Y_IDLE + (Y_RUN - Y_IDLE) * ease(u) }; }
+    phi += (W_MAX * T_UP) / 2; t -= T_UP;
+    if (t < T_RUN) return { phi: phi + W_MAX * t, w: W_MAX, y: Y_RUN };
+    phi += W_MAX * T_RUN; t -= T_RUN;
+    const u = Math.min(1, t / T_DOWN); return { phi: phi + W_MAX * T_DOWN * (u - (u * u) / 2), w: W_MAX * (1 - u), y: Y_RUN - (Y_RUN - Y_IDLE) * ease(u) };
+  }
+
+  /* --- the stalls along the avenue, string lights across it; the sea wall, its railing and lamps; palms --- */
+  const GL = []; // the bulbs: [x, y, z, size, r, g, b (r < 0: the accent), ride, phase, pattern, smallest px]
+  const WARM = [2.5, 1.95, 1.25];
+  const STALL_COL = [0xf3efe6, 0xdfe9ef, 0xf2e3d2, 0xe9efe2, 0xf5f0e8, 0xeadcd8];
+  for (const s of [-1, 1]) for (let k = 0; k < 6; k++) { // a booth: walls, a lit opening behind the counter, a sign, a striped tent roof
+    const z = 52 + k * 6.4, c = STALL_COL[(k + (s > 0 ? 3 : 0)) % 6];
+    P(box(3.4, 2.5, 5.2), at(s * 11.2, 1.25, z), c); P(box(0.06, 1.25, 3.9), at(s * 9.48, 1.7, z), LAMP); P(box(0.55, 1.0, 5.2), at(s * 9.3, 0.5, z), 0xe2d6c2);
+    P(box(0.14, 0.62, 3.4), at(s * 9.45, 2.78, z), [0xd94a3a, 0xe8b43a, 0x3a7fd9, 0x3fae6a, 0xd9583a, 0x8a5ad0][(k * 2 + (s > 0 ? 1 : 0)) % 6]);
+    for (let w = 0; w < 8; w++) P(new THREE.ConeGeometry(1, 1.6, 1, 1, true, (w * Math.PI) / 4, Math.PI / 4).scale(2.45, 1, 3.5), at(s * 11.05, 3.3, z), w % 2 ? 0xf8f6f0 : ACC);
+    P(cyl(0.04, 0.04, 0.6, 5), at(s * 11.05, 4.4, z), 0x9aa0a6); // a pennant pole
+    POOLS.push([s * 7.8, z, 6.5, 0.6, 0]);
+  }
+  const wirePts = [];
+  for (let k = 0; k < 5; k++) { // poles each side; the strings zigzag across the avenue
+    const z = 50 + k * 10;
+    for (const s of [-1, 1]) { P(cyl(0.08, 0.1, 6.2, 6), at(s * 7.7, 3.1, z + (s > 0 ? 5 : 0)), 0x4a4d52); }
+    for (const [a, b] of [[[-7.7, 6.1, z], [7.7, 6.1, z + 5]], [[7.7, 6.1, z + 5], [-7.7, 6.1, z + 10]]]) {
+      if (b[2] > 92) continue;
+      const n = 20;
+      for (let j = 0; j <= n; j++) { const u = j / n, x = a[0] + (b[0] - a[0]) * u, y = a[1] + (b[1] - a[1]) * u - 0.9 * 4 * u * (1 - u), zz = a[2] + (b[2] - a[2]) * u; if (j) wirePts.push(...wirePts.slice(-3), x, y, zz); else wirePts.push(x, y, zz); if (j && j < n) { const pick = r(); GL.push([x, y - 0.12, zz, 0.16, ...(pick < 0.62 ? WARM : pick < 0.72 ? [2.6, 0.5, 0.35] : pick < 0.82 ? [0.5, 2.3, 0.7] : pick < 0.92 ? [0.6, 1.0, 2.7] : [2.6, 2.1, 0.4]), 0, r(), 2, 1.2]); } }
+    }
+    POOLS.push([0, z + 2.5, 9, 0.55, 0]);
+  }
+  { const strip = []; for (let i = 0; i + 3 < wirePts.length; i += 3) strip.push(wirePts[i], wirePts[i + 1], wirePts[i + 2]); }
+  const wires = new THREE.LineSegments(keep(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(wirePts.length % 6 === 0 ? wirePts : wirePts.slice(0, wirePts.length - (wirePts.length % 6)), 3))), keep(new THREE.LineBasicMaterial({ color: 0x2a2c30, transparent: true, opacity: 0.6 })));
+  world.add(wires);
+  P(box(420, 3.3, 2.2), at(0, -1.35, -97.1), 0x9c968c); P(box(420, 0.1, 0.1), at(0, 1.1, -96.4), 0xe2e4e6); P(box(420, 0.08, 0.08), at(0, 0.6, -96.4), 0xe2e4e6); // the sea wall, its railing
+  for (let x = -208; x <= 208; x += 2.6) P(box(0.07, 1.0, 0.07), at(x, 0.6, -96.4), 0xe2e4e6);
+  for (let x = -126; x <= 126; x += 14) { P(cyl(0.09, 0.13, 4.6, 6), at(x, 2.3, -93), 0x3d4146); P(box(0.5, 0.45, 0.5), at(x, 4.7, -93), LAMP); GL.push([x, 4.75, -93, 0.35, ...WARM, 0, 0, 0, 1.4]); POOLS.push([x, -91.5, 10, 0.42, 0]); }
+  const palmGeo = (() => { const parts = []; let p = new THREE.Vector3(0, 0, 0); for (let k = 0; k < 6; k++) { const q = p.clone().add(new THREE.Vector3(0.22 * k * 0.18, 1.5, 0)); parts.push([rod(p.toArray(), q.toArray(), 0.24 - k * 0.018, 6), I4, 0x6a5440]); p = q; } for (let k = 0; k < 9; k++) { const a = (k / 9) * Math.PI * 2; parts.push([box(3.4, 0.06, 0.7), new THREE.Matrix4().makeTranslation(1.6, 0, 0).premultiply(new THREE.Matrix4().makeRotationZ(-0.42 - (k % 3) * 0.12)).premultiply(new THREE.Matrix4().makeRotationY(a)).premultiply(new THREE.Matrix4().makeTranslation(p.x, p.y, p.z)), 0x34522c]); } return keep(mergeColored(THREE, parts)); })();
+  const palmXs = []; for (let x = -118; x <= 118; x += 21) if (Math.abs(x) > 12) palmXs.push(x);
+  const palms = new THREE.InstancedMesh(palmGeo, paintMat, palmXs.length);
+  palmXs.forEach((x, i) => palms.setMatrixAt(i, at(x + r(-2, 2), 0, -87 + r(-1, 1), 0, r(0, 6.28), 0).scale(V.set(1, r(0.85, 1.15), 1)))); world.add(palms); keep(palms);
+  POOLS.push([CC.x, CC.z, 15, 0.78, 0], [SW.x, SW.z, 12, 0.3, 0.4], [WC.x, WC.z, 22, 0.12, 0.5], [-71, -16, 11, 0.5, 0]);
+  for (const [x, z] of [[-45, 12], [-12, 18], [12, 6], [40, 22], [78, 16], [80, -40], [-95, 8], [-48, 72], [48, 72], [-128, -40], [10, -45], [-12, -72], [12, -72]]) { // lamp posts across the plaza
+    P(cyl(0.08, 0.12, 4.4, 6), at(x, 2.2, z), 0x3d4146); P(box(0.45, 0.4, 0.45), at(x, 4.55, z), LAMP); GL.push([x, 4.6, z, 0.32, ...WARM, 0, 0, 0, 1.3]); POOLS.push([x, z, 12, 0.32, 0]);
+  }
+  // the big top on the left, the dodgems on the right (they fill a wide screen), trees round the edges of the plaza
+  const BT = new THREE.Vector3(-56, 0, 40), DG = new THREE.Vector3(57, 0, 53);
+  for (let k = 0; k < 24; k++) { const t0 = (k / 24) * Math.PI * 2; P(new THREE.CylinderGeometry(13, 13, 4.6, 2, 1, true, t0, Math.PI / 12), at(BT.x, 2.3, BT.z), k % 2 ? 0xf6f0e2 : ACC); P(new THREE.ConeGeometry(14.2, 7.2, 2, 1, true, t0, Math.PI / 12), at(BT.x, 8.2, BT.z), k % 2 ? ACC : 0xf6f0e2); }
+  P(cyl(0.22, 0.28, 15, 8), at(BT.x, 7.5, BT.z), 0xd9c07a); P(box(1.6, 0.9, 0.06), at(BT.x + 0.8, 14.4, BT.z), ACC); P(box(3.2, 3.2, 4), at(BT.x + 13.4, 1.6, BT.z), 0xf6f0e2); P(box(3.4, 0.3, 4.4), at(BT.x + 13.4, 3.3, BT.z), ACC); P(box(0.05, 2.4, 2.4), at(BT.x + 15.03, 1.3, BT.z), LAMP);
+  for (let k = 0; k < 60; k++) { const a = (k / 60) * Math.PI * 2; GL.push([BT.x + 14.3 * Math.cos(a), 4.65, BT.z + 14.3 * Math.sin(a), 0.16, ...WARM, 0, k * 0.29, 2, 1.1]); }
+  for (let k = 0; k < 12; k++) GL.push([BT.x + 0.3 * Math.cos(k), 11.3 + k * 0.28, BT.z + 0.3 * Math.sin(k), 0.14, -1, -1, -1, 0, k, 2, 1.0]);
+  POOLS.push([BT.x, BT.z, 19, 0.5, 0.15], [BT.x + 16, BT.z, 8, 0.6, 0]);
+  P(box(24, 0.3, 14), at(DG.x, 0.15, DG.z), 0x3a3d42); P(box(25, 0.5, 15), at(DG.x, 5.75, DG.z), 0xe9e1d0); P(box(23, 0.06, 13), at(DG.x, 5.46, DG.z), LAMP);
+  for (const s of [-1, 1]) { P(box(25.2, 0.8, 0.3), at(DG.x, 5.75, DG.z + s * 7.6), ACC); P(box(0.3, 0.8, 15.2), at(DG.x + s * 12.6, 5.75, DG.z), ACC); for (const dx of [-12, 0, 12]) P(cyl(0.2, 0.2, 5.5, 8), at(DG.x + dx, 2.75, DG.z + s * 7), 0x9aa0a6); }
+  for (let k = 0; k < 84; k++) { const u = k / 84, per = 2 * (25 + 15), d = u * per, [x, z] = d < 25 ? [-12.5 + d, 7.65] : d < 40 ? [12.5, 7.65 - (d - 25)] : d < 65 ? [12.5 - (d - 40), -7.35] : [-12.5, -7.35 + (d - 65)]; GL.push([DG.x + x, 6.25, DG.z + z, 0.15, ...(k % 2 ? WARM : [-1, -1, -1]), 0, (k % 2) * 0.5, 4, 1.1]); }
+  POOLS.push([DG.x, DG.z, 18, 0.55, 0.2]);
+  const TREES = []; for (const [x0, x1, z0, z1, n] of [[-112, -74, 60, 84, 7], [-40, -28, 66, 84, 2], [74, 112, 64, 84, 7], [-100, -75, 0, 26, 4], [80, 110, -30, 20, 5]]) for (let k = 0; k < n; k++) TREES.push([r(x0, x1), r(z0, z1), r(0.8, 1.25)]);
+  const treeGeo = keep(mergeColored(THREE, [[cyl(0.22, 0.3, 3, 6), at(0, 1.5, 0), 0x5a4634], [new THREE.IcosahedronGeometry(2.6, 1).scale(1, 1.1, 1), at(0, 4.8, 0), 0x3c5a2e], [new THREE.IcosahedronGeometry(1.8, 1), at(0.9, 6.2, 0.4), 0x46663a]]));
+  const trees = new THREE.InstancedMesh(treeGeo, paintMat, TREES.length); TREES.forEach(([x, z, s], i) => trees.setMatrixAt(i, at(x, 0, z, 0, r(0, 6.28), 0).scale(V.set(s, s, s)))); world.add(trees); keep(trees);
+  nightMapU.value = keep(fgNightMap(THREE, POOLS));
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+  const NDG = 10, dodgemMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.3 })); envMats.push(dodgemMat);
+  const dodgems = new THREE.InstancedMesh(keep(mergeColored(THREE, [[box(2.0, 0.55, 1.3), at(0, 0.6, 0), 0xffffff], [box(0.7, 0.35, 1.1), at(-0.45, 1.0, 0), 0xffffff], [new THREE.SphereGeometry(0.18, 8, 6), at(-0.35, 1.38, 0), 0x3a2c24], [cyl(0.03, 0.03, 4.3, 4), at(-0.8, 3.0, 0), 0x55595e], [box(2.3, 0.22, 1.5), at(0, 0.35, 0), 0x2a2c30]])), dodgemMat, NDG);
+  { const c = new THREE.Color(); for (let k = 0; k < NDG; k++) dodgems.setColorAt(k, c.setHSL(k / NDG, 0.75, 0.55)); }
+  dodgems.frustumCulled = false; dodgems.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(dodgems); keep(dodgems);
+  const DGM = Array.from({ length: NDG }, () => ({ w1: r(0.25, 0.45), w2: r(0.3, 0.55), p1: r(0, 6.28), p2: r(0, 6.28) }));
+
+  /* --- people strolling: along the avenue, the promenade, round the carousel, across to the wheel --- */
+  const NP = preview ? 40 : 90, PATHS = [
+    { a: [-5.5, -78], b: [5.5, 90], w: 0.36 }, { a: [-120, -88], b: [120, -84], w: 0.26 }, { ring: [CC.x, CC.z, 12.5], w: 0.14 }, { a: [6, 12], b: [44, -2], w: 0.1 }, { a: [-38, 22], b: [-12, 30], w: 0.07 }, { a: [12, 30], b: [44, 44], w: 0.07 },
+  ];
+  const PEOPLE = Array.from({ length: NP }, () => { let u = r(), k = 0; while (k < PATHS.length - 1 && u > PATHS[k].w) { u -= PATHS[k].w; k++; } return { k, off: r(-1, 1), v: r(0.9, 1.5), ph: r(0, 1000) }; });
+  const bodyGeo = keep(mergeColored(THREE, [[cyl(0.2, 0.17, 0.62, 8), at(0, 1.1, 0), 0xffffff], [box(0.34, 0.8, 0.22), at(0, 0.42, 0), 0x55585e]]));
+  const headGeo = keep(new THREE.SphereGeometry(0.13, 8, 6).translate(0, 1.58, 0));
+  const peopleMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), headMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.7 }));
+  const bodies = new THREE.InstancedMesh(bodyGeo, peopleMat, NP), heads = new THREE.InstancedMesh(headGeo, headMat, NP);
+  { const c = new THREE.Color(); PEOPLE.forEach((p, i) => { bodies.setColorAt(i, c.setHSL(r(0, 1), r(0.3, 0.7), r(0.3, 0.6))); heads.setColorAt(i, c.setHSL(r(0.05, 0.09), r(0.3, 0.5), r(0.25, 0.65))); }); }
+  for (const m of [bodies, heads]) { m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); }
+  function personAt(p, clock, out) {
+    const P0 = PATHS[p.k];
+    if (P0.ring) { const a = p.ph + (clock * p.v) / P0.ring[2]; out.set(P0.ring[0] + Math.cos(a) * (P0.ring[2] + p.off), 0, P0.ring[1] + Math.sin(a) * (P0.ring[2] + p.off)); return a + Math.PI; }
+    const dx = P0.b[0] - P0.a[0], dz = P0.b[1] - P0.a[1], L = Math.hypot(dx, dz), u = (p.ph + clock * p.v) % (2 * L), s = u < L ? u : 2 * L - u, nx = -dz / L, nz = dx / L;
+    out.set(P0.a[0] + (dx * s) / L + nx * p.off * 1.6, 0, P0.a[1] + (dz * s) / L + nz * p.off * 1.6);
+    return Math.atan2(-(u < L ? dz : -dz), u < L ? dx : -dx);
+  }
+
+  /* --- the bulbs: one instanced draw; the wheel's, the carousel's and the swing's turn with their rides in the shader --- */
+  for (let i = 0; i < NS; i += 4) for (const sd of [1, -1]) { const p = TP[i].clone().addScaledVector(TB[i], 0.85 * sd).addScaledVector(TU[i], 0.1); GL.push([p.x, p.y, p.z, 0.24, -1, -1, -1, 0, (i / NS) * 90, 1, 1.5]); } // the coaster outlined in the accent, chasing
+  for (const x of [-80, -71, -62]) GL.push([x, 5.25, -17.6, 0.3, ...WARM, 0, 0, 0, 1.3]);
+  for (const z of [-3.2, 3.2]) for (let k = 0; k < 120; k++) { const a = (k / 120) * Math.PI * 2; GL.push([(WR + 0.45) * Math.cos(a), (WR + 0.45) * Math.sin(a), z, 0.2, ...WARM, 1, k / 3, 1, 1.2]); } // the wheel: the rims chasing
+  for (const z of [-3, 3]) for (let k = 0; k < NSP; k++) { const a = (k / NSP) * 2 * Math.PI; for (let j = 1; j <= 7; j++) { const rr = 1.6 + ((WR - 2.6 - 1.6) * j) / 7.5, zz = z * (1.35 - (0.35 * j) / 7.5); GL.push([rr * Math.cos(a), rr * Math.sin(a), zz, 0.3, -1, -1, -1, 1, j / 7, 3, 1.5]); } } // the spokes in the accent, waves running out
+  for (let k = 0; k < 16; k++) { const a = (k / 16) * Math.PI * 2; for (const z of [-4.1, 4.1]) GL.push([2.4 * Math.cos(a), 2.4 * Math.sin(a), z, 0.22, 2.6, 2.4, 2.1, 1, 0, 0, 1.2]); }
+  for (let k = 0; k < 64; k++) { const a = (k / 64) * Math.PI * 2; GL.push([9.45 * Math.cos(a), 6.55, 9.45 * Math.sin(a), 0.16, ...WARM, 2, k / 2, 1, 1.1]); } // the carousel's valance, chasing
+  for (let k = 0; k < 24; k++) { const a = (k / 24) * Math.PI * 2; GL.push([9.0 * Math.cos(a), 7.15, 9.0 * Math.sin(a), 0.14, ...WARM, 2, k, 2, 1.0]); GL.push([1.45 * Math.cos(a), 5.4, 1.45 * Math.sin(a), 0.1, 2.6, 2.3, 1.6, 2, k, 2, 0.9]); }
+  for (let k = 0; k < 16; k++) { const a = (k / 16) * Math.PI * 2; GL.push([1.25 * Math.cos(a), 11.2, 1.25 * Math.sin(a), 0.14, -1, -1, -1, 2, k, 2, 1.0]); }
+  for (const [rad, n] of [[7.6, 36], [5.4, 26], [3.4, 16]]) for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; GL.push([rad * Math.cos(a), 7.08, rad * Math.sin(a), 0.12, ...WARM, 2, k * 0.37, 2, 0.9]); } // the bulbs under the canopy
+  for (let k = 0; k < 48; k++) { const a = (k / 48) * Math.PI * 2; GL.push([7.25 * Math.cos(a), 0.75, 7.25 * Math.sin(a), 0.17, ...(k % 2 ? WARM : [-1, -1, -1]), 3, (k % 2) * 0.5, 4, 1.1]); } // the swing's rim, two sets blinking in turn
+  GL.push([SW.x, 22.2, SW.z, 0.35, 2.6, 0.3, 0.2, 0, 0, 0, 1.4], [WC.x, WC.y, WC.z, 0.0, 0, 0, 0, 0, 0, 0, 1]);
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aAnim = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4);
+  GL.forEach(([x, y, z, s, cr, cg, cb, g, ph, pat, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aAnim.setXYZW(i, g, ph, pat, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aAnim", aAnim); glowGeo.instanceCount = NGL;
+  const ROT = [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()];
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 }, uTime: time, uRot: { value: ROT }, uAccentGlow: { value: new THREE.Color() } };
+  const glows = new THREE.Mesh(glowGeo, shader(FG_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- light: the low sun over the sea behind the fair (the moon at night), a soft fill from the town behind the camera --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1), fill = new THREE.DirectionalLight(0xffffff, 1);
+  fill.position.set(-200, 300, 900); world.add(hemi, sun, sun.target, fill);
+  scene.fog = new THREE.Fog(0xffffff, 500, 9000);
+
+  let env = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); glowU.uAccentGlow.value.set(p.accent).multiplyScalar(2.4).addScalar(0.45); accentPoolU.value.set(p.accent).multiplyScalar(0.9); // the bulbs a little whiter than the paint, so every accent glows
+    env?.dispose(); env = fgEnv(THREE, d); for (const m of envMats) m.envMap = env;
+    skyU.uZenith.value.set(d ? "#02050f" : "#3a5c9c"); skyU.uMid.value.set(d ? "#08112a" : "#b98fb6"); skyU.uHorizon.value.set(d ? "#16224a" : "#ffb27e"); skyU.uGlow.value.set(d ? "#1d2a50" : "#ff8a50").multiplyScalar(d ? 0.3 : 0.62); skyU.uSunDir.value.copy(SUN); skyU.uSunColor.value.set("#ffad6a"); skyU.uSun.value = d ? 0 : 1;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudU.uSunDir.value.copy(L); cloudU.uLit.value.set(d ? "#2a3452" : "#ffbf9c"); cloudU.uShade.value.set(d ? "#131a2c" : "#7d78a3"); cloudU.uGlow.value.set(d ? "#34426a" : "#ff935a").multiplyScalar(d ? 0.3 : 0.75); cloudU.uHaze.value.set(d ? "#16203a" : "#dcb0ac");
+    seaU.uSunDir.value.copy(L); seaU.uSunCol.value.set(d ? "#9fb4e8" : "#ffc896"); seaU.uGlint.value = d ? 0.35 : 1;
+    seaU.uDeep.value.set(d ? "#04080f" : "#173a50"); seaU.uSwell.value.set(d ? "#08121f" : "#285468"); seaU.uFoam.value.set(d ? "#3a4656" : "#e6ecee"); seaU.uHaze.value.set(d ? "#0e1a33" : "#f0b090");
+    sun.position.copy(L).multiplyScalar(1000); sun.color.set(d ? "#9fb4e8" : "#ffb27c"); sun.intensity = d ? 0.3 : 1.9;
+    fill.color.set(d ? "#28324c" : "#ffd9c0"); fill.intensity = d ? 0.2 : 0.75;
+    hemi.color.set(d ? "#1a2440" : "#b7c2e2"); hemi.groundColor.set(d ? "#060708" : "#4a4038"); hemi.intensity = d ? 0.32 : 0.7;
+    scene.fog.color.set(d ? "#0b1428" : "#e6b4a0"); scene.fog.near = d ? 400 : 500; scene.fog.far = d ? 8000 : 9000;
+    nightU.value = d ? 1 : 0; poolAmtU.value = d ? 1 : 0.28;
+    glowU.uAmt.value = d ? 1 : 0.62; chainMat.color.set(d ? "#4a5058" : "#8a9096");
+    horseMat.emissive.set(d ? "#5c4a33" : "#000000"); // lit from the canopy
+  }
+  applyPalette(pal);
+
+  /* --- the camera and the mirrored pass --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0).add(V.set(Math.sin(clock * 0.05) * 1.5, 0, 0));
+    camera.lookAt(look.copy(LOOK).add(V.set(k * 44, k * 7, 0))); // a phone turns towards the wheel
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2();
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf); seaU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    const mv = moon.visible; world.scale.y = -1; sea.visible = ground.visible = false; moon.visible = moonHalo.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+    const before = renderer.getRenderTarget();
+    renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    world.scale.y = 1; sea.visible = ground.visible = true; moon.visible = moonHalo.visible = mv; glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
+    world.updateMatrixWorld(true);
+    reflecting = false;
+  };
+
+  const mA = new THREE.Matrix4(), pT = new THREE.Vector3(), tT = new THREE.Vector3(), uT = new THREE.Vector3(), bT = new THREE.Vector3(), mB = new THREE.Matrix4();
+  let wheelPhi = 0, coaster = { fi: 0, v: 0 }, swing = { phi: 0, w: 0, y: Y_IDLE };
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    // the wheel: a turn in about a minute and a half; the gondolas hang level, swaying a little
+    wheelPhi = clock * 0.07; wheelRot.rotation.z = wheelPhi;
+    for (let k = 0; k < NG; k++) { const a = ((k + 0.5) / NG) * 2 * Math.PI + wheelPhi; gondolas.setMatrixAt(k, mA.compose(V.set(WR * Math.cos(a), WR * Math.sin(a), 0), Q.setFromEuler(E.set(0, 0, 0.04 * Math.sin(clock * 0.7 + k * 1.7))), ONE)); }
+    gondolas.instanceMatrix.needsUpdate = true;
+    wheel.updateMatrix(); wheelRot.updateMatrix(); ROT[1].multiplyMatrices(wheel.matrix, wheelRot.matrix);
+    // the coaster: the train on its time table, each car from the track at its centre
+    coaster = headAt(clock);
+    for (let c = 0; c < NCAR; c++) { sample(coaster.fi - (0.5 * CAR_L + c * CAR_GAP) / DS, pT, tT, uT, bT); cars.setMatrixAt(c, mA.makeBasis(tT, uT, bT).setPosition(pT.addScaledVector(uT, 0.12))); }
+    cars.instanceMatrix.needsUpdate = true;
+    // the carousel: a turn every 19 s, the horses rising and falling
+    carRot.rotation.y = -clock * 0.33; horses.rotation.y = carRot.rotation.y;
+    HORSES.forEach((h, i) => horses.setMatrixAt(i, mA.compose(V.set(h.rad * Math.cos(h.a), 2.6 + 0.38 * Math.sin(clock * 2.1 + h.ph), h.rad * Math.sin(h.a)), Q.setFromEuler(E.set(0, -h.a - Math.PI / 2 + Math.PI, 0)), ONE)));
+    horses.instanceMatrix.needsUpdate = true;
+    carousel.updateMatrix(); carRot.updateMatrix(); ROT[2].multiplyMatrices(carousel.matrix, carRot.matrix);
+    // the swing ride: the top rises and spins, the chairs fly out as far as the spin throws them
+    swing = swingAt(clock); swingTop.position.y = swing.y; swingTop.rotation.y = -swing.phi; swingTop.updateMatrix(); ROT[3].copy(swingTop.matrix);
+    let al = 0; for (let it = 0; it < 6; it++) al = Math.atan((swing.w * swing.w * (RA + CHAIN * Math.sin(al))) / G);
+    const sway = swing.w < 0.05 ? 0.03 * Math.sin(clock * 1.3) : 0;
+    for (let k = 0; k < NSEAT; k++) {
+      const a = (k / NSEAT) * Math.PI * 2, rr = RA + CHAIN * Math.sin(al + sway);
+      const local = mB.compose(V.set(rr * Math.cos(a), -CHAIN * Math.cos(al + sway) - 0.15, rr * Math.sin(a)), Q.setFromEuler(E.set(0, -a, al, "YXZ")), ONE);
+      seats.setMatrixAt(k, mA.multiplyMatrices(swingTop.matrix, local));
+      V.set(RA * Math.cos(a), 0, RA * Math.sin(a)).applyMatrix4(swingTop.matrix); chainPos.set([V.x, V.y, V.z], k * 6);
+      V.set(rr * Math.cos(a), -CHAIN * Math.cos(al + sway) + 0.55, rr * Math.sin(a)).applyMatrix4(swingTop.matrix); chainPos.set([V.x, V.y, V.z], k * 6 + 3);
+    }
+    seats.instanceMatrix.needsUpdate = true; chainGeo.attributes.position.needsUpdate = true;
+    // people
+    PEOPLE.forEach((p, i) => { const head = personAt(p, clock, V2), bob = Math.abs(Math.sin(clock * 5.2 * p.v + p.ph)) * 0.05; mA.compose(V.set(V2.x, bob, V2.z), Q.setFromEuler(E.set(0, head, 0)), ONE); bodies.setMatrixAt(i, mA); heads.setMatrixAt(i, mA); });
+    bodies.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = true;
+    DGM.forEach((g, k) => { const x = 9.6 * Math.sin(clock * g.w1 + g.p1), z = 5.2 * Math.sin(clock * g.w2 + g.p2), vx = 9.6 * g.w1 * Math.cos(clock * g.w1 + g.p1), vz = 5.2 * g.w2 * Math.cos(clock * g.w2 + g.p2); dodgems.setMatrixAt(k, mA.compose(V.set(DG.x + x, 0.3, DG.z + z), Q.setFromEuler(E.set(0, Math.atan2(-vz, vx), 0)), ONE)); });
+    dodgems.instanceMatrix.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { lap: +LAP.toFixed(1), track: Math.round(LEN), train: [+pT.x.toFixed(1), +pT.y.toFixed(1), +pT.z.toFixed(1)], speed: +coaster.v.toFixed(1), wheel: +(wheelPhi % (2 * Math.PI)).toFixed(2), swing: +swing.y.toFixed(1), bulbs: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; env?.dispose(); disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
