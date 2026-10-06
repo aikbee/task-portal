@@ -62,6 +62,7 @@ export const BG_STYLES = [
   { value: "windfarm", label: "Offshore wind farm", desc: "3D wind farm at sea at sunset: turbines turning over the glittering water, a service boat in your colour between the towers; at night their red lights blink in sync and shine in the sea", three: true },
   { value: "fairground", label: "Fairground at dusk", desc: "3D seaside fair at dusk: a Ferris wheel turning, a roller coaster racing through its loop, a carousel and swings; at night every bulb lights up in your colour and shines on the wet promenade", three: true },
   { value: "racecircuit", label: "Night race circuit", desc: "3D street circuit by the harbour: race cars in your colour brake into the hairpin and roar down the straights, one dives into the pits; golden hour by day, floodlights and a glittering bay at night", three: true },
+  { value: "bambooforest", label: "Bamboo forest", desc: "3D bamboo grove: tall stalks swaying in the wind, light shafts and mist along a stone path up to a shrine gate in your colour; at night stone lanterns glow and fireflies drift", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

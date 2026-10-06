@@ -18505,7 +18505,475 @@ function racecircuit(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit };
+/* ---------- Bamboo forest: a stone path through a bamboo grove up to a shrine gate; the stalks sway, light falls in shafts; lanterns and fireflies at night ---------- */
+// Thousands of stalks are one instanced draw and their leaf sprays another; both bend with the same wind in their vertex shaders
+// (bfSway: a crooked lean, a slow sway, gusts travelling through the grove), so the leaves stay on their stalks. Everything else
+// (falling leaves, fireflies, the banners, the dappled light) runs off the clock alone.
+const BF_WIND_GLSL = /* glsl */ `
+  uniform float uTime; uniform vec2 uWind;
+  float bfHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  float bfPathX(float z) { float u = clamp(-z / 62.0, 0.0, 1.0); return -3.6 * u * u * (3.0 - 2.0 * u); }
+  float bfGround(float z) { return 0.034 * clamp(-z, 0.0, 56.0) + 0.075 * clamp(-56.0 - z, 0.0, 18.0) + 0.02 * max(0.0, -74.0 - z); }
+  vec3 bfSway(vec2 base, float h, float H) { // how far a stalk rooted at base is pushed at height h (of H)
+    float k = clamp(h / H, 0.0, 1.2); k *= k;
+    float ph = bfHash(base), ph2 = bfHash(base + 7.31);
+    float dxp = bfPathX(base.y) - base.x, nearP = 1.0 - smoothstep(3.0, 11.0, abs(dxp)); // those by the path lean out over it, towards the light
+    vec2 lean = normalize(mix(vec2(cos(ph * 6.283), sin(ph * 6.283)), vec2(sign(dxp), 0.0), nearP * 0.85)) * (0.015 + 0.035 * ph2 + 0.1 * nearP) * H;
+    float gust = 0.5 + 0.5 * sin(dot(base, uWind) * 0.07 - uTime * 0.42); // gusts travel through the grove with the wind
+    float sway = 0.3 + 0.7 * gust * gust + 0.22 * sin(uTime * (0.75 + 0.3 * ph2) + ph * 6.283);
+    vec2 d = lean * k + uWind * sway * 0.032 * H * k + vec2(-uWind.y, uWind.x) * sin(uTime * 1.2 + ph * 9.0) * 0.007 * H * k;
+    return vec3(d.x, -0.5 * dot(d, d) / H, d.y);
+  }
+`;
+// the night's light from the lanterns, from above (x −40…40, z −110…15), as emission on whatever lies near the ground under it
+const BF_NIGHT_GLSL = /* glsl */ `
+  uniform sampler2D uNightMap; uniform vec3 uPoolCol; uniform float uNight;
+  vec3 bfNight(vec3 albedo, vec3 wp) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = vec2((wp.x + 40.0) / 80.0, (wp.z + 110.0) / 125.0);
+    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    float m = texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside;
+    return albedo * uPoolCol * m * exp(-max(wp.y - bfGround(wp.z), 0.0) / 1.6) * uNight;
+  }
+`;
+// a leaf spray on its stalk: a card placed at its branch, carried by the stalk's sway, trembling; lit through from behind by the sun
+const BF_LEAF_VS = /* glsl */ `
+  #include <fog_pars_vertex>
+  attribute vec4 aCulm; attribute vec4 aCard; attribute vec4 aRot; attribute vec3 aTint; // stalk base x, z, height, the card's height on it; branch x, attach y, branch z, size; turn; tint
+  varying vec2 vUv; varying vec3 vTint; varying vec3 vPW;
+  vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
+  void main() {
+    vUv = uv; vTint = aTint;
+    vec3 sw = bfSway(aCulm.xy, aCulm.w, aCulm.z) * (1.0 + 0.12 * length(aCard.xz));
+    vec3 local = qrot(aRot, position * aCard.w);
+    local += vec3(0.0, sin(uTime * 2.1 + aCulm.x * 3.1 + aCulm.y * 1.7 + aCulm.w) * 0.05 * aCard.w * (position.x + 0.5), 0.0); // the spray trembles from its twig
+    vec3 wp = vec3(aCulm.x + aCard.x, aCard.y, aCulm.y + aCard.z) + sw + local;
+    vPW = wp;
+    vec4 mvPosition = viewMatrix * vec4(wp, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+const BF_LEAF_FS = /* glsl */ `
+  #include <fog_pars_fragment>
+  uniform sampler2D uLeaf; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uHaze; uniform float uDay;
+  varying vec2 vUv; varying vec3 vTint; varying vec3 vPW;
+  void main() {
+    vec4 t = texture2D(uLeaf, vUv);
+    if (t.a < 0.42) discard;
+    vec3 V = normalize(cameraPosition - vPW);
+    float back = pow(max(dot(-V, uSunDir), 0.0), 3.0); // looking up through a leaf towards the sun: it glows
+    vec3 col = t.rgb * vTint * (uAmb + uSunCol * (0.28 + 1.5 * back));
+    col = mix(col, uHaze, smoothstep(2.5, 14.0, vPW.y - bfGround(vPW.z)) * 0.42 * uDay); // the sunlit mist among the upper stalks
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+  }
+`;
+// a shaft of sunlight through a gap in the canopy: crossed planes along the sun, soft-edged, fading at both ends and when seen edge-on
+const BF_SHAFT_VS = /* glsl */ `
+  attribute float aSide; varying vec2 vS; varying float vFace; varying vec3 vPW; varying float vDist;
+  void main() {
+    vS = uv;
+    vec4 w = modelMatrix * vec4(position, 1.0); vPW = w.xyz;
+    vec3 n = normalize(mat3(modelMatrix) * (aSide > 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0)));
+    vFace = abs(dot(n, normalize(cameraPosition - w.xyz))); vDist = distance(cameraPosition, w.xyz);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const BF_SHAFT_FS = /* glsl */ `
+  uniform vec3 uCol; uniform float uAmt; uniform float uTime; uniform sampler2D uNoise;
+  varying vec2 vS; varying float vFace; varying vec3 vPW; varying float vDist;
+  void main() {
+    float along = smoothstep(0.0, 0.25, vS.y) * (1.0 - smoothstep(0.55, 1.0, vS.y));
+    float across = pow(1.0 - abs(vS.x * 2.0 - 1.0), 1.6);
+    float flick = 0.7 + 0.3 * texture2D(uNoise, vec2(vS.x * 0.7 + uTime * 0.01, vS.y * 0.2 - uTime * 0.02)).r;
+    float a = along * across * smoothstep(0.08, 0.5, vFace) * flick * uAmt * (1.0 - smoothstep(12.0, 38.0, vDist)); // far shafts, seen through one another, would pile up into a glare
+    gl_FragColor = vec4(uCol * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// mist drifting low along the path: soft noise on a camera-facing sheet, scrolling with the wind
+const BF_MIST_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uCol; uniform float uAmt; uniform float uSeed;
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv * vec2(3.0, 1.0) + vec2(uTime * 0.006 + uSeed, uSeed * 0.37);
+    float n = texture2D(uNoise, p * 0.5).r * 0.65 + texture2D(uNoise, p * 1.3 + 0.4).g * 0.35;
+    float a = smoothstep(0.38, 0.75, n) * smoothstep(0.0, 0.35, vUv.y) * (1.0 - smoothstep(0.45, 1.0, vUv.y)) * smoothstep(0.0, 0.15, vUv.x) * (1.0 - smoothstep(0.85, 1.0, vUv.x));
+    gl_FragColor = vec4(uCol, a * uAmt);
+    #include <colorspace_fragment>
+  }
+`;
+/** A spray of bamboo leaves hanging from its twigs, on a transparent card (the twigs meet at the top middle). */
+function bfLeafSpray(THREE) {
+  const r = koiRng(4242);
+  const tex = canvasTexture(THREE, 256, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    const leaf = (x, y, ang, len, wid, col) => { // a lance-shaped leaf from its stalk end
+      g.save(); g.translate(x, y); g.rotate(ang);
+      g.fillStyle = col; g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(len * 0.35, -wid, len, 0); g.quadraticCurveTo(len * 0.35, wid, 0, 0); g.fill();
+      g.strokeStyle = "rgba(255,255,240,0.25)"; g.lineWidth = 1; g.beginPath(); g.moveTo(2, 0); g.lineTo(len * 0.9, 0); g.stroke();
+      g.restore();
+    };
+    for (let t = 0; t < 4; t++) { // twigs fanning out and down from the top middle, leaves along them
+      const a0 = Math.PI / 2 + r(-1.0, 1.0), L = r(150, 220);
+      let x = w / 2 + r(-12, 12), y = 8;
+      g.strokeStyle = "#6b6a3a"; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a0) * L, y + Math.sin(a0) * L); g.stroke();
+      for (let k = 0; k < 9; k++) {
+        const u = 0.15 + (k / 9) * 0.85; x = w / 2 + Math.cos(a0) * L * u; y = 8 + Math.sin(a0) * L * u;
+        const side = k % 2 ? 1 : -1, ang = a0 + side * r(0.5, 1.1), l = r(42, 66), c = r();
+        leaf(x, y, ang, l, r(6, 9), c < 0.5 ? `hsl(${Math.round(r(78, 96))},${Math.round(r(38, 52))}%,${Math.round(r(30, 42))}%)` : `hsl(${Math.round(r(70, 86))},${Math.round(r(40, 58))}%,${Math.round(r(38, 52))}%)`);
+      }
+    }
+  });
+  tex.anisotropy = 4;
+  return tex;
+}
+/** One fallen bamboo leaf, yellowed. */
+function bfOneLeaf(THREE) {
+  return canvasTexture(THREE, 64, 16, (g) => {
+    g.clearRect(0, 0, 64, 16);
+    g.fillStyle = "#c9b45a"; g.beginPath(); g.moveTo(2, 8); g.quadraticCurveTo(22, 1, 62, 8); g.quadraticCurveTo(22, 15, 2, 8); g.fill();
+    g.strokeStyle = "rgba(120,100,40,0.6)"; g.lineWidth = 1; g.beginPath(); g.moveTo(3, 8); g.lineTo(58, 8); g.stroke();
+  });
+}
+/** The brushwood fence along the path (2.4 m a tile, 1.6 m high): twigs packed upright, two black bamboo rails, a ragged top. */
+function bfFence(THREE) {
+  const r = koiRng(8080);
+  const tex = canvasTexture(THREE, 256, 160, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = "#4a3824"; g.fillRect(0, 18, w, h - 18);
+    for (let k = 0; k < 520; k++) { const x = r(0, w), top = r(2, 22), sl = r(-3, 3), c = Math.round(r(70, 140)); g.strokeStyle = `rgb(${c},${Math.round(c * 0.78)},${Math.round(c * 0.52)})`; g.lineWidth = r(0.8, 2.2); g.beginPath(); g.moveTo(x, top); g.lineTo(x + sl, h); g.stroke(); }
+    for (const y of [0.34, 0.74]) { g.fillStyle = "#1c1a16"; g.fillRect(0, h * y - 4, w, 8); g.fillStyle = "rgba(255,255,255,0.12)"; g.fillRect(0, h * y - 4, w, 2); for (let x = 16; x < w; x += 64) { g.fillStyle = "#2b2219"; g.fillRect(x, h * y - 7, 6, 14); } }
+    g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(0, h - 10, w, 10);
+  });
+  tex.wrapS = THREE.RepeatWrapping; tex.anisotropy = 8;
+  return tex;
+}
+/** A shrine banner (nobori), redrawn for each accent: the accent with a white column of marks, a darker hem. */
+function bfBanner(THREE) {
+  const c = document.createElement("canvas"); c.width = 64; c.height = 256;
+  const g = c.getContext("2d"), tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const draw = (accent) => {
+    g.fillStyle = accent; g.fillRect(0, 0, 64, 256);
+    g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(0, 0, 64, 18); g.fillRect(0, 238, 64, 18);
+    g.fillStyle = "#f6f2ea";
+    const marks = [[18, 30, 28, 6], [30, 24, 4, 26], [16, 56, 32, 5], [22, 70, 20, 4], [18, 90, 28, 6], [30, 98, 4, 30], [20, 136, 24, 5], [16, 150, 32, 4], [26, 160, 12, 22], [18, 192, 28, 6], [30, 198, 4, 24]];
+    for (const [x, y, w, h] of marks) g.fillRect(x, y, w, h);
+    tex.needsUpdate = true;
+  };
+  return { tex, draw };
+}
+/** The lanterns' light on the ground from above (x −40…40, z −110…15). */
+function bfNightMap(THREE, pools) {
+  const W = 512, H = 800, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x + 40) / 80) * W, Y = (z) => ((15 - z) / 125) * H, S = W / 80;
+  for (const [x, z, rad, a] of pools) { g.save(); g.translate(X(x), Y(z)); g.scale(rad * S, rad * S); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); [[0, 1], [0.3, 0.65], [0.6, 0.25], [0.85, 0.06], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(255,255,255,${a * k})`)); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+function bambooforest(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(6161);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  const C0 = new THREE.Vector3(0.25, 1.7, 7.5), LOOK = new THREE.Vector3(-2.0, 5.6, -60); // standing on the path, looking up it to the shrine
+  camera.fov = 40; camera.near = 0.2; camera.far = 3000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 2;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), I4 = new THREE.Matrix4();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 12) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(-Math.PI / 2 + 0.5, 0.95), MOON = sph(-Math.PI / 2 - 0.15, 1.05); // the sun high, ahead and right, behind the canopy; the moon above the path
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; a lantern's lit paper
+  const WIND = new THREE.Vector2(1, 0.25).normalize();
+
+  /* --- the lie of the land: the path rises gently, steps lead up to the shrine's terrace --- */
+  const ZE = -56, TOP = 0.034 * 56 + 1.35; // where the path ends at the steps; the terrace's level
+  const pathX = (z) => { const u = Math.min(1, Math.max(0, -z / 62)); return -3.6 * u * u * (3 - 2 * u); };
+  const slopeY = (z) => 0.034 * Math.min(Math.max(-z, 0), 56) + 0.075 * Math.min(Math.max(-56 - z, 0), 18) + 0.02 * Math.max(0, -74 - z);
+  const groundY = (x, z) => slopeY(z) + 0.35 * Math.sin(x * 0.23 + 1.3) * Math.sin(z * 0.17) * smooth(4, 9, Math.abs(x - pathX(z)));
+
+  /* --- the shared uniforms; the painted material (markers: the accent, lit paper; the lanterns' light at night) --- */
+  const windU = { value: WIND }, nightU = { value: 0 }, accentU = { value: new THREE.Color() }, poolColU = { value: new THREE.Color(1, 0.72, 0.42).multiplyScalar(1.6) }, nightMapU = { value: null };
+  const COMMON = (sh) => Object.assign(sh.uniforms, { uTime: time, uWind: windU, uNight: nightU, uNightMap: nightMapU, uPoolCol: poolColU, uAccent: accentU, uNoise: { value: noise } });
+  const lit = (mat, key) => {
+    mat.onBeforeCompile = (sh) => {
+      COMMON(sh);
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw;\n#endif\nvPW = (modelMatrix * pw).xyz; }");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; varying vec3 vPW;\n" + BF_WIND_GLSL + BF_NIGHT_GLSL)
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float bfLamp = 0.0, bfAcc = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.82, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.9, 0.72), isLamp); bfLamp = isLamp; bfAcc = isAcc; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.7, 0.38) * bfLamp * (0.15 + 1.6 * uNight) + bfNight(diffuseColor.rgb, vPW) + uAccent * bfAcc * 0.3 * uNight; // the gate's paint softly lit at night, the path's goal");
+    };
+    mat.customProgramCacheKey = () => "bf-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0 })), "paint");
+
+  /* --- the sky, seen through the canopy; the night's stars and moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(2000, 40, 20)), shader(LANTERN_SKY_VS, WF_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 200 : 700, starPos = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.2, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 1500, Math.sin(e) * 1500, Math.sin(a) * Math.cos(e) * 1500], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+  const starMat = keep(new THREE.PointsMaterial({ color: 0xe8eeff, size: preview ? 1.1 : 1.5, sizeAttenuation: false, transparent: true, depthWrite: false, fog: false }));
+  const stars = new THREE.Points(starGeo, starMat); stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(1400); moon.scale.setScalar(46); moon.lookAt(0, 0, 0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x8fa3d8, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.5 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(330); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+
+  /* --- the ground: leaf litter and moss, the gravel path; flecks of sun moving with the wind by day, the lanterns' pools at night --- */
+  const dayU = { value: 1 }, fleckU = { value: new THREE.Color() }, hazeU = { value: new THREE.Color() }; // by day, sunlit mist glows among the upper stalks
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95 }));
+  groundMat.onBeforeCompile = (sh) => {
+    COMMON(sh); Object.assign(sh.uniforms, { uDay: dayU, uFleck: fleckU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\nvPW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; uniform float uDay; uniform vec3 uFleck; varying vec3 vPW;\n" + BF_WIND_GLSL + BF_NIGHT_GLSL)
+      .replace("#include <color_fragment>", `#include <color_fragment>
+  float bfFleck = 0.0;
+  { vec2 w = vPW.xz;
+    float n = texture2D(uNoise, w * 0.045).r, n2 = texture2D(uNoise, w * 0.33).g, n3 = texture2D(uNoise, w * 1.7).r;
+    vec3 litter = mix(vec3(0.4, 0.31, 0.19), vec3(0.56, 0.45, 0.27), n2) * (0.72 + 0.56 * n3); // dry bamboo leaves
+    vec3 moss = mix(vec3(0.17, 0.27, 0.09), vec3(0.27, 0.36, 0.13), n3);
+    vec3 col = mix(litter, moss, smoothstep(0.52, 0.72, n) * 0.75);
+    float dp = abs(w.x - bfPathX(w.y)), onPath = (1.0 - smoothstep(1.4, 1.7, dp)) * step(-56.5, w.y);
+    vec3 gravel = vec3(0.6, 0.56, 0.48) * (0.78 + 0.36 * n3) * (0.92 + 0.16 * n2);
+    float st = smoothstep(0.62, 0.7, texture2D(uNoise, w * vec2(0.5, 0.42) + 0.2).r) * (1.0 - smoothstep(0.7, 1.2, dp)); // flat stones set in the gravel
+    gravel = mix(gravel, vec3(0.5, 0.49, 0.46) * (0.9 + 0.2 * n2), st);
+    col = mix(col, gravel, onPath);
+    col = mix(col, moss * 0.9, (1.0 - smoothstep(0.0, 0.25, abs(dp - 1.75))) * step(-56.5, w.y) * 0.6); // moss along the path's edge
+    diffuseColor.rgb = col;
+    vec2 drift = uWind * uTime * 0.05 + vec2(sin(uTime * 0.4), cos(uTime * 0.33)) * 0.6;
+    float f = texture2D(uNoise, (w + drift) * 0.09).r * 0.6 + texture2D(uNoise, (w - drift * 1.6) * 0.31 + 0.5).g * 0.4;
+    bfFleck = smoothstep(0.6, 0.68, f) * uDay; }`)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * uFleck * bfFleck + bfNight(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "bf-ground";
+  { const g = keep(new THREE.PlaneGeometry(110, 170, 110, 170).rotateX(-Math.PI / 2).translate(-4, 0, -58)), p = g.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, groundY(p.getX(i), p.getZ(i))); g.computeVertexNormals(); scene.add(new THREE.Mesh(g, groundMat)); }
+
+  /* --- the bamboo: tall culms with their nodes, one instanced draw, swaying in the vertex shader --- */
+  const CULMS = [], CELL = 1.2;
+  for (let gz = -122; gz < 6; gz += CELL) for (let gx = -40; gx < 32; gx += CELL) {
+    const z = gz + r(0.1, 0.9) * CELL, x = gx + r(0.1, 0.9) * CELL, d = Math.abs(x - pathX(z));
+    if (d < 2.75 || (z < -52 && z > -84 && d < 8.5) || (z > 5 && d < 6)) continue; // the path and its fences, the shrine's terrace, beside the camera
+    if (r() > (d < 9 ? 0.85 : d < 16 ? 0.5 : 0.22) * (preview && d > 12 ? 0.5 : 1)) continue; // the grove's depth is mostly hidden behind its first rows
+    CULMS.push({ x, z, y: groundY(x, z) - 0.05, H: r(13, 21) * (d < 6 ? 0.9 : 1), rad: r(0.045, 0.085), d });
+  }
+  CULMS.sort((a, b) => Math.hypot(a.x - C0.x, a.z - C0.z) - Math.hypot(b.x - C0.x, b.z - C0.z)); // nearest first: the camera stands still, so the hidden ones fail the depth test early
+  const culmMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0 }));
+  culmMat.onBeforeCompile = (sh) => {
+    COMMON(sh); sh.uniforms.uDay = dayU; sh.uniforms.uHaze = hazeU;
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\n" + BF_WIND_GLSL + "\nvarying vec3 vPW; varying float vBfH;").replace("#include <project_vertex>", `
+  vec4 mvPosition = vec4( transformed, 1.0 );
+  #ifdef USE_INSTANCING
+  { float bfH = length(instanceMatrix[1].xyz); vBfH = transformed.y * bfH;
+    mvPosition = instanceMatrix * mvPosition;
+    mvPosition.xyz += bfSway(instanceMatrix[3].xz, vBfH, bfH); }
+  #endif
+  vPW = (modelMatrix * mvPosition).xyz;
+  mvPosition = modelViewMatrix * mvPosition;
+  gl_Position = projectionMatrix * mvPosition;`);
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform sampler2D uNoise; uniform float uDay; uniform vec3 uHaze; varying vec3 vPW; varying float vBfH;\n" + BF_WIND_GLSL + BF_NIGHT_GLSL)
+      .replace("#include <color_fragment>", `#include <color_fragment>
+  { float sp = 0.3 + 0.014 * vBfH, fu = fract(vBfH / sp);
+    float ring = (1.0 - smoothstep(0.0, 0.04, fu)) + 0.5 * (1.0 - smoothstep(0.0, 0.03, 1.0 - fu)); // the node's ridge
+    float wax = smoothstep(0.8, 0.96, fu) * (1.0 - smoothstep(0.96, 1.0, fu)); // a pale bloom under each node
+    float n = texture2D(uNoise, vec2((vPW.x + vPW.z) * 2.3, vBfH * 0.06)).r; // fine streaks along the culm
+    diffuseColor.rgb *= (0.84 + 0.3 * n) * (1.0 - 0.36 * ring) * (0.72 + 0.28 * smoothstep(0.0, 4.0, vBfH));
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.74, 0.8, 0.68), wax * 0.24);
+    diffuseColor.rgb *= 1.0 + 0.22 * uDay; }`)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += bfNight(diffuseColor.rgb, vPW) * 0.55 + diffuseColor.rgb * vec3(0.2, 0.24, 0.12) * uDay; // by day the light glows through the green")
+      .replace("#include <opaque_fragment>", "outgoingLight = mix(outgoingLight, uHaze, smoothstep(2.5, 14.0, vPW.y - bfGround(vPW.z)) * 0.42 * uDay);\n#include <opaque_fragment>");
+  };
+  culmMat.customProgramCacheKey = () => "bf-culm";
+  const culms = new THREE.InstancedMesh(keep(new THREE.CylinderGeometry(0.75, 1, 1, 6, 6, true).translate(0, 0.5, 0)), culmMat, CULMS.length);
+  { const c = new THREE.Color(); CULMS.forEach((k, i) => { culms.setMatrixAt(i, new THREE.Matrix4().compose(V.set(k.x, k.y, k.z), Q.identity(), V2.set(k.rad, k.H, k.rad))); const u = r(); culms.setColorAt(i, u < 0.1 ? c.setHSL(r(0.17, 0.2), 0.5, r(0.42, 0.5)) : u < 0.18 ? c.setHSL(r(0.2, 0.25), 0.2, r(0.38, 0.46)) : c.setHSL(r(0.22, 0.28), r(0.35, 0.55), r(0.3, 0.42))); }); }
+  culms.frustumCulled = false; scene.add(culms); keep(culms);
+
+  /* --- the leaves: sprays on the upper culms, one instanced draw, carried by the same sway --- */
+  const leafTex = keep(bfLeafSpray(THREE));
+  const NCARD = CULMS.reduce((s, k) => s + (k.d < 12 ? 5 : 3), 0);
+  const cardGeo = keep(new THREE.InstancedBufferGeometry()), cardQuad = keep(new THREE.PlaneGeometry(1, 1).translate(0, -0.5, 0));
+  cardGeo.setIndex(cardQuad.index); cardGeo.setAttribute("position", cardQuad.attributes.position); cardGeo.setAttribute("uv", cardQuad.attributes.uv);
+  const aCulm = new Float32Array(NCARD * 4), aCard = new Float32Array(NCARD * 4), aRot = new Float32Array(NCARD * 4), aTint = new Float32Array(NCARD * 3);
+  { let n = 0; for (const k of CULMS) for (let j = 0, m = k.d < 12 ? 5 : 3; j < m; j++, n++) {
+    const f = r(0.55, 0.97), h = f * k.H, a = r(0, 6.283), off = r(0.3, 1.1) * (1.25 - f);
+    aCulm.set([k.x, k.z, k.H, h], n * 4); aCard.set([Math.cos(a) * off, k.y + h, Math.sin(a) * off, r(1.4, 2.5)], n * 4);
+    Q.setFromEuler(E.set(r(-0.8, 0.8), r(0, 6.283), r(-0.3, 0.3))); aRot.set([Q.x, Q.y, Q.z, Q.w], n * 4);
+    const b = r(0.82, 1.15); aTint.set([b * r(0.92, 1.06), b, b * r(0.85, 1.05)], n * 3);
+  } }
+  cardGeo.setAttribute("aCulm", new THREE.InstancedBufferAttribute(aCulm, 4)); cardGeo.setAttribute("aCard", new THREE.InstancedBufferAttribute(aCard, 4)); cardGeo.setAttribute("aRot", new THREE.InstancedBufferAttribute(aRot, 4)); cardGeo.setAttribute("aTint", new THREE.InstancedBufferAttribute(aTint, 3));
+  cardGeo.instanceCount = NCARD;
+  const leafU = { ...THREE.UniformsLib.fog, uTime: time, uWind: windU, uLeaf: { value: leafTex }, uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() }, uHaze: hazeU, uDay: dayU };
+  const leaves = new THREE.Mesh(cardGeo, shader(BF_WIND_GLSL + BF_LEAF_VS, BF_WIND_GLSL + BF_LEAF_FS, leafU, { side: THREE.DoubleSide, fog: true }));
+  leaves.frustumCulled = false; scene.add(leaves);
+
+  /* --- the brushwood fences along the path --- */
+  const fenceTex = keep(bfFence(THREE));
+  const fenceMat = lit(keep(new THREE.MeshStandardMaterial({ map: fenceTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.95 })), "fence");
+  for (const side of [-1, 1]) {
+    const pos = [], uv = [], idx = []; let s = 0, prev = null, k = 0;
+    for (let z = 10; z >= ZE + 0.4; z -= 0.5, k++) { const x = pathX(z) + side * 2.35, y = slopeY(z); if (prev) s += Math.hypot(x - prev[0], z - prev[1]); prev = [x, z]; pos.push(x, y - 0.15, z, x, y + 1.55, z); uv.push(s / 2.4, 0, s / 2.4, 1); if (k) { const a = (k - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
+    scene.add(new THREE.Mesh(g, fenceMat));
+  }
+
+  /* --- stone lanterns along the path; the steps, the terrace, the shrine gate in the accent, banners, the little shrine --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]);
+  const GL = []; // lights: [x, y, z, size, r, g, b, smallest px]
+  const POOLS = []; // [x, z, radius, strength]
+  const lantern = (x, y, z, s = 1) => {
+    const st = [0x8f8b84, 0x87837c, 0x96928a][Math.floor(r(0, 3))], A = (dy) => at(x, y + dy * s, z);
+    P(cyl(0.28 * s, 0.32 * s, 0.2 * s, 6), A(0.1), st); P(cyl(0.1 * s, 0.12 * s, 0.72 * s, 12), A(0.56), st); P(cyl(0.27 * s, 0.2 * s, 0.14 * s, 6), A(0.99), st);
+    P(box(0.34 * s, 0.3 * s, 0.34 * s), A(1.21), st); P(box(0.22 * s, 0.18 * s, 0.36 * s), A(1.21), LAMP); P(box(0.36 * s, 0.18 * s, 0.22 * s), A(1.21), LAMP);
+    P(new THREE.ConeGeometry(0.44 * s, 0.28 * s, 6), A(1.5), st); P(new THREE.SphereGeometry(0.075 * s, 8, 6), A(1.7), st);
+    GL.push([x, y + 1.21 * s, z, 0.14 * s, 2.6, 1.75, 0.9, 1.5]); POOLS.push([x, z, 3.3 * s, 0.85]);
+  };
+  for (let k = 0; k < 6; k++) { const z = -4 - k * 9.5, side = k % 2 ? 1 : -1; lantern(pathX(z) + side * 1.95, slopeY(z), z); }
+  const X0 = pathX(ZE - 10), ZT = ZE - 10, Y1 = TOP;
+  for (const s of [-1, 1]) lantern(X0 + s * 2.7, slopeY(ZE + 0.8), ZE + 0.8, 1.25); // a pair at the foot of the steps
+  for (let i = 0; i < 7; i++) { const top = slopeY(ZE) + (i + 1) * (1.35 / 7), z = ZE - 0.43 - i * 0.857; P(box(4.2, top - slopeY(ZE) + 0.45, 0.86), at(X0, (top + slopeY(ZE) - 0.45) / 2, z), [0x8a857c, 0x837e75][i % 2]); } // the steps
+  P(box(15, 2.2, 22), at(X0, Y1 - 1.1, ZE - 6 - 11), 0x7f7a71); P(box(15.05, 0.08, 22.05), at(X0, Y1 + 0.02, ZE - 6 - 11), 0xa8a294); // the terrace, gravelled
+  // the torii: black-capped lintel over the accent, black feet
+  for (const s of [-1, 1]) { P(cyl(0.19, 0.23, 4.6, 16), at(X0 + s * 1.9, Y1 + 2.3, ZT, 0, 0, s * 0.022), ACC); P(cyl(0.26, 0.26, 0.42, 16), at(X0 + s * 1.9, Y1 + 0.21, ZT), 0x1b1b1d); }
+  P(box(5.0, 0.24, 0.17), at(X0, Y1 + 3.7, ZT), ACC); P(box(0.3, 0.72, 0.15), at(X0, Y1 + 4.15, ZT), ACC); P(box(5.7, 0.26, 0.34), at(X0, Y1 + 4.55, ZT), ACC);
+  P(box(6.2, 0.3, 0.42), at(X0, Y1 + 4.86, ZT), 0x1b1b1d); for (const s of [-1, 1]) P(box(0.85, 0.3, 0.42), at(X0 + s * 3.35, Y1 + 4.97, ZT, 0, 0, s * 0.22), 0x1b1b1d);
+  P(box(0.42, 0.5, 0.05), at(X0, Y1 + 4.15, ZT + 0.1), 0x1b1b1d); // the name plaque
+  // the shrine: a raised hall with white walls, a dark tiled gable roof, two paper lanterns in the accent
+  const ZS = ZE - 19;
+  P(box(6.2, 0.5, 4.6), at(X0, Y1 + 0.25, ZS), 0x3a2a1c); P(box(5.4, 2.3, 3.8), at(X0, Y1 + 1.65, ZS), 0x4b3322); P(box(4.4, 1.5, 0.05), at(X0, Y1 + 1.6, ZS + 1.92), 0xe9e3d6);
+  for (const dx of [-2.2, 0, 2.2]) P(box(0.18, 2.3, 0.2), at(X0 + dx, Y1 + 1.65, ZS + 1.95), 0x3a2618);
+  { const w = 7.4, d = 5.8, h = 1.7, x0 = -w / 2, x1 = w / 2, z0 = -d / 2, z1 = d / 2, tris = [[[x0, 0, z0], [x1, 0, z0], [x1, h, 0]], [[x0, 0, z0], [x1, h, 0], [x0, h, 0]], [[x0, 0, z1], [x0, h, 0], [x1, h, 0]], [[x0, 0, z1], [x1, h, 0], [x1, 0, z1]], [[x0, 0, z0], [x0, h, 0], [x0, 0, z1]], [[x1, 0, z0], [x1, 0, z1], [x1, h, 0]], [[x0, -0.25, z0], [x0, -0.25, z1], [x1, -0.25, z1]], [[x0, -0.25, z0], [x1, -0.25, z1], [x1, -0.25, z0]]];
+    const pos = [], cen = new THREE.Vector3(0, h * 0.3, 0); for (const t of tris) { const [a, b, c] = t.map((q) => new THREE.Vector3(...q)), nn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)), mid = a.clone().add(b).add(c).multiplyScalar(1 / 3).sub(cen); for (const q of nn.dot(mid) < 0 ? [a, c, b] : [a, b, c]) pos.push(q.x, q.y, q.z); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.computeVertexNormals(); P(g, at(X0, Y1 + 2.8, ZS), 0x3a3f45); P(box(7.6, 0.16, 0.22), at(X0, Y1 + 2.8 + 1.72, ZS), 0x2c3035); }
+  for (const s of [-1, 1]) { P(new THREE.SphereGeometry(0.3, 14, 10).scale(1, 1.35, 1), at(X0 + s * 1.5, Y1 + 2.25, ZS + 2.45), ACC); P(cyl(0.18, 0.18, 0.08, 12), at(X0 + s * 1.5, Y1 + 2.68, ZS + 2.45), 0x1b1b1d); GL.push([X0 + s * 1.5, Y1 + 2.25, ZS + 2.45, 0.32, -1, -1, -1, 1.6]); }
+  POOLS.push([X0, ZS + 3, 6, 0.7], [X0, ZT, 4.5, 0.55]);
+  // the banners (nobori) beside the gate: poles, and cloth fluttering in the shader
+  const banner = bfBanner(THREE); keep(banner.tex);
+  const bannerMat = lit(keep(new THREE.MeshStandardMaterial({ map: banner.tex, side: THREE.DoubleSide, roughness: 0.9 })), "banner");
+  { const f = bannerMat.onBeforeCompile; bannerMat.onBeforeCompile = (sh) => { f(sh); sh.vertexShader = sh.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n  { float u = position.x + 0.275; transformed.z += sin(uTime * 3.1 + position.y * 2.2 + modelMatrix[3].x * 1.7) * 0.07 * u * 4.0 + sin(uTime * 5.3 + position.y * 4.1) * 0.012; }").replace("#include <common>", "#include <common>\n" + BF_WIND_GLSL); }; }
+  const bannerGeo = keep(new THREE.PlaneGeometry(0.55, 2.4, 4, 12));
+  for (const dx of [-4.4, -3.1, 3.1, 4.4]) { P(cyl(0.03, 0.03, 4.2, 6), at(X0 + dx, Y1 + 2.1, ZE - 6.6), 0x6b6560); P(box(0.62, 0.04, 0.04), at(X0 + dx + 0.3, Y1 + 4.0, ZE - 6.6), 0x6b6560); const m = new THREE.Mesh(bannerGeo, bannerMat); m.position.set(X0 + dx + 0.3, Y1 + 2.75, ZE - 6.6); scene.add(m); }
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); scene.add(site);
+  nightMapU.value = keep(bfNightMap(THREE, POOLS));
+
+  /* --- light shafts through the canopy (by day), mist along the path, falling leaves, fireflies (at night) --- */
+  const shaftGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], uv = [], side = []; for (const sd of [0, 1]) for (const [px, py, u, v] of [[-0.5, 0, 0, 0], [0.5, 0, 1, 0], [0.5, 1, 1, 1], [-0.5, 0, 0, 0], [0.5, 1, 1, 1], [-0.5, 1, 0, 1]]) { pos.push(sd ? 0 : px, py, sd ? px : 0); uv.push(u, v); side.push(sd); } shaftGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); shaftGeo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); shaftGeo.setAttribute("aSide", new THREE.Float32BufferAttribute(side, 1)); }
+  const shaftU = { uCol: { value: new THREE.Color(1, 0.93, 0.75) }, uAmt: { value: 0 }, uTime: time, uNoise: { value: noise } };
+  const shaftMat = shader(BF_SHAFT_VS, BF_SHAFT_FS, shaftU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  const shafts = [];
+  for (const [z, dx, w] of [[-7, 0.6, 1.4], [-13, -1.2, 2.2], [-20, 1.4, 1.6], [-28, -0.4, 2.4]]) {
+    const m = new THREE.Mesh(shaftGeo, shaftMat); m.position.set(pathX(z) + dx, slopeY(z), z); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), SUN); m.scale.set(w, 24, w); m.renderOrder = 12; m.frustumCulled = false; scene.add(m); shafts.push(m);
+  }
+  const mistVS = "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }";
+  const mists = [];
+  [-10, -20, -30, -40, -50].forEach((z, k) => { const u = { uNoise: { value: noise }, uTime: time, uCol: { value: new THREE.Color() }, uAmt: { value: 0 }, uSeed: { value: k * 0.37 } }; const m = new THREE.Mesh(quad, shader(mistVS, BF_MIST_FS, u, { transparent: true, depthWrite: false })); m.position.set(pathX(z), slopeY(z) + 2.6, z); m.scale.set(46, 7, 1); m.renderOrder = 11; scene.add(m); mists.push(u); });
+  const NLEAF = preview ? 30 : 70, LEAVES = Array.from({ length: NLEAF }, () => { const z = r(-45, 3); return { x: pathX(z) + r(-8, 8), z, y0: slopeY(z) + r(9, 16), T: r(18, 30), ph: r(0, 30), vf: r(0.55, 0.85), sx: r(0.6, 1.8), sy: r(0.4, 1.3), sz: r(1.2, 3.2), a: r(0, 6.28) }; });
+  const fallMat = keep(new THREE.MeshStandardMaterial({ map: keep(bfOneLeaf(THREE)), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8 }));
+  const fallen = new THREE.InstancedMesh(keep(new THREE.PlaneGeometry(0.34, 0.085)), fallMat, NLEAF); fallen.frustumCulled = false; fallen.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(fallen); keep(fallen);
+  const NFLY = preview ? 50 : 110, FLIES = Array.from({ length: NFLY }, () => { const z = r(-52, 5); return { x: pathX(z) + r(-9, 9), z, y: slopeY(z) + r(0.4, 2.6), p: [r(0, 6.28), r(0, 6.28), r(0, 6.28), r(0, 6.28)], w: [r(0.2, 0.4), r(0.5, 0.9), r(0.3, 0.6), r(0.2, 0.35)], per: r(2.4, 4.6), off: r(0, 1) }; });
+  const NSTATIC = GL.length;
+  for (let k = 0; k < NFLY; k++) GL.push([0, 0, 0, 0, 1.8, 2.6, 0.55, 2.2]);
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTintG = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTintG.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTintG.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTintG); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  /* --- light --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 6, 120);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, L = d ? MOON : SUN;
+    accentU.value.set(p.accent); banner.draw("#" + new THREE.Color(p.accent).getHexString());
+    for (let i = 0; i < NSTATIC; i++) if (GL[i][4] < 0) aTintG.setXYZ(i, ...new THREE.Color(p.accent).multiplyScalar(2.2).addScalar(0.35).toArray());
+    skyU.uZenith.value.set(d ? "#040912" : "#86a9d4"); skyU.uMid.value.set(d ? "#0a1524" : "#d2e2e2"); skyU.uHorizon.value.set(d ? "#13233a" : "#f3edd2"); skyU.uGlow.value.set(d ? "#1d2a40" : "#ffe7b0").multiplyScalar(d ? 0.2 : 0.4); skyU.uSunDir.value.copy(SUN); skyU.uSunColor.value.set("#fff0c8"); skyU.uSun.value = d ? 0 : 0.6;
+    starMat.opacity = d ? 0.85 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    sun.position.copy(L).multiplyScalar(100); sun.color.set(d ? "#9fb6e0" : "#fff0d2"); sun.intensity = d ? 0.2 : 1.5;
+    hemi.color.set(d ? "#2c4a6a" : "#e2efcc"); hemi.groundColor.set(d ? "#0a0a08" : "#5c4c34"); hemi.intensity = d ? 0.26 : 0.9; // a cool moonlight keeps the grove's shape at night
+    scene.fog.color.set(d ? "#0b1a1d" : "#cbd8b4"); scene.fog.near = d ? 8 : 8; scene.fog.far = d ? 115 : 150;
+    leafU.uSunDir.value.copy(L); leafU.uSunCol.value.set(d ? "#141c28" : "#fff3c4"); leafU.uAmb.value.set(d ? "#081010" : "#4e6436");
+    shaftU.uAmt.value = d ? 0 : 0.3; for (const m of shafts) m.visible = !d;
+    mists.forEach((u) => { u.uCol.value.set(d ? "#4f6070" : "#eef2e2"); u.uAmt.value = d ? 0.22 : 0.32; });
+    dayU.value = d ? 0 : 1; fleckU.value.set(d ? "#000000" : "#ffe7b2").multiplyScalar(0.8); nightU.value = d ? 1 : 0; hazeU.value.set("#e6edd6");
+    glowU.uAmt.value = d ? 1 : 0.35;
+    for (let i = 0; i < NSTATIC; i++) aGlow.setW(i, d ? GL[i][3] : GL[i][3] * 0.35);
+    aGlow.needsUpdate = aTintG.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0).add(V.set(0, Math.sin(clock * 0.6) * 0.015, 0));
+    camera.lookAt(look.copy(LOOK).add(V.set(0, k * 9, 0))); // a phone looks a little higher, up the stalks
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900)); };
+
+  const mA = new THREE.Matrix4(), EL = new THREE.Euler();
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    LEAVES.forEach((l, i) => { // a leaf flutters down, lies a while, and goes
+      const tc = (((clock + l.ph) % l.T) + l.T) % l.T, gy = groundY(l.x, l.z), tf = (l.y0 - gy) / l.vf;
+      let s = 1;
+      if (tc < tf) { V.set(l.x + 0.5 * Math.sin(tc * 1.3 + l.a) + WIND.x * 0.12 * tc, l.y0 - l.vf * tc, l.z + 0.3 * Math.sin(tc * 0.9 + l.a * 2) + WIND.y * 0.12 * tc); EL.set(tc * l.sx, tc * l.sy + l.a, tc * l.sz); }
+      else { V.set(l.x + 0.5 * Math.sin(tf * 1.3 + l.a) + WIND.x * 0.12 * tf, gy + 0.03, l.z + 0.3 * Math.sin(tf * 0.9 + l.a * 2) + WIND.y * 0.12 * tf); EL.set(-Math.PI / 2, l.a, 0); s = Math.min(1, (l.T - tc) / 1.5); }
+      fallen.setMatrixAt(i, mA.compose(V, Q.setFromEuler(EL), V2.set(s, s, s)));
+    });
+    fallen.instanceMatrix.needsUpdate = true;
+    if (pal.dark) FLIES.forEach((f, k) => { // fireflies drift about, glowing now and then
+      const x = f.x + 0.9 * Math.sin(clock * f.w[0] + f.p[0]) + 0.4 * Math.sin(clock * f.w[1] + f.p[1]), y = f.y + 0.35 * Math.sin(clock * f.w[2] + f.p[2]), z = f.z + 0.9 * Math.sin(clock * f.w[3] + f.p[3]);
+      const s = (((clock / f.per + f.off) % 1) + 1) % 1, b = smooth(0, 0.12, s) * (1 - smooth(0.2, 0.5, s));
+      aGlow.setXYZW(NSTATIC + k, x, y, z, b > 0.02 ? 0.05 * b : 0);
+    });
+    else for (let k = 0; k < NFLY; k++) aGlow.setW(NSTATIC + k, 0);
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { culms: CULMS.length, cards: NCARD, lamps: NSTATIC, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
