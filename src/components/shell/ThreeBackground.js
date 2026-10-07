@@ -19391,7 +19391,7 @@ function desertcaravan(THREE, scene, camera, pal, preview) {
   const PATH = [];
   for (let x = 54; x >= -92; x -= 0.5) { const z = cz1(x) + 0.3; PATH.push(new THREE.Vector3(x, groundH(x, z), z)); } // along the knife-edge crest, from off the right of even a 21:9 view to off its left
   const PL = [0]; for (let i = 1; i < PATH.length; i++) PL.push(PL[i - 1] + PATH[i].distanceTo(PATH[i - 1]));
-  const LTOT = PL[PL.length - 1], VC = 1.05, SP = 4.4, GAIT = 1.7;
+  const LTOT = PL[PL.length - 1], VC = 1.05, SP = 4.4, GAIT = 1.7, T0 = 62; // T0: the caravan is already halfway along the crest when the page opens
   const pathAt = (s, out) => { s = ((s % LTOT) + LTOT) % LTOT; let lo = 0, hi = PL.length - 1; while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (PL[mid] <= s) lo = mid; else hi = mid; } return out.copy(PATH[lo]).lerp(PATH[hi], (s - PL[lo]) / Math.max(1e-6, PL[hi] - PL[lo])); };
   const KNEEL = [[15.5, 8.5, 0.25], [20.5, 10.5, Math.PI - 0.35]]; // two camels resting by the camp, side-on
   KNEEL.forEach(([x, z, ry], k) => { // lying on the sand, each leg folded: the upper part down to the knee, the lower tucked back beneath
@@ -19519,7 +19519,7 @@ function desertcaravan(THREE, scene, camera, pal, preview) {
   const camelM = Array.from({ length: NCAM }, () => new THREE.Matrix4()), headAt = Array.from({ length: NCAM }, () => new THREE.Vector3()), tailAt = Array.from({ length: NCAM }, () => new THREE.Vector3());
   function frame(dt) {
     clock += dt; time.value = clock; fireTime.value = clock; emberU.uTime.value = clock;
-    const sLead = clock * VC;
+    const sLead = (clock + T0) * VC;
     for (let k = 0; k < NCAM; k++) { // each camel from the path at its place in the line: paces, rolls, bobs
       const s = sLead - 3.2 - k * SP, ph = (clock / GAIT + k * 0.27) % 1, w = 2 * Math.PI * ph;
       frameOf(s, mA);
@@ -19547,7 +19547,7 @@ function desertcaravan(THREE, scene, camera, pal, preview) {
   return {
     update: sceneStep(frame),
     setPalette: applyPalette,
-    stats() { pathAt(clock * VC - 3.2, V); return { camels: NCAM, lead: [+V.x.toFixed(1), +V.z.toFixed(1)], path: Math.round(LTOT), accent: "#" + accentU.value.getHexString(), night: dayU.value ? 0 : 1 }; }, // for checking by hand
+    stats() { pathAt((clock + T0) * VC - 3.2, V); return { camels: NCAM, lead: [+V.x.toFixed(1), +V.z.toFixed(1)], path: Math.round(LTOT), accent: "#" + accentU.value.getHexString(), night: dayU.value ? 0 : 1 }; }, // for checking by hand
     dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
   };
 }
