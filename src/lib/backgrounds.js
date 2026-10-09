@@ -64,6 +64,7 @@ export const BG_STYLES = [
   { value: "racecircuit", label: "Night race circuit", desc: "3D street circuit by the harbour: race cars in your colour brake into the hairpin and roar down the straights, one dives into the pits; golden hour by day, floodlights and a glittering bay at night", three: true },
   { value: "bambooforest", label: "Bamboo forest", desc: "3D bamboo grove: tall stalks swaying in the wind, light shafts and mist along a stone path up to a shrine gate in your colour; at night stone lanterns glow and fireflies drift", three: true },
   { value: "desertcaravan", label: "Desert caravan", desc: "3D golden dunes at sunset: a camel caravan in your colour walks a dune crest above an oasis, sand blowing off the ridges; at night the Milky Way arches over the dunes and a campfire glows", three: true },
+  { value: "skiresort", label: "Ski resort", desc: "3D ski resort in the winter sun: gondola cabins in your colour glide up past snowy pines, skiers carve down to the village; at night floodlit pistes, a torchlight descent and glowing chalets", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
