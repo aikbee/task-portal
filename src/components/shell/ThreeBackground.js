@@ -19499,10 +19499,10 @@ function desertcaravan(THREE, scene, camera, pal, preview) {
       reflectRT.scissor.set(px0, py0, px1 - px0, py1 - py0); reflectRT.scissorTest = true;
       const auto = renderer.shadowMap.autoUpdate, need = renderer.shadowMap.needsUpdate, si = sun.shadow.intensity;
       renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false; sun.shadow.intensity = 0; // the mirrored world must not draw the shadow map, nor read it
-      world.scale.y = -1; world.position.y = 2 * WL; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+      world.scale.y = -1; world.position.y = 2 * WL; pool.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h); // the pool would read the very image it is drawn into
       const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
       renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
-      renderer.clippingPlanes = NONE; world.scale.y = 1; world.position.y = 0; world.updateMatrixWorld(true);
+      renderer.clippingPlanes = NONE; world.scale.y = 1; world.position.y = 0; world.updateMatrixWorld(true); pool.visible = true;
       renderer.shadowMap.autoUpdate = auto; renderer.shadowMap.needsUpdate = need; sun.shadow.intensity = si;
     }
     glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
@@ -20593,14 +20593,17 @@ function volcanoisland(THREE, scene, camera, pal, preview) {
     camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
     camera.updateMatrixWorld();
   }
-  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [];
+  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [], primeRT = keep(new THREE.WebGLRenderTarget(1, 1));
   let reflecting = false;
   const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
   scene.onBeforeRender = (renderer) => {
     layout();
     if (reflecting) return;
-    if (!preview && !shadowsOn) { shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true; } // before the first frame: compiled once, with shadows
     reflecting = true;
+    if (!preview && !shadowsOn) { // before the first frame: compiled once, with shadows, and the shadow map drawn once by a throwaway render, so the mirrored pass never samples a map that is not there yet (a still frame is that first frame)
+      shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true;
+      const before = renderer.getRenderTarget(); renderer.setRenderTarget(primeRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    }
     renderer.getDrawingBufferSize(buf); seaU.uRes.value.copy(buf);
     const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
     if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
@@ -20651,7 +20654,611 @@ function volcanoisland(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland };
+/* ---------- Rainforest waterfall: a jungle gorge from a rock by the river; the falls plunge from the cliff at its head into a misty pool ---------- */
+// One height field holds the gorge (a winding canyon cut into the jungle plateau, an amphitheatre at its head, the upper river's notch at
+// the lip, the river's bed and its banks), meshed as rings round the camera; the falls are sheets on the water's own arc out from the lip.
+// The river mirrors the gorge at half size; mist and spray are ribbons and points; the forest is cards of painted leaves that stir in the
+// air the falls push down the gorge.
+const RF_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uNight; uniform float uTime; uniform vec3 uGlowCol; uniform vec4 uMist; // the mist hanging in the upper gorge: colour, how much at the rim
+  varying vec3 vPW; varying float vSlope; varying float vVar; varying float vWet; varying float vRock;
+  vec3 rfGround(vec3 p, out vec3 glow) {
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.05 + 0.3).g, n3 = texture2D(uNoise, vec2((p.x + p.z) * 0.06, p.y * 0.012) + 0.7).r; // n3 runs down the walls in streaks
+    float n4 = texture2D(uNoise, vec2((p.x - p.z) * 0.02, p.y * 0.05) + 0.2).g;
+    vec3 rock = mix(vec3(0.13, 0.12, 0.11), vec3(0.31, 0.28, 0.24), n4) * (0.7 + 0.5 * n3); // dark basalt in bands, wet streaks running down it
+    vec3 moss = mix(vec3(0.07, 0.2, 0.04), vec3(0.23, 0.42, 0.09), smoothstep(0.3, 0.75, n2 * 0.7 + n1 * 0.4));
+    float mossy = smoothstep(0.52, 0.72, n3 * 0.45 + n2 * 0.35 + (1.0 - vSlope) * 0.9); // moss and ferns on the ledges and in the seeps, bare rock on the pitches
+    vec3 col = mix(rock, moss, mossy);
+    col = mix(col, vec3(0.06, 0.13, 0.04) * (0.8 + 0.4 * n2), smoothstep(0.35, 0.15, vSlope) * smoothstep(60.0, 85.0, p.y)); // the forest floor up on the plateau
+    vec3 gravel = mix(vec3(0.35, 0.32, 0.27), vec3(0.5, 0.46, 0.38), n2) * (0.85 + 0.3 * n1);
+    col = mix(col, gravel, smoothstep(3.5, 1.2, p.y) * smoothstep(0.5, 0.25, vSlope)); // shingle banks by the water
+    col = mix(col, mix(vec3(0.12, 0.12, 0.1), vec3(0.2, 0.26, 0.1), smoothstep(0.4, 0.8, vSlope < 0.35 ? n2 : 0.0)) * (0.8 + 0.4 * n4), vRock); // boulders: dark stone, moss on their tops
+    col *= mix(1.0, 0.55, vWet); // spray-soaked near the falls: darker, glossier
+    col = mix(col, uMist.rgb, smoothstep(45.0, 112.0, p.y) * uMist.a); // the upper walls pale into the mist (and the page's grey text stays readable over them)
+    glow = vec3(0.0);
+    if (uNight > 0.0) { // foxfire: glowing fungi in clusters along the foot of the walls and on the banks
+      float f = texture2D(uNoise, p.xz * 0.21 + vec2(0.13, p.y * 0.05)).r * texture2D(uNoise, p.xz * 0.5 - 0.41).g;
+      glow = uGlowCol * smoothstep(0.42, 0.5, f) * smoothstep(14.0, 2.0, p.y) * smoothstep(0.45, 0.15, vSlope) * (0.75 + 0.25 * sin(uTime * 0.7 + p.x)) * uNight; // on the flat, not smeared down the rocks' sides
+    }
+    return col;
+  }
+`;
+// the falls: a sheet following the water's own arc from the lip; streaks that speed up as they fall, ragged edges, the foot lost in spray
+const RF_FALL_VS = /* glsl */ `
+  attribute vec3 aFall; // across 0…1, down 0…1, the square root of how far it has fallen (the streaks run on this)
+  varying vec3 vFall; varying vec3 vWorld;
+  void main() {
+    vFall = aFall;
+    vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const RF_FALL_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uLit; uniform vec3 uShade; uniform float uAmt; uniform float uSeed; uniform float uStreak;
+  varying vec3 vFall; varying vec3 vWorld;
+  void main() {
+    float u = vFall.x, v = vFall.y, q = vFall.z;
+    vec2 a = vec2(u * uStreak + uSeed, q * 0.9 - uTime * 1.25), b = vec2(u * uStreak * 2.3 - uSeed, q * 1.7 - uTime * 2.1);
+    float n = texture2D(uNoise, a * vec2(1.0, 0.12)).r * 0.6 + texture2D(uNoise, b * vec2(1.0, 0.1)).g * 0.4; // long streaks down the fall, sliding down ever faster
+    float edge = smoothstep(0.0, 0.09 + 0.06 * n, u) * smoothstep(0.0, 0.09 + 0.06 * n, 1.0 - u); // the sides fray
+    float body = smoothstep(0.28, 0.62, n + 0.18 * (1.0 - v)); // whole at the lip, breaking into strands lower down
+    float a0 = edge * mix(body, 1.0, 0.2) * smoothstep(0.0, 0.03, v) * (1.0 - smoothstep(0.82, 1.0, v)) * uAmt;
+    if (a0 < 0.004) discard;
+    vec3 col = mix(uShade, uLit, smoothstep(0.35, 0.85, n) * 0.8 + 0.2 * v); // white water, greyer in the gaps
+    vec4 c = linearToOutputTexel(vec4(col, 1.0));
+    gl_FragColor = vec4(c.rgb * a0, a0);
+  }
+`;
+// the pool and the river: ripples carried down the flow (two phases blended, so the pattern never smears), foam where the falls land and
+// round the rocks, the river bed through the shallows, the mirrored gorge, a glitter of sun or moon
+const RF_WATER_VS = /* glsl */ `
+  attribute float aDepth; attribute vec3 aFlow; // depth (signed); the flow's direction (x, z) and speed
+  varying vec3 vWorld; varying float vDepth; varying vec3 vFlow;
+  void main() {
+    vDepth = aDepth; vFlow = aFlow;
+    vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const RF_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNoise; uniform float uTime; uniform vec3 uGlintDir; uniform vec3 uGlintCol; uniform float uGlint;
+  uniform vec3 uBed; uniform vec3 uDeep; uniform vec3 uFoam; uniform vec3 uHaze; uniform vec2 uFoot; uniform float uNight;
+  varying vec3 vWorld; varying float vDepth; varying vec3 vFlow;
+  vec2 rfWaves(vec2 q, vec2 off) { return (texture2D(uNoise, q * vec2(0.035, 0.11) + off).rg - 0.5) + (texture2D(uNoise, q * vec2(0.09, 0.26) - off * 1.7 + 0.37).rg - 0.5) * 0.45; } // q in the flow's frame: ripples drawn out along the current
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz, fdir = vFlow.xy, flow = fdir * vFlow.z;
+    vec2 q = vec2(dot(p, fdir), dot(p, vec2(-fdir.y, fdir.x)));
+    float ph = fract(uTime * 0.12), w0 = abs(ph * 2.0 - 1.0); // two copies of the ripples, half a cycle apart, each swept down the flow and faded out before it smears
+    vec2 s = rfWaves(q, vec2(-vFlow.z * ph * 0.3, 0.0)) * w0 + rfWaves(q + 7.3, vec2(-vFlow.z * fract(ph + 0.5) * 0.3, 0.0)) * (1.0 - w0);
+    s = vec2(s.x * fdir.x - s.y * fdir.y, s.x * fdir.y + s.y * fdir.x); // back into the world's frame
+    float footD = distance(p, uFoot), churn = 1.0 - smoothstep(6.0, 34.0, footD); // where the falls come down
+    s *= 0.6 + 1.6 * churn + 0.5 * smoothstep(0.5, 2.0, vFlow.z);
+    vec3 N = normalize(vec3(s.x * 0.6, 1.0, s.y * 0.6)), Nf = normalize(vec3(s.x * 0.045, 1.0, s.y * 0.045)); // seen this low, a steeper facet flips the water from mirror to dark: keep the mirror's own normal gentle
+    float fres = 0.03 + 0.97 * pow(1.0 - max(dot(Nf, V), 0.0), 5.0);
+    float d = max(vDepth, 0.0);
+    vec3 body = mix(uBed * (0.85 + 0.3 * texture2D(uNoise, p * 0.31).r), uDeep, smoothstep(0.2, 2.5, d)); // the stony bed through the shallows, then green-dark water
+    vec2 uv = gl_FragCoord.xy / uRes + vec2(s.x * 0.03, s.y * 0.06);
+    vec2 dv = vec2(0.0, 0.004 + 0.01 * churn);
+    vec3 refl = (texture2D(tReflect, clamp(uv, 0.001, 0.999)).rgb * 2.0 + texture2D(tReflect, clamp(uv + dv, 0.001, 0.999)).rgb + texture2D(tReflect, clamp(uv - dv, 0.001, 0.999)).rgb) * 0.25;
+    vec3 col = mix(body, refl * 0.88, clamp(0.06 + 0.8 * fres, 0.0, 0.62)); // the pool's own green-dark shows through more than a still lake's would: it is churned
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    float sd = max(dot(R, uGlintDir), 0.0);
+    col += uGlintCol * uGlint * (pow(sd, 900.0) * 6.0 + pow(sd, 60.0) * 0.25);
+    // white water: the churn under the falls, lines of foam carried off down the river, a rim round each rock and at the banks
+    float fl = texture2D(uNoise, (p - flow * uTime * 0.6) * vec2(0.05, 0.05) + 0.2).r;
+    float foam = churn * smoothstep(0.25, 0.6, fl + churn * 0.4) + smoothstep(0.62, 0.8, fl) * smoothstep(0.6, 1.6, vFlow.z) * 0.6;
+    foam += (1.0 - smoothstep(0.02, 0.35, d + 0.15 * sin(d * 14.0 - uTime * 2.2))) * smoothstep(-0.02, 0.05, vDepth) * 0.7; // where the water laps the stones
+    col = mix(col, uFoam, clamp(foam, 0.0, 0.95));
+    col = mix(col, uHaze, smoothstep(160.0, 600.0, dist) * 0.5);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// spray: drops thrown out from the foot of the falls on short arcs, catching the light (premultiplied)
+const RF_SPRAY_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform vec3 uFoot;
+  attribute vec4 aShot; // speed up, speed out, the way out, phase
+  varying float vA;
+  void main() {
+    float vz = aShot.x, T = 2.0 * vz / 9.8 + 0.4, tau = fract(uTime / T + aShot.w) * T;
+    vec3 p = uFoot + vec3(cos(aShot.z) * aShot.y * tau, vz * tau - 4.9 * tau * tau, sin(aShot.z) * aShot.y * tau * 0.6 + tau * 2.0);
+    float age = tau / T;
+    vA = smoothstep(0.0, 0.1, age) * (1.0 - smoothstep(0.55, 1.0, age));
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = clamp((0.25 + 0.8 * age) * uPx / -mv.z, 1.0, 16.0);
+  }
+`;
+const RF_SPRAY_FS = /* glsl */ `
+  uniform vec3 uCol; uniform float uAmt;
+  varying float vA;
+  void main() {
+    vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d);
+    if (r2 > 1.0) discard;
+    float a = (1.0 - r2) * (1.0 - r2) * vA * uAmt;
+    vec4 c = linearToOutputTexel(vec4(uCol, 1.0));
+    gl_FragColor = vec4(c.rgb * a, a);
+  }
+`;
+// the rainbow in the spray by day (a moonbow, faint and white, by night): bands by radius on a sheet facing the camera
+const RF_BOW_FS = /* glsl */ `
+  uniform float uAmt; uniform float uWhite; uniform sampler2D uNoise; uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec2 q = vUv * 2.0 - 1.0; q.y = q.y * 0.5 + 0.5; // the sheet's centre sits at its bottom edge
+    float rr = length(q), t = (rr - 0.78) / 0.12; // across the band, 0 inside to 1 outside
+    if (t < 0.0 || t > 1.0 || q.y < 0.0) discard;
+    float hue = (1.0 - t) * 0.75; // red on the outside round to violet on the inside
+    vec3 spec = clamp(vec3(abs(hue * 6.0 - 3.0) - 1.0, 2.0 - abs(hue * 6.0 - 2.0), 2.0 - abs(hue * 6.0 - 4.0)), 0.0, 1.0);
+    spec = mix(spec, vec3(0.85, 0.9, 1.0), uWhite);
+    float mist = texture2D(uNoise, vUv * vec2(2.0, 1.0) + vec2(uTime * 0.01, 0.0)).r; // only where there is spray to carry it
+    float a = sin(t * 3.14159) * smoothstep(0.0, 0.35, q.y) * smoothstep(-0.2, 0.3, q.x) * smoothstep(0.35, 0.75, mist) * uAmt; // only the right-hand foot of the bow, where the spray drifts
+    gl_FragColor = vec4(spec * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** A cluster of broad jungle leaves on a transparent card, fanning out from the bottom middle (canopy and shrubs are built from these). */
+function rfLeafCluster(THREE) {
+  const r = koiRng(6161);
+  const tex = canvasTexture(THREE, 256, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    const leaf = (x, y, ang, len, wid, col) => { // an ovate leaf with a drip tip, from its stalk end
+      g.save(); g.translate(x, y); g.rotate(ang);
+      g.fillStyle = col; g.beginPath(); g.moveTo(0, 0); g.bezierCurveTo(len * 0.25, -wid, len * 0.8, -wid * 0.9, len, 0); g.bezierCurveTo(len * 0.8, wid * 0.9, len * 0.25, wid, 0, 0); g.fill();
+      g.strokeStyle = "rgba(220,255,180,0.22)"; g.lineWidth = 1.2; g.beginPath(); g.moveTo(1, 0); g.lineTo(len * 0.95, 0); g.stroke();
+      for (let k = 1; k < 5; k++) { const u = k / 5; g.beginPath(); g.moveTo(len * u, 0); g.lineTo(len * (u + 0.12), -wid * 0.7 * Math.sin(Math.PI * u)); g.moveTo(len * u, 0); g.lineTo(len * (u + 0.12), wid * 0.7 * Math.sin(Math.PI * u)); g.stroke(); }
+      g.restore();
+    };
+    for (let k = 0; k < 16; k++) {
+      const ang = -Math.PI / 2 + r(-1.25, 1.25), len = r(70, 118), c = r();
+      leaf(w / 2 + r(-10, 10), h - 6 - r(0, 30), ang, len, len * r(0.26, 0.34), c < 0.45 ? `hsl(${Math.round(r(95, 118))},${Math.round(r(40, 58))}%,${Math.round(r(18, 28))}%)` : `hsl(${Math.round(r(85, 110))},${Math.round(r(40, 60))}%,${Math.round(r(26, 38))}%)`);
+    }
+  });
+  tex.anisotropy = 4;
+  return tex;
+}
+/** One big split leaf (a monstera's) for the foreground: base at the bottom middle, tip at the top. */
+function rfBigLeaf(THREE) {
+  const tex = canvasTexture(THREE, 256, 512, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    const cx = w / 2, grad = g.createLinearGradient(0, h, 0, 0);
+    grad.addColorStop(0, "#1f4d18"); grad.addColorStop(1, "#2f6a1f");
+    g.fillStyle = grad; g.beginPath(); g.moveTo(cx, h - 8); g.bezierCurveTo(-30, h * 0.72, -10, h * 0.12, cx, 6); g.bezierCurveTo(w + 10, h * 0.12, w + 30, h * 0.72, cx, h - 8); g.fill();
+    g.globalCompositeOperation = "destination-out"; // the splits from the edge towards the rib, and a few holes
+    for (let k = 0; k < 7; k++) for (const s of [-1, 1]) { const y = h * (0.18 + k * 0.1); g.lineWidth = 7; g.beginPath(); g.moveTo(cx + s * w * 0.62, y - 26); g.quadraticCurveTo(cx + s * w * 0.3, y, cx + s * 18, y + 14); g.stroke(); }
+    for (let k = 0; k < 6; k++) { const s = k % 2 ? 1 : -1, y = h * (0.25 + k * 0.1); g.beginPath(); g.ellipse(cx + s * 26, y, 6, 11, s * 0.5, 0, Math.PI * 2); g.fill(); }
+    g.globalCompositeOperation = "source-over";
+    g.strokeStyle = "rgba(200,240,150,0.35)"; g.lineWidth = 3; g.beginPath(); g.moveTo(cx, h - 8); g.lineTo(cx, 14); g.stroke(); // the midrib
+  });
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/** A morpho's wings from above on a transparent card, white so the accent can colour them: the left wing in the left half, the right in the right. */
+function rfWing(THREE) {
+  return canvasTexture(THREE, 128, 64, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    for (const s of [-1, 1]) { // the forewing, then the hindwing, out from the body in the middle
+      g.save(); g.translate(w / 2, h / 2); g.scale(s, 1);
+      const grad = g.createLinearGradient(0, 0, w / 2, 0); grad.addColorStop(0, "#c8c8c8"); grad.addColorStop(0.35, "#ffffff"); grad.addColorStop(0.85, "#f0f0f0"); grad.addColorStop(1, "#303030");
+      g.fillStyle = grad;
+      g.beginPath(); g.moveTo(2, -2); g.bezierCurveTo(20, -30, 52, -32, 62, -22); g.bezierCurveTo(60, -10, 40, -2, 2, 0); g.fill();
+      g.beginPath(); g.moveTo(2, 1); g.bezierCurveTo(30, 2, 52, 10, 48, 24); g.bezierCurveTo(36, 31, 14, 22, 2, 4); g.fill();
+      g.fillStyle = "#1a1a1a"; for (const [x, y] of [[50, -20], [42, 20]]) { g.beginPath(); g.arc(x, y, 2.2, 0, Math.PI * 2); g.fill(); } // eye spots near the edges
+      g.restore();
+    }
+  });
+}
+
+function waterfall(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(5151);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 44; camera.near = 0.3; camera.far = 30000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(1.75, 0.5), MOON = sph(-1.52, 0.555), MOONLIGHT = sph(-2.3, 0.85); // the sun behind the camera and low enough to hang a rainbow in the spray; the moon over the falls, its light from the front left
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; lanterns (lit at night)
+
+  /* --- the gorge: a winding canyon cut into the jungle plateau, an amphitheatre at its head under the lip --- */
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const P0 = new THREE.Vector2(0, -150), PLAT = 105; // the plunge pool's centre; the plateau's height at the lip
+  const PATH = [[0, -150], [4, -100], [-6, -30], [5, 40], [-10, 120], [0, 220], [10, 320]], WALL = [36, 50, 60, 66, 74, 80, 86], RIV = [30, 24, 22, 20, 18, 17, 18];
+  const info = [0, 0, 0, 0, 1]; // distance from the river's line, the canyon's and the river's half widths there, the flow's direction
+  const pathInfo = (x, z) => {
+    let best = 1e9;
+    for (let i = 0; i < PATH.length - 1; i++) {
+      const [ax, az] = PATH[i], [bx, bz] = PATH[i + 1], vx = bx - ax, vz = bz - az, L2 = vx * vx + vz * vz, t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / L2)), d = Math.hypot(x - ax - vx * t, z - az - vz * t);
+      if (d < best) { best = d; const L = Math.sqrt(L2); info[0] = d; info[1] = WALL[i] + (WALL[i + 1] - WALL[i]) * t; info[2] = RIV[i] + (RIV[i + 1] - RIV[i]) * t; info[3] = vx / L; info[4] = vz / L; }
+    }
+    return info;
+  };
+  const BOULDERS = []; // boulders in the river and on its banks, part of the ground (so the water finds them and foams round them)
+  const pathX = (z) => { for (let i = 1; i < PATH.length; i++) if (z <= PATH[i][1]) { const [ax, az] = PATH[i - 1], [bx, bz] = PATH[i]; return ax + ((bx - ax) * (z - az)) / (bz - az); } return PATH[PATH.length - 1][0]; };
+  for (let k = 0; k < (preview ? 16 : 26); k++) { const z = r(-138, -40), rw = pathInfo(pathX(z), z)[2], mid = k < 6; BOULDERS.push([pathX(z) + (mid ? r(-0.6, 0.6) : r(0.75, 1.25) * (r() < 0.5 ? -1 : 1)) * rw, z, mid ? r(1.8, 3.2) : r(1.6, 3.8), mid ? r(0.35, 0.9) : r(0.8, 2.6)]); } // [x, z, radius, height above the water]: a few in midstream, most along the margins
+  BOULDERS.push([-3, -20, 4.0, 4.6]); // the rock in midstream the camera stands on
+  function groundH(x, z) {
+    const [d, w, rw] = pathInfo(x, z);
+    const amph = smooth(-120, -165, z) * Math.exp(-((x / 34) ** 2)), steep = 14 - 8 * amph; // under the lip the wall is nearly sheer
+    const e = d - w + 9 * (fbm(x * 0.025 + 3, z * 0.025, 3) - 0.5) * (1 - 0.85 * amph);
+    const H = PLAT + (8 * (fbm(x * 0.006, z * 0.006, 3) - 0.5) + 14 * smooth(40, 200, d - w)) * (1 - amph) - 18 * smooth(-205, -320, z); // the plateau, falling away behind the lip so the sky shows over it
+    const tw = smooth(-3, steep * 1.7, e); let h = H * Math.pow(Math.min(1, Math.max(0, tw + 0.045 * Math.sin(tw * Math.PI * 8 + x * 0.02) * 4 * tw * (1 - tw))), 0.85); // terraced: steep pitches and narrow ledges where things can grow (nothing added at the foot or the top)
+    if (z < -175 && Math.abs(x) < 20) h -= 3.2 * smooth(18, 9, Math.abs(x)) * smooth(-185, -200, z); // the upper river's notch at the lip
+    const bank = Math.max(0.45, 0.7 + 0.045 * Math.max(0, d - rw) + 1.6 * (fbm(x * 0.05, z * 0.05, 2) - 0.5)); // never back down to the water's level away from the edge (the two would fight in the depth buffer)
+    const bed = -1.6 - 4.5 * Math.exp(-((Math.hypot(x - P0.x, z - P0.y + 10) / 24) ** 2)); // the river's bed; the pool deep where the falls come down
+    let floor = bed + (bank - bed) * smooth(rw - 7, rw + 1, d); // the same slope on through the water's edge, so the shore lies where it really is
+    for (const [bx, bz, br, bh] of BOULDERS) { const q = Math.hypot(x - bx, z - bz); if (q < br * 1.3) floor = Math.max(floor, bed + (bh - bed) * Math.pow(Math.max(0, 1 - (q / (br * 1.3)) ** 2), 0.45) * (0.85 + 0.3 * vnoise(x * 0.9 + bx, z * 0.9))); } // a lumpy dome up out of the bed
+    return Math.max(h, floor);
+  }
+  // rings round the camera; the land keeps the cells above the water, the river the ones below
+  const C0 = new THREE.Vector3(-3, 6.5, -20);
+  const RINGS = [];
+  for (let rr = 2.5; rr < 6000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 40 ? 0.03 : rr < 400 ? 0.016 : 0.03)) RINGS.push(rr);
+  RINGS.push(6000);
+  const NA = preview ? 140 : 320, AW = 1.12, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry()), riverGeo = keep(new THREE.BufferGeometry());
+  let landTris = 0, riverTris = 0;
+  const FOOT = new THREE.Vector2(0, -168); // where the falls come down
+  {
+    const pos = new Float32Array(nv * 3), wpos = new Float32Array(nv * 3), HV = new Float32Array(nv), depth = new Float32Array(nv), fl = new Float32Array(nv * 3), vari = new Float32Array(nv), wet = new Float32Array(nv), rock = new Float32Array(nv);
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) {
+      const a = 0.02 - AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i, h = groundH(x, z);
+      pos[k * 3] = wpos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = wpos[k * 3 + 2] = z; HV[k] = h; depth[k] = -h;
+      const [, , , dx, dz] = pathInfo(x, z), sp = 0.15 + 0.9 * smooth(-150, -110, z) + 0.6 * smooth(-40, 20, z) * 0.6; // slack in the pool, quickening down the river
+      fl[k * 3] = dx; fl[k * 3 + 1] = dz; fl[k * 3 + 2] = sp;
+      vari[k] = vnoise(x * 0.02 + 40.5, z * 0.02 - 17.25);
+      wet[k] = Math.exp(-((Math.hypot(x - FOOT.x, z - FOOT.y) / 55) ** 2)) * smooth(140, 0, h); // soaked by the spray round the foot of the falls
+      for (const [bx, bz, br] of BOULDERS) if (Math.hypot(x - bx, z - bz) < br * 1.15) rock[k] = 1;
+    }
+    const li = [], wi = [];
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) {
+      const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1, hi = Math.max(HV[a], HV[b], HV[c], HV[d]), lo = Math.min(HV[a], HV[b], HV[c], HV[d]);
+      if (hi > -1.5) li.push(a, b, c, b, d, c);
+      if (lo < 0.5) wi.push(a, b, c, b, d, c);
+    }
+    landTris = li.length / 3; riverTris = wi.length / 3;
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(li); landGeo.computeVertexNormals();
+    landGeo.setAttribute("aVar", new THREE.BufferAttribute(vari, 1)); landGeo.setAttribute("aWet", new THREE.BufferAttribute(wet, 1)); landGeo.setAttribute("aRock", new THREE.BufferAttribute(rock, 1));
+    riverGeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3)); riverGeo.setIndex(wi); riverGeo.setAttribute("aDepth", new THREE.BufferAttribute(depth, 1)); riverGeo.setAttribute("aFlow", new THREE.BufferAttribute(fl, 3));
+  }
+
+  /* --- materials: the ground; a painted one with markers; leaves that stir --- */
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, fungusU = { value: new THREE.Color(0.25, 1.0, 0.75).multiplyScalar(0.9) }, mistU = { value: new THREE.Vector4() };
+  const landMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 }));
+  landMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNight: nightU, uTime: time, uGlowCol: fungusU, uMist: mistU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aVar; attribute float aWet; attribute float aRock; varying float vSlope; varying float vVar; varying float vWet; varying float vRock; varying vec3 vPW;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vVar = aVar; vWet = aWet; vRock = aRock; vSlope = 1.0 - normalize(objectNormal).y; vPW = position; // the local position: the mirrored pass keeps the colours");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + RF_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  vec3 rfGlow; diffuseColor.rgb = rfGround(vPW, rfGlow);")
+      .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.35, vWet); // wet rock shines")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += rfGlow;");
+  };
+  landMat.customProgramCacheKey = () => "rf-land";
+  const lit = (mat, key, extraVS) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time, uMist: mistU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime; varying float vHY;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 hw = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nhw = instanceMatrix * hw;\n#endif\nvHY = (modelMatrix * hw).y; }");
+      if (extraVS) sh.vertexShader = sh.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight; uniform vec4 uMist; varying float vHY;")
+        .replace("#include <fog_fragment>", "gl_FragColor.rgb = mix(gl_FragColor.rgb, uMist.rgb, smoothstep(45.0, 112.0, vHY) * uMist.a * 0.8);\n#include <fog_fragment>")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float rfLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.12, 0.09, 0.05), isLamp); rfLamp = isLamp; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.72, 0.4) * rfLamp * (0.05 + 1.6 * uNight);");
+    };
+    mat.customProgramCacheKey = () => "rf-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "paint");
+  const SWAY = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].z * 0.17;\n#endif\n  float k = max(position.y, 0.0); transformed.x += (sin(uTime * 1.1 + ph) * 0.6 + sin(uTime * 2.7 + ph * 1.7) * 0.25) * 0.05 * k; transformed.z += sin(uTime * 0.9 + ph * 1.3) * 0.03 * k; } // the air the falls push down the gorge";
+  const leafTex = keep(rfLeafCluster(THREE));
+  const leafMat = lit(keep(new THREE.MeshStandardMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.75 })), "leaf", SWAY);
+  const world = new THREE.Group(); scene.add(world); // everything the river mirrors
+  const land = new THREE.Mesh(landGeo, landMat); land.frustumCulled = false; land.renderOrder = 1; world.add(land); // after the leaves: early-z skips the ground behind them
+
+  /* --- the sky over the gorge: blue with cumulus by day; the Milky Way, stars and the moon by night --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: nightU, uNoise: { value: noise },
+    uGalN: { value: new THREE.Vector3(0.7, 0.2, 0.68).normalize() }, uGalC: { value: new THREE.Vector3() } };
+  skyU.uGalC.value.set(-0.3, 0.55, -0.78).normalize(); skyU.uGalC.value.addScaledVector(skyU.uGalN.value, -skyU.uGalC.value.dot(skyU.uGalN.value)).normalize();
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(20000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 500 : 1500, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.05, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 15000, Math.sin(e) * 15000, Math.sin(a) * Math.cos(e) * 15000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(14000).add(C0); moon.scale.setScalar(260); moon.lookAt(C0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0x9fb3e0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.45 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(1900); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo); // not in the world: the river shows the moon as a glitter instead
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(60000, 60000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 1800, -9000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+
+  /* --- the falls: sheets on the water's arc out from the lip, a smaller cascade down the left of the amphitheatre --- */
+  const LIP_Z = (() => { for (let z = -150; z > -260; z -= 0.5) if (groundH(0, z) > PLAT - 6) return z; return -196; })(); // the lip: where the ground reaches the top, straight back from the pool
+  const fallMats = [];
+  const fallSheet = (x0, x1, y0, zEdge, v0, spread, nu, nv) => { // across x0…x1 at the lip, thrown out at v0 m/s; widening by spread as it falls
+    const pos = [], fa = [], idx = [], T = Math.sqrt((2 * y0) / 9.8);
+    for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) {
+      const u = i / nu, v = j / nv, t = v * T, x = (x0 + (x1 - x0) * u) * (1 + spread * v) + 0.6 * Math.sin(u * 9 + v * 3), y = y0 - 4.9 * t * t, z = zEdge + 1.2 + v0 * t + 1.5 * Math.sin(u * 6.3) * v;
+      pos.push(x, y, z); fa.push(u, v, Math.sqrt(4.9 * t * t));
+      if (i < nu && j < nv) { const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1; idx.push(a, c, b, b, c, d); }
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("aFall", new THREE.Float32BufferAttribute(fa, 3)); g.setIndex(idx); return keep(g);
+  };
+  const fallLayer = (geo, amt, seed, streak, order) => {
+    const u = { uNoise: { value: noise }, uTime: time, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uAmt: { value: amt }, uSeed: { value: seed }, uStreak: { value: streak } };
+    const m = new THREE.Mesh(geo, shader(RF_FALL_VS, RF_FALL_FS, u, { transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.DoubleSide }));
+    m.frustumCulled = false; m.renderOrder = order; world.add(m); fallMats.push(u); return m;
+  };
+  const NU = preview ? 16 : 30, NV = preview ? 24 : 56;
+  fallLayer(fallSheet(-15, 15, PLAT - 2, LIP_Z, 5.6, 0.3, NU, NV), 0.55, 0.0, 6, 11);
+  fallLayer(fallSheet(-13, 13, PLAT - 1.5, LIP_Z, 6.4, 0.22, NU, NV), 0.9, 0.37, 9, 12);
+
+  /* --- mist off the pool, spray from the foot, the rainbow in it --- */
+  const C0T = new THREE.Vector3();
+  const ribbon = (pathAt, widthAt, n) => {
+    const pos = [], rib = [], sid = [], idx = [], T = new THREE.Vector3(), A = new THREE.Vector3(), B = new THREE.Vector3(), Sd = new THREE.Vector3(); let m = 0;
+    for (let i = 0; i <= n; i++) {
+      const u = i / n; pathAt(u, A); pathAt(Math.min(1, u + 1 / n), B); if (i === n) { pathAt(u - 1 / n, B); T.subVectors(A, B); } else T.subVectors(B, A);
+      if (i) m += A.distanceTo(pathAt((i - 1) / n, B));
+      T.normalize(); Sd.subVectors(C0T.copy(C0), A).normalize().cross(T).normalize(); const w = widthAt(u) / 2;
+      for (const s of [-1, 1]) { pos.push(A.x + Sd.x * w * s, A.y + Sd.y * w * s, A.z + Sd.z * w * s); rib.push(u, s, m); sid.push(Sd.x, Sd.y, Sd.z); }
+      if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("aRib", new THREE.Float32BufferAttribute(rib, 3)); g.setAttribute("aSide", new THREE.Float32BufferAttribute(sid, 3)); g.setIndex(idx); return keep(g);
+  };
+  const mistMats = [];
+  const mistLayer = (geo, amt, seed, scale, flow, order) => {
+    const u = { uNoise: { value: noise }, uTime: time, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uLightDir: { value: SUN.clone() }, uGlowCol: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: 0 }, uAmt: { value: amt }, uFlow: { value: flow }, uScale: { value: new THREE.Vector2(...scale) }, uSeed: { value: seed }, uHaze: { value: new THREE.Color() }, uHazeAmt: { value: 0 } };
+    const m = new THREE.Mesh(geo, shader(VI_PLUME_VS, VI_PLUME_FS, u, { transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.DoubleSide }));
+    m.frustumCulled = false; m.renderOrder = order; world.add(m); mistMats.push({ u, amt }); return m;
+  };
+  mistLayer(ribbon((u, out) => out.set(FOOT.x - 8 * u, 2 + 85 * u, FOOT.y + 6 + 30 * u * u), (u) => 34 + 120 * u, preview ? 14 : 26), 0.55, 0.2, [0.012, 0.9], 0.09, 13); // the cloud the falls throw up
+  mistLayer(ribbon((u, out) => out.set(FOOT.x + 4 - 8 * u, 3 + 2 * u, FOOT.y + 14 + 70 * u), (u) => 40 + 30 * u, preview ? 12 : 22), 0.3, 1.1, [0.01, 0.8], 0.05, 13); // a low mist drifting off down the river, gone well before it reaches the camera (near by, a ribbon lies flat across the view)
+  const NSP = preview ? 200 : 700, sprayShots = new Float32Array(NSP * 4);
+  for (let i = 0; i < NSP; i++) sprayShots.set([r(3, 11), r(2, 10), r(0, 6.283), r()], i * 4);
+  const spGeo = keep(new THREE.BufferGeometry()); spGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(NSP * 3), 3)); spGeo.setAttribute("aShot", new THREE.BufferAttribute(sprayShots, 4));
+  const sprayU = { uTime: time, uPx: { value: 700 }, uFoot: { value: new THREE.Vector3(FOOT.x, 0.5, FOOT.y) }, uCol: { value: new THREE.Color() }, uAmt: { value: 0.5 } };
+  const spray = new THREE.Points(spGeo, shader(RF_SPRAY_VS, RF_SPRAY_FS, sprayU, { transparent: true, depthWrite: false, premultipliedAlpha: true }));
+  spray.frustumCulled = false; spray.renderOrder = 14; world.add(spray);
+  const bowU = { uAmt: { value: 0 }, uWhite: { value: 0 }, uNoise: { value: noise }, uTime: time };
+  const bow = new THREE.Mesh(quad, shader("varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }", RF_BOW_FS, bowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  bow.position.set(FOOT.x + 22, 6, FOOT.y + 34); bow.scale.set(96, 48, 1); bow.lookAt(C0.x, 6, C0.z); bow.renderOrder = 15; bow.frustumCulled = false; scene.add(bow); // not mirrored: a rainbow is made by the eye's own angle to the sun
+
+  /* --- the forest: crowns along the rims and back over the plateau, shrubs clinging to the walls, ferns on the banks, vines hanging --- */
+  const cardCluster = (n, rad, flat) => { // cards of painted leaves round a dome, each tilted out from the centre
+    const parts = [];
+    for (let k = 0; k < n; k++) { const a = r(0, 6.283), up = r(0.05, 1) ** 0.7, s = rad * r(0.55, 0.95), px = Math.cos(a) * Math.sqrt(1 - up * up) * rad * 0.7, pz = Math.sin(a) * Math.sqrt(1 - up * up) * rad * 0.7, py = up * rad * flat; parts.push([new THREE.PlaneGeometry(s, s).translate(0, s * 0.42, 0), new THREE.Matrix4().compose(V.set(px, py, pz), Q.setFromEuler(E.set(r(-0.5, 0.3), a + Math.PI / 2 + r(-0.6, 0.6), (1 - up) * 1.1 * (r() < 0.5 ? -1 : 1))), ONE)]); }
+    return keep(mergeParts(THREE, parts));
+  };
+  const crownGeo = cardCluster(preview ? 14 : 22, 1, 0.6), shrubGeo = cardCluster(preview ? 7 : 11, 1, 0.8);
+  const CROWNS = [], SHRUBS = [], TRUNKS = [];
+  const inView = (x, z, margin = 0) => { const a = Math.atan2(x - C0.x, C0.z - z) - 0.02; return Math.abs(a) < AW - margin; };
+  for (let tries = 0; CROWNS.length < (preview ? 160 : 380) && tries < 12000; tries++) { // up on the plateau: thick along the rim, thinning back from it
+    const x = r(-260, 260), z = r(-460, 80); if (!inView(x, z, 0.04) || Math.hypot(x - C0.x, z - C0.z) < 60) continue;
+    const [d, w] = pathInfo(x, z), e = d - w; if (e < 10 || r() > Math.exp(-(e - 10) / 70) + 0.15) continue;
+    const y = groundH(x, z); if (y < PLAT - 30) continue;
+    const s = r(5, 11), th = r(6, 16); CROWNS.push([x, y + th, z, s, r(0, 6.28)]); TRUNKS.push([x, y - 1, z, th + 1, s]);
+  }
+  for (let tries = 0; SHRUBS.length < (preview ? 260 : 900) && tries < 30000; tries++) { // on the walls wherever a ledge will hold them, and along the banks
+    const x = r(-140, 140), z = r(-230, 10); if (!inView(x, z) || Math.hypot(x - C0.x, z - C0.z) < 48) continue; // none close by: the pool must show
+    const y = groundH(x, z), nyy = 2 / Math.hypot(groundH(x + 1, z) - groundH(x - 1, z), 2, groundH(x, z + 1) - groundH(x, z - 1));
+    if (y < 1.2 || y > PLAT + 4 || nyy < 0.06 || (Math.abs(x) < 22 && z < -170) || r() > 0.25 + 0.75 * smooth(0.2, 0.6, nyy)) continue; // not on the falls' face; more on the ledges than the pitches
+    SHRUBS.push([x, y - 0.3, z, r(1.4, 3.6) * (y < 6 ? 0.7 : 1), r(0, 6.28)]);
+  }
+  const plant = (geo, list, mat, col, cast) => {
+    const m = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length)), c = new THREE.Color();
+    list.forEach(([x, y, z, s, ry], i) => { m.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(0, ry, 0)), V2.set(s, s, s))); m.setColorAt(i, c.setHSL(...col())); });
+    m.count = list.length; m.castShadow = cast; world.add(m); keep(m); return m;
+  };
+  plant(crownGeo, CROWNS, leafMat, () => [r(0.24, 0.32), r(0.25, 0.45), r(0.55, 0.85)], false);
+  plant(shrubGeo, SHRUBS, leafMat, () => [r(0.22, 0.33), r(0.3, 0.5), r(0.6, 0.95)], false);
+  const trunkMat = keep(new THREE.MeshStandardMaterial({ color: 0x4a3b2c, roughness: 0.95 }));
+  { const g = keep(new THREE.CylinderGeometry(0.06, 0.1, 1, 6, 1, true).translate(0, 0.5, 0)), m = new THREE.InstancedMesh(g, trunkMat, Math.max(1, TRUNKS.length)); TRUNKS.forEach(([x, y, z, h, s], i) => m.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, y, z), Q.identity(), V2.set(s, h, s)))); m.count = TRUNKS.length; world.add(m); keep(m); }
+  // ferns and palms on the banks near by, big split leaves at the very front
+  const frondTex = keep(dcFrond(THREE));
+  const fernGeo = (() => { const pos = [], uv = [], idx = []; let base = 0; for (let f = 0; f < 14; f++) { const az = (f / 14) * Math.PI * 2 + r(-0.2, 0.2), L = r(1.6, 2.4), W = r(0.5, 0.7), dir = new THREE.Vector3(Math.cos(az), 0, Math.sin(az)), sd = new THREE.Vector3(-dir.z, 0, dir.x); for (let k = 0; k <= 6; k++) { const t = k / 6, c = dir.clone().multiplyScalar(L * t).add(new THREE.Vector3(0, L * (0.9 * t - 0.85 * t * t), 0)), w = W * (0.3 + 0.7 * Math.sin(Math.PI * Math.min(1, t * 1.1 + 0.1))); for (const s of [-0.5, 0.5]) { const q = c.clone().addScaledVector(sd, s * w); pos.push(q.x, q.y, q.z); uv.push(s + 0.5, t); } if (k) { const a = base + (k - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } } base += 14; } const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals(); return keep(g); })();
+  const fernMat = lit(keep(new THREE.MeshStandardMaterial({ map: frondTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.8 })), "fern", SWAY);
+  const FERNS = [];
+  for (let tries = 0; FERNS.length < (preview ? 30 : 70) && tries < 6000; tries++) { const x = r(-90, 90), z = r(-170, 40); if (!inView(x, z) || Math.hypot(x - C0.x, z - C0.z) < 26) continue; const y = groundH(x, z), [d, , rw] = pathInfo(x, z); if (y < 0.7 || y > 8 || d < rw + 1) continue; FERNS.push([x, y - 0.1, z, r(1.2, 2.6), r(0, 6.28)]); }
+  plant(fernGeo, FERNS, fernMat, () => [r(0.25, 0.32), r(0.3, 0.5), r(0.75, 1.0)], false);
+  const bigLeafMat = lit(keep(new THREE.MeshStandardMaterial({ map: keep(rfBigLeaf(THREE)), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.6 })), "bigleaf", SWAY.replace("0.05 * k", "0.03 * k").replace("0.03 * k;", "0.015 * k;"));
+  const bigLeafGeo = keep(new THREE.PlaneGeometry(1, 2, 1, 4).translate(0, 1, 0));
+  bigLeafGeo.attributes.position.array.forEach((_, i, a) => { if (i % 3 === 2) a[i] = -0.35 * a[i - 1] * a[i - 1]; }); bigLeafGeo.computeVertexNormals(); // curving back as it rises
+  const BIG = [[-6.4, 0, -23.6, 0.95, 0.9, 0.55], [-7.0, 0, -22.4, 0.8, 0.5, 0.75], [0.6, 0, -23.4, 0.9, -0.7, -0.6], [1.3, 0, -22.0, 0.8, -0.3, -0.8]].map(([x, , z, ...rest]) => [x, groundH(x, z) - 0.15, z, ...rest]); // on the rim of the camera's rock, framing the bottom corners
+  { const m = new THREE.InstancedMesh(bigLeafGeo, bigLeafMat, BIG.length), c = new THREE.Color(); BIG.forEach(([x, y, z, s, ry, lean], i) => { m.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(lean * 0.6, ry, lean * 0.5)), V2.set(s, s, s))); m.setColorAt(i, c.setHSL(0.28, 0.4, 0.75)); }); world.add(m); keep(m); }
+  // vines hanging from the rims
+  const vinePos = [], vineAnc = [];
+  for (let k = 0, tries = 0; k < (preview ? 50 : 130) && tries < 8000; tries++) {
+    const x = r(-120, 120), z = r(-215, 30); if (!inView(x, z) || (Math.abs(x) < 20 && z < -170)) continue;
+    const [d, w] = pathInfo(x, z), y = groundH(x, z); if (d - w < 4 || d - w > 22 || y < PLAT - 25) continue;
+    const L = r(10, 48), seg = 10, ph = r(0, 6.28); k++;
+    for (let s = 0; s < seg; s++) { const y0 = y - (L * s) / seg, y1 = y - (L * (s + 1)) / seg; vinePos.push(x, y0, z, x, y1, z); vineAnc.push(y, ph, y, ph); }
+  }
+  const vineGeo = keep(new THREE.BufferGeometry()); vineGeo.setAttribute("position", new THREE.Float32BufferAttribute(vinePos, 3)); vineGeo.setAttribute("aAnc", new THREE.Float32BufferAttribute(vineAnc, 2));
+  const vineU = { uTime: time, uCol: { value: new THREE.Color() } };
+  const vines = new THREE.LineSegments(vineGeo, shader(`uniform float uTime; attribute vec2 aAnc; void main() { vec3 p = position; float below = aAnc.x - p.y; p.x += sin(uTime * 0.8 + aAnc.y) * 0.012 * pow(below, 1.3); p.z += cos(uTime * 0.6 + aAnc.y) * 0.008 * pow(below, 1.3); gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
+    "uniform vec3 uCol; void main() { gl_FragColor = vec4(uCol, 1.0);\n  #include <colorspace_fragment>\n}", vineU, { fog: false }));
+  vines.frustumCulled = false; world.add(vines);
+
+  /* --- the rope bridge across the gorge: planks on a sagging deck, rope rails, pennants in the accent, lanterns; two walkers --- */
+  const BZ = -118, BY = 34;
+  const anchorOut = (sgn) => { const cx = 0 + 4 * ((BZ + 150) / 50); for (let x = cx; Math.abs(x - cx) < 140; x += sgn * 0.5) if (groundH(x, BZ) >= BY) return new THREE.Vector3(x - sgn * 1.5, BY, BZ); return new THREE.Vector3(cx + sgn * 50, BY, BZ); };
+  const BA = anchorOut(-1), BB = anchorOut(1), BL = BA.distanceTo(BB), SAG = 5.5;
+  const bridge = new THREE.Group(); bridge.position.copy(BA); bridge.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), V.subVectors(BB, BA).normalize()); world.add(bridge);
+  const bridgeQ = bridge.quaternion.clone();
+  const deckY = (s) => -SAG * 4 * (s / BL) * (1 - s / BL);
+  const B = [];
+  for (let s = 0.4; s < BL - 0.4; s += 0.62) B.push([box(0.5, 0.06, 1.5), at(s, deckY(s), 0, 0, 0, Math.atan(-SAG * 4 * (1 - (2 * s) / BL) / BL)), 0x7a5a3c]);
+  for (let s = 2; s < BL - 2; s += 4) for (const sd of [-0.78, 0.78]) B.push([new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1.3, -0.35, 0, 0, -0.7, 0], 3)).setAttribute("normal", new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3)), at(s, deckY(s) + 1.15, sd, 0, sd > 0 ? 0 : Math.PI, 0), ACC]); // pennants on the rails
+  for (let s = 10; s < BL - 6; s += 13) { B.push([box(0.32, 0.42, 0.32), at(s, deckY(s) + 1.0, 0.85), LAMP]); }
+  const bridgeMesh = new THREE.Mesh(keep(mergeColored(THREE, B)), paintMat); bridge.add(bridgeMesh);
+  const ropePos = [];
+  for (let s = 0; s < BL; s += 2) for (const sd of [-0.78, 0.78]) { const s2 = Math.min(BL, s + 2); ropePos.push(s, deckY(s) + 1.1, sd, s2, deckY(s2) + 1.1, sd, s, deckY(s) + 1.1, sd, s, deckY(s), sd); }
+  const ropes = new THREE.LineSegments(keep(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(ropePos, 3))), keep(new THREE.LineBasicMaterial({ color: 0x5a4a36 })));
+  bridge.add(ropes);
+  const walkerGeo = keep(mergeColored(THREE, [[box(0.3, 0.75, 0.36), at(0, 1.05, 0), 0x3e5a3a], [new THREE.SphereGeometry(0.13, 8, 6), at(0.02, 1.58, 0), 0xc89a78], [box(0.24, 0.5, 0.34), at(-0.24, 1.15, 0), ACC], ...[-0.09, 0.09].map((zz) => [box(0.12, 0.7, 0.12), at(0, 0.35, zz), 0x2e2a26])]));
+  const walkers = [0, 1].map(() => { const m = new THREE.Mesh(walkerGeo, paintMat); bridge.add(m); return m; });
+  const GL = [], WARM = [2.5, 1.7, 0.95];
+  for (let s = 10; s < BL - 6; s += 13) { V.set(s, deckY(s) + 1.1, 0.85).applyQuaternion(bridgeQ).add(BA); GL.push([V.x, V.y, V.z, 0.6, ...WARM, 1.3]); }
+  const NBL = GL.length;
+  const FUNGI = [];
+  for (let k = 0; k < (preview ? 18 : 46); k++) { const x = r(-60, 60), z = r(-150, 25); if (!inView(x, z) || Math.hypot(x - C0.x, z - C0.z) < 6) continue; const y = groundH(x, z), [d, , rw] = pathInfo(x, z); if (d < rw + 1 || y > 6) continue; FUNGI.push([x, y + 0.3, z]); GL.push([x, y + 0.3, z, 0.18, 0.25, 1.0, 0.7, 1.0]); }
+
+  /* --- macaws across the gorge, blue butterflies in the accent near by, fireflies by night --- */
+  const macawGeo = (body, wing, wing2) => keep(mergeColored(THREE, [[box(0.9, 0.22, 0.22), at(0, 0, 0), body], [box(0.22, 0.2, 0.2), at(0.52, 0.04, 0), body], [box(0.16, 0.1, 0.12), at(0.68, 0.0, 0), 0xe8e0d0], [box(1.1, 0.05, 0.16), at(-0.95, -0.02, 0), body], ...[-1, 1].flatMap((sd) => [[box(0.42, 0.04, 0.55), at(0.05, 0.04, sd * 0.38), wing], [box(0.32, 0.04, 0.5), at(-0.05, 0.04, sd * 0.88), wing2]])]));
+  const FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].y * 0.7 + instanceMatrix[3].x * 0.13;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.12, 0.0), f = sin(uTime * 7.5 + ph) * 0.75;\n  transformed.y += span * sin(f) * 1.0; transformed.z = side * (0.12 + span * cos(f)); } // the wings beat";
+  const birdMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 })), "macaw", FLAP);
+  const MACAWS = [[0xc8231e, 0xf0c020, 0x2056c8], [0xc8231e, 0xf0c020, 0x2056c8], [0x2a6fd0, 0x2a6fd0, 0xf0c020]].map((c, k) => ({ geo: macawGeo(...c), k }));
+  const BIRDS = Array.from({ length: preview ? 3 : 5 }, (_, k) => ({ c: new THREE.Vector3(r(-20, 20), r(45, 85), r(-140, -60)), rx: r(40, 70), rz: r(25, 50), w: r(11, 15), ph: r(0, 6.28), dir: k % 2 ? 1 : -1, kind: k % 3 }));
+  const birdMeshes = MACAWS.map(({ geo }, kind) => { const n = BIRDS.filter((b) => b.kind === kind).length; const m = new THREE.InstancedMesh(geo, birdMat, Math.max(1, n)); m.count = n; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); return m; });
+  const flyGeo = (() => { const g = new THREE.BufferGeometry(), P4 = [], U4 = [], I4 = []; [-1, 1].forEach((sd, k) => { const b = k * 4; P4.push(0.09, 0, 0, -0.09, 0, 0, -0.09, 0, sd * 0.2, 0.09, 0, sd * 0.2); const u0 = 0.5, u1 = sd < 0 ? 0 : 1; U4.push(u0, 1, u0, 0, u1, 0, u1, 1); I4.push(b, b + 1, b + 2, b, b + 2, b + 3); }); g.setAttribute("position", new THREE.Float32BufferAttribute(P4, 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute(U4, 2)); g.setIndex(I4); g.computeVertexNormals(); return keep(g); })(); // two wings out from the body line, each a half of the painted card
+  const BFLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 3.1 + instanceMatrix[3].z * 1.7;\n#endif\n  float side = sign(position.z), span = abs(position.z), f = 0.3 + sin(uTime * 13.0 + ph) * 1.0;\n  transformed.y += span * sin(f); transformed.z = side * span * cos(f); } // a morpho's slow, deep wingbeat";
+  const flyMat = lit(keep(new THREE.MeshStandardMaterial({ map: keep(rfWing(THREE)), alphaTest: 0.5, roughness: 0.35, metalness: 0.1, side: THREE.DoubleSide })), "morpho", BFLAP); // coloured from the accent in setPalette, with a sheen of its own
+  const FLIES = Array.from({ length: preview ? 4 : 8 }, () => ({ c: new THREE.Vector3(C0.x + r(-6, 6), C0.y + r(-2.5, 1.2), C0.z + r(-13, -5)), a: r(2, 5), b: r(1.5, 4), h: r(0.4, 1.2), w: r(0.25, 0.45), ph: r(0, 6.28) }));
+  const flies = new THREE.InstancedMesh(flyGeo, flyMat, FLIES.length); flies.frustumCulled = false; flies.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(flies); keep(flies);
+  const NFF = preview ? 120 : 320, ffPos = new Float32Array(NFF * 3), ffSeed = new Float32Array(NFF * 3);
+  for (let i = 0; i < NFF; i++) { let x = 0, z = 0, y = 0; for (let t = 0; t < 30; t++) { x = r(-70, 60); z = r(-160, 26); if (inView(x, z) && groundH(x, z) < 6) break; } y = Math.max(0.4, groundH(x, z)) + r(0.4, 5); ffPos.set([x, y, z], i * 3); ffSeed.set([r(0.6, 1.8), r(), r(0.5, 2.5)], i * 3); }
+  const ffGeo = keep(new THREE.BufferGeometry()); ffGeo.setAttribute("position", new THREE.BufferAttribute(ffPos, 3)); ffGeo.setAttribute("aSeed", new THREE.BufferAttribute(ffSeed, 3));
+  const ffU = { uTime: time, uPx: { value: 700 }, uSize: { value: 0.35 }, uOpacity: { value: 0 } };
+  const fireflies = new THREE.Points(ffGeo, shader(CAMP_FLY_VS, CAMP_FLY_FS, ffU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  fireflies.frustumCulled = false; fireflies.renderOrder = 18; world.add(fireflies);
+  // glows: the bridge's lanterns, the foxfire
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- the river: drawn last, mirroring the gorge above it --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const waterU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uGlintDir: { value: SUN.clone() }, uGlintCol: { value: new THREE.Color() }, uGlint: { value: 0 },
+    uBed: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFoot: { value: FOOT }, uNight: nightU };
+  const river = new THREE.Mesh(riverGeo, shader(RF_WATER_VS, RF_WATER_FS, waterU));
+  river.frustumCulled = false; river.renderOrder = 2; scene.add(river);
+
+  /* --- light, shadows near by --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target);
+  scene.fog = new THREE.Fog(0xffffff, 120, 2600);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent); flyMat.color.set(p.accent); flyMat.emissive.set(p.accent).multiplyScalar(0.35);
+    skyU.uZenith.value.set(d ? "#02060f" : "#3a78c8"); skyU.uMid.value.set(d ? "#07132e" : "#7fb2e4"); skyU.uHorizon.value.set(d ? "#0f1c38" : "#cfe4f2"); skyU.uGlow.value.set("#fff4e0").multiplyScalar(d ? 0 : 0.2); skyU.uSunColor.value.set("#fff6e0"); skyU.uSun.value = 0;
+    starU.uAmt.value = d ? 1 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    clouds.visible = !d; cloudU.uLit.value.set("#ffffff"); cloudU.uShade.value.set("#b9c8dc"); cloudU.uGlow.value.set("#fff3e0").multiplyScalar(0.3); cloudU.uHaze.value.set("#d6e8f5");
+    sun.position.copy(d ? MOONLIGHT : SUN).multiplyScalar(500); sun.color.set(d ? "#9fb4e0" : "#fff1dc"); sun.intensity = d ? 0.55 : 2.7;
+    hemi.color.set(d ? "#2c3f6a" : "#a8c8ea"); hemi.groundColor.set(d ? "#0a0f0a" : "#2a3a1a"); hemi.intensity = d ? 0.5 : 1.0;
+    scene.fog.color.set(d ? "#0a1220" : "#c6d8d4"); scene.fog.near = d ? 80 : 120; scene.fog.far = d ? 2000 : 2600;
+    nightU.value = d ? 1 : 0; mistU.value.set(...(d ? [0.05, 0.07, 0.1, 0.25] : [0.8, 0.86, 0.84, 0.5]));
+    for (const u of fallMats) { u.uLit.value.set(d ? "#a9b8d6" : "#ffffff"); u.uShade.value.set(d ? "#3a4660" : "#9fb0b8"); }
+    for (const { u, amt } of mistMats) { u.uLit.value.set(d ? "#6a7894" : "#ffffff"); u.uShade.value.set(d ? "#2a3248" : "#b8c6cc"); u.uLightDir.value.copy(d ? MOONLIGHT : SUN); u.uAmt.value = amt * (d ? 0.75 : 1); u.uHaze.value.copy(scene.fog.color); u.uHazeAmt.value = 0.05; }
+    sprayU.uCol.value.set(d ? "#8a98b8" : "#ffffff"); sprayU.uAmt.value = d ? 0.22 : 0.32;
+    bowU.uAmt.value = d ? 0.015 : 0.09; bowU.uWhite.value = d ? 1 : 0; // a faint moonbow by night
+    waterU.uBed.value.set(d ? "#0c1412" : "#5f6b44"); waterU.uDeep.value.set(d ? "#03080a" : "#0b3b35"); waterU.uFoam.value.set(d ? "#5a6680" : "#f2f6f4"); waterU.uHaze.value.copy(scene.fog.color);
+    waterU.uGlintDir.value.copy(d ? MOON : SUN); waterU.uGlintCol.value.set(d ? "#c8d4ff" : "#fff6e6"); waterU.uGlint.value = d ? 0.7 : 0.4;
+    vineU.uCol.value.set(d ? "#0b120b" : "#22361a");
+    ffU.uOpacity.value = d ? 1 : 0; fireflies.visible = d; flies.visible = !d;
+    glowU.uAmt.value = d ? 1 : 0;
+    for (let i = 0; i < NGL; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    aGlow.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera on the rock; the mirrored pass, clipped at the water, drawn only below the falls' foot --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 44 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = 0.02, pitch = 0.225 + k * 0.08; // a phone looks a little higher, up the falls
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [];
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    renderer.getDrawingBufferSize(buf); waterU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    V.set(FOOT.x, 0, FOOT.y).project(camera); // the water lies below the falls' foot on screen
+    const top = Math.min(h, Math.ceil(((V.y + 1) / 2) * h) + 10);
+    if (top > 0) {
+      reflectRT.scissor.set(0, 0, w, top); reflectRT.scissorTest = true;
+      world.scale.y = -1; world.updateMatrixWorld(true); river.visible = moon.visible = moonHalo.visible = bow.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h); sprayU.uPx.value = ffU.uPx.value = pxFor(h);
+      const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
+      renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+      renderer.clippingPlanes = NONE; world.scale.y = 1; world.updateMatrixWorld(true); river.visible = bow.visible = true; moon.visible = moonHalo.visible = pal.dark;
+    }
+    glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); sprayU.uPx.value = ffU.uPx.value = pxFor(buf.y);
+    reflecting = false;
+  };
+
+  const mA = new THREE.Matrix4(), P2 = new THREE.Vector3(), P3 = new THREE.Vector3(), T0 = 20;
+  const birdAt = (b, t, out) => { const a = b.ph + (t * b.w * b.dir) / ((b.rx + b.rz) / 2); return out.set(b.c.x + b.rx * Math.cos(a), b.c.y + 8 * Math.sin(a * 2 + b.ph), b.c.z + b.rz * Math.sin(a)); };
+  const flyAt = (f, t, out) => out.set(f.c.x + f.a * Math.sin(t * f.w + f.ph) + 0.6 * Math.sin(t * 2.3 + f.ph), f.c.y + f.h * Math.sin(t * f.w * 1.7 + f.ph * 2) + 0.25 * Math.sin(t * 5.1 + f.ph), f.c.z + f.b * Math.sin(t * f.w * 0.83 + f.ph * 0.7));
+  const facing = (p, q) => Math.atan2(-(q.z - p.z), q.x - p.x); // the yaw that points a model's +x from p towards q
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0;
+    bridge.quaternion.copy(bridgeQ).multiply(Q.setFromAxisAngle(V.set(1, 0, 0), 0.012 * Math.sin(t * 0.7) + 0.005 * Math.sin(t * 1.9 + 1))); // the bridge sways about the line between its anchors
+    walkers.forEach((m, k) => { // two walkers, one each way, out of the jungle at one end and into it at the other
+      const span = BL + 24, s = (((t * 1.1 + k * 57) % span) + span) % span - 12, along = k ? BL - s : s;
+      m.visible = s > 0.5 && s < BL - 0.5; m.position.set(along, deckY(along) + 0.05 + 0.04 * Math.abs(Math.sin(t * 5.5 + k)), k ? 0.35 : -0.35); m.rotation.set(0, k ? Math.PI : 0, 0);
+    });
+    let bi = [0, 0, 0];
+    BIRDS.forEach((b) => { // macaws: round their loops, facing the way they fly, banking into the turn
+      birdAt(b, t, P2); birdAt(b, t + 0.1, P3); const head = facing(P2, P3), bank = b.dir * 0.35; // a roll to the bird's right (its +z) for a loop run from +x towards +z
+      birdMeshes[b.kind].setMatrixAt(bi[b.kind]++, mA.compose(P2, Q.setFromEuler(E.set(bank, head, Math.atan2(P3.y - P2.y, Math.hypot(P3.x - P2.x, P3.z - P2.z)), "YXZ")), V2.setScalar(1.6))); E.set(0, 0, 0, "XYZ");
+    });
+    for (const m of birdMeshes) m.instanceMatrix.needsUpdate = true;
+    FLIES.forEach((f, k) => { flyAt(f, t, P2); flyAt(f, t + 0.05, P3); flies.setMatrixAt(k, mA.compose(P2, Q.setFromEuler(E.set(0, facing(P2, P3), 0)), V2.setScalar(1.2))); });
+    flies.instanceMatrix.needsUpdate = true;
+    if (pal.dark) for (let i = 0; i < NBL; i++) aGlow.setW(i, GL[i][3] * (0.9 + 0.1 * Math.sin(t * 9 + i * 1.3))); // the lanterns flicker
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { landTris, riverTris, crowns: CROWNS.length, shrubs: SHRUBS.length, ferns: FERNS.length, fungi: FUNGI.length, bridge: Math.round(BL), lip: LIP_Z, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
