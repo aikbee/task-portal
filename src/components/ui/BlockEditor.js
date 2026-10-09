@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFetch, useDebouncedValue } from "@/lib/hooks";
 import { Table2, Plus, Trash2, Copy, Check } from "lucide-react";
 import { cn, fullName } from "@/lib/utils";
@@ -15,6 +15,8 @@ import { Popover } from "./Popover";
 import Button from "./Button";
 import { useToast } from "./Toast";
 
+const nowMs = () => Date.now();
+
 /**
  * One document, edited in place: paragraphs are textareas, tables are live grids between them.
  * The value is a single Markdown string (tables as pipe tables), so it stays searchable and copyable.
@@ -23,6 +25,9 @@ import { useToast } from "./Toast";
  *  - typing a Markdown table by hand turns into a grid as soon as its separator row is complete
  *  - typing @ opens a picker; the chosen record becomes an `@[Label](type:id)` token that renders as an
  *    inline link inside the paragraph (and as a chip in the "Linked" strip below)
+ *  - ⌘Z / Ctrl+Z undoes a table inserted, pasted or deleted, "paste as text instead", and edits inside a table (cells,
+ *    rows, columns); ⌘⇧Z / Ctrl+Y redoes. Those changes are made here, so the browser's own undo, which keeps the
+ *    typing in paragraphs, cannot see them
  */
 export default function BlockEditor({ value, onChange, onBlur, onSave, placeholder, mono = true, className }) {
   const tr = useT();
@@ -49,8 +54,56 @@ export default function BlockEditor({ value, onChange, onBlur, onSave, placehold
   const highlight = hl.q === (mention?.query ?? "") ? Math.min(hl.i, Math.max(0, items.length - 1)) : 0;
 
   const commit = (next) => onChange(serializeDoc(next));
+
+  // the structural changes made here, for ⌘Z / ⌘⇧Z: { before, after, onUndo, onRedo } where onUndo / onRedo say
+  // what gets the focus afterwards ({ para: { index, pos } } or { table: ordinal })
+  const history = useRef({ undo: [], redo: [] });
+  // the document as it is now, also for a toast's button pressed later (its closure holds an older `value`)
+  const latest = useRef(value);
+  useEffect(() => {
+    latest.current = value;
+  });
+  const commitStep = (after, onUndo = null, onRedo = null) => {
+    const h = history.current;
+    h.undo.push({ before: latest.current ?? "", after, onUndo, onRedo });
+    if (h.undo.length > 50) h.undo.shift();
+    h.redo = [];
+    onChange(after);
+  };
+  const refocus = (where) => {
+    if (where?.table != null) setFocusTable((f) => ({ ordinal: where.table, nonce: (f?.nonce ?? 0) + 1 }));
+    // the paragraph's text is rebuilt after this render: place the caret once it is there
+    else if (where?.para) setTimeout(() => paras.current[where.para.index]?.focusAt?.(where.para.pos), 40);
+  };
+  /** Only while nothing was typed since that change (typing is the browser's to undo); true when it stepped. */
+  const step = (redo) => {
+    const h = history.current;
+    const entry = redo ? h.redo.at(-1) : h.undo.at(-1);
+    if (!entry || (redo ? entry.before : entry.after) !== (value ?? "")) return false;
+    (redo ? h.redo : h.undo).pop();
+    (redo ? h.undo : h.redo).push(entry);
+    onChange(redo ? entry.after : entry.before);
+    refocus(redo ? entry.onRedo : entry.onUndo);
+    return true;
+  };
   const setText = (index, text) => commit(blocks.map((b, i) => (i === index ? { type: "text", text } : b)));
-  const setTable = (index, table) => commit(blocks.map((b, i) => (i === index ? { type: "table", table } : b)));
+  /** An edit inside table `index`: edits of the same table in quick succession make one undo step. */
+  const setTable = (index, table) => {
+    const after = serializeDoc(blocks.map((b, i) => (i === index ? { type: "table", table } : b)));
+    const h = history.current;
+    const top = h.undo.at(-1);
+    const now = nowMs();
+    if (top?.cells === ordinals[index] && top.after === (value ?? "") && now - top.at < 1500) {
+      top.after = after;
+      top.at = now;
+      h.redo = [];
+      onChange(after);
+      return;
+    }
+    commitStep(after);
+    history.current.undo.at(-1).cells = ordinals[index];
+    history.current.undo.at(-1).at = now;
+  };
 
   /** Insert a table into paragraph `index` at `pos` (defaults: last caret, else end of that paragraph). */
   const insertTable = (table, at) => {
@@ -64,13 +117,14 @@ export default function BlockEditor({ value, onChange, onBlur, onSave, placehold
       next = [...blocks.slice(0, index), { type: "text", text: target.text.slice(0, pos) }, { type: "table", table }, { type: "text", text: target.text.slice(pos) }, ...blocks.slice(index + 1)];
     }
     const ordinal = next.slice(0, next.findIndex((b) => b.table === table)).filter((b) => b.type === "table").length;
-    commit(next);
+    const caretBack = target.type === "text" ? { para: { index, pos: at?.pos ?? caret.current.pos ?? target.text.length } } : null;
+    commitStep(serializeDoc(next), caretBack, { table: ordinal });
     setFocusTable((f) => ({ ordinal, nonce: (f?.nonce ?? 0) + 1 }));
   };
 
   const removeTable = (index) => {
     const prev = value;
-    commit(blocks.filter((_, i) => i !== index));
+    commitStep(serializeDoc(blocks.filter((_, i) => i !== index)), { table: ordinals[index] });
     toast.show({ type: "info", title: tr("Table deleted"), action: { label: tr("Undo"), onClick: () => onChange(prev) } });
   };
 
@@ -104,7 +158,9 @@ export default function BlockEditor({ value, onChange, onBlur, onSave, placehold
         onClick: () => {
           const b = parseDoc(prev);
           const t = b[index];
-          onChange(serializeDoc(b.map((x, i) => (i === index ? { type: "text", text: `${t.text.slice(0, pos)}${hit.text}${t.text.slice(pos)}` } : x))));
+          const asText = serializeDoc(b.map((x, i) => (i === index ? { type: "text", text: `${t.text.slice(0, pos)}${hit.text}${t.text.slice(pos)}` } : x)));
+          const ordinal = ordinals.slice(0, index).filter((o) => o >= 0).length;
+          commitStep(asText, { table: ordinal }, { para: { index, pos: pos + hit.text.length } });
         },
       },
     });
@@ -160,10 +216,13 @@ export default function BlockEditor({ value, onChange, onBlur, onSave, placehold
         if (onBlur && !e.currentTarget.contains(e.relatedTarget)) onBlur();
       }}
       onKeyDown={(e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        const key = e.key.toLowerCase();
+        if ((e.metaKey || e.ctrlKey) && key === "s") {
           e.preventDefault();
           onSave?.();
         }
+        // undo / redo a table change; anything else (typing) stays with the browser's own undo
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || key === "y") && step(key === "y" || e.shiftKey)) e.preventDefault();
       }}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-2 py-1.5">

@@ -88,6 +88,43 @@ const RichParagraph = forwardRef(function RichParagraph({ value, onChange, place
   useImperativeHandle(ref, () => ({
     el: root.current,
     focus: () => root.current?.focus(),
+    /** Focus with the caret `pos` characters into the text as serialized (a mention counts as its whole token). */
+    focusAt: (pos) => {
+      const el = root.current;
+      if (!el) return;
+      el.focus();
+      let left = Math.max(0, pos ?? 0);
+      let spot = null; // [node, offset]
+      const at = (parent, child, after = 0) => [parent, Array.prototype.indexOf.call(parent.childNodes, child) + after];
+      const walk = (node) => {
+        for (const n of node.childNodes) {
+          if (spot) return;
+          if (n.nodeType === 3) {
+            if (left <= n.data.length) spot = [n, left];
+            else left -= n.data.length;
+          } else if (n.nodeName === "BR") {
+            if ((n.dataset?.trail && !n.nextSibling) || left === 0) spot = at(node, n); // the end, or right before a line break
+            else left -= 1;
+          } else if (n.nodeName === "A" && n.classList.contains("mention")) {
+            const len = mentionToken(n.dataset.type, Number(n.dataset.id), n.dataset.label).length;
+            if (left === 0) spot = at(node, n);
+            else if (left < len) spot = at(node, n, 1);
+            else left -= len;
+          } else walk(n);
+        }
+      };
+      walk(el);
+      const r = document.createRange();
+      if (spot) r.setStart(spot[0], spot[1]);
+      else {
+        r.selectNodeContents(el);
+        r.collapse(false);
+      }
+      r.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    },
     textBefore,
     insertText: (text) => {
       root.current?.focus();

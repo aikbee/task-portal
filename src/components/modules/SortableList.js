@@ -1,24 +1,79 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const nowMs = () => Date.now();
+
+/** Is any part of `el` inside its scrolling box (or the window)? */
+function onScreen(el) {
+  let box = el.parentElement;
+  while (box && !(box.scrollHeight > box.clientHeight && /auto|scroll/.test(getComputedStyle(box).overflowY))) box = box.parentElement;
+  const b = box ? box.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const r = el.getBoundingClientRect();
+  return r.bottom > b.top && r.top < b.bottom;
+}
+
+/** Scroll an item into view (only as far as needed) with a short flash, and optionally focus its first field. */
+function reveal(el, { focus = false } = {}) {
+  if (!el) return;
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || document.documentElement.dataset.motion === "reduce";
+  if (focus) el.querySelector("input, textarea, [contenteditable='true']")?.focus({ preventScroll: true });
+  el.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
+  // a smooth scroll can stall (a busy or throttled tab): then go straight there
+  if (!still) setTimeout(() => el.isConnected && !onScreen(el) && el.scrollIntoView({ block: "nearest" }), 700);
+  el.classList.remove("sortable-flash");
+  void el.offsetWidth; // restart the animation when the same item moves twice in a row
+  el.classList.add("sortable-flash");
+  setTimeout(() => el.classList.remove("sortable-flash"), 1500);
+}
 
 /**
  * Reorderable list: drag by the handle, use the arrows, or type a position
  * number. Calls onReorder(idsInNewOrder) and (optionally) onSetPosition(id, pos).
+ * A moved item is scrolled into view and flashes once its new place shows (also when the parent waits for the
+ * server); `anchor` ({ id, focus? }, a new object each time) does the same for an item the parent just added.
  */
-export default function SortableList({ items, getId = (i) => i.id, renderItem, onReorder, onSetPosition, disabled = false, className, itemClassName }) {
+export default function SortableList({ items, getId = (i) => i.id, renderItem, onReorder, onSetPosition, anchor = null, disabled = false, className, itemClassName }) {
   const [dragId, setDragId] = useState(null);
   const [armed, setArmed] = useState(null);
   const [over, setOver] = useState(null); // { id, before }
+  const list = useRef(null);
+  const moved = useRef(null); // { id, index, until }: an item on its way to `index`
+  const anchored = useRef(null); // the last `anchor` that was shown
 
   const ids = items.map(getId);
+  const order = ids.map(String).join("\u0001");
+  const itemEl = (id) => list.current?.querySelector(`[data-sortable-id="${CSS.escape(String(id))}"]`);
+
+  // follow the item to its new place once the list shows it there
+  useEffect(() => {
+    const m = moved.current;
+    if (!m) return;
+    if (nowMs() > m.until) {
+      moved.current = null;
+      return;
+    }
+    if (order.split("\u0001").indexOf(String(m.id)) !== m.index) return;
+    moved.current = null;
+    reveal(itemEl(m.id));
+  }, [order]);
+
+  // an item the parent just added: show it (and its first field) as soon as it is in the list
+  useEffect(() => {
+    if (!anchor || anchored.current === anchor) return;
+    const el = itemEl(anchor.id);
+    if (!el) return;
+    anchored.current = anchor;
+    reveal(el, { focus: anchor.focus });
+  }, [anchor, order]);
 
   const move = (from, to) => {
     if (from === to || to < 0 || to >= ids.length) return;
     const next = [...ids];
     const [x] = next.splice(from, 1);
     next.splice(to, 0, x);
+    moved.current = { id: ids[from], index: to, until: nowMs() + 8000 };
     onReorder?.(next);
   };
 
@@ -39,7 +94,7 @@ export default function SortableList({ items, getId = (i) => i.id, renderItem, o
   };
 
   return (
-    <ul className={cn("space-y-2", className)}>
+    <ul ref={list} className={cn("space-y-2", className)}>
       {items.map((item, index) => {
         const id = getId(item);
         const isDragging = dragId === id;
@@ -47,6 +102,7 @@ export default function SortableList({ items, getId = (i) => i.id, renderItem, o
         return (
           <li
             key={id}
+            data-sortable-id={id}
             draggable={!disabled && armed === id}
             onDragStart={(e) => {
               setDragId(id);
@@ -63,7 +119,7 @@ export default function SortableList({ items, getId = (i) => i.id, renderItem, o
             onDrop={(e) => onDrop(e, id)}
             onDragEnd={reset}
             className={cn(
-              "relative rounded-app border border-line bg-surface transition-all",
+              "relative scroll-my-24 rounded-app border border-line bg-surface transition-all",
               isDragging && "opacity-40 scale-[0.99]",
               isOver && over.before && "shadow-[0_-3px_0_0_var(--accent)]",
               isOver && !over.before && "shadow-[0_3px_0_0_var(--accent)]",
@@ -101,7 +157,16 @@ export default function SortableList({ items, getId = (i) => i.id, renderItem, o
                 </button>
               </div>
               <div className="flex shrink-0 items-center border-r border-line px-1">
-                <PositionInput value={index + 1} max={ids.length} disabled={disabled} onCommit={(pos) => (onSetPosition ? onSetPosition(id, pos) : move(index, pos - 1))} />
+                <PositionInput
+                  value={index + 1}
+                  max={ids.length}
+                  disabled={disabled}
+                  onCommit={(pos) => {
+                    if (!onSetPosition) return move(index, pos - 1);
+                    moved.current = { id, index: pos - 1, until: nowMs() + 8000 };
+                    onSetPosition(id, pos);
+                  }}
+                />
               </div>
               <div className="min-w-0 flex-1">{renderItem(item, index)}</div>
             </div>

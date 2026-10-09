@@ -78,7 +78,9 @@ export const usePrefs = create(
       ...SECURITY_DEFAULTS,
       tables: {}, // { [tableId]: { [columnKey]: boolean } }
       tableSorts: {}, // { [tableId]: { key, dir } } — user-chosen default sort per table
-      pins: [], // [{ href, label, module }]
+      pins: [], // [{ href, label, module }] — the pins of the profile in use (pinScope)
+      pinScope: null, // the profile `pins` belong to: every profile (and so every workspace) keeps its own pins
+      pinsByScope: {}, // { [profileId]: pins } for the other profiles
       set: (patch) => set(patch),
       lock: () => get().pinHash && set({ locked: true }),
       unlock: () => set({ locked: false }),
@@ -115,6 +117,18 @@ export const usePrefs = create(
         set({ pins });
       },
       clearPins: () => set({ pins: [] }),
+      /** The profile in use changed: put its pins in place (the first call keeps the pins already there for it). */
+      setPinScope: (scope) => {
+        const { pinScope, pins, pinsByScope } = get();
+        if (!scope || scope === pinScope) return;
+        if (pinScope == null) return set({ pinScope: scope });
+        const others = { ...pinsByScope };
+        if (pins.length) others[pinScope] = pins;
+        else delete others[pinScope];
+        const next = others[scope] ?? [];
+        delete others[scope];
+        set({ pinScope: scope, pins: next, pinsByScope: others });
+      },
 
       setSplitCount: (n) => set({ splitCount: Math.max(1, Math.min(MAX_SPLIT, n)) }),
       setPanePath: (index, path) => {

@@ -90,6 +90,26 @@
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
+/*
+ * Hover on rows, menu items and ghost controls. `bg-surface-2` is only one step off the card / menu / sidebar surface
+ * (dark #151c33 on #10162a, light #f6f7fb on white), so as a hover it was all but invisible. A tint of the text colour
+ * shows on any surface, light, dark or glass. Unlayered, so it wins over the Tailwind utility everywhere it is used.
+ */
+@media (hover: hover) {
+  .hover\:bg-surface-2:hover {
+    background-color: color-mix(in oklab, var(--fg) 8%, transparent);
+  }
+}
+
+/* A list item that was just moved or added: a short accent ring, so the eye finds where it went. */
+@keyframes sortable-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  20%, 55% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent); }
+}
+.sortable-flash {
+  animation: sortable-flash 1.4s ease-out;
+}
+
 @layer base {
   * {
     border-color: var(--line);

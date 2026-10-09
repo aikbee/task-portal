@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Pin, X } from "lucide-react";
@@ -7,6 +7,7 @@ import { usePrefs, useUI } from "@/lib/store";
 import { MODULE_MAP, moduleFromPath } from "@/lib/modules";
 import { cn } from "@/lib/utils";
 import { useMounted } from "@/lib/hooks";
+import { useAuth } from "@/lib/auth-context";
 import { Kbd } from "@/components/ui/Misc";
 import { useT } from "@/lib/i18n";
 
@@ -34,7 +35,16 @@ export default function PinBar() {
   const removePin = usePrefs((s) => s.removePin);
   const movePin = usePrefs((s) => s.movePin);
   const updatePinLabel = usePrefs((s) => s.updatePinLabel);
+  const setPinScope = usePrefs((s) => s.setPinScope);
+  const { user } = useAuth();
   const current = useCurrentPin();
+
+  // every profile has its own pins (a pinned record only exists in its profile, and each workspace has its own
+  // profiles): swap them in before anything is painted, so the bar never shows another profile's pins
+  const scope = user?.profile_id ? String(user.profile_id) : null;
+  useLayoutEffect(() => {
+    if (scope) setPinScope(scope);
+  }, [scope, setPinScope]);
   const isPinned = pins.some((p) => p.href === current.href);
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);

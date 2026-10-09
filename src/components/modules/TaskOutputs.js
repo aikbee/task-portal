@@ -32,6 +32,7 @@ export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUr
   const [toDelete, setToDelete] = useState(null);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [anchor, setAnchor] = useState(null); // the output just added: the list scrolls to it and focuses its title
   const toast = useToast();
 
   const add = async () => {
@@ -40,6 +41,7 @@ export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUr
       const { items, created_id } = await api.post(collection, { title: "", content: "" });
       onChange(items);
       setExpanded((s) => new Set([...s, created_id]));
+      setAnchor({ id: created_id, focus: true });
     } catch (e) {
       toast.error(`Could not add ${labels.singular}`, e.message);
     } finally {
@@ -109,6 +111,7 @@ export default function TaskOutputs({ taskId, outputs, onChange, baseUrl, itemUr
           items={outputs}
           onReorder={reorder}
           onSetPosition={setPosition}
+          anchor={anchor}
           disabled={!canEdit}
           renderItem={(o) => (
             <OutputRow output={o} placeholder={labels.placeholder} singular={labels.singular} open={expanded.has(o.id)} onToggle={() => toggle(o.id)} onSave={(patch) => save(o.id, patch)} onDelete={() => setToDelete(o)} />
