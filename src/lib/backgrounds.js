@@ -67,6 +67,7 @@ export const BG_STYLES = [
   { value: "skiresort", label: "Ski resort", desc: "3D ski resort in the winter sun: gondola cabins in your colour glide up past snowy pines, skiers carve down to the village; at night floodlit pistes, a torchlight descent and glowing chalets", three: true },
   { value: "volcanoisland", label: "Volcano island", desc: "3D volcanic island across a turquoise lagoon: a smoking volcano, palms swaying on the beach, a sailboat in your colour; at night lava rivers glow down to the sea in clouds of steam and a fountain of lava lights the plume", three: true },
   { value: "waterfall", label: "Rainforest waterfall", desc: "3D jungle gorge: a tall waterfall plunges into a misty pool with a rainbow in the spray, a rope bridge hung with flags in your colour, macaws and butterflies; at night moonlight on the falls, fireflies and glowing fungi", three: true },
+  { value: "dinovalley", label: "Dinosaur valley", desc: "3D prehistoric valley: a herd of long-necked sauropods wades across the river among giant ferns and cycads, pterosaurs in your colour circle overhead; at night a huge moon rises and fireflies drift", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
