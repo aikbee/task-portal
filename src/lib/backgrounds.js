@@ -69,6 +69,7 @@ export const BG_STYLES = [
   { value: "waterfall", label: "Rainforest waterfall", desc: "3D jungle gorge: a tall waterfall plunges into a misty pool with a rainbow in the spray, a rope bridge hung with flags in your colour, macaws and butterflies; at night moonlight on the falls, fireflies and glowing fungi", three: true },
   { value: "dinovalley", label: "Dinosaur valley", desc: "3D prehistoric valley: a herd of long-necked sauropods wades across the river among giant ferns and cycads, pterosaurs in your colour circle overhead; at night a huge moon rises and fireflies drift", three: true },
   { value: "futurecity", label: "Futuristic city", desc: "3D city of the future: flying cars stream along sky lanes down a grand avenue between glass towers, a maglev glides down the middle, screens and lane lights glow in your colour; at night the towers light up window by window and the traffic turns into streams of light", three: true },
+  { value: "floatislands", label: "Floating islands", desc: "3D islands of rock adrift over a sea of clouds: waterfalls pour off their edges, airships with sails in your colour drift between them and birds wheel round the cliffs; at night crystals glow in the rock under a starry sky", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

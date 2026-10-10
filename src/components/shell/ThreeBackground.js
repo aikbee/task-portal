@@ -22248,7 +22248,371 @@ function futurecity(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity };
+/* ---------- Floating islands: islands of rock adrift over a sea of clouds; waterfalls off their edges, airships between them ---------- */
+// Each island is one mesh: a profile turned round its axis (a grassy top, a cliff band, an underside tapering to a jagged point), its
+// outline and its underside roughened by noise; they bob, slowly and out of step. The sea of clouds is a plane whose billows come from
+// layered noise, lit from the sun's side; the falls are the rainforest's sheets on the water's arc, thinning into mist as they drop into
+// it. Airships, birds and the rocks drifting round the islands run off the clock alone.
+const FI_ISLE_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uNight; uniform vec3 uAccent; uniform float uTime;
+  varying vec3 vLP; varying vec3 vLN; varying float vZone; // the island's own frame (so its colours ride with its bobbing); 0 its top, 1 its cliffs and underside
+  vec3 fiIsle(out vec3 glow) {
+    vec3 p = vLP, n = normalize(vLN);
+    float n1 = texture2D(uNoise, p.xz * 0.012 + 0.3).r, n2 = texture2D(uNoise, p.xz * 0.05 + 0.7).g, n3 = texture2D(uNoise, vec2(p.x + p.z, p.y) * 0.02).r;
+    vec3 grass = mix(vec3(0.2, 0.42, 0.12), vec3(0.44, 0.58, 0.2), smoothstep(0.3, 0.75, n1 * 0.6 + n2 * 0.5));
+    float strata = texture2D(uNoise, vec2((p.x - p.z) * 0.004, p.y * 0.03) + 0.37).g;
+    vec3 rock = mix(vec3(0.34, 0.3, 0.26), vec3(0.58, 0.52, 0.44), smoothstep(0.3, 0.7, strata)) * (0.75 + 0.45 * n3);
+    float top = smoothstep(0.5, 0.78, n.y) * (1.0 - vZone);
+    vec3 col = mix(rock, grass, top);
+    col = mix(col, vec3(0.44, 0.35, 0.24), smoothstep(0.78, 0.5, n.y) * (1.0 - vZone) * 0.7); // bare earth where the top rolls over the edge
+    col = mix(col, mix(vec3(0.17, 0.32, 0.12), rock, 0.45), smoothstep(0.55, 0.75, n3 + n2 * 0.3) * vZone * smoothstep(-0.3, 0.3, n.y) * 0.65); // moss down the cliffs
+    col = mix(col, rock * 0.7, smoothstep(-0.2, -0.7, n.y) * vZone * 0.5); // the underside in its own shadow
+    glow = vec3(0.0);
+    if (uNight > 0.0 && vZone > 0.5 && n.y < 0.0) { // crystals in the rock, aglow in the accent by night
+      vec2 cq = vec2((p.x + p.z) * 0.7, p.y); // across the face and down it at the same scale, so the clusters come round, not smeared
+      float c = texture2D(uNoise, cq * 0.03).r * texture2D(uNoise, cq * 0.085 - 0.31).g;
+      float k = smoothstep(0.41, 0.47, c) * smoothstep(0.05, -0.3, n.y) * smoothstep(-25.0, -60.0, p.y); // clusters a few metres across, on the underside below the cliffs
+      glow = uAccent * k * 1.3 * uNight * (0.7 + 0.3 * sin(uTime * 1.1 + p.x * 0.05 + p.y * 0.07));
+      col = mix(col, uAccent * 0.5, k);
+    }
+    return col;
+  }
+`;
+// the sea of clouds: billows from layered noise drifting by, lit on the side towards the sun and shaded in the hollows; the bright
+// glare towards the sun (or the moon), haze far off
+const FI_SEA_VS = /* glsl */ `
+  varying vec3 vW; varying float vDepth;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDepth = -mv.z; gl_Position = projectionMatrix * mv; }
+`;
+const FI_SEA_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uSunDir; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uGlow; uniform vec3 uHaze; uniform float uFogD;
+  varying vec3 vW; varying float vDepth;
+  float fiHeap(vec2 p) { return texture2D(uNoise, p * 0.0006).r * 0.55 + texture2D(uNoise, p * 0.0015 + 0.3).g * 0.3 + texture2D(uNoise, p * 0.0038 + 0.7).r * 0.15; }
+  void main() {
+    vec2 p = vW.xz;
+    vec2 w = vec2(texture2D(uNoise, p * 0.00025 + 0.17).r, texture2D(uNoise, p * 0.00025 + 0.61).g) - 0.5; // a slow warp: the heaps come rounded and bunched, not spotted
+    vec2 q = p + w * 900.0 + uTime * vec2(1.4, 0.6);
+    float e = 9.0, h = fiHeap(q), hx = fiHeap(q + vec2(e, 0.0)), hz = fiHeap(q + vec2(0.0, e));
+    vec3 n = normalize(vec3((h - hx) * 55.0, 1.0, (h - hz) * 55.0)); // the heaps' slopes
+    vec3 V = normalize(cameraPosition - vW);
+    float heap = smoothstep(0.32, 0.74, h), lit = clamp(0.5 + 0.55 * dot(n, uSunDir), 0.0, 1.0);
+    vec3 col = mix(uShade, uLit, mix(lit, 1.0, 0.2) * (0.5 + 0.5 * heap)); // bright on the tops of the heaps and their sunny sides, blue-grey in the hollows
+    col += uGlow * pow(max(dot(-V, normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0), 8.0) * 0.5 * heap; // the glare towards the sun
+    float fog = 1.0 - exp(-uFogD * uFogD * vDepth * vDepth);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+function floatislands(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(3131);
+  camera.fov = 42; camera.near = 0.3; camera.far = 50000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 10) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(2.3, 0.55), MOON = sph(-1.3, 0.15), MOONLIGHT = sph(0.7, 0.6); // the sun behind our left shoulder lights the islands' faces; the moon low ahead on the right, its light (a cheat) from behind
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; lanterns and windows (lit at night)
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const SEA_Y = -320;
+
+  /* --- the islands: a profile turned round the axis, its outline ragged, its underside lobed and jagged --- */
+  const islandGeo = (R, depth, seed, flat) => {
+    const NA = preview ? 40 : 72, prof = [];
+    for (let k = 0; k <= 9; k++) { const t = k / 9; prof.push([t * 0.95, 2.5 * flat * (1 - t * t), 0]); } // the top, domed a little
+    prof.push([1.0, -1.2, 0], [1.03, -5, 1], [1.0, -12, 1], [0.94, -19, 1]); // the lip, the cliff band
+    const NU = preview ? 9 : 16;
+    for (let k = 1; k <= NU; k++) { const t = k / NU; prof.push([0.94 * Math.pow(1 - t, 1.25), -19 - depth * Math.pow(t, 0.85), 1]); } // the underside to its point
+    const NP = prof.length, pos = new Float32Array(NP * NA * 3), zone = new Float32Array(NP * NA), idx = [];
+    for (let j = 0; j < NP; j++) for (let i = 0; i < NA; i++) {
+      const a = (i / NA) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), [rf, y0, z] = prof[j];
+      const out = 1 + 0.44 * (fbm(ca * 1.6 + seed, sa * 1.6 - seed, 3) - 0.5), lobe = 0.4 + 1.25 * fbm(ca * 2.4 - seed * 1.3, sa * 2.4 + seed, 3); // lobe: how far down this side of the underside reaches
+      let rr = R * rf * out, y = z > 0.5 && y0 < -19 ? -19 + (y0 + 19) * lobe : y0;
+      if (z > 0.5) rr *= 1 + 0.2 * (vnoise(a * 6 + seed, y * 0.06) - 0.5) + 0.07 * Math.sin(a * 23 + seed * 3 + y * 0.012) * Math.min(1, -y / 40); // the cliffs jagged, fluted down the underside
+      const x = rr * ca, zz = rr * sa;
+      if (z < 0.5 && j < 9) y += 3 * (fbm(x * 0.015 + seed, zz * 0.015, 3) - 0.5) * flat; // the top's gentle hills
+      pos.set([x, y, zz], (j * NA + i) * 3); zone[j * NA + i] = z;
+    }
+    for (let j = 0; j < NP - 1; j++) for (let i = 0; i < NA; i++) { const i2 = (i + 1) % NA, a = j * NA + i, b = j * NA + i2, c = (j + 1) * NA + i, d = (j + 1) * NA + i2; idx.push(a, b, c, b, d, c); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("aZone", new THREE.BufferAttribute(zone, 1)); g.setIndex(idx); g.computeVertexNormals(); return keep(g);
+  };
+  const topY = (isl, x, z) => { // the height of an island's top at (x, z) in its own frame
+    const a = Math.atan2(z, x), out = 1 + 0.44 * (fbm(Math.cos(a) * 1.6 + isl.seed, Math.sin(a) * 1.6 - isl.seed, 3) - 0.5), t = Math.hypot(x, z) / (isl.R * out * 0.95);
+    return t > 1 ? null : 2.5 * isl.flat * (1 - t * t) + 3 * (fbm(x * 0.015 + isl.seed, z * 0.015, 3) - 0.5) * isl.flat;
+  };
+  const ISLES = [ // centre, radius, depth below the cliffs, seed, how flat its top, trees, a waterfall off it (the angle round it); we hover among them
+    { c: [-120, 5, -165], R: 72, depth: 170, seed: 1.3, flat: 0.7, trees: 16, fg: true },
+    { c: [110, -15, -430], R: 135, depth: 280, seed: 2.7, flat: 1, trees: 60, fall: 1.5, main: true },
+    { c: [-330, 50, -760], R: 85, depth: 180, seed: 3.9, flat: 1, trees: 22, fall: 1.45 },
+    { c: [430, 30, -980], R: 100, depth: 220, seed: 5.2, flat: 1, trees: 22 },
+    { c: [-650, -60, -1400], R: 170, depth: 300, seed: 6.6, flat: 1, trees: 30, fall: 1.0 },
+    { c: [300, 60, -2000], R: 150, depth: 260, seed: 7.4, flat: 1, trees: 0 },
+    { c: [-1500, 10, -2500], R: 230, depth: 340, seed: 8.8, flat: 1, trees: 0 },
+    { c: [1600, -30, -3300], R: 280, depth: 380, seed: 9.9, flat: 1, trees: 0 },
+    { c: [-300, 120, -4500], R: 260, depth: 360, seed: 11.1, flat: 1, trees: 0 },
+  ];
+  for (let k = 0, tries = 0; k < (preview ? 5 : 9) && tries < 200; tries++) { const d = r(380, 2000), a = r(-0.75, 0.75), x = Math.sin(a) * d, z = -Math.cos(a) * d, R = r(14, 40); if (ISLES.some((o) => Math.hypot(o.c[0] - x, o.c[2] - z) < o.R + R + 40)) continue; ISLES.push({ c: [x, r(-90, 80), z], R, depth: r(40, 90), seed: 20 + k * 1.7, flat: 1, trees: r() < 0.6 ? 2 : 0 }); k++; } // islets, clear of the others
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 };
+  const isleMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0 }));
+  isleMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNight: nightU, uAccent: accentU, uTime: time });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aZone; varying vec3 vLP; varying vec3 vLN; varying float vZone;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vLP = position; vLN = normal; vZone = aZone;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + FI_ISLE_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n  vec3 fiGlow; diffuseColor.rgb = fiIsle(fiGlow);").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += fiGlow;");
+  };
+  isleMat.customProgramCacheKey = () => "fi-isle";
+  const lit = (mat, key, extraVS = "") => { // markers: the accent; lanterns and windows lit at night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime;");
+      if (extraVS) sh.vertexShader = sh.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float fiLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.14, 0.1, 0.05), isLamp); fiLamp = isLamp; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.72, 0.4) * fiLamp * (0.05 + 1.6 * uNight);");
+    };
+    mat.customProgramCacheKey = () => "fi-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "paint");
+  const SWAY = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].z * 0.17;\n#endif\n  float k = max(position.y, 0.0); transformed.x += (sin(uTime * 1.2 + ph) * 0.6 + sin(uTime * 2.9 + ph * 1.7) * 0.25) * 0.05 * k; transformed.z += sin(uTime * 0.9 + ph * 1.3) * 0.03 * k; } // the wind up here";
+  const treeMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true })), "tree", SWAY.replace("0.05 * k", "0.012 * k").replace("0.03 * k", "0.008 * k"));
+  const roundTree = keep(mergeColored(THREE, [[cyl(0.35, 0.55, 5, 6), at(0, 2.5, 0), 0x5a4030], [new THREE.IcosahedronGeometry(3.6, 0), at(0, 6.8, 0), 0xffffff], [new THREE.IcosahedronGeometry(2.6, 0), at(1.4, 8.6, 0.6), 0xffffff], [new THREE.IcosahedronGeometry(2.4, 0), at(-1.5, 8.0, -0.8), 0xffffff]]));
+  const pineTree = keep(mergeColored(THREE, [[cyl(0.3, 0.45, 3, 6), at(0, 1.5, 0), 0x4a3a2a], [new THREE.ConeGeometry(3.2, 7, 7), at(0, 5.5, 0), 0xffffff], [new THREE.ConeGeometry(2.3, 5.5, 7), at(0, 9, 0), 0xffffff]]));
+  const groups = [], FALLS = [], LIGHTS = [];
+  const fallMats = [], mistMats = [];
+  const fallU = (amt, seed, streak) => { const u = { uNoise: { value: noise }, uTime: time, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uAmt: { value: amt }, uSeed: { value: seed }, uStreak: { value: streak } }; fallMats.push(u); return u; };
+  const C0 = new THREE.Vector3(0, 70, 0); // we hover among the islands, above the nearer ones' tops
+  ISLES.forEach((isl) => {
+    const g = new THREE.Group(); g.position.set(...isl.c); scene.add(g); groups.push({ g, base: isl.c[1], amp: isl.fg ? 0 : r(1.2, 3.2) * (isl.R / 100) ** 0.3, w: r(0.12, 0.22), ph: r(0, 6.28) }); // our own island stays put
+    const m = new THREE.Mesh(islandGeo(isl.R, isl.depth, isl.seed, isl.flat), isleMat); m.frustumCulled = false; g.add(m);
+    // trees on its top: round-crowned ones and pines, never near its rim
+    const TR = [], TP = [];
+    for (let k = 0, tries = 0; k < isl.trees && tries < isl.trees * 20; tries++) { const rr = isl.R * Math.sqrt(r(0, 0.72)), a = r(0, 6.283), x = rr * Math.cos(a), z = rr * Math.sin(a), y = topY(isl, x, z); if (y === null) continue; if (isl.main && Math.hypot(x - 25, z - 10) < 32) continue; (r() < 0.6 ? TR : TP).push([x, y - 0.3, z, r(0.8, 1.35)]); k++; }
+    const c = new THREE.Color();
+    for (const [list, geo, hue] of [[TR, roundTree, [0.2, 0.32]], [TP, pineTree, [0.3, 0.38]]]) { if (!list.length) continue; const im = new THREE.InstancedMesh(geo, treeMat, list.length); list.forEach(([x, y, z, s], k) => { im.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.setScalar(s))); im.setColorAt(k, c.setHSL(r(...hue), r(0.35, 0.55), r(0.24, 0.36))); }); im.frustumCulled = false; g.add(im); keep(im); }
+    if (isl.fall !== undefined) { // a waterfall pouring off its rim into the clouds below
+      const a = isl.fall, out = 1 + 0.44 * (fbm(Math.cos(a) * 1.6 + isl.seed, Math.sin(a) * 1.6 - isl.seed, 3) - 0.5), rim = isl.R * out * 1.0, dx = Math.cos(a), dz = Math.sin(a);
+      const H = isl.c[1] - 1.2 - SEA_Y + 20, W = Math.max(8, isl.R * 0.12), T = Math.sqrt((2 * H) / 9.8), NU = preview ? 10 : 18, NV = preview ? 24 : 50;
+      for (const [wk, amt, seed, streak, v0] of [[1.25, 0.5, 0.0, 6, 2.2], [1, 0.85, 0.37, 9, 2.8]]) {
+        const pos = [], fa = [], idx = [];
+        for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) {
+          const u = i / NU, v = j / NV, t = v * T, across = (u - 0.5) * W * wk * (1 + 1.4 * v), outw = rim - 1.5 + v0 * t, y = -1.2 - 4.9 * t * t;
+          pos.push(dx * outw - dz * across, y, dz * outw + dx * across); fa.push(u, v, Math.sqrt(4.9 * t * t));
+          if (i < NU && j < NV) { const p0 = j * (NU + 1) + i, p1 = p0 + 1, p2 = p0 + NU + 1, p3 = p2 + 1; idx.push(p0, p2, p1, p1, p2, p3); }
+        }
+        const fg = new THREE.BufferGeometry(); fg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); fg.setAttribute("aFall", new THREE.Float32BufferAttribute(fa, 3)); fg.setIndex(idx); keep(fg);
+        const fm = new THREE.Mesh(fg, shader(RF_FALL_VS, RF_FALL_FS, fallU(amt, seed, streak), { transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.DoubleSide }));
+        fm.frustumCulled = false; fm.renderOrder = 11; g.add(fm);
+      }
+      FALLS.push({ g, x: dx * (rim + 2.5 * T), z: dz * (rim + 2.5 * T), y: SEA_Y - isl.c[1], W });
+    }
+    isl.g = g;
+  });
+  const FG = ISLES[0], MAIN = ISLES[1];
+  C0.set(0, 70, 0); // our eye, hovering
+
+  /* --- the main island's tower, cottages and lanterns; a lantern by us; grass and flowers about our feet --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // painted, one merged draw per island
+  { const tx = 25, tz = 10, ty = topY(MAIN, tx, tz) - 0.5; // a stone tower, a slate roof, banners in the accent, lit windows
+    P(cyl(7, 8.5, 26, 14), at(tx, ty + 13, tz), 0xb8b0a2); P(cyl(5.6, 7, 10, 14), at(tx, ty + 31, tz), 0xc8c0b2); P(new THREE.ConeGeometry(7.4, 12, 14), at(tx, ty + 42, tz), 0x4a5568); P(cyl(0.12, 0.12, 6, 4), at(tx, ty + 50, tz), 0x3a3a3a);
+    const wallR = (y) => (y < 26 ? 8.5 - 1.5 * (y / 26) : 7 - 1.4 * ((y - 26) / 10)) + 0.12; // the tower's radius at a height: it tapers
+    for (const [h, n] of [[8, 6], [19, 8], [31, 8]]) for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2 + h, rr = wallR(h); P(box(1.1, 2.2, 0.3), at(tx + Math.cos(a) * rr, ty + h, tz + Math.sin(a) * rr, 0, -a + Math.PI / 2, 0), LAMP); }
+    for (const a of [0.5, 2.6, 4.7]) P(box(0.2, 9, 3.2), at(tx + Math.cos(a) * (wallR(20) + 0.15), ty + 20, tz + Math.sin(a) * (wallR(20) + 0.15), 0, -a, 0), ACC); // banners
+    P(new THREE.ConeGeometry(1.2, 2.2, 3).rotateZ(-Math.PI / 2), at(tx + 1.1, ty + 52, tz), ACC); // a pennant on the spire
+    LIGHTS.push([MAIN, tx, ty + 44, tz, 0.9]);
+    for (const [cx, cz, ry] of [[-30, -20, 0.4], [-50, 25, 1.2], [5, -45, 2.0], [55, -25, 0.9], [-15, 50, 2.6]]) { const y0 = topY(MAIN, cx, cz); if (y0 === null) continue; const cy = y0 - 0.4; P(box(9, 5, 7), at(cx, cy + 2.5, cz, 0, ry, 0), 0xe8dcc6); P(new THREE.ConeGeometry(6.6, 4.5, 4).rotateY(Math.PI / 4), at(cx, cy + 7.2, cz, 0, ry, 0), 0x9a4a32); P(box(1.6, 1.4, 0.2), at(cx + Math.sin(ry) * 3.55, cy + 2.6, cz + Math.cos(ry) * 3.55, 0, ry, 0), LAMP); LIGHTS.push([MAIN, cx + Math.sin(ry) * 4.2, cy + 2.6, cz + Math.cos(ry) * 4.2, 0.35]); }
+    for (let k = 0; k < 10; k++) { const a = (k / 10) * Math.PI * 2, x = tx + Math.cos(a) * 22, z = tz + Math.sin(a) * 22, y = topY(MAIN, x, z); if (y === null) continue; P(cyl(0.14, 0.18, 3, 5), at(x, y + 1.3, z), 0x3a3028); P(box(0.6, 0.7, 0.6), at(x, y + 3.0, z), LAMP); LIGHTS.push([MAIN, x, y + 3.0, z, 0.3]); }
+  }
+  const mainSite = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); MAIN.g.add(mainSite);
+  const S2 = [];
+  { const x = 20, z = 30, y = topY(FG, x, z) - 0.2; // a stone lantern on the near island, its glass lit at dusk
+    S2.push([box(1.4, 0.5, 1.4), at(x, y + 0.25, z), 0x9a948a], [cyl(0.25, 0.3, 1.6, 6), at(x, y + 1.3, z), 0xa8a296], [box(1.0, 0.9, 1.0), at(x, y + 2.5, z), LAMP], [new THREE.ConeGeometry(1.0, 0.8, 4).rotateY(Math.PI / 4), at(x, y + 3.35, z), 0x7a746a]);
+    LIGHTS.push([FG, x, y + 2.5, z, 0.25]); }
+  FG.g.add(new THREE.Mesh(keep(mergeColored(THREE, S2)), paintMat));
+
+  const CRYSTALS = []; // glowing crystal clusters in the near islands' undersides (lights by night, in the accent), so they read even when small
+  for (const isl of ISLES.slice(0, 4)) for (let k = 0; k < (preview ? 5 : 10); k++) {
+    const a = r(0, 6.283), ca = Math.cos(a), sa = Math.sin(a), out = 1 + 0.44 * (fbm(ca * 1.6 + isl.seed, sa * 1.6 - isl.seed, 3) - 0.5), lobe = 0.4 + 1.25 * fbm(ca * 2.4 - isl.seed * 1.3, sa * 2.4 + isl.seed, 3), rf = r(0.3, 0.8);
+    const y = -19 - isl.depth * Math.pow(1 - Math.pow(rf / 0.94, 0.8), 0.85) * lobe, rr = isl.R * out * rf * 1.1 + 2; // just outside the rock there
+    CRYSTALS.push(LIGHTS.length); LIGHTS.push([isl, ca * rr, y - 1, sa * rr, r(5, 10), 3]); // soft halos, a few pixels at least
+  }
+
+  /* --- rocks drifting round the islands, turning slowly; vines hanging from the undersides --- */
+  const ROCKS = [];
+  for (const isl of ISLES.slice(0, 6)) for (let k = 0; k < (isl.fg ? 4 : preview ? 4 : 9); k++) { const a = r(0, 6.283), d = isl.R * r(1.15, 1.8); ROCKS.push([isl.c[0] + Math.cos(a) * d, isl.c[1] + r(-isl.depth * 0.6, 20), isl.c[2] + Math.sin(a) * d, r(1.5, isl.R * 0.08 + 2)]); }
+  { const g = keep(new THREE.IcosahedronGeometry(1, 1)); { const p = g.attributes.position; for (let i = 0; i < p.count; i++) { V.fromBufferAttribute(p, i); const k = 0.75 + 0.5 * vnoise(V.x * 2.1 + 3, V.y * 2.1 + V.z * 1.3); p.setXYZ(i, V.x * k, V.y * k * 0.8, V.z * k); } g.computeVertexNormals(); }
+    const DRIFT = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.13 + instanceMatrix[3].z * 0.07;\n#endif\n  float a = uTime * 0.04 + ph, c = cos(a), s = sin(a); transformed.xz = mat2(c, -s, s, c) * transformed.xz; transformed.y += 0.35 * sin(uTime * 0.25 + ph * 3.0); } // each turning and bobbing at its own pace";
+    const rm = new THREE.InstancedMesh(g, lit(keep(new THREE.MeshStandardMaterial({ color: 0x7a6e60, roughness: 0.95, flatShading: true })), "rock", DRIFT), ROCKS.length);
+    ROCKS.forEach(([x, y, z, s], k) => rm.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(r(0, 3), r(0, 3), r(0, 3))), V2.setScalar(s))));
+    rm.frustumCulled = false; scene.add(rm); keep(rm); }
+  const vinePos = [], vineAnc = [];
+  for (const isl of ISLES.slice(0, 5)) for (let k = 0; k < (preview ? 14 : 34); k++) { // from the underside, where the profile puts it at that radius and angle
+    const a = r(0, 6.283), ca = Math.cos(a), sa = Math.sin(a), out = 1 + 0.44 * (fbm(ca * 1.6 + isl.seed, sa * 1.6 - isl.seed, 3) - 0.5), lobe = 0.4 + 1.25 * fbm(ca * 2.4 - isl.seed * 1.3, sa * 2.4 + isl.seed, 3), rf = r(0.45, 0.85), rr = isl.R * out * rf * 0.92;
+    const y0 = -19 - isl.depth * Math.pow(1 - Math.pow(rf / 0.94, 0.8), 0.85) * lobe + 1.5, L = r(8, 30), ph = r(0, 6.28);
+    for (let s = 0; s < 8; s++) { vinePos.push(ca * rr, y0 - (L * s) / 8, sa * rr, ca * rr, y0 - (L * (s + 1)) / 8, sa * rr); vineAnc.push(y0, ph, y0, ph); } }
+  // vines are drawn per island so they bob with it: split the buffers by island
+  const vineU = { uTime: time, uCol: { value: new THREE.Color() } };
+  const vineMat = shader("uniform float uTime; attribute vec2 aAnc; void main() { vec3 p = position; float below = aAnc.x - p.y; p.x += sin(uTime * 0.7 + aAnc.y) * 0.02 * pow(below, 1.2); p.z += cos(uTime * 0.5 + aAnc.y) * 0.015 * pow(below, 1.2); gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }", "uniform vec3 uCol; void main() { gl_FragColor = vec4(uCol, 1.0);\n  #include <colorspace_fragment>\n}", vineU);
+  { let o = 0; for (const isl of ISLES.slice(0, 5)) { const n = (preview ? 14 : 34) * 8 * 2, vg = keep(new THREE.BufferGeometry()); vg.setAttribute("position", new THREE.Float32BufferAttribute(vinePos.slice(o * 3, (o + n) * 3), 3)); vg.setAttribute("aAnc", new THREE.Float32BufferAttribute(vineAnc.slice(o * 2, (o + n) * 2), 2)); o += n; const l = new THREE.LineSegments(vg, vineMat); l.frustumCulled = false; isl.g.add(l); } }
+
+  /* --- the sea of clouds below, wisps drifting between the islands, mist where the falls come down --- */
+  const fogD = { value: 1 / 6000 };
+  const seaU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFogD: fogD };
+  const sea = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(-Math.PI / 2)), shader(FI_SEA_VS, FI_SEA_FS, seaU));
+  sea.position.y = SEA_Y; sea.renderOrder = 1; scene.add(sea);
+  const ribbon = (pathAt, widthAt, n) => {
+    const pos = [], rib = [], sid = [], idx = [], T = new THREE.Vector3(), A = new THREE.Vector3(), B = new THREE.Vector3(), Sd = new THREE.Vector3(); let m = 0;
+    for (let i = 0; i <= n; i++) { const u = i / n; pathAt(u, A); pathAt(Math.min(1, u + 1 / n), B); if (i === n) { pathAt(u - 1 / n, B); T.subVectors(A, B); } else T.subVectors(B, A); if (i) m += A.distanceTo(pathAt((i - 1) / n, B)); T.normalize(); Sd.subVectors(V2.copy(C0), A).normalize().cross(T).normalize(); const w = widthAt(u) / 2; for (const s of [-1, 1]) { pos.push(A.x + Sd.x * w * s, A.y + Sd.y * w * s, A.z + Sd.z * w * s); rib.push(u, s, m); sid.push(Sd.x, Sd.y, Sd.z); } if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("aRib", new THREE.Float32BufferAttribute(rib, 3)); g.setAttribute("aSide", new THREE.Float32BufferAttribute(sid, 3)); g.setIndex(idx); return keep(g);
+  };
+  const mistLayer = (geo, amt, seed, scale, flow, order) => {
+    const u = { uNoise: { value: noise }, uTime: time, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uLightDir: { value: SUN.clone() }, uGlowCol: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: 0 }, uAmt: { value: amt }, uFlow: { value: flow }, uScale: { value: new THREE.Vector2(...scale) }, uSeed: { value: seed }, uHaze: { value: new THREE.Color() }, uHazeAmt: { value: 0 } };
+    const m = new THREE.Mesh(geo, shader(VI_PLUME_VS, VI_PLUME_FS, u, { transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.DoubleSide }));
+    m.frustumCulled = false; m.renderOrder = order; scene.add(m); mistMats.push({ u, amt }); return m;
+  };
+  for (const [x0, y, z, len, w, seed] of [[-900, -140, -620, 1700, 110, 0.3], [-400, -40, -1250, 1500, 90, 1.1], [-150, -230, -330, 800, 70, 1.9], [-1500, 30, -2300, 2700, 200, 2.6]]) mistLayer(ribbon((u, out) => out.set(x0 + len * u, y + 12 * Math.sin(u * 6 + seed), z - 60 * Math.sin(u * 3 + seed)), (u) => w * (0.6 + 0.4 * Math.sin(u * 3.14)), preview ? 16 : 30), 0.4, seed, [0.003, 0.9], 0.02, 9); // wisps of cloud between the islands
+  for (const f of FALLS) { const wx = f.g.position.x + f.x, wz = f.g.position.z + f.z; mistLayer(ribbon((u, out) => out.set(wx - 20 * u, SEA_Y + 10 + 70 * u, wz + 10 * u), (u) => f.W * 3 + 80 * u, preview ? 10 : 18), 0.5, 3 + wx * 0.01, [0.01, 0.9], 0.06, 12); } // spray thrown up where each fall comes down
+
+  /* --- airships: one circling the main island, one crossing far off; birds wheeling round the cliffs --- */
+  const tri = (a, b, c) => { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute([...a, ...b, ...c], 3)); g.computeVertexNormals(); return g; };
+  const shipGeo = keep(mergeColored(THREE, [
+    [new THREE.SphereGeometry(1, 18, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2).scale(14, 4.4, 4.2), at(0, 0, 0), 0x6e4a2c], [box(25, 0.5, 7.4), at(0, 0.15, 0), 0x9a7048], // the hull, a boat's; its deck
+    [box(7, 3.2, 5), at(-5, 1.9, 0), 0x7a5232], [box(6.6, 1.0, 5.1), at(-5, 2.3, 0), LAMP], // the deckhouse, its windows
+    [new THREE.SphereGeometry(1, 24, 14).scale(17, 6.2, 6.2), at(0, 12.5, 0), 0xf2ead8], ...[4.5, -6.5].map((x) => [new THREE.CylinderGeometry(6.0, 6.0, 1.8, 24, 1, true).rotateZ(Math.PI / 2), at(x, 12.5, 0), ACC]), // the envelope, bands in the accent
+    ...[-8, 8].flatMap((x) => [-1, 1].map((sd) => [box(0.3, 7.2, 0.3), at(x, 5.8, sd * 2.9, sd * 0.22, 0, 0), 0x5a4030])), // struts
+    ...[-1, 1].map((sd) => [tri([7, 1, sd * 3.6], [-7, 1.5, sd * 3.6], [-3, 4.2, sd * 12]), at(0, 0, 0), ACC]), // wing sails
+    [tri([-13, 12.5, 0], [-19.5, 21, 0], [-19.5, 5, 0]), at(0, 0, 0), ACC], [box(0.7, 0.7, 0.7), at(13, 1.4, 0), LAMP], [box(0.7, 0.7, 0.7), at(-13.5, 1.8, 0), LAMP], // the tail fin; lanterns at the bow and stern
+  ]));
+  const propGeo = keep(mergeColored(THREE, [[box(0.4, 6, 0.6), at(0, 0, 0), 0x4a3a2a], [box(0.4, 0.6, 6), at(0, 0, 0), 0x4a3a2a], [cyl(0.5, 0.5, 1.2, 8).rotateZ(Math.PI / 2), at(0, 0, 0), 0x3a3028]]));
+  const SHIPS = [{ kind: 0, cx: MAIN.c[0], cz: MAIN.c[2], ra: 300, rb: 210, y: 58, v: 7, ph: 1.4 }, { kind: 1, x0: -2600, z0: -1400, x1: 2600, z1: -1150, y: 120, v: 9, ph: 0.22 }].map((s) => { const g = new THREE.Group(); g.add(new THREE.Mesh(shipGeo, paintMat)); const p = new THREE.Mesh(propGeo, paintMat); p.position.set(-15, 3.5, 0); g.add(p); scene.add(g); return { ...s, g, prop: p }; });
+  const shipAt = (s, t, out) => { if (s.kind === 0) { const L = Math.PI * (3 * (s.ra + s.rb) - Math.sqrt((3 * s.ra + s.rb) * (s.ra + 3 * s.rb))), a = s.ph + (t * s.v * Math.PI * 2) / L; return out.set(s.cx + s.ra * Math.cos(a), s.y + 6 * Math.sin(a * 2), s.cz + s.rb * Math.sin(a)); } const L = Math.hypot(s.x1 - s.x0, s.z1 - s.z0), u = (((t * s.v) / (L + 600) + s.ph) % 1 + 1) % 1, k = (u * (L + 600) - 300) / L; return out.set(s.x0 + (s.x1 - s.x0) * k, s.y + 4 * Math.sin(t * 0.2), s.z0 + (s.z1 - s.z0) * k); };
+  const birdGeo = keep(mergeColored(THREE, [[box(0.8, 0.18, 0.2), at(0, 0, 0), 0xf4f2ee], [box(0.25, 0.16, 0.16), at(0.5, 0.05, 0), 0xf4f2ee], [box(0.12, 0.06, 0.08), at(0.66, 0.03, 0), 0xe8a030], ...[-1, 1].flatMap((sd) => [[box(0.36, 0.04, 0.55), at(0.05, 0.05, sd * 0.36), 0xf4f2ee], [box(0.28, 0.04, 0.55), at(-0.05, 0.05, sd * 0.88), 0xe8e6e2]])]));
+  const FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].y * 0.7 + instanceMatrix[3].x * 0.13;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.12, 0.0), f = sin(uTime * 6.0 + ph) * 0.7 * smoothstep(0.2, 0.6, sin(uTime * 0.6 + ph)) + 0.08;\n  transformed.y += span * sin(f); transformed.z = side * (0.12 + span * cos(f)); } // a few beats, then a glide";
+  const birdMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 })), "bird", FLAP);
+  const BIRDS = Array.from({ length: preview ? 6 : 16 }, (_, k) => ({ c: new THREE.Vector3(MAIN.c[0] - 70 + r(-30, 30), r(10, 55), MAIN.c[2] + 120 + r(-30, 30)), rad: r(30, 80), w: r(9, 12), ph: r(0, 6.28), dir: k % 3 ? 1 : -1 }));
+  const birds = new THREE.InstancedMesh(birdGeo, birdMat, BIRDS.length); birds.frustumCulled = false; birds.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(birds); keep(birds);
+
+  /* --- the sky: blue with high cloud by day; the Milky Way, stars and the moon by night --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: nightU, uNoise: { value: noise },
+    uGalN: { value: new THREE.Vector3(0.55, 0.4, 0.73).normalize() }, uGalC: { value: new THREE.Vector3() } };
+  skyU.uGalC.value.set(0.7, 0.2, -0.7).normalize(); skyU.uGalC.value.addScaledVector(skyU.uGalN.value, -skyU.uGalC.value.dot(skyU.uGalN.value)).normalize();
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(40000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 500 : 1600, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.02, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 30000, Math.sin(e) * 30000, Math.sin(a) * Math.cos(e) * 30000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(28000).add(C0); moon.scale.setScalar(820); moon.lookAt(C0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0xb0bfe0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.45 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(5200); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(100000, 100000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 3000, -15000); clouds.renderOrder = -6; clouds.frustumCulled = false; scene.add(clouds);
+
+  /* --- glows: the lanterns and windows by night, the ships' lanterns --- */
+  const GL = [];
+  const G_STATIC = LIGHTS.map(([isl, x, y, z, s, mn = 1.2]) => { GL.push([0, 0, 0, s, 2.5, 1.7, 0.9, mn]); return { isl, x, y, z }; });
+  const G_SHIP = GL.length; for (let k = 0; k < SHIPS.length * 2; k++) GL.push([0, 0, 0, 0.6, 2.5, 1.7, 0.9, 1.3]);
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  /* --- light --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#03061a" : "#3a7cd4"); skyU.uMid.value.set(d ? "#0a1538" : "#8ab8ea"); skyU.uHorizon.value.set(d ? "#1c2a52" : "#e6f0f9"); skyU.uGlow.value.set(d ? "#1a2448" : "#fff4dc").multiplyScalar(d ? 0.15 : 0.3); skyU.uSunColor.value.set("#fff6e0");
+    starU.uAmt.value = d ? 1 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    clouds.visible = !d; cloudU.uLit.value.set("#ffffff"); cloudU.uShade.value.set("#b8c6dc"); cloudU.uGlow.value.set("#fff3e0").multiplyScalar(0.3); cloudU.uHaze.value.set("#e0eaf4");
+    const haze = new THREE.Color(d ? "#121c38" : "#dfe9f3");
+    seaU.uSunDir.value.copy(d ? MOONLIGHT : SUN); seaU.uLit.value.set(d ? "#6a7aa4" : "#ffffff"); seaU.uShade.value.set(d ? "#1a2240" : "#8ea2c2"); seaU.uGlow.value.set(d ? "#8a9ac8" : "#fff4dc").multiplyScalar(d ? 0.2 : 0.4); seaU.uHaze.value.copy(haze);
+    for (const u of fallMats) { u.uLit.value.set(d ? "#a9b8d8" : "#ffffff"); u.uShade.value.set(d ? "#3a4662" : "#a8b8c4"); }
+    for (const { u, amt } of mistMats) { u.uLit.value.set(d ? "#56648a" : "#ffffff"); u.uShade.value.set(d ? "#1c2238" : "#c4cede"); u.uLightDir.value.copy(d ? MOONLIGHT : SUN); u.uAmt.value = amt * (d ? 0.7 : 1); u.uHaze.value.copy(haze); u.uHazeAmt.value = 0.08; }
+    sun.position.copy(d ? MOONLIGHT : SUN).multiplyScalar(800); sun.color.set(d ? "#9fb4e0" : "#fff1dc"); sun.intensity = d ? 0.55 : 2.7;
+    hemi.color.set(d ? "#2c3f6a" : "#b4cdea"); hemi.groundColor.set(d ? "#141828" : "#c8ccd4"); hemi.intensity = d ? 0.45 : 0.95; // light from the clouds below, too
+    scene.fog.color.copy(haze); fogD.value = d ? 1 / 5000 : 1 / 6000; scene.fog.density = fogD.value;
+    nightU.value = d ? 1 : 0;
+    vineU.uCol.value.set(d ? "#0e160e" : "#2a4220");
+    glowU.uAmt.value = d ? 1 : 0;
+    for (const i of CRYSTALS) aTint.setXYZ(i, accentU.value.r * 2.2, accentU.value.g * 2.2, accentU.value.b * 2.2);
+    aTint.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera on our island's edge --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 42 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = 0.02 + k * 0.08, pitch = -0.17 + k * 0.05; // looking down a little, at the islands' undersides and the sea of clouds; a phone turns towards the main island
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); glowU.uPx.value = buf.y / (2 * Math.tan((camera.fov * Math.PI) / 360)); glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900)); };
+
+  const mA = new THREE.Matrix4(), P2 = new THREE.Vector3(), P3 = new THREE.Vector3(), T0 = 30;
+  const facing = (p, q) => Math.atan2(-(q.z - p.z), q.x - p.x); // the yaw that points a model's +x from p towards q
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    for (const b of groups) b.g.position.y = b.base + b.amp * Math.sin(t * b.w * 0.5 + b.ph); // each island bobbing at its own pace
+    SHIPS.forEach((s, k) => { // airships: along their courses, facing the way they go, a slight roll
+      shipAt(s, t, P2); shipAt(s, t + 0.5, P3);
+      s.g.position.copy(P2); s.g.rotation.set(0.03 * Math.sin(t * 0.4 + k), facing(P2, P3), 0.02 * Math.sin(t * 0.3 + k), "YXZ"); s.prop.rotation.x = t * 4;
+      s.g.updateMatrixWorld(true); V.set(13, 1.4, 0).applyMatrix4(s.g.matrixWorld); aGlow.setXYZW(G_SHIP + k * 2, V.x, V.y, V.z, 0.6); V.set(-13.5, 1.8, 0).applyMatrix4(s.g.matrixWorld); aGlow.setXYZW(G_SHIP + k * 2 + 1, V.x, V.y, V.z, 0.6);
+    });
+    BIRDS.forEach((b, k) => { // birds round their circles, banked into the turn
+      const a = b.ph + (t * b.w * b.dir) / b.rad, a2 = a + (0.1 * b.w * b.dir) / b.rad;
+      P2.set(b.c.x + b.rad * Math.cos(a), b.c.y + 4 * Math.sin(a * 2 + k), b.c.z + b.rad * Math.sin(a)); P3.set(b.c.x + b.rad * Math.cos(a2), b.c.y + 4 * Math.sin(a2 * 2 + k), b.c.z + b.rad * Math.sin(a2));
+      birds.setMatrixAt(k, mA.compose(P2, Q.setFromEuler(E.set(b.dir * Math.atan((b.w * b.w) / (9.8 * b.rad)), facing(P2, P3), 0, "YXZ")), V2.setScalar(2.2))); E.set(0, 0, 0, "XYZ"); // a roll to its right (+z) for a circle run from +x towards +z
+    });
+    birds.instanceMatrix.needsUpdate = true;
+    G_STATIC.forEach((l, i) => { const g = l.isl.g; aGlow.setXYZ(i, g.position.x + l.x, g.position.y + l.y, g.position.z + l.z); if (night) aGlow.setW(i, GL[i][3] * (0.9 + 0.1 * Math.sin(t * 7 + i * 1.9))); });
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { isles: ISLES.length, falls: FALLS.length, rocks: ROCKS.length, birds: BIRDS.length, ships: SHIPS.length, lights: NGL, eye: +C0.y.toFixed(1), accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
