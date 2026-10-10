@@ -21693,7 +21693,562 @@ function dinovalley(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley };
+/* ---------- Futuristic city: down a grand avenue from high above it; glass towers, sky lanes of flying cars, a maglev down the middle ---------- */
+// The towers are instanced boxes (and a few cylinders) with one shader that draws their curtain walls: panes mirroring the sky with a
+// glint of sun, frames lit by it, and by night windows lit one by one (whole floors on or off), crowns and corners outlined in the
+// accent. Every pattern fades to its average once a cell is smaller than a pixel, so the far city does not shimmer. The flying cars move
+// in their vertex shaders along straight lanes whose clock is wrapped every 600 s (each lane's period divides it), so no large times
+// reach the GPU; their lights are streaks stretched back along the lane.
+const FC_BLD_VS = /* glsl */ `
+  attribute vec4 aB; // seed, glass tint (0…3), column width, floor height
+  attribute vec4 aB2; // lit share by night, LED (0 none, 1 crown band, 2 corner strips), the building's top (m), roof (0 plant, 1 garden)
+  varying vec3 vW; varying vec3 vN; varying vec4 vB; varying vec4 vB2; varying vec3 vL; varying vec2 vHalf; varying float vDepth;
+  void main() {
+    vB = aB; vB2 = aB2;
+    vec3 sc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+    vL = position * sc; vHalf = sc.xz * 0.5; // the part's own frame, in metres
+    vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0); vW = w.xyz;
+    vN = normalize(mat3(modelMatrix) * (mat3(instanceMatrix) * (normal / (sc * sc)))); // a normal through a scaled matrix
+    vec4 mv = viewMatrix * w; vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const FC_BLD_FS = /* glsl */ `
+  uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uSkyZ; uniform vec3 uSkyH; uniform vec3 uGround; uniform vec3 uHaze; uniform vec3 uAccent;
+  uniform float uFogD; uniform float uNight;
+  varying vec3 vW; varying vec3 vN; varying vec4 vB; varying vec4 vB2; varying vec3 vL; varying vec2 vHalf; varying float vDepth;
+  float fcH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  vec3 fcTint(float k) { return k < 0.5 ? vec3(0.52, 0.74, 0.84) : k < 1.5 ? vec3(0.86, 0.72, 0.54) : k < 2.5 ? vec3(0.8, 0.86, 0.92) : vec3(0.36, 0.48, 0.66); }
+  float fcStep(float e, float x, float fw) { return smoothstep(e - fw, e + fw, x); }
+  void main() {
+    vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+    float seed = vB.x;
+    vec3 frameC = mix(vec3(0.74, 0.76, 0.78), vec3(0.2, 0.22, 0.25), step(0.62, fract(seed * 5.31)));
+    vec3 sunLit = uAmb + uSunCol * max(dot(N, uSunDir), 0.0);
+    float ao = mix(0.55, 1.0, smoothstep(0.0, 90.0, vW.y)); // the canyons darker towards the street
+    vec3 col;
+    if (N.y > 0.6) { // a roof: gravel and plant, a parapet round it, or a garden
+      vec2 q = vW.xz / 3.0, c2 = floor(q), f2 = fract(q), fq = fwidth(q);
+      float aa = smoothstep(0.3, 0.8, max(fq.x, fq.y));
+      float unit = step(0.84, fcH(c2 + seed)) * step(0.12, f2.x) * step(f2.x, 0.88) * step(0.12, f2.y) * step(f2.y, 0.88);
+      unit = mix(unit, 0.12, aa);
+      vec3 roofC = mix(vec3(0.4, 0.4, 0.38), vec3(0.62, 0.64, 0.66), unit);
+      if (vB2.w > 0.5) roofC = mix(mix(vec3(0.14, 0.3, 0.11), vec3(0.3, 0.44, 0.16), fcH(floor(q * 0.5) + seed)), vec3(0.5, 0.48, 0.42), step(0.82, fcH(c2 * 1.3 + seed)) * (1.0 - aa));
+      #ifdef CYL
+      float pe = vHalf.x - length(vL.xz);
+      #else
+      float pe = min(vHalf.x - abs(vL.x), vHalf.y - abs(vL.z));
+      #endif
+      roofC = mix(frameC, roofC, smoothstep(0.7, 1.1, pe));
+      col = mix(roofC * sunLit, roofC * uAmb * 0.35, uNight);
+    } else { // a curtain wall
+      #ifdef CYL
+      float rad = vHalf.x, nCol = max(6.0, floor(6.2832 * rad / vB.z + 0.5)), cw = 6.2832 * rad / nCol;
+      float across = atan(vL.z, vL.x) * rad, edge = 1e3;
+      #else
+      bool alongZ = abs(N.x) > 0.5; // a face looking along x: its windows run along z
+      float across = alongZ ? vW.z : vW.x, cw = vB.z;
+      float edge = alongZ ? vHalf.y - abs(vL.z) : vHalf.x - abs(vL.x); // how far in from the face's vertical edges
+      #endif
+      vec2 g = vec2(across / cw + seed * 17.0, vW.y / vB.w), cell = floor(g), f = fract(g), fw = fwidth(g);
+      float aaX = smoothstep(0.3, 0.8, fw.x), aaY = smoothstep(0.3, 0.8, fw.y), aa = max(aaX, aaY); // 1 once a column (a floor) is smaller than a pixel or so: its average instead
+      float curtain = step(0.3, fract(seed * 3.77)); // most towers are sheer glass; the rest have punched windows in a stone frame
+      float mx = mix(0.16, 0.035, curtain), sy = mix(0.32, 0.12, curtain);
+      float wx = mix(fcStep(mx, f.x, fw.x) * fcStep(mx, 1.0 - f.x, fw.x), 1.0 - 2.0 * mx, aaX);
+      float wy = mix(fcStep(sy, f.y, fw.y) * fcStep(0.03, 1.0 - f.y, fw.y), 1.0 - sy - 0.03, aaY);
+      float hp = mix(fcH(cell + seed * 7.0), 0.5, aa);
+      vec3 Np = normalize(N + vec3(hp - 0.5, fcH(cell.yx + seed) - 0.5, hp * 0.6 - 0.3) * 0.07 * (1.0 - aa)); // each pane a hair off true, so the mirror breaks up
+      vec3 R = reflect(-V, Np);
+      vec3 sky = R.y > 0.0 ? mix(uSkyH, uSkyZ, smoothstep(0.0, 0.7, R.y)) : mix(uSkyH * 0.55, uGround, smoothstep(0.0, -0.25, R.y));
+      float fres = 0.06 + 0.94 * pow(1.0 - max(dot(N, V), 0.0), 4.0);
+      vec3 tint = fcTint(vB.y);
+      vec3 glass = mix(tint * (0.05 + 0.08 * hp), sky * tint * 1.15, 0.42 + 0.58 * fres);
+      vec3 spandrel = mix(frameC * sunLit, glass * 0.8, curtain), mullion = vec3(0.56, 0.6, 0.64) * sunLit; // between the floors: stone, or opaque glass; the thin mullions between panes
+      vec3 pane = glass + uSunCol * pow(max(dot(R, uSunDir), 0.0), 300.0) * 4.0 * (1.0 - 0.7 * aa);
+      vec3 day = mix(spandrel, mix(mullion, pane, wx), wy) * ao; // the floor band where wy is 0, a mullion where wx is
+      // by night: some windows lit, whole floors dark; seen from further off, the lit floors as bands, then a dim average
+      float floorOn = step(0.3, fcH(vec2(cell.y * 1.7, seed * 3.1)));
+      float office = step(1.0 - vB2.x, fcH(vec2(floor(g.x / 6.0), cell.y) + seed * 2.9)), aaG = smoothstep(0.3, 0.8, fw.x / 6.0); // lights go on an office (six bays) at a time
+      float on = mix(mix(mix(step(0.25, fcH(cell + seed * 5.3)) * office, 0.75 * office, aaX), 0.75 * vB2.x, aaG) * floorOn, 0.75 * vB2.x * 0.7 * 0.5, aaY); // a window; its office; the floor; the tower, dimmed
+      float lk = fract(seed * 7.7);
+      vec3 lamp = (lk < 0.4 ? vec3(1.0, 0.72, 0.42) : lk < 0.75 ? vec3(0.8, 0.9, 1.0) : vec3(1.0, 0.93, 0.8)) * (0.55 + 0.7 * hp); // warm, cool, neutral by tower
+      vec3 night = mix(frameC * uAmb * 0.3, glass * 0.25, curtain) + lamp * on * wx * wy * 1.7;
+      col = mix(day, night, uNight);
+      // the accent: a band round the crown, or strips up the corners
+      float led = 0.0;
+      if (vB2.y > 0.5 && vB2.y < 1.5) { float fy = fwidth(vW.y); led = (1.0 - smoothstep(1.1 - fy, 1.1 + fy, abs(vW.y - (vB2.z - 6.0)))) * (1.0 - smoothstep(1.0, 3.0, fy)); }
+      else if (vB2.y > 1.5) { float fe = fwidth(edge); led = (1.0 - smoothstep(0.7 - fe, 0.7 + fe, edge)) * (1.0 - smoothstep(0.8, 2.5, fe)); }
+      col = mix(col, uAccent * (0.8 + 1.6 * uNight), led);
+    }
+    float fog = 1.0 - exp(-uFogD * uFogD * vDepth * vDepth);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the streets far below: a park down the avenue's middle, three lanes each way, pavements, cross streets every block; traffic moving
+// along them (its pattern repeats exactly every 600 s, like the sky lanes); by night street lamps and the cars as streams of light
+const FC_GROUND_VS = /* glsl */ `
+  varying vec3 vW; varying float vDepth;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vec4 mv = viewMatrix * w; vDepth = -mv.z; gl_Position = projectionMatrix * mv; }
+`;
+const FC_GROUND_FS = /* glsl */ `
+  uniform vec3 uSunCol; uniform vec3 uAmb; uniform vec3 uHaze; uniform vec3 uSunDir; uniform float uFogD; uniform float uNight; uniform float uLaneT; uniform sampler2D uNoise;
+  varying vec3 vW; varying float vDepth;
+  float fcH1(float x) { return fract(sin(x * 127.1) * 43758.5453); }
+  float fcBand(float x, float w, float fw) { return 1.0 - smoothstep(w - fw, w + fw, abs(x)); }
+  float fcCar(float along, float off, float v, float seed, out float cs) { // one lane: a car every 25 m or so (some gaps), moving along it
+    float u = (along - v * uLaneT) / 25.0 + seed, k = floor(u), f = fract(u), fu = fwidth(u), fo = fwidth(off);
+    cs = fcH1(k * 1.7 + seed);
+    float car = step(0.35, fcH1(k + seed * 13.0)) * fcBand(f - 0.5, 0.09, fu) * fcBand(off, 0.9, fo);
+    return mix(car, 0.65 * 0.18 * fcBand(off, 0.9, fo), smoothstep(0.15, 0.4, fu));
+  }
+  void main() {
+    vec2 p = vW.xz;
+    float ax = abs(p.x), tz = mod(280.0 - p.y, 110.0), tx = mod(ax - 50.0, 110.0), fx = fwidth(p.x), fz = fwidth(p.y);
+    vec3 col = vec3(0.46, 0.46, 0.44); // plazas under the towers
+    float road, walk, green = 0.0, lamps = 0.0, carHead = 0.0, carTail = 0.0, carDay = 0.0, cs = 0.0, c2;
+    vec3 carC = vec3(0.0);
+    if (ax < 50.0) { // the avenue
+      green = 1.0 - smoothstep(10.0 - fx, 10.0 + fx, ax);
+      road = smoothstep(10.0 - fx, 10.0 + fx, ax) * (1.0 - smoothstep(40.0 - fx, 40.0 + fx, ax));
+      walk = smoothstep(40.0 - fx, 40.0 + fx, ax);
+      float dir = p.x < 0.0 ? 1.0 : -1.0; // towards us on the left, away on the right
+      for (int i = 0; i < 3; i++) { float lx = 16.0 + 9.0 * float(i), v = (12.5 + 2.5 * float(i)) * dir, c = fcCar(p.y, ax - lx, v, float(i) * 0.37 + (dir > 0.0 ? 0.0 : 0.5), c2); if (c > carDay) { carDay = c; cs = c2; } } // the paint of the lane covering this point most (scaling it by coverage drew a ring round every car)
+      carHead = p.x < 0.0 ? carDay : 0.0; carTail = p.x < 0.0 ? 0.0 : carDay;
+      lamps = exp(-(pow(ax - 42.0, 2.0) + pow(mod(p.y, 32.0) - 16.0, 2.0)) / 34.0) + 0.5 * exp(-(pow(ax - 8.0, 2.0) + pow(mod(p.y + 16.0, 32.0) - 16.0, 2.0)) / 20.0);
+    } else {
+      road = max(fcBand(tz - 15.0, 11.0, fz), fcBand(tx - 95.0, 11.0, fx));
+      walk = max(fcBand(tz - 15.0, 15.0, fz), fcBand(tx - 95.0, 15.0, fx)) * (1.0 - road);
+      if (tz < 30.0) { float cb, a = fcCar(p.x, tz - 9.0, 10.0, 0.21 + floor((280.0 - p.y) / 110.0) * 0.13, c2), b = fcCar(p.x, tz - 21.0, -10.0, 0.71 + floor((280.0 - p.y) / 110.0) * 0.17, cb); carDay = max(a, b); carHead = a; carTail = b; cs = a > b ? c2 : cb; }
+      else if (tx > 80.0) { float cb, a = fcCar(p.y, tx - 89.0, 12.5, 0.43 + floor((ax - 50.0) / 110.0) * 0.11, c2), b = fcCar(p.y, tx - 101.0, -12.5, 0.93 + floor((ax - 50.0) / 110.0) * 0.19, cb); carDay = max(a, b); carHead = a; carTail = b; cs = a > b ? c2 : cb; }
+      lamps = exp(-(pow(tz - 3.0, 2.0) + pow(mod(p.x, 30.0) - 15.0, 2.0)) / 26.0) * step(tz, 30.0) + exp(-(pow(tx - 83.0, 2.0) + pow(mod(p.y, 30.0) - 15.0, 2.0)) / 26.0) * step(80.0, tx);
+    }
+    vec3 asphalt = vec3(0.09, 0.095, 0.1), pave = vec3(0.55, 0.54, 0.5), park = vec3(0.16, 0.3, 0.12) * (0.85 + 0.3 * texture2D(uNoise, p * 0.05).r);
+    col = mix(col, pave, walk); col = mix(col, asphalt, road); col = mix(col, park, green);
+    carC = cs < 0.25 ? vec3(0.8, 0.82, 0.84) : cs < 0.5 ? vec3(0.12, 0.13, 0.15) : cs < 0.75 ? vec3(0.62, 0.12, 0.1) : vec3(0.18, 0.32, 0.6);
+    col = mix(col, carC, carDay * (1.0 - uNight));
+    vec3 day = col * (uAmb + uSunCol * max(uSunDir.y, 0.0)) * 0.85;
+    vec3 night = col * uAmb * 0.6 + vec3(1.0, 0.75, 0.45) * lamps * 0.9 + vec3(1.0, 0.95, 0.85) * carHead * 1.4 + vec3(1.0, 0.12, 0.06) * carTail * 1.2;
+    float fog = 1.0 - exp(-uFogD * uFogD * vDepth * vDepth);
+    gl_FragColor = vec4(mix(mix(day, night, uNight), uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// a flying car's or a train's light: a streak from the light back along its lane, as in a long exposure (additive)
+const FC_STREAK_VS = /* glsl */ `
+  uniform float uLaneT; uniform float uPx; uniform float uMinK; uniform vec2 uRes; uniform float uTrail;
+  attribute vec4 aLane; attribute vec4 aDir; attribute vec4 aCar; // lane origin, length; direction, speed; offset along the lane, the light's place along the car, kind (0 head, 1 tail), size
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    float s = mod(aCar.x + aDir.w * uLaneT, aLane.w), fade = smoothstep(0.0, 200.0, s) * (1.0 - smoothstep(aLane.w - 300.0, aLane.w, s));
+    vec3 head = aLane.xyz + aDir.xyz * (s + aCar.y), back = head - aDir.xyz * (0.6 + aDir.w * uTrail);
+    vec4 ca = projectionMatrix * viewMatrix * vec4(head, 1.0), cb = projectionMatrix * viewMatrix * vec4(back, 1.0);
+    vUv = uv; vTint = (aCar.z < 0.5 ? vec3(2.2, 2.15, 1.95) : vec3(2.6, 0.22, 0.12)) * fade;
+    if (ca.w < 3.0 || cb.w < 3.0 || fade <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec2 hr = uRes * 0.5, pa = ca.xy / ca.w * hr, pb = cb.xy / cb.w * hr, d = pb - pa;
+    float len = length(d); vec2 t = len > 1e-3 ? d / len : vec2(1.0, 0.0), n = vec2(-t.y, t.x);
+    float along = position.x + 0.5, wpx = max(aCar.w * uPx / mix(ca.w, cb.w, along), 1.5 * uMinK);
+    vec2 px = mix(pa, pb, along) + t * (along - 0.5) * wpx + n * position.y * wpx; // the ends pushed out by half a width: round caps
+    float w = mix(ca.w, cb.w, along);
+    gl_Position = vec4(px / hr * w, mix(ca.z, cb.z, along), w);
+  }
+`;
+const FC_STREAK_FS = /* glsl */ `
+  uniform float uAmt;
+  varying vec2 vUv; varying vec3 vTint;
+  void main() {
+    float a = 1.0 - abs(vUv.y * 2.0 - 1.0);
+    float k = a * a * pow(1.0 - vUv.x, 1.5) * smoothstep(0.0, 0.1, vUv.x);
+    gl_FragColor = vec4(vTint * k * uAmt, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the LED screens on the facades: four designs taking turns (a wipe between them), tinted, scanlines close by, a frame
+const FC_SCREEN_VS = /* glsl */ `
+  attribute vec4 aAd; // seed, tint (0 the accent, 1 cyan, 2 pink, 3 amber), unused, unused
+  varying vec2 vUv; varying vec4 vAd; varying float vDepth;
+  void main() { vUv = uv; vAd = aAd; vec4 mv = viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0); vDepth = -mv.z; gl_Position = projectionMatrix * mv; }
+`;
+const FC_SCREEN_FS = /* glsl */ `
+  uniform sampler2D uAds; uniform float uTime; uniform float uNight; uniform vec3 uAccent; uniform vec3 uHaze; uniform float uFogD;
+  varying vec2 vUv; varying vec4 vAd; varying float vDepth;
+  void main() {
+    float t = uTime * 0.11 + vAd.x * 7.0, k = floor(t), f = fract(t);
+    float tile = mod(k + step(vUv.y, smoothstep(0.86, 1.0, f) * 1.02), 4.0); // the next design wipes in from below at the end of each turn
+    vec2 uv = vUv * 0.5 + vec2(mod(tile, 2.0), floor(tile / 2.0)) * 0.5;
+    float m = texture2D(uAds, uv).r;
+    vec3 tint = vAd.y < 0.5 ? uAccent : vAd.y < 1.5 ? vec3(0.3, 0.9, 1.0) : vAd.y < 2.5 ? vec3(1.0, 0.35, 0.75) : vec3(1.0, 0.7, 0.25);
+    float sl = vUv.y * 160.0, fs = fwidth(sl), scan = mix(0.8 + 0.2 * sin(sl * 6.2832 + uTime * 4.0), 0.9, smoothstep(0.3, 0.8, fs));
+    vec2 e = min(vUv, 1.0 - vUv), fe = fwidth(vUv);
+    float frame = 1.0 - smoothstep(0.012 - fe.x, 0.012 + fe.x, e.x) * smoothstep(0.012 - fe.y, 0.012 + fe.y, e.y);
+    vec3 col = mix(vec3(0.015, 0.02, 0.04), tint * (0.9 + 1.5 * uNight), m * scan);
+    col = mix(col, vec3(0.08, 0.09, 0.1), frame);
+    float fog = 1.0 - exp(-uFogD * uFogD * vDepth * vDepth);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the hologram rings turning over the landmark tower: bright towards their edges, scanlines running round them (additive)
+const FC_RING_VS = /* glsl */ `
+  varying vec3 vN; varying vec3 vV; varying vec2 vUv;
+  void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vN = normalize(mat3(modelMatrix) * normal); vV = cameraPosition - w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const FC_RING_FS = /* glsl */ `
+  uniform vec3 uCol; uniform float uAmt; uniform float uTime;
+  varying vec3 vN; varying vec3 vV; varying vec2 vUv;
+  void main() {
+    float fr = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+    float scan = 0.55 + 0.45 * sin(vUv.x * 90.0 - uTime * 2.5);
+    gl_FragColor = vec4(uCol * (0.2 + 1.6 * fr * fr) * scan * uAmt, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** Four LED-screen designs in the quarters of one texture, white on black (the shader tints them): a check in a ring, a word, an
+ *  equaliser, chevrons. Tile t sits at u (t mod 2) / 2, v floor(t / 2) / 2 once the canvas is flipped, so tile 0 is its lower left. */
+function fcAds(THREE) {
+  const r = koiRng(818);
+  const tex = canvasTexture(THREE, 1024, 1024, (g) => {
+    g.fillStyle = "#000"; g.fillRect(0, 0, 1024, 1024);
+    const tile = (t, draw) => { g.save(); g.translate((t % 2) * 512, t < 2 ? 512 : 0); g.beginPath(); g.rect(0, 0, 512, 512); g.clip(); draw(); g.restore(); };
+    g.fillStyle = g.strokeStyle = "#fff"; g.lineCap = g.lineJoin = "round"; g.textAlign = "center"; g.textBaseline = "middle";
+    tile(0, () => { // a check in a ring, the portal's own mark
+      g.lineWidth = 22; g.beginPath(); g.arc(256, 215, 150, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 8; g.beginPath(); g.arc(256, 215, 118, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 34; g.beginPath(); g.moveTo(186, 222); g.lineTo(238, 272); g.lineTo(334, 160); g.stroke();
+      g.font = "bold 58px sans-serif"; g.fillText("TASK PORTAL", 256, 440);
+    });
+    tile(1, () => { // a word, large
+      g.font = "bold 190px sans-serif"; g.fillText("NEO", 256, 200);
+      g.lineWidth = 10; g.beginPath(); g.moveTo(70, 320); g.lineTo(442, 320); g.stroke();
+      g.font = "bold 60px sans-serif"; g.fillText("SKYLINE", 256, 400);
+    });
+    tile(2, () => { // an equaliser
+      g.font = "bold 70px sans-serif"; g.fillText("LIVE", 256, 70);
+      for (let k = 0; k < 13; k++) { const hgt = r(60, 330); g.fillRect(42 + k * 34, 470 - hgt, 24, hgt); }
+    });
+    tile(3, () => { // chevrons
+      g.lineWidth = 30; for (let k = 0; k < 3; k++) { const x = 120 + k * 100; g.beginPath(); g.moveTo(x, 110); g.lineTo(x + 70, 210); g.lineTo(x, 310); g.stroke(); }
+      g.font = "bold 66px sans-serif"; g.fillText("SKYWAY 7", 256, 420);
+    });
+  });
+  tex.colorSpace = THREE.NoColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+
+function futurecity(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4747);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 40; camera.near = 1; camera.far = 40000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, laneT = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 10) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(2.55, 0.62), MOON = sph(-1.15, 0.27); // the afternoon sun from the left, a little behind us: it lights the right-hand towers' faces along the avenue
+  const ACC = 0xff00ff, COAT = 0xffffff, LAMP = 0xffff00; // vertex-colour markers: the accent; a car's paint; glass (lit at night)
+  const P_LOOP = 600; // every sky lane's period divides this: the lanes' clock is wrapped here (on the CPU), so the shaders never see a large time
+
+  /* --- the plan: a grand avenue running straight away from us, blocks of 80 m either side with 30 m streets; the towers rise towards downtown --- */
+  const AV = 50, PITCH = 110, C0 = new THREE.Vector3(0, 110, 262);
+  const NROW = preview ? 30 : 46, NCOL = preview ? 12 : 23;
+  const rowZ = (j) => 210 - PITCH * j, colX = (i) => AV + 40 + PITCH * i, crossZ = (j) => 265 - PITCH * j; // block centres; the cross street in front of row j
+  const LANE_STREETS = [4, 8, 12, 17, 23]; // cross streets with flying traffic over them
+  const downtown = (x, z) => Math.exp(-(((x - 120) / 1000) ** 2 + ((z + 2300) / 1200) ** 2));
+  const PARTS = [], CYLS = [], SPIRES = [], TOWERS = []; // parts: [x, y0, z, w, h, d, building]; towers: { x, z, w, d, top, single, ... }
+  const building = (h) => ({ seed: r(), tint: Math.floor(r() * 4), colW: r(1.6, 3.2), floorH: r(3.5, 4.4), lit: r(0.25, 0.6), led: h > 90 ? (r() < 0.2 ? 1 : r() < 0.18 ? 2 : 0) : 0, top: h, roof: h < 90 && r() < 0.45 ? 1 : 0 });
+  const addTower = (x, z, w, d, h, opts = {}) => {
+    const b = { ...building(h), ...opts };
+    if (!opts.landmark && h > 110 && r() < 0.07) { const dia = Math.min(w, d) * 0.92; CYLS.push([x, 0, z, dia, h, dia, b]); b.cyl = true; } // now and then a round tower
+    else if (opts.parts) { let y = 0; for (const [k, f] of opts.parts) { PARTS.push([x, y, z, w * k, h * f, d * k, b]); y += h * f; } }
+    else if (h > 150 && r() < 0.45) { const s = [[1, 0.55], [0.76, 0.3], [0.56, 0.15]]; let y = 0; for (const [k, f] of s) { PARTS.push([x, y, z, w * k, h * f, d * k, b]); y += h * f; } } // set back as it rises
+    else PARTS.push([x, 0, z, w, h, d, b]);
+    if (h > 320 || opts.spire) SPIRES.push([x, h, z, Math.min(w, d) * 0.07, opts.spire || r(40, 110)]);
+    const t = { x, z, w, d, top: h, b }; TOWERS.push(t); return t;
+  };
+  const singles = new Map(); // block → its one tower, for sky bridges
+  const LANDMARK = { i: 1, j: 21 };
+  for (let j = 0; j < NROW; j++) for (let i = 0; i < NCOL; i++) for (const sd of [-1, 1]) {
+    const xc = sd * colX(i), zc = rowZ(j);
+    if (sd > 0 && i === LANDMARK.i && j === LANDMARK.j) { singles.set(`${i},${j},${sd}`, addTower(xc, zc, 76, 76, 580, { landmark: true, led: 2, lit: 0.6, tint: 0, spire: 120, parts: [[1, 0.45], [0.8, 0.3], [0.6, 0.18], [0.42, 0.07]] })); continue; }
+    const D = downtown(xc, zc);
+    let H = 22 + 400 * D;
+    if (zc < -4300) H *= smooth(-5200, -4300, zc); // nothing tall at the very end of the view
+    const lots = D > 0.45 ? (r() < 0.7 ? 1 : 2) : r() < 0.35 ? 1 : r() < 0.6 ? 2 : 4;
+    const L = lots === 1 ? [[0, 0, r(54, 74), r(54, 74)]] : lots === 2 ? (r() < 0.5 ? [[-20, 0, r(30, 36), r(58, 74)], [20, 0, r(30, 36), r(58, 74)]] : [[0, -20, r(58, 74), r(30, 36)], [0, 20, r(58, 74), r(30, 36)]]) : [[-20, -20], [20, -20], [-20, 20], [20, 20]].map(([a, b]) => [a, b, r(26, 34), r(26, 34)]);
+    for (const [ox, oz, w, d] of L) {
+      let h = H * r(0.35, 1.2) * (r() < 0.06 ? 1.7 : 1);
+      if (sd < 0 && j < 4) h = Math.min(h, r(30, 90)); // the near towers on the left stay below us: we see their roofs, and sky over them
+      if (sd > 0 && j < 3) h = Math.min(h, r(60, 170));
+      const t = addTower(xc + ox, zc + oz, w, d, Math.max(12, h));
+      if (lots === 1) singles.set(`${i},${j},${sd}`, t);
+    }
+  }
+  // sky bridges between neighbouring towers across a cross street (never over one with flying traffic, never over the avenue)
+  const BRIDGES = [];
+  for (const [key, a] of singles) {
+    const [i, j, sd] = key.split(",").map(Number), b = singles.get(`${i},${j + 1},${sd}`);
+    if (!b || LANE_STREETS.includes(j + 1) || a.top < 120 || b.top < 120 || r() > 0.32) continue;
+    const y0 = r(50, Math.min(a.top, b.top) - 40), z0 = b.z + b.d / 2, z1 = a.z - a.d / 2, x = (a.x + b.x) / 2;
+    BRIDGES.push([x, y0, (z0 + z1) / 2, 10, 6, z1 - z0, { ...building(100), led: 0, top: y0 + 6 }]);
+  }
+
+  /* --- the towers: one instanced draw for the boxes (sorted nearest first, so the hidden ones cost little), one for the round ones --- */
+  const fogD = { value: 1 / 5200 }, nightU = { value: 0 }, accentU = { value: new THREE.Color() };
+  const bldU = { uSunDir: { value: SUN.clone() }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() }, uSkyZ: { value: new THREE.Color() }, uSkyH: { value: new THREE.Color() }, uGround: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uAccent: accentU, uFogD: fogD, uNight: nightU };
+  const towerMesh = (geo, list, defines) => {
+    list.sort((p, q) => Math.hypot(p[0] - C0.x, p[2] - C0.z) - Math.hypot(q[0] - C0.x, q[2] - C0.z));
+    const n = list.length, aB = new Float32Array(n * 4), aB2 = new Float32Array(n * 4);
+    const m = new THREE.InstancedMesh(geo, shader(FC_BLD_VS, FC_BLD_FS, bldU, { defines }), Math.max(1, n));
+    list.forEach(([x, y0, z, w, h, d, b], k) => { m.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y0, z), Q.identity(), V2.set(w, h, d))); aB.set([b.seed, b.tint, b.colW, b.floorH], k * 4); aB2.set([b.lit, b.led, b.top, b.roof], k * 4); });
+    geo.setAttribute("aB", new THREE.InstancedBufferAttribute(aB, 4)); geo.setAttribute("aB2", new THREE.InstancedBufferAttribute(aB2, 4));
+    m.count = n; m.frustumCulled = false; scene.add(m); keep(m); return m;
+  };
+  towerMesh(keep(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)), [...PARTS, ...BRIDGES], {});
+  towerMesh(keep(new THREE.CylinderGeometry(0.5, 0.5, 1, preview ? 18 : 30, 1).translate(0, 0.5, 0)), CYLS, { CYL: "" });
+
+  /* --- the streets far below, the trees down the avenue's park and along its pavements --- */
+  const groundU = { uSunCol: bldU.uSunCol, uAmb: bldU.uAmb, uHaze: bldU.uHaze, uSunDir: bldU.uSunDir, uFogD: fogD, uNight: nightU, uLaneT: laneT, uNoise: { value: noise } };
+  const ground = new THREE.Mesh(keep(new THREE.PlaneGeometry(60000, 60000).rotateX(-Math.PI / 2)), shader(FC_GROUND_VS, FC_GROUND_FS, groundU));
+  ground.renderOrder = 1; scene.add(ground); // after the towers: early-z skips the street they stand on
+  const lit = (mat, key, extraVS = "", extraPars = "") => { // markers: the accent, a car's own paint (aCoat, through vCoat), glass lit at night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uLaneT: laneT, uTime: time });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uLaneT; uniform float uTime; varying vec3 vCoat;\n" + extraPars).replace("#include <begin_vertex>", "#include <begin_vertex>\n  vCoat = vec3(0.6);\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight; varying vec3 vCoat;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float fcLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(0.9, c.b) * step(c.g, 0.1), isCoat = step(0.99, c.r) * step(0.99, c.g) * step(0.99, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vCoat, isCoat); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.06, 0.08, 0.11), isLamp); fcLamp = isLamp + isAcc * 0.6; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += mix(vec3(1.0, 0.85, 0.6), uAccent, step(0.5, fcLamp) * step(fcLamp, 0.7)) * fcLamp * uNight * 1.3;");
+    };
+    mat.customProgramCacheKey = () => "fc-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.25 })), "paint");
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // painted, one merged draw
+  const TREES = [];
+  for (let z = 400; z > -4600; z -= preview ? 28 : 14) { for (const x of [-5, 5]) TREES.push([x + r(-1, 1), z + r(-3, 3), r(0.8, 1.3)]); if (r() < 0.6) for (const x of [-45, 45]) TREES.push([x, z + r(-4, 4), r(0.7, 1.1)]); }
+  { const g = keep(mergeColored(THREE, [[new THREE.IcosahedronGeometry(3.2, 0).scale(1, 1.15, 1), at(0, 6.2, 0), 0x2e5a22], [cyl(0.3, 0.4, 3.4, 5), at(0, 1.7, 0), 0x4a3a2a]]));
+    const m = new THREE.InstancedMesh(g, paintMat, TREES.length), c = new THREE.Color();
+    TREES.forEach(([x, z, s], k) => { m.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, 0, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.setScalar(s))); m.setColorAt(k, c.setHSL(r(0.24, 0.33), r(0.3, 0.5), r(0.7, 1.0) * 0.5)); });
+    m.frustumCulled = false; scene.add(m); keep(m); }
+
+  /* --- the maglev: a guideway down the park on pylons, a train each way --- */
+  const GW_Y = 40, GW_Z0 = 560, GW_Z1 = -4800;
+  P(box(11, 2.4, GW_Z0 - GW_Z1), at(0, GW_Y - 1.2, (GW_Z0 + GW_Z1) / 2), 0xd9dde2);
+  for (const sd of [-1, 1]) P(box(0.25, 0.5, GW_Z0 - GW_Z1), at(sd * 5.55, GW_Y - 1.0, (GW_Z0 + GW_Z1) / 2), ACC); // a light line down each side, in the accent
+  for (let z = GW_Z0 - 20; z > GW_Z1; z -= 40) { P(cyl(1.3, 1.7, GW_Y - 2.4, 8), at(0, (GW_Y - 2.4) / 2, z), 0xbfc4ca); P(box(11.4, 1.4, 3), at(0, GW_Y - 3.0, z), 0xb3b8be); }
+  const carLen = 24, NCAR = 8, TRAIN_V = 55;
+  const midCar = keep(mergeColored(THREE, [[box(carLen, 4.0, 4.4), at(0, 2.3, 0), 0xf2f4f6], [box(carLen - 1.5, 1.3, 4.46), at(0, 2.9, 0), LAMP], [box(carLen, 0.5, 4.5), at(0, 1.5, 0), ACC], [box(carLen - 2, 0.5, 3.8), at(0, 0.3, 0), 0x3a3e44], [box(carLen - 0.5, 0.2, 0.7), at(0, 4.35, 0), ACC]]));
+  const noseCar = keep(mergeColored(THREE, [[box(carLen - 8, 4.0, 4.4), at(-4, 2.3, 0), 0xf2f4f6], [new THREE.SphereGeometry(1, 16, 10).scale(8.5, 2.0, 2.2), at(4.2, 2.3, 0), 0xf2f4f6], [box(carLen - 9.5, 1.3, 4.46), at(-4, 2.9, 0), LAMP], [box(4.6, 1.0, 3.2), at(7.8, 3.0, 0, 0, 0, -0.34), LAMP], [box(carLen - 8, 0.5, 4.5), at(-4, 1.5, 0), ACC], [box(carLen - 10, 0.5, 3.8), at(-3.5, 0.3, 0), 0x3a3e44], [box(carLen - 9, 0.2, 0.7), at(-4, 4.35, 0), ACC]]));
+  const mids = new THREE.InstancedMesh(midCar, paintMat, 2 * (NCAR - 2)), noses = new THREE.InstancedMesh(noseCar, paintMat, 4);
+  for (const m of [mids, noses]) { m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); keep(m); }
+  const TRAINS = [{ x: -2.7, dir: 1, off: 0 }, { x: 2.7, dir: -1, off: 0.45 }]; // towards us on the left track, away on the right
+  const TRAIN_RUN = GW_Z0 - GW_Z1 + 400, TRAIN_P = TRAIN_RUN / TRAIN_V + 6; // each pass, then a moment out of sight
+
+  /* --- the blimp: drifting up the avenue towards us, high over the traffic --- */
+  const blimp = new THREE.Mesh(keep(mergeColored(THREE, [
+    [new THREE.SphereGeometry(1, 28, 16).scale(42, 10.5, 10.5), at(0, 0, 0), 0xe8eaee], [new THREE.CylinderGeometry(10.62, 10.62, 3, 28, 1, true).rotateZ(Math.PI / 2), at(6, 0, 0), ACC], // the envelope, a band in the accent round it
+    [box(9, 2.6, 3.2), at(4, -11.4, 0), 0x50555c], [box(7.6, 1.2, 3.26), at(4, -11.0, 0), LAMP], // the gondola
+    ...[[0, 1], [0, -1], [1, 0], [-1, 0]].map(([y, z]) => [box(9, 0.6, 0.6).scale(1, y ? 9 : 1, z ? 9 : 1), at(-36, y * 4.2, z * 4.2), 0xd0d4da]), // fins
+  ])), paintMat);
+  scene.add(blimp);
+  const BLIMP_Z0 = -3800, BLIMP_V = 7, BLIMP_P = 600, BLIMP_Y = 262; // high enough to clear the cross lanes beneath it // 4200 m in 600 s
+
+  /* --- the hologram rings over the landmark, the spires --- */
+  const LM = TOWERS.find((t) => t.b.landmark), LM_TOP = 580 + 120;
+  const ringU = { uCol: { value: new THREE.Color() }, uAmt: { value: 1 }, uTime: time };
+  const rings = [70, 92, 114].map((R, k) => { const m = new THREE.Mesh(keep(new THREE.TorusGeometry(R, 1.4, 8, preview ? 80 : 160)), shader(FC_RING_VS, FC_RING_FS, ringU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })); m.position.set(LM.x, LM_TOP - 40 - k * 6, LM.z); m.renderOrder = 16; m.frustumCulled = false; scene.add(m); return m; });
+  { const m = new THREE.InstancedMesh(keep(new THREE.ConeGeometry(0.5, 1, 8).translate(0, 0.5, 0)), keep(new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.3, metalness: 0.7 })), Math.max(1, SPIRES.length));
+    SPIRES.forEach(([x, y, z, rad, h], k) => m.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.identity(), V2.set(rad * 2, h, rad * 2))));
+    m.count = SPIRES.length; m.frustumCulled = false; scene.add(m); keep(m); }
+
+  /* --- the LED screens: on towers along the avenue, facing it, and a few facing us further up --- */
+  const SCREENS = [];
+  for (const t of TOWERS) {
+    if (t.b.cyl || t.top < 70 || Math.abs(t.x) > 400 || t.z > 120 || t.z < -2600 || r() > 0.42) continue;
+    const toAv = Math.abs(t.x) - t.w / 2 < AV + 45; // its face looks onto the avenue
+    const w = Math.min(r(14, 30), (toAv ? t.d : t.w) * 0.72), tall = r() < 0.6, h = tall ? w * r(1.3, 1.8) : w * r(0.5, 0.65), y = r(0.25, 0.65) * t.top;
+    if (y + h / 2 > t.top - 8 || y - h / 2 < 15) continue;
+    const gap = 0.5 + 0.0004 * Math.hypot(t.x - C0.x, t.z - C0.z); // off the wall by more the further it is: the depth buffer's steps grow with distance
+    if (toAv) { const sd = Math.sign(t.x); SCREENS.push([t.x - sd * (t.w / 2 + gap), y, t.z + r(-0.1, 0.1) * t.d, sd > 0 ? -Math.PI / 2 : Math.PI / 2, w, h]); }
+    else if (t.z < -500 && r() < 0.5) SCREENS.push([t.x, y, t.z + t.d / 2 + gap, 0, w, h]);
+  }
+  const screenGeo = keep(new THREE.PlaneGeometry(1, 1)), aAd = new Float32Array(SCREENS.length * 4);
+  const adsTex = keep(fcAds(THREE));
+  const screenU = { uAds: { value: adsTex }, uTime: time, uNight: nightU, uAccent: accentU, uHaze: bldU.uHaze, uFogD: fogD };
+  const screens = new THREE.InstancedMesh(screenGeo, shader(FC_SCREEN_VS, FC_SCREEN_FS, screenU), Math.max(1, SCREENS.length));
+  SCREENS.forEach(([x, y, z, ry, w, h], k) => { screens.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(0, ry, 0)), V2.set(w, h, 1))); aAd.set([r(), r() < 0.45 ? 0 : 1 + Math.floor(r() * 3), 0, 0], k * 4); });
+  screenGeo.setAttribute("aAd", new THREE.InstancedBufferAttribute(aAd, 4)); screens.count = SCREENS.length; screens.frustumCulled = false; scene.add(screens);
+
+  /* --- the sky lanes: flying cars along the avenue (four decks) and across it over five cross streets; all in their vertex shaders --- */
+  const LANES = [];
+  const lane = (ox, oy, oz, dx, dz, L, k, spacing) => LANES.push({ o: [ox, oy, oz], d: [dx, 0, dz], L, v: (L * k) / P_LOOP, spacing });
+  for (const [y, outer] of [[60, true], [90, false], [135, true], [165, false]]) {
+    lane(-16, y, -5000, 0, 1, 5500, 4, 105); lane(16, y + 2, 500, 0, -1, 5500, 4, 115); // towards us on the left, away on the right
+    if (outer) { lane(-30, y + 5, -5000, 0, 1, 5500, 3, 150); lane(30, y + 7, 500, 0, -1, 5500, 5, 135); }
+  }
+  LANE_STREETS.forEach((j, n) => { const z = crossZ(j), y = [82, 128, 172, 226, 290][n]; lane(-2700, y, z + 6, 1, 0, 5400, 3 + (n % 3), 170); lane(2700, y + 3, z - 6, -1, 0, 5400, 4 - (n % 2), 190); });
+  const CARS = [];
+  for (const L of LANES) for (let k = 0, n = Math.floor(L.L / L.spacing); k < n; k++) if (!preview || k % 2 === 0) CARS.push({ L, s0: (k + r(0, 0.6)) * L.spacing, coat: r() < 0.25 ? -1 : r() });
+  const carGeo = keep(mergeColored(THREE, [
+    [new THREE.SphereGeometry(1, 18, 10).scale(3.0, 0.52, 1.18), at(0, 0, 0), COAT], // the body, long and flat
+    [new THREE.SphereGeometry(1, 18, 4).scale(3.05, 0.07, 1.23), at(0, -0.02, 0), ACC], // a light line round its waist, in the accent
+    [new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.25, 0.42, 0.78), at(0.7, 0.22, 0), 0x0e1620], // the canopy, dark glass
+    [box(0.7, 0.12, 2.6), at(-2.4, 0.3, 0), 0xd6dade], ...[-1, 1].map((sd) => [cyl(0.26, 0.32, 1.0, 10).rotateZ(Math.PI / 2), at(-2.45, -0.1, sd * 0.85), 0x5a5f66]), // the rear wing, the thrusters
+  ]));
+  const inst = (geo, list, fill) => { // the cars' (or lights') own attributes on an instanced copy of a geometry
+    const g = new THREE.InstancedBufferGeometry(); for (const [k, a] of Object.entries(geo.attributes)) g.setAttribute(k, a); if (geo.index) g.setIndex(geo.index);
+    const aLane = new Float32Array(list.length * 4), aDir = new Float32Array(list.length * 4), aCar = new Float32Array(list.length * 4), aCoat = new Float32Array(list.length * 3);
+    list.forEach((c, k) => { aLane.set([...c.L.o, c.L.L], k * 4); aDir.set([...c.L.d, c.L.v], k * 4); fill(c, k, aCar, aCoat); });
+    g.setAttribute("aLane", new THREE.InstancedBufferAttribute(aLane, 4)); g.setAttribute("aDir", new THREE.InstancedBufferAttribute(aDir, 4)); g.setAttribute("aCar", new THREE.InstancedBufferAttribute(aCar, 4)); g.setAttribute("aCoat", new THREE.InstancedBufferAttribute(aCoat, 3));
+    g.instanceCount = list.length; return keep(g);
+  };
+  const cc = new THREE.Color(), PAINT = [0xf2f4f6, 0xf2f4f6, 0xc8ced6, 0xc8ced6, 0x2a2d33, 0xc0262a, 0x2a5ec8, 0xe8b830]; // mostly white and silver, a few dark, red, blue, gold
+  const carsGeo = inst(carGeo, CARS, (c, k, aCar, aCoat) => { aCar.set([c.s0, 0, 0, 0], k * 4); aCoat.set(c.coat < 0 ? [-1, -1, -1] : cc.setHex(PAINT[Math.floor(c.coat * PAINT.length)]).toArray(), k * 3); });
+  const CAR_VS = `{ float s = mod(aCar.x + aDir.w * uLaneT, aLane.w), fade = smoothstep(0.0, 200.0, s) * (1.0 - smoothstep(aLane.w - 300.0, aLane.w, s));
+    vec3 X = aDir.xyz, Y = vec3(0.0, 1.0, 0.0), Z = cross(X, Y), p = aLane.xyz + X * s + vec3(0.0, 0.25 * sin(uTime * 1.3 + aCar.x), 0.0);
+    transformed = (X * transformed.x + Y * transformed.y + Z * transformed.z) * fade + p; vCoat = aCoat.r < 0.0 ? uAccent * 0.9 : aCoat; }`;
+  const carMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.45 })), "car", CAR_VS, "attribute vec4 aLane; attribute vec4 aDir; attribute vec4 aCar; attribute vec3 aCoat;");
+  { const f = carMat.onBeforeCompile; carMat.onBeforeCompile = (sh) => { f(sh);
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying float vUnder;").replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\n  vUnder = smoothstep(-0.2, -0.75, objectNormal.y); // the underside, before the turn onto the lane\n  { vec3 X = aDir.xyz, Y = vec3(0.0, 1.0, 0.0), Z = cross(X, Y); objectNormal = X * objectNormal.x + Y * objectNormal.y + Z * objectNormal.z; }");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nvarying float vUnder;").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += uAccent * vUnder * (0.3 + 0.8 * uNight); // the hover glow under it"); }; }
+  const cars = new THREE.Mesh(carsGeo, carMat); cars.frustumCulled = false; scene.add(cars);
+  const LIGHTS = []; // streaks: along the avenue one per car (white towards us, red away), across it both
+  for (const c of CARS) { const across = c.L.d[0] !== 0; if (across || c.L.d[2] > 0) LIGHTS.push({ c, along: 2.6, kind: 0 }); if (across || c.L.d[2] < 0) LIGHTS.push({ c, along: -2.6, kind: 1 }); }
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const streakGeo = inst(quad, LIGHTS.map((l) => ({ L: l.c.L, l })), (o, k, aCar) => aCar.set([o.l.c.s0, o.l.along, o.l.kind, 0.9], k * 4));
+  const streakU = { uLaneT: laneT, uPx: { value: 500 }, uMinK: { value: 1 }, uRes: { value: new THREE.Vector2(1, 1) }, uAmt: { value: 0 }, uTrail: { value: 0.28 } };
+  const streaks = new THREE.Mesh(streakGeo, shader(FC_STREAK_VS, FC_STREAK_FS, streakU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  streaks.frustumCulled = false; streaks.renderOrder = 18; scene.add(streaks);
+
+  /* --- glows: beacons marking the avenue's sky lanes (accent), aviation lights on the tall roofs, the trains' and the blimp's lights --- */
+  const GL = [], BEACONS = [], AVIATION = [];
+  for (const y of [60, 90, 135, 165]) for (let z = 120; z > -2600; z -= preview ? 140 : 70) for (const x of [-23, 23]) { BEACONS.push(GL.length); GL.push([x, y - 2, z, 0.5, 0, 0, 0, 1.1]); }
+  for (const t of TOWERS) if (t.top > 160) { AVIATION.push(GL.length); GL.push([t.x, t.top + 1.5, t.z, 1.1, 2.6, 0.18, 0.1, 1.2]); }
+  for (const s of SPIRES) { AVIATION.push(GL.length); GL.push([s[0], s[1] + s[4], s[2], 1.6, 2.6, 0.18, 0.1, 1.4]); }
+  const G_TRAIN = GL.length; for (let k = 0; k < 4; k++) GL.push([0, 0, 0, 0, 0, 0, 0, 1.4]); // each train's front and back
+  const G_BLIMP = GL.length; GL.push([0, 0, 0, 0, 2.6, 0.2, 0.12, 1.3], [0, 0, 0, 0, 0.3, 2.6, 0.6, 1.3]);
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); scene.add(site);
+
+  /* --- the sky: a clear afternoon with cumulus; by night a deep blue glowing over the city, a few stars, the moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: { value: 0 }, uNoise: { value: noise }, uGalN: { value: new THREE.Vector3(0, 1, 0) }, uGalC: { value: new THREE.Vector3(1, 0, 0) } }; // no Milky Way over a city
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(30000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 160 : 420, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.18, 1)); starPos.set([Math.cos(a) * Math.cos(e) * 25000, Math.sin(e) * 25000, Math.sin(a) * Math.cos(e) * 25000], i * 3); starSize[i] = r(1, 2); starCol.set([0.9, 0.93, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(24000).add(C0); moon.scale.setScalar(560); moon.lookAt(C0); moon.renderOrder = -8;
+  const moonHalo = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: glow, color: 0xb0bfe0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, opacity: 0.4 })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(3600); moonHalo.renderOrder = -9;
+  scene.add(moon, moonHalo);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2600, -12000); clouds.renderOrder = -6; clouds.frustumCulled = false; scene.add(clouds);
+
+  /* --- light --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#03061a" : "#2f6fd0"); skyU.uMid.value.set(d ? "#0a1236" : "#86b4e6"); skyU.uHorizon.value.set(d ? "#2a2350" : "#d6e6f2"); skyU.uGlow.value.set(d ? "#ff7a40" : "#fff2dc").multiplyScalar(d ? 0.06 : 0.25); skyU.uSunDir.value.copy(d ? V.set(0, 0, -1) : SUN); skyU.uSunColor.value.set("#fff6e0"); // by night the glow along the horizon is the city's
+    bldU.uSkyZ.value.copy(skyU.uZenith.value); bldU.uSkyH.value.copy(skyU.uHorizon.value); bldU.uGround.value.set(d ? "#06070c" : "#5a5e64");
+    bldU.uSunCol.value.set(d ? "#0f1220" : "#fff1dc").multiplyScalar(d ? 1 : 1.5); bldU.uAmb.value.set(d ? "#0c1022" : "#6f7f96"); bldU.uHaze.value.set(d ? "#1a1a38" : "#c6d6e6");
+    starU.uAmt.value = d ? 0.7 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    cloudU.uLit.value.set(d ? "#3c3150" : "#ffffff"); cloudU.uShade.value.set(d ? "#16172a" : "#b4c4dc"); cloudU.uGlow.value.set(d ? "#ff8a50" : "#fff0dc").multiplyScalar(d ? 0.12 : 0.3); cloudU.uHaze.value.copy(bldU.uHaze.value); cloudU.uSunDir.value.copy(SUN);
+    sun.position.copy(d ? MOON : SUN).multiplyScalar(800); sun.color.set(d ? "#8ea4d8" : "#fff1dc"); sun.intensity = d ? 0.35 : 2.6;
+    hemi.color.set(d ? "#2a3060" : "#a6c2e8"); hemi.groundColor.set(d ? "#120e18" : "#6a6e74"); hemi.intensity = d ? 0.45 : 0.9;
+    fogD.value = d ? 1 / 6500 : 1 / 5200; scene.fog.color.copy(bldU.uHaze.value); scene.fog.density = fogD.value;
+    nightU.value = d ? 1 : 0;
+    ringU.uCol.value.copy(accentU.value).multiplyScalar(1.6); ringU.uAmt.value = d ? 1 : 0.35;
+    streakU.uAmt.value = d ? 1 : 0.55; streakU.uTrail.value = d ? 0.12 : 0.015; // by day only the running lights, by night long trails
+    glowU.uAmt.value = d ? 1 : 0.4;
+    for (const i of BEACONS) { aTint.setXYZ(i, accentU.value.r * 2.4, accentU.value.g * 2.4, accentU.value.b * 2.4); aGlow.setW(i, d ? GL[i][3] : 0); } // lights: by day they would only make a starburst at the vanishing point
+    for (const i of AVIATION) aGlow.setW(i, d ? GL[i][3] : 0);
+    aTint.needsUpdate = aGlow.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera, high over the avenue --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const pitch = -0.045 + k * 0.1; // a phone looks a little higher: the downtown towers and the rings
+    camera.lookAt(look.set(C0.x + 0.02 * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - 1000));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = streakU.uPx.value = pxFor(buf.y); glowU.uMinK.value = streakU.uMinK.value = minK(buf.y); streakU.uRes.value.copy(buf);
+  };
+
+  const mA = new THREE.Matrix4(), T0 = 76.5; // T0: the page opens with one train just below us heading off down the avenue, the other on its way towards us, the blimp in view
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    laneT.value = ((t % P_LOOP) + P_LOOP) % P_LOOP; // the sky lanes' clock, wrapped where every lane repeats
+    let mi = 0;
+    TRAINS.forEach((tr, n) => { // two trains of eight cars, gliding down the guideway each way
+      const u = (((t / TRAIN_P + tr.off) % 1) + 1) % 1, s = u * TRAIN_P * TRAIN_V, zLead = tr.dir > 0 ? GW_Z1 - 200 + s : GW_Z0 + 200 - s;
+      for (let k = 0; k < NCAR; k++) {
+        const z = zLead - tr.dir * k * (carLen + 1.2), on = z < GW_Z0 + 150 && z > GW_Z1 - 150, nose = k === 0 || k === NCAR - 1;
+        mA.compose(V.set(tr.x, GW_Y, z), Q.setFromEuler(E.set(0, (tr.dir > 0 ? -Math.PI / 2 : Math.PI / 2) + (k === NCAR - 1 ? Math.PI : 0), 0)), on ? ONE : V2.set(0, 0, 0)); // the model's nose is +x: turned to face its way (the last car backwards)
+        if (nose) noses.setMatrixAt(n * 2 + (k ? 1 : 0), mA); else mids.setMatrixAt(mi++, mA);
+      }
+      const zTail = zLead - tr.dir * (NCAR - 1) * (carLen + 1.2);
+      aGlow.setXYZW(G_TRAIN + n * 2, tr.x, GW_Y + 2.4, zLead + tr.dir * 11, night ? 0.9 : 0); aTint.setXYZ(G_TRAIN + n * 2, 2.4, 2.35, 2.2);
+      aGlow.setXYZW(G_TRAIN + n * 2 + 1, tr.x, GW_Y + 2.4, zTail - tr.dir * 11, night ? 0.7 : 0); aTint.setXYZ(G_TRAIN + n * 2 + 1, 2.6, 0.2, 0.12);
+    });
+    mids.instanceMatrix.needsUpdate = noses.instanceMatrix.needsUpdate = true;
+    { const s = (((t / BLIMP_P) % 1) + 1) % 1, z = BLIMP_Z0 + s * BLIMP_V * BLIMP_P; // the blimp, nose towards us
+      blimp.position.set(-12, BLIMP_Y + 3 * Math.sin(t * 0.15), z); blimp.rotation.set(0, -Math.PI / 2, 0.03 * Math.sin(t * 0.2)); blimp.scale.setScalar(Math.min(1, smooth(0, 0.02, s) * 2) * (1 - smooth(0.97, 1, s)) || 1e-3);
+      aGlow.setXYZW(G_BLIMP, -12 + 10.6, BLIMP_Y, z, night ? 0.8 : 0); aGlow.setXYZW(G_BLIMP + 1, -12 - 10.6, BLIMP_Y, z, night ? 0.8 : 0); }
+    rings.forEach((m, k) => { m.rotation.set(Math.PI / 2 + 0.25 * Math.sin(t * 0.13 + k * 2.1), 0, t * (0.08 + 0.05 * k) * (k % 2 ? -1 : 1)); });
+    if (night) for (const i of AVIATION) aGlow.setW(i, GL[i][3] * (0.15 + 0.85 * Math.max(0, Math.sin(t * 2.4 + GL[i][0] * 0.013)) ** 6)); // slow red blinks, out of step
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { parts: PARTS.length, cyls: CYLS.length, bridges: BRIDGES.length, spires: SPIRES.length, screens: SCREENS.length, cars: CARS.length, lights: LIGHTS.length, glows: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
