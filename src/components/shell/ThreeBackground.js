@@ -22612,7 +22612,525 @@ function floatislands(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands };
+/* ---------- Mars colony: a base on the red plain, seen from a low hill; rovers out on their rounds, a lander coming down ---------- */
+// The plain is one height field (gentle swells, craters with raised rims, the base's levelled ground, our hill, mesas and a shield
+// volcano far off), meshed as rings round the camera, its shading from the low sun baked per vertex once; a shadow map adds the base's
+// and the rovers' shadows near by. The rovers follow closed loops of track by arc length (stateless), their wheels rolling with the
+// distance; the lander's descent, touchdown and lift-off are one cycle of the clock; the dust they raise is particles placed afresh
+// each frame from where each grain was thrown up.
+const MC_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform sampler2D uTracks; uniform vec4 uTrackRect; uniform sampler2D uNightMap; uniform vec4 uNightRect;
+  uniform vec3 uLampCol; uniform vec3 uGrowCol; uniform float uNight; uniform float uShadowAmt; uniform float uTime;
+  varying vec3 vPW; varying float vShade; varying float vSlope; varying float vVar; varying float vCrater;
+  float mcInRect(vec2 uv) { return step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); }
+  vec3 mcGround(vec3 p) {
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.011 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.09 + 0.7).r;
+    vec3 dust = mix(vec3(0.56, 0.3, 0.17), vec3(0.74, 0.47, 0.29), smoothstep(0.3, 0.75, n2 * 0.6 + n1 * 0.5));
+    vec3 basalt = mix(vec3(0.22, 0.14, 0.1), vec3(0.34, 0.21, 0.15), n3);
+    float rocky = clamp(smoothstep(0.56, 0.76, n1 * 0.7 + n3 * 0.45) * 0.55 + smoothstep(0.22, 0.45, vSlope), 0.0, 1.0);
+    vec3 col = mix(dust, basalt, rocky) * (0.88 + 0.22 * n3);
+    col = mix(col, col * vec3(0.82, 0.74, 0.7), vCrater); // the craters' floors darker
+    vec2 tuv = (p.xz - uTrackRect.xy) * uTrackRect.zw;
+    col *= 1.0 - 0.3 * texture2D(uTracks, clamp(tuv, 0.0, 1.0)).r * mcInRect(tuv); // the rovers' tracks, worn darker
+    float fw = fwidth(p.x) + fwidth(p.z), streak = texture2D(uNoise, vec2(p.x * 0.0035 - uTime * 0.004, p.z * 0.011)).r; // dust blowing across the plain
+    col = mix(col, vec3(0.86, 0.62, 0.42), smoothstep(0.62, 0.82, streak) * 0.12 * (1.0 - uNight) * (1.0 - smoothstep(2.0, 12.0, fw)));
+    return col;
+  }
+  vec3 mcRipple(vec3 p) { // dune ripples close by
+    float fw = fwidth(p.x) + fwidth(p.z);
+    if (fw > 0.3) return vec3(0.0);
+    float q = (p.x * 0.6 + p.z * 0.8 + 0.4 * sin(p.z * 0.23 + p.x * 0.11)) * 5.5;
+    return vec3(0.042 * cos(q), 0.0, 0.056 * cos(q)) * (1.0 - smoothstep(0.08, 0.3, fw));
+  }
+  vec3 mcLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    vec3 m = texture2D(uNightMap, clamp(uv, 0.0, 1.0)).rgb * mcInRect(uv);
+    return albedo * (uLampCol * m.r + uGrowCol * m.g) * uNight;
+  }
+`;
+// a dust devil: a tapering column of dust whose bands swirl round and climb it, wobbling as it goes; thickest towards its edges, where
+// we look through more of it; lit on the sun's side, hazed with distance (premultiplied)
+const MC_DEVIL_VS = /* glsl */ `
+  uniform float uTime; uniform float uSeed;
+  varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vDepth;
+  void main() {
+    vUv = uv;
+    vec3 p = position; float h = uv.y;
+    p.x += sin(h * 4.0 + uTime * 0.7 + uSeed) * 0.16 * h; p.z += cos(h * 3.0 + uTime * 0.5 + uSeed * 1.7) * 0.16 * h; // the column wobbles, more towards its top
+    vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal);
+    vec4 mv = viewMatrix * w; vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const MC_DEVIL_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uCol; uniform vec3 uShade; uniform float uAmt; uniform vec3 uHaze; uniform float uFogD; uniform vec3 uSunDir; uniform float uSeed;
+  varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vDepth;
+  void main() {
+    float u = vUv.x, v = vUv.y;
+    vec2 q = vec2(u * 3.0 + v * 1.4 - uTime * 0.35 + uSeed, v * 2.2 - uTime * 0.08);
+    float n = texture2D(uNoise, q).r * 0.6 + texture2D(uNoise, q * 2.7 + 0.3).g * 0.4;
+    float edge = 1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vW)));
+    float a = smoothstep(0.28, 0.7, n) * (0.55 + 0.45 * edge * edge) * smoothstep(0.0, 0.05, v) * (1.0 - smoothstep(0.4, 1.0, v)) * (1.0 + 0.6 * (1.0 - smoothstep(0.0, 0.25, v))) * uAmt; // a column, not two edge streaks; thickest in its skirt of dust at the bottom
+    if (a < 0.003) discard;
+    vec3 col = mix(uShade, uCol, 0.5 + 0.5 * dot(normalize(vN), uSunDir));
+    float fog = 1.0 - exp(-uFogD * uFogD * vDepth * vDepth);
+    col = mix(col, uHaze, fog); a *= 1.0 - 0.6 * fog;
+    vec4 c = linearToOutputTexel(vec4(col, 1.0));
+    gl_FragColor = vec4(c.rgb * a, a);
+  }
+`;
+// the lander's burn: a cone of flame from the engine bell, white at the nozzle, amber further out, flickering as it streams down;
+// brightest where we look through its middle (additive)
+const MC_FLAME_VS = /* glsl */ `
+  varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+  void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const MC_FLAME_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uAmt;
+  varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+  void main() {
+    float along = 1.0 - vUv.y; // 0 at the nozzle
+    float face = abs(dot(normalize(vN), normalize(cameraPosition - vW)));
+    float n = texture2D(uNoise, vec2(vUv.x * 2.0, along * 1.5 - uTime * 2.5)).r;
+    float a = (1.0 - smoothstep(0.1, 1.0, along)) * (0.45 + 0.55 * n) * face * face * uAmt;
+    vec3 col = mix(vec3(1.0, 0.95, 0.82), vec3(1.0, 0.55, 0.2), smoothstep(0.0, 0.6, along)) * 2.2;
+    gl_FragColor = vec4(col * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// dust thrown up by the rovers' wheels and the lander's burn: soft grains, each with its own size and strength (premultiplied)
+const MC_DUST_VS = /* glsl */ `
+  uniform float uPx; attribute float aA; attribute float aS; varying float vA;
+  void main() { vA = aA; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv; gl_PointSize = aA <= 0.0 ? 0.0 : clamp(aS * uPx / -mv.z, 1.0, 240.0); }
+`;
+const MC_DUST_FS = /* glsl */ `
+  uniform vec3 uCol; varying float vA;
+  void main() {
+    vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d);
+    if (r2 > 1.0) discard;
+    float a = (1.0 - r2) * (1.0 - r2) * vA;
+    vec4 c = linearToOutputTexel(vec4(uCol, 1.0));
+    gl_FragColor = vec4(c.rgb * a, a);
+  }
+`;
+/** The rovers' tracks from above, over rect [x0, z0, x1, z1]: a worn band along each closed loop (one path a stroke, so its joins never double up). */
+function mcTracks(THREE, loops, [x0, z0, x1, z1]) {
+  const W = 1024, H = 1024, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (z) => ((z1 - z) / (z1 - z0)) * H, S = W / (x1 - x0); // the canvas's top row is the far edge (v = 1 once flipped)
+  g.lineCap = g.lineJoin = "round";
+  for (const pts of loops) for (const [w, a] of [[5.5, 0.35], [3.2, 0.75]]) { g.strokeStyle = `rgba(255,255,255,${a})`; g.lineWidth = Math.max(1, w * S); g.beginPath(); pts.forEach(([x, z], i) => (i ? g.lineTo(X(x), Y(z)) : g.moveTo(X(x), Y(z)))); g.closePath(); g.stroke(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+/** The night's light on the ground from above, over rect [x0, z0, x1, z1]: radial pools [x, z, radius, strength, channel] — r the lamps, g the greenhouses' grow lights. */
+function mcNightMap(THREE, pools, [x0, z0, x1, z1]) {
+  const W = 512, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (z) => ((z1 - z) / (z1 - z0)) * H, SX = W / (x1 - x0), SY = H / (z1 - z0);
+  for (const [x, z, rad, a, ch] of pools) {
+    g.save(); g.translate(X(x), Y(z)); g.scale(rad * SX, rad * SY);
+    const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1), rgb = ch ? "0,255,0" : "255,0,0";
+    [[0, 1], [0.3, 0.6], [0.6, 0.24], [0.85, 0.06], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(${rgb},${a * k})`));
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+/** Phobos: a lumpy grey-brown moonlet, lit from one side, its craters (Stickney the biggest) on a transparent card. */
+function mcPhobos(THREE) {
+  const r = koiRng(808);
+  return canvasTexture(THREE, 128, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.save(); g.translate(64, 64); g.rotate(0.45);
+    const gr = g.createRadialGradient(-16, -12, 6, 0, 0, 58); gr.addColorStop(0, "#c2b2a2"); gr.addColorStop(0.7, "#7a6a5c"); gr.addColorStop(1, "#4a3e36");
+    g.fillStyle = gr; g.beginPath();
+    for (let k = 0; k <= 40; k++) { const a = (k / 40) * Math.PI * 2, rr = 1 + 0.08 * Math.sin(a * 3 + 1) + 0.05 * Math.sin(a * 7); const x = Math.cos(a) * 54 * rr, y = Math.sin(a) * 40 * rr; if (k) g.lineTo(x, y); else g.moveTo(x, y); }
+    g.closePath(); g.fill();
+    for (const [x, y, s] of [[16, 6, 15], ...Array.from({ length: 9 }, () => [r(-40, 40), r(-26, 26), r(3, 7)])]) { g.fillStyle = "rgba(40,30,25,0.45)"; g.beginPath(); g.arc(x, y, s, 0, Math.PI * 2); g.fill(); g.fillStyle = "rgba(220,205,190,0.25)"; g.beginPath(); g.arc(x - s * 0.25, y - s * 0.25, s * 0.7, 0, Math.PI * 2); g.fill(); }
+    g.restore();
+  });
+}
+
+function marscolony(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(6262);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 40; camera.near = 0.5; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 10) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(2.4, 0.48), MOONLIGHT = sph(0.9, 0.85), WEST = sph(-1.95, 0.02); // the afternoon sun behind our left shoulder; by night a dim cheat light from high behind us, and the afterglow of sunset low ahead on the left
+  const ACC = 0xff00ff, ACC_GLOW = 0xff0080, LAMP = 0xffff00, GLASS = 0x00ffff; // vertex-colour markers: the accent; the accent lit up at night; windows (lit at night); the greenhouses' glass
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+
+  /* --- the plan: the base on levelled ground, the pad to its left, the rovers' two loops of track, craters --- */
+  const C0 = new THREE.Vector3(0, 0, 20), YAW = -0.06; // our eye, on the low hill (its height set below)
+  const BASE = new THREE.Vector2(20, -270), PAD = new THREE.Vector2(-140, -265), TW = new THREE.Vector2(0, -352), VOLC = new THREE.Vector2(-1800, -8500);
+  const chaikinLoop = (pts, n) => { for (let k = 0; k < n; k++) { const out = []; for (let i = 0; i < pts.length; i++) { const [ax, az] = pts[i], [bx, bz] = pts[(i + 1) % pts.length]; out.push([ax * 0.75 + bx * 0.25, az * 0.75 + bz * 0.25], [ax * 0.25 + bx * 0.75, az * 0.25 + bz * 0.75]); } pts = out; } return pts; };
+  const LOOP1 = chaikinLoop([[110, -200], [40, -150], [-30, -110], [-120, -100], [-205, -140], [-245, -230], [-235, -330], [-200, -400], [-90, -420], [40, -425], [140, -390], [175, -320], [165, -245]], 3); // round the base
+  const LOOP2 = chaikinLoop([[165, -245], [210, -380], [230, -560], [250, -660], [390, -660], [480, -780], [460, -920], [320, -1010], [170, -950], [120, -810], [160, -670], [180, -480], [160, -330]], 3); // out round the big crater and back
+  const pathOf = (pts) => { const P3 = [...pts, pts[0]].map(([x, z]) => new THREE.Vector2(x, z)), L = [0]; for (let i = 1; i < P3.length; i++) L.push(L[i - 1] + P3[i].distanceTo(P3[i - 1])); return { P3, L, total: L[L.length - 1] }; };
+  const P1 = pathOf(LOOP1), P2 = pathOf(LOOP2);
+  const pathAt = (pa, s, out) => { s = ((s % pa.total) + pa.total) % pa.total; let lo = 1, hi = pa.L.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (pa.L[m] < s) lo = m + 1; else hi = m; } const t = (s - pa.L[lo - 1]) / (pa.L[lo] - pa.L[lo - 1]); return out.copy(pa.P3[lo - 1]).lerp(pa.P3[lo], t); };
+  const segDist = (px, pz, ax, az, bx, bz) => { const vx = bx - ax, vz = bz - az, t = Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / (vx * vx + vz * vz))); return Math.hypot(px - ax - vx * t, pz - az - vz * t); };
+  const pathDist = (x, z) => { let m = Infinity; for (const pa of [P1, P2]) for (let i = 0; i < pa.P3.length - 1; i++) m = Math.min(m, segDist(x, z, pa.P3[i].x, pa.P3[i].y, pa.P3[i + 1].x, pa.P3[i + 1].y)); return m; };
+  const sNearest = (pa, x, z) => { let best = Infinity, sb = 0; for (let i = 0; i < pa.P3.length - 1; i++) { const a = pa.P3[i], b = pa.P3[i + 1], vx = b.x - a.x, vz = b.y - a.y, t = Math.max(0, Math.min(1, ((x - a.x) * vx + (z - a.y) * vz) / (vx * vx + vz * vz))), d = Math.hypot(x - a.x - vx * t, z - a.y - vz * t); if (d < best) { best = d; sb = pa.L[i] + t * (pa.L[i + 1] - pa.L[i]); } } return sb; };
+  const CRATERS = [[300, -820, 140, 34], [600, -1500, 220, 50], [-900, -1600, 140, 35], [-420, -700, 70, 18], [-280, -560, 40, 10], [-60, -760, 55, 14], [900, -1100, 90, 25], [40, -640, 28, 7], [-650, -1100, 60, 15], [1300, -2100, 260, 60]]; // x, z, radius, depth
+  for (let k = 0, tries = 0; k < (preview ? 14 : 34) && tries < 800; tries++) { // small ones, clear of the base, our hill and the tracks
+    const x = r(-1400, 1600), z = r(-2400, -80), R = r(5, 26);
+    if (Math.hypot(x - BASE.x, z - BASE.y) < 230 || Math.hypot(x - C0.x, z - C0.z) < 120 || pathDist(x, z) < R * 1.6 + 8 || CRATERS.some(([cx, cz, cr]) => Math.hypot(x - cx, z - cz) < cr * 1.3 + R * 1.3)) continue;
+    CRATERS.push([x, z, R, R * 0.24]); k++;
+  }
+  const CB = 200, CBX0 = -4000, CBZ0 = -9000, CBN = 40, CBM = 47, CBK = Array.from({ length: CBN * CBM }, () => []); // the craters near each 200 m cell
+  for (const c of CRATERS) { const reach = c[2] * 2.6; for (let gz = Math.floor((c[1] - reach - CBZ0) / CB); gz <= Math.floor((c[1] + reach - CBZ0) / CB); gz++) for (let gx = Math.floor((c[0] - reach - CBX0) / CB); gx <= Math.floor((c[0] + reach - CBX0) / CB); gx++) if (gx >= 0 && gz >= 0 && gx < CBN && gz < CBM) CBK[gz * CBN + gx].push(c); }
+  const NONE = [];
+  const cratersNear = (x, z) => { const gx = Math.floor((x - CBX0) / CB), gz = Math.floor((z - CBZ0) / CB); return gx >= 0 && gz >= 0 && gx < CBN && gz < CBM ? CBK[gz * CBN + gx] : NONE; };
+  function groundH(x, z) {
+    let h = 1.4 * Math.sin(x / 53 + 0.7) * Math.sin(z / 41) + 3.0 * (fbm(x * 0.0035, z * 0.0035, 4) - 0.5) + 0.7 * (fbm(x * 0.03, z * 0.03, 2) - 0.5); // the plain's gentle swells
+    h *= 1 - 0.85 * smooth(250, 150, Math.hypot(x - BASE.x, z - BASE.y)); // the base's ground levelled
+    h += 26 * Math.exp(-((x / 120) ** 2 + ((z - 45) / 85) ** 2)) * (0.85 + 0.3 * fbm(x * 0.02 + 3, z * 0.02, 2)); // the low hill we stand on
+    for (const [cx, cz, R, D] of cratersNear(x, z)) { const d = Math.hypot(x - cx, z - cz) / R; if (d > 2.6) continue; h += (d < 1 ? -D * (1 - d * d) : 0.08 * D * Math.exp(-(d - 1) * 2.5)) + 0.32 * D * Math.exp(-(((d - 1) / 0.16) ** 2)); } // the bowl, its rim, the ejecta round it
+    const far = smooth(1800, 3400, Math.hypot(x - C0.x, z - C0.z));
+    if (far > 0.5) { const m = fbm(x * 0.00045 + 7, z * 0.00045 - 3, 3); h = Math.max(h, smooth(0.5, 0.9, far) * (240 * smooth(0.55, 0.565, m) + 130 * smooth(0.625, 0.64, m))); } // mesas far off, in two tiers
+    const vr = Math.hypot(x - VOLC.x, z - VOLC.y); if (vr < 6500) h = Math.max(h, 950 * Math.pow(1 - vr / 6500, 1.5) - 60 * smooth(500, 150, vr)); // a shield volcano on the horizon
+    return h;
+  }
+  C0.y = groundH(C0.x, C0.z) + 2.4;
+  // the sun's shade on the plain: a coarse height grid marched once per vertex
+  const GS = preview ? 80 : 40, GX0 = -4000, GZ0 = -9000, GNX = Math.round(8000 / GS) + 1, GNZ = Math.round(9400 / GS) + 1, HG = new Float32Array(GNX * GNZ);
+  for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) HG[j * GNX + i] = groundH(GX0 + i * GS, GZ0 + j * GS);
+  const hGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return null; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j, a = HG[j * GNX + i], b = HG[j * GNX + i + 1], c = HG[(j + 1) * GNX + i], d = HG[(j + 1) * GNX + i + 1]; return (a * (1 - u) + b * u) * (1 - w) + (c * (1 - u) + d * u) * w; };
+  const SH = new THREE.Vector2(SUN.x, SUN.z).normalize(), TAN_EL = SUN.y / Math.hypot(SUN.x, SUN.z);
+  const shadeAt = (x, z, h0) => { let m = -1, t = 4; for (let k = 0; k < 40; k++) { const hh = hGrid(x + SH.x * t, z + SH.y * t); if (hh === null) break; m = Math.max(m, (hh - h0) / t); if (m > TAN_EL + 0.03) break; t = t * 1.12 + 2; } return 1 - smooth(TAN_EL - 0.04, TAN_EL + 0.02, m); };
+  const SHG = new Float32Array(GNX * GNZ); for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) SHG[j * GNX + i] = shadeAt(GX0 + i * GS, GZ0 + j * GS, HG[j * GNX + i]); // marched once per grid point, not per vertex
+  const shadeGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return 1; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j; return (SHG[j * GNX + i] * (1 - u) + SHG[j * GNX + i + 1] * u) * (1 - w) + (SHG[(j + 1) * GNX + i] * (1 - u) + SHG[(j + 1) * GNX + i + 1] * u) * w; };
+  // the ground: rings round the camera, so a cell is about as big on screen near as far; only the wedge the camera can see
+  const RINGS = [];
+  for (let rr = 3; rr < 40000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 60 ? 0.03 : rr < 1500 ? 0.014 : 0.022)) RINGS.push(rr);
+  RINGS.push(40000);
+  const NA = preview ? 140 : 330, AW = 1.12, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  {
+    const pos = new Float32Array(nv * 3), idx = new Uint32Array((NR - 1) * NA * 6);
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) { const a = YAW - AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = (j * N1 + i) * 3; pos[k] = x; pos[k + 1] = groundH(x, z); pos[k + 2] = z; }
+    let o = 0;
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; idx[o++] = a; idx[o++] = b; idx[o++] = c; idx[o++] = b; idx[o++] = d; idx[o++] = c; }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(new THREE.BufferAttribute(idx, 1)); landGeo.computeVertexNormals();
+    const sh = new Float32Array(nv), vari = new Float32Array(nv), cr = new Float32Array(nv);
+    for (let k = 0; k < nv; k++) {
+      const x = pos[k * 3], z = pos[k * 3 + 2];
+      sh[k] = shadeGrid(x, z); vari[k] = vnoise(x * 0.01 + 40.5, z * 0.01 - 17.25);
+      for (const [cx, cz, R] of cratersNear(x, z)) { const d = Math.hypot(x - cx, z - cz) / R; if (d < 1) cr[k] = Math.max(cr[k], smooth(1, 0.55, d)); }
+    }
+    landGeo.setAttribute("aShade", new THREE.BufferAttribute(sh, 1)); landGeo.setAttribute("aVar", new THREE.BufferAttribute(vari, 1)); landGeo.setAttribute("aCrater", new THREE.BufferAttribute(cr, 1));
+  }
+
+  /* --- materials: the ground; a painted one with markers (flat shaded: panels and facets catch the light) --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const TRACK_RECT = [-320, -1040, 640, -60], NIGHT_RECT = [-280, -480, 220, -140];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, shadowAmtU = { value: 1 }, nightMapU = { value: null };
+  const lampColU = { value: new THREE.Color(1.0, 0.82, 0.6).multiplyScalar(1.1) }, growColU = { value: new THREE.Color(1.0, 0.35, 0.78) }; // warm lamps; the greenhouses' pink-violet grow lights
+  const tracksTex = keep(mcTracks(THREE, [LOOP1, LOOP2], TRACK_RECT));
+  const LIT_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= mcSun;");
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uTracks: { value: tracksTex }, uTrackRect: rectU(TRACK_RECT), uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uLampCol: lampColU, uGrowCol: growColU, uNight: nightU, uShadowAmt: shadowAmtU, uTime: time });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aShade; attribute float aVar; attribute float aCrater; varying float vShade; varying float vSlope; varying float vVar; varying float vCrater; varying vec3 vPW;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vShade = aShade; vVar = aVar; vCrater = aCrater; vSlope = 1.0 - normalize(objectNormal).y; vPW = position;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + MC_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float mcSun = mix(1.0, vShade, uShadowAmt);\n  diffuseColor.rgb = mcGround(vPW);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = normalize(normal + (viewMatrix * vec4(mcRipple(vPW), 0.0)).xyz);")
+      .replace("#include <lights_fragment_begin>", LIT_BEGIN)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += mcLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "mc-ground";
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; land.renderOrder = 1; scene.add(land); // after the base and the rocks: early-z skips the ground behind them
+  const lit = (mat, key) => {
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uGrowCol: growColU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <project_vertex>", "#include <project_vertex>\n{ vec4 pw = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\npw = instanceMatrix * pw;\n#endif\nvPW = (modelMatrix * pw).xyz; }");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight; uniform vec3 uGrowCol; varying vec3 vPW;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  vec3 mcEmit = vec3(0.0);
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb;
+    float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isAccG = step(0.9, c.r) * step(c.g, 0.1) * step(0.15, c.b) * step(c.b, 0.3); // 0xff0080: vertex colours are stored linear, so its blue is 0.216
+    float isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1), isGlass = step(c.r, 0.1) * step(0.9, c.g) * step(0.9, c.b);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc + isAccG);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.07, 0.08, 0.1), isLamp);
+    float rows = 0.5 + 0.5 * sin(vPW.z * 2.6 + vPW.x * 0.05);
+    diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.16, 0.38, 0.14) * (0.7 + 0.5 * rows), vec3(0.7, 0.76, 0.8), 0.22), isGlass); // the greenhouses: plants in rows under the glass
+    mcEmit = vec3(1.0, 0.78, 0.5) * isLamp * (0.04 + 1.5 * uNight) + uAccent * isAccG * uNight * 1.4 + uGrowCol * isGlass * (0.4 + 0.6 * rows) * uNight * 1.3; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += mcEmit;");
+    };
+    mat.customProgramCacheKey = () => "mc-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.05, flatShading: true })), "paint");
+  const panelMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.28, metalness: 0.55 })), "panel");
+  const rockMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }));
+
+  /* --- the base: domes linked by tubes, greenhouses, the pad, the comms mast, tanks, containers, a flag --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]); // painted, one merged draw
+  const strut = (list, a, b, w, hex) => { const dir = new THREE.Vector3().subVectors(b, a), len = dir.length(); list.push([box(w, len, w), new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(UP, dir.normalize()), ONE), hex]); };
+  const DOMES = [[30, -270, 20], [-15, -297, 12], [76, -302, 13], [56, -230, 9]], GREENHOUSES = [[100, -255, 36, 6], [97, -236, 28, 5]];
+  const DOORS = [], POOLS = [];
+  for (const [x, z, R] of DOMES) { // a faceted shell on a footing ring lit in the accent, a band of windows, a skylight, an airlock towards us
+    const y = groundH(x, z) - 0.3;
+    P(new THREE.SphereGeometry(R, 20, 8, 0, Math.PI * 2, 0, Math.PI / 2), at(x, y + 1.6, z), 0xe9e6e0);
+    P(cyl(R * 1.02, R * 1.04, 1.6, 24), at(x, y + 0.8, z), ACC_GLOW);
+    const nw = Math.round(R * 0.9); for (let k = 0; k < nw; k++) { const a = (k / nw) * Math.PI * 2; P(box(1.6, 0.9, 0.3), at(x + Math.cos(a) * R * 0.985, y + 2.9, z + Math.sin(a) * R * 0.985, 0, -a + Math.PI / 2, 0), LAMP); }
+    P(cyl(R * 0.16, R * 0.18, 1.0, 12), at(x, y + 1.4 + R, z), LAMP);
+    const dz = z + R + 1.2; P(box(3.4, 3.4, 3.2), at(x, y + 1.7, dz), 0xdedad2); P(box(1.6, 2.4, 0.2), at(x, y + 1.5, dz + 1.62), LAMP); DOORS.push([x, y + 3.9, dz + 1.8]); POOLS.push([x, z, R + 14, 0.5, 0], [x, dz + 4, 10, 0.75, 0]);
+  }
+  const tube = (ax, az, bx, bz, rad) => { // a pressurised tube on the ground, ribbed in the accent
+    const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz), ry = Math.atan2(-dz, dx), mx = (ax + bx) / 2, mz = (az + bz) / 2, y = groundH(mx, mz) + rad + 0.1;
+    P(cyl(rad, rad, L, 12).rotateZ(Math.PI / 2), at(mx, y, mz, 0, ry, 0), 0xdedad2);
+    for (let s = 3; s < L - 2; s += 6) P(cyl(rad * 1.08, rad * 1.08, 0.5, 12).rotateZ(Math.PI / 2), at(ax + (dx * s) / L, y, az + (dz * s) / L, 0, ry, 0), ACC);
+  };
+  for (const k of [1, 2, 3]) { const [ax, az, ar] = DOMES[0], [bx, bz, br] = DOMES[k], dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz), ux = dx / L, uz = dz / L; tube(ax + ux * (ar - 1.5), az + uz * (ar - 1.5), bx - ux * (br - 1.5), bz - uz * (br - 1.5), 2.2); }
+  for (const [x, z, L, R] of GREENHOUSES) { // half-tubes of glass over rows of plants, ribbed, on a footing
+    const y = groundH(x, z) - 0.15;
+    P(box(L + 1, 0.5, 2 * R + 1), at(x, y + 0.25, z), 0xbab4aa);
+    P(new THREE.CylinderGeometry(R, R, L, 18, 1, true, 0, Math.PI).rotateZ(Math.PI / 2), at(x, y + 0.5, z), GLASS);
+    for (const sd of [-1, 1]) P(new THREE.CircleGeometry(R, 18, 0, Math.PI).rotateY((sd * Math.PI) / 2), at(x + (sd * L) / 2, y + 0.5, z), GLASS);
+    for (let s = -L / 2; s <= L / 2 + 0.01; s += 4) P(new THREE.TorusGeometry(R + 0.05, 0.14, 4, 18, Math.PI).rotateY(Math.PI / 2), at(x + s, y + 0.5, z), 0xeeeae2);
+    POOLS.push([x, z, L * 0.6 + 6, 0.55, 1]);
+  }
+  { const [ax, az, ar] = DOMES[0], [gx, gz, gl] = GREENHOUSES[0]; tube(ax + ar - 1.5, az + 3, gx - gl / 2 - 0.4, gz, 1.8); } // from the main dome to the first greenhouse
+  const padY = groundH(PAD.x, PAD.y);
+  P(cyl(26, 27, 0.8, 40), at(PAD.x, padY + 0.2, PAD.y), 0x8e8984); P(new THREE.RingGeometry(21, 22.6, 40).rotateX(-Math.PI / 2), at(PAD.x, padY + 0.62, PAD.y), ACC_GLOW); P(new THREE.RingGeometry(10.5, 11.8, 40).rotateX(-Math.PI / 2), at(PAD.x, padY + 0.62, PAD.y), 0xf2f0ea); // the landing pad: a ring in the accent, an H
+  for (const dx of [-3, 3]) P(box(1.6, 0.06, 9), at(PAD.x + dx, padY + 0.63, PAD.y), 0xf2f0ea); P(box(4.4, 0.06, 1.6), at(PAD.x, padY + 0.63, PAD.y), 0xf2f0ea);
+  POOLS.push([PAD.x, PAD.y, 36, 0.4, 0]);
+  { const y = groundH(-100, -292); for (const dz of [0, 5.2]) { P(cyl(2.2, 2.2, 10, 14).rotateZ(Math.PI / 2), at(-100, y + 2.6, -292 + dz), 0xf0eee8); for (const dx of [-3.5, 3.5]) { P(cyl(2.3, 2.3, 0.5, 14).rotateZ(Math.PI / 2), at(-100 + dx, y + 2.6, -292 + dz), ACC); P(box(0.6, 1.6, 3.2), at(-100 + dx, y + 0.8, -292 + dz), 0x6a6a6e); } } } // fuel tanks by the pad
+  { const twY = groundH(TW.x, TW.y); P(cyl(0.45, 1.3, 46, 6), at(TW.x, twY + 23, TW.y), 0xc8c4bc); for (const hh of [12, 24, 36]) P(box(5, 0.4, 0.4), at(TW.x, twY + hh, TW.y, 0, 0.6, 0), 0xb0aca4); P(new THREE.SphereGeometry(5, 16, 8, 0, Math.PI * 2, 0, 1.0).rotateX(-0.9).rotateY(0.8), at(TW.x, twY + 41, TW.y), 0xeeeae2); } // the comms mast and its dish
+  { const y = groundH(-45, -278); P(box(6, 2.6, 2.4), at(-45, y + 1.3, -278, 0, 0.1, 0), 0xd8d2c8); P(box(6, 2.6, 2.4), at(-45.3, y + 1.3, -281, 0, 0.1, 0), 0xb8602c); P(box(6, 2.6, 2.4), at(-45.1, y + 3.9, -279.5, 0, 0.12, 0), ACC); } // cargo containers
+  { const y = groundH(8, -246); P(cyl(0.08, 0.08, 7, 5), at(8, y + 3.5, -246), 0xd0d0d0); P(box(2.6, 1.6, 0.06), at(9.35, y + 6.1, -246), ACC); P(box(2.6, 0.3, 0.07), at(9.35, y + 6.1, -246), 0xf2f0ea); } // a flag (the air too thin to stir it)
+  for (let k = 0; k < 5; k++) { const x = 92 + k * 3.2, y = groundH(x, -322); P(box(0.2, 5, 2.6), at(x, y + 2.5, -322), 0xeeeae2); } // radiator panels behind the dome
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); scene.add(site);
+  // the solar field: rows of panels tilted to the sun
+  const panelGeo = keep(mergeColored(THREE, [[box(2.3, 0.08, 1.3), at(0, 0, 0), 0x1c2c5c], [box(2.42, 0.05, 1.42), at(0, -0.05, 0), 0x9aa0a8], [cyl(0.06, 0.06, 1.3, 5), at(0, -0.7, 0), 0x8a8a8a]]));
+  const PANELS = []; for (let rz = -178; rz >= -205; rz -= 6.5) for (let x = -124; x <= -42; x += 2.7) PANELS.push([x, groundH(x, rz) + 1.35, rz]);
+  const panels = new THREE.InstancedMesh(panelGeo, panelMat, PANELS.length);
+  PANELS.forEach(([x, y, z], k) => panels.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(0.55, 0, 0)), ONE)));
+  panels.frustumCulled = false; scene.add(panels); keep(panels);
+  nightMapU.value = keep(mcNightMap(THREE, POOLS, NIGHT_RECT));
+
+  /* --- rocks strewn over the plain, more of them on our hill and round the craters, none on the tracks or in the base --- */
+  const rockGeo = keep(new THREE.IcosahedronGeometry(1, 1)); { const p = rockGeo.attributes.position; for (let i = 0; i < p.count; i++) { V.fromBufferAttribute(p, i); const k = 0.75 + 0.5 * vnoise(V.x * 2.1 + 3, V.y * 2.1 + V.z * 1.3); p.setXYZ(i, V.x * k, V.y * k * 0.7, V.z * k); } rockGeo.computeVertexNormals(); }
+  const RN = [], RF = [];
+  for (let tries = 0; RN.length + RF.length < (preview ? 1000 : 3000) && tries < 30000; tries++) {
+    const d = 6 + 2500 * Math.pow(r(), 2.2), a = YAW + r(-1.1, 1.1), x = C0.x + d * Math.sin(a), z = C0.z - d * Math.cos(a);
+    if (Math.hypot(x - BASE.x, z - BASE.y) < 150 || Math.hypot(x - PAD.x, z - PAD.y) < 45 || (x > -135 && x < -30 && z < -165 && z > -215) || (x > -300 && x < 520 && z > -1030 && z < -80 && pathDist(x, z) < 7)) continue; // the cheap tests first
+    let s = 0.15 + 1.4 * Math.pow(r(), 3) * smooth(15, 120, d); // close by only pebbles and stones: a boulder at our feet would fill the frame
+    if (d > 40 && d < 140 && r() < 0.05) s += r(0.8, 2.0); // a few boulders down the hill
+    (d < 450 ? RN : RF).push([x, groundH(x, z) - s * 0.25, z, s]);
+  }
+  const rocks = (list, cast) => { const m = new THREE.InstancedMesh(rockGeo, rockMat, Math.max(1, list.length)), c = new THREE.Color(); list.forEach(([x, y, z, s], k) => { m.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(r(0, 3), r(0, 6), r(0, 3))), V2.set(s * r(0.8, 1.3), s, s * r(0.8, 1.3)))); m.setColorAt(k, c.setHSL(r(0.025, 0.06), r(0.3, 0.5), r(0.16, 0.3))); }); m.count = list.length; m.frustumCulled = false; m.castShadow = cast; m.receiveShadow = cast; scene.add(m); keep(m); return m; };
+  rocks(RN, !preview); rocks(RF, false);
+
+  /* --- the rovers: two round the base, one out to the crater; wheels rolling, a little pitch and roll over the ground --- */
+  const roverGeo = keep(mergeColored(THREE, [
+    [box(6.4, 2.4, 3.2), at(-0.4, 2.3, 0), ACC], [box(0.9, 1.3, 3.2), at(3.25, 1.75, 0), ACC], [box(0.14, 1.5, 2.9), at(3.2, 2.85, 0, 0, 0, 0.55), LAMP], [box(3.6, 0.6, 3.24), at(-0.9, 2.95, 0), LAMP], // the pressurised cabin and its nose, in the accent; the windscreen leaning back; a band of side windows
+    [box(6.0, 0.28, 3.0), at(-0.5, 3.62, 0), 0xeeeae2], [box(1.8, 0.7, 1.6), at(-1.8, 4.1, 0), 0xd4d0c8], [cyl(0.05, 0.05, 2.4, 4), at(-3.0, 5.0, 1.0), 0x9a9a9a], // the roof, its kit, a whip antenna
+    [box(7.6, 0.55, 2.8), at(0.1, 1.05, 0), 0x3a3a3c], ...[-1, 1].map((sd) => [box(5.6, 0.3, 0.06), at(-0.6, 1.95, sd * 1.63), 0xeeeae2]), ...[-1, 1].map((sd) => [box(0.12, 0.3, 0.55), at(3.72, 1.55, sd * 1.15), LAMP]), // the chassis, a white stripe down each side, the headlights
+  ]));
+  const wheelGeo = keep(mergeColored(THREE, [[cyl(0.85, 0.85, 0.65, 14).rotateX(Math.PI / 2), at(0, 0, 0), 0x2a2a2c], [box(1.45, 0.22, 0.68), at(0, 0, 0), 0x6a6a6e], [box(0.22, 1.45, 0.68), at(0, 0, 0), 0x6a6a6e]]));
+  const WHEEL_AT = [[-2.6, 1.85], [0, 1.85], [2.6, 1.85], [-2.6, -1.85], [0, -1.85], [2.6, -1.85]];
+  const T0 = 324; // T0: the page opens with the lander 60 m up on its burn and a rover crossing in front of the base
+  const ROVERS = [{ pa: P1, v: 4.4 }, { pa: P1, v: 4.4 }, { pa: P2, v: 5.2 }];
+  ROVERS[0].s0 = sNearest(P1, -40, -105) - T0 * 4.4; ROVERS[1].s0 = ROVERS[0].s0 + P1.total / 2; ROVERS[2].s0 = sNearest(P2, 225, -520) - T0 * 5.2;
+  const rovers = new THREE.InstancedMesh(roverGeo, paintMat, ROVERS.length), wheels = new THREE.InstancedMesh(wheelGeo, paintMat, ROVERS.length * 6);
+  for (const m of [rovers, wheels]) { m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); keep(m); }
+  const PA = new THREE.Vector2(), PB = new THREE.Vector2();
+  const roverPose = (rv, t, m) => { // where the rover is and how it sits on the ground there; returns how far it has come
+    const s = rv.s0 + t * rv.v; pathAt(rv.pa, s, PA); pathAt(rv.pa, s + 1.2, PB); // heading from just ahead: a longer look cut the corners
+    const head = Math.atan2(-(PB.y - PA.y), PB.x - PA.x), fx = Math.cos(head), fz = -Math.sin(head), zx = Math.sin(head), zz = Math.cos(head);
+    const hf = groundH(PA.x + fx * 2.8, PA.y + fz * 2.8), hb = groundH(PA.x - fx * 2.8, PA.y - fz * 2.8), hl = groundH(PA.x + zx * 1.85, PA.y + zz * 1.85), hr = groundH(PA.x - zx * 1.85, PA.y - zz * 1.85);
+    m.compose(V.set(PA.x, (hf + hb + hl + hr) / 4, PA.y), Q.setFromEuler(E.set(-Math.atan2(hl - hr, 3.7), head, Math.atan2(hf - hb, 5.6), "YXZ")), ONE); E.set(0, 0, 0, "XYZ");
+    return s;
+  };
+
+  /* --- the lander: down on its burn, a while on the pad, up and away; the dust its burn throws up --- */
+  const LG = [[cyl(3.0, 3.4, 9, 18), at(0, 9.6, 0), 0xf2f2f0], [new THREE.ConeGeometry(3.0, 5.5, 18), at(0, 16.85, 0), 0xf2f2f0], [cyl(3.42, 3.42, 1.2, 18), at(0, 11.2, 0), ACC], [box(1.3, 1.5, 0.3), at(0, 13, 3.05), LAMP], [cyl(2.3, 3.0, 2.6, 18), at(0, 3.8, 0), 0xa4a2a0], [cyl(1.0, 1.7, 2.2, 14), at(0, 1.6, 0), 0x38383a]];
+  for (let k = 0; k < 4; k++) { const a = (k * Math.PI) / 2 + Math.PI / 4, ca = Math.cos(a), sa = Math.sin(a); strut(LG, new THREE.Vector3(ca * 2.6, 5.2, sa * 2.6), new THREE.Vector3(ca * 6.6, 0.25, sa * 6.6), 0.35, 0x8a8a8e); LG.push([cyl(0.9, 1.0, 0.25, 10), at(ca * 6.6, 0.12, sa * 6.6), 0x6a6a6e]); }
+  const lander = new THREE.Group(); scene.add(lander);
+  const landerBody = new THREE.Mesh(keep(mergeColored(THREE, LG)), paintMat); lander.add(landerBody);
+  const flameU = [0.9, 0.5].map(() => ({ uNoise: { value: noise }, uTime: time, uAmt: { value: 0 } }));
+  const flames = [[0.6, 1.5, 1.0], [0.95, 3.6, 0.55]].map(([r0, r1], k) => { const m = new THREE.Mesh(keep(new THREE.CylinderGeometry(r0, r1, 1, 16, 6, true).translate(0, -0.5, 0)), shader(MC_FLAME_VS, MC_FLAME_FS, flameU[k], { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })); m.position.y = 0.55; m.frustumCulled = false; m.renderOrder = 17; lander.add(m); return m; });
+  const LP = 150, DESC = 36, STAY = 64, ASC = 26, ALT0 = 520;
+  const landerState = (t) => { // [altitude, thrust] at time t
+    const tc = ((t % LP) + LP) % LP;
+    if (tc < DESC) { const k = 1 - tc / DESC; return [ALT0 * k * k, 1]; }
+    if (tc < DESC + STAY) return [0, tc < DESC + 0.8 ? 0.6 : 0];
+    if (tc < DESC + STAY + ASC) { const k = (tc - DESC - STAY) / ASC; return [ALT0 * k * k, Math.min(1, 0.5 + 0.25 * (tc - DESC - STAY))]; }
+    return [ALT0 * 1.3, 0];
+  };
+
+  /* --- dust: grains thrown up by the rovers' wheels and the lander's burn, placed afresh each frame from where each one was raised --- */
+  const NRD = preview ? 14 : 28, NLD = preview ? 80 : 200, ND = ROVERS.length * NRD + NLD;
+  const dustGeo = keep(new THREE.BufferGeometry()), dPos = new Float32Array(ND * 3), dA = new Float32Array(ND), dS = new Float32Array(ND);
+  dustGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3).setUsage(THREE.DynamicDrawUsage)); dustGeo.setAttribute("aA", new THREE.BufferAttribute(dA, 1).setUsage(THREE.DynamicDrawUsage)); dustGeo.setAttribute("aS", new THREE.BufferAttribute(dS, 1).setUsage(THREE.DynamicDrawUsage));
+  const dustU = { uPx: { value: 700 }, uCol: { value: new THREE.Color() } };
+  const dust = new THREE.Points(dustGeo, shader(MC_DUST_VS, MC_DUST_FS, dustU, { transparent: true, depthWrite: false, premultipliedAlpha: true }));
+  dust.frustumCulled = false; dust.renderOrder = 15; scene.add(dust);
+
+  /* --- dust devils wandering across the far plain --- */
+  const devilGeo = keep(new THREE.CylinderGeometry(1, 0.18, 1, 24, 12, true).translate(0, 0.5, 0));
+  const DEVILS = [{ x0: -500, x1: 900, z: -1700, v: 3.2, H: 260, W: 44, ph: 0.62 }, { x0: 100, x1: 1500, z: -2400, v: 4.0, H: 380, W: 62, ph: 0.35 }, { x0: 700, x1: 2100, z: -3400, v: 5.0, H: 480, W: 78, ph: 0.1 }];
+  const fogD = { value: 1 / 9000 };
+  const devilU = DEVILS.map((_, k) => ({ uNoise: { value: noise }, uTime: time, uCol: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uAmt: { value: 0 }, uHaze: { value: new THREE.Color() }, uFogD: fogD, uSunDir: { value: SUN.clone() }, uSeed: { value: k * 1.7 + 0.4 } }));
+  const devils = DEVILS.map((_, k) => { const m = new THREE.Mesh(devilGeo, shader(MC_DEVIL_VS, MC_DEVIL_FS, devilU[k], { transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.DoubleSide })); m.frustumCulled = false; m.renderOrder = 12; scene.add(m); return m; });
+
+  /* --- the sky: a clear butterscotch by day; by night the Milky Way, Phobos and Deimos, Earth a blue star over the afterglow --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: nightU, uNoise: { value: noise },
+    uGalN: { value: new THREE.Vector3(0.45, 0.55, 0.7).normalize() }, uGalC: { value: new THREE.Vector3() } };
+  skyU.uGalC.value.set(0.6, 0.25, -0.75).normalize(); skyU.uGalC.value.addScaledVector(skyU.uGalN.value, -skyU.uGalC.value.dot(skyU.uGalN.value)).normalize();
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(45000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 600 : 2000, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.02, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 35000, Math.sin(e) * 35000, Math.sin(a) * Math.cos(e) * 35000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3.2)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); } // the thin air hides few
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const phobosTex = keep(mcPhobos(THREE));
+  const phobos = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: phobosTex, transparent: true, depthWrite: false, fog: false })));
+  const deimos = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: phobosTex, transparent: true, depthWrite: false, fog: false, color: 0xd8d0c8 })));
+  phobos.scale.setScalar(520); deimos.scale.setScalar(150); phobos.renderOrder = deimos.renderOrder = -8;
+  deimos.position.copy(sph(-1.22, 0.2)).multiplyScalar(28000).add(C0); scene.add(phobos, deimos);
+
+  /* --- glows: the pad's ring of lights, the mast's beacon, the airlocks, Earth; the rovers' and the lander's lights --- */
+  const GL = [];
+  const G_PAD = GL.length; for (let k = 0; k < 20; k++) { const a = (k / 20) * Math.PI * 2; GL.push([PAD.x + Math.cos(a) * 26.6, padY + 1.0, PAD.y + Math.sin(a) * 26.6, 0.35, 2.4, 1.8, 1.0, 1.2]); }
+  const G_TOWER = GL.length; GL.push([TW.x, groundH(TW.x, TW.y) + 47.2, TW.y, 0.9, 2.6, 0.2, 0.12, 1.6]);
+  const G_DOOR = GL.length; for (const [x, y, z] of DOORS) GL.push([x, y, z, 0.5, 2.5, 1.9, 1.2, 1.3]);
+  const G_EARTH = GL.length; { const e = sph(-1.9, 0.1).multiplyScalar(30000).add(C0); GL.push([e.x, e.y, e.z, 120, 0.7, 1.3, 2.8, 3.2]); }
+  const G_ROVER = GL.length; for (let k = 0; k < ROVERS.length * 4; k++) GL.push([0, 0, 0, 0, 0, 0, 0, 1.2]);
+  const G_LANDER = GL.length; GL.push([0, 0, 0, 0, 2.6, 2.6, 2.6, 1.4], [0, 0, 0, 0, 2.6, 1.2, 0.4, 2.0]); // its strobe; the glow of its burn on the pad
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  /* --- light, the shadows of the base and the rovers near it --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun, sun.target);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+  if (!preview) {
+    sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.08;
+    for (const m of [site, panels, rovers, wheels, landerBody]) m.castShadow = true;
+    land.receiveShadow = site.receiveShadow = panels.receiveShadow = true;
+  }
+  const LIT_MATS = [groundMat, paintMat, panelMat, rockMat];
+  const shadowFit = () => { // the light's box round the base, the pad and the near half of the rovers' loop
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [-270, 190]) for (const y of [-5, 60]) for (const z of [-440, -80]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x; cam.right = hi.x; cam.bottom = lo.y; cam.top = hi.y; cam.near = Math.max(0.5, -hi.z - 100); cam.far = -lo.z + 100; cam.updateProjectionMatrix();
+  };
+  let shadowsOn = false;
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#04050c" : "#a8714c"); skyU.uMid.value.set(d ? "#0b0d1e" : "#d29e74"); skyU.uHorizon.value.set(d ? "#1a1626" : "#ecc8a2");
+    skyU.uSunDir.value.copy(d ? WEST : SUN); skyU.uGlow.value.set(d ? "#3d6eb0" : "#fff0dc").multiplyScalar(d ? 0.45 : 0.18); skyU.uSunColor.value.set("#cfe0ff"); // by night the blue afterglow of a Martian sunset low in the west
+    starU.uAmt.value = d ? 1 : 0; stars.visible = phobos.visible = deimos.visible = d;
+    sun.position.copy(d ? MOONLIGHT : SUN).multiplyScalar(600); sun.color.set(d ? "#7f8fb8" : "#fff0dc"); sun.intensity = d ? 0.45 : 2.5; sun.castShadow = !preview && !d; if (!preview && !d) shadowFit();
+    hemi.color.set(d ? "#28304a" : "#e0aa80"); hemi.groundColor.set(d ? "#120c0c" : "#7a4630"); hemi.intensity = d ? 0.62 : 0.9;
+    const haze = new THREE.Color(d ? "#15131e" : "#e3bc96"); scene.fog.color.copy(haze); fogD.value = d ? 1 / 8000 : 1 / 9000; scene.fog.density = fogD.value;
+    nightU.value = d ? 1 : 0; shadowAmtU.value = d ? 0 : 1;
+    for (const u of devilU) { u.uCol.value.set(d ? "#4a4048" : "#f0d0ae"); u.uShade.value.set(d ? "#262024" : "#c99a74"); u.uHaze.value.copy(haze); } // pale, sunlit dust: dark columns read as smoke
+    dustU.uCol.value.set(d ? "#4a3a36" : "#c08a62");
+    glowU.uAmt.value = d ? 1 : 0.4;
+    for (let i = G_DOOR; i < G_DOOR + DOORS.length; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    aGlow.setW(G_EARTH, d ? GL[G_EARTH][3] : 0);
+    aGlow.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera on our hill --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = YAW + k * 0.16, pitch = -0.085 + k * 0.04; // a phone turns towards the domes
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (!preview && !shadowsOn) { shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true; } // before the first frame: compiled once, with shadows
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = dustU.uPx.value = pxFor(buf.y); glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900));
+  };
+
+  const mA = new THREE.Matrix4(), mW = new THREE.Matrix4(), mR = new THREE.Matrix4();
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    ROVERS.forEach((rv, k) => { // the rovers on their rounds; their lights by night
+      const s = roverPose(rv, t, mA);
+      rovers.setMatrixAt(k, mA);
+      WHEEL_AT.forEach(([wx, wz], j) => { mW.compose(V.set(wx, 0.85, wz), Q.setFromAxisAngle(V2.set(0, 0, 1), -s / 0.85), ONE); wheels.setMatrixAt(k * 6 + j, mR.multiplyMatrices(mA, mW)); });
+      [[3.85, 1.6, 1.15, 0], [3.85, 1.6, -1.15, 0], [-3.75, 1.9, 1.25, 1], [-3.75, 1.9, -1.25, 1]].forEach(([lx, ly, lz, tail], j) => { V.set(lx, ly, lz).applyMatrix4(mA); const i = G_ROVER + k * 4 + j; aGlow.setXYZW(i, V.x, V.y, V.z, night ? (tail ? 0.22 : 0.35) : 0); if (tail) aTint.setXYZ(i, 2.6, 0.2, 0.12); else aTint.setXYZ(i, 2.5, 2.4, 2.2); });
+    });
+    rovers.instanceMatrix.needsUpdate = wheels.instanceMatrix.needsUpdate = true;
+    const [alt, thrust] = landerState(t), flick = 0.85 + 0.15 * Math.sin(t * 37) * Math.sin(t * 23);
+    lander.visible = alt < ALT0 * 1.1; lander.position.set(PAD.x, padY + 0.6 + alt, PAD.y);
+    flames.forEach((m, k) => { m.visible = thrust > 0.01; m.scale.set(1, (k ? 16 : 9) * (0.6 + 0.4 * thrust) * flick * (alt < 30 ? 0.5 + alt / 60 : 1), 1); flameU[k].uAmt.value = thrust * (k ? 0.55 : 1.0); });
+    aGlow.setXYZW(G_LANDER, PAD.x, padY + 20.2 + alt, PAD.y, lander.visible && Math.floor(t * 1.2) % 2 === 0 ? 0.6 : 0); // the strobe on its nose
+    aGlow.setXYZW(G_LANDER + 1, PAD.x, padY + 1.2, PAD.y, thrust * smooth(40, 2, alt) * 16 * flick); // only once the flame reaches the pad
+    const approach = alt > 0.5 && alt < 220; // the pad's lights chase round towards its middle while the lander comes in or goes
+    for (let k = 0; k < 20; k++) aGlow.setW(G_PAD + k, approach ? (0.25 + 0.5 * Math.max(0, Math.cos(((k / 20) * 2 - t * 1.6) * Math.PI)) ** 8) : night ? 0.3 : 0);
+    aGlow.setW(G_TOWER, Math.floor(t * 0.8) % 2 === 0 ? 0.9 : 0.15);
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    // dust from the rovers' wheels: each grain where its rover was when it threw it up, rising and drifting off on the wind
+    let o = 0;
+    ROVERS.forEach((rv) => { for (let k = 0; k < NRD; k++) { const life = 4, age = ((t / life + k / NRD) % 1) * life, s = rv.s0 + (t - age) * rv.v; pathAt(rv.pa, s - 3.6, PA); pathAt(rv.pa, s - 1.6, PB); const tx = PB.x - PA.x, tz = PB.y - PA.y, tl = Math.hypot(tx, tz) || 1, jit = (hash(k, 7) - 0.5) * 3.2; const x = PA.x - (tz / tl) * jit + age * 1.1, z = PA.y + (tx / tl) * jit; dPos[o * 3] = x; dPos[o * 3 + 1] = groundH(x, z) + 0.4 + age * 0.9; dPos[o * 3 + 2] = z; dA[o] = 0.3 * (1 - age / life) ** 2 * smooth(0, 0.4, age) * (night ? 0.5 : 1); dS[o] = 1.4 + age * 2.4; o++; } });
+    for (let k = 0; k < NLD; k++) { const life = 3.2, age = ((t / life + hash(k, 3)) % 1) * life, [ae, th] = landerState(t - age), str = th * smooth(70, 4, ae), a = (k / NLD) * Math.PI * 2 + hash(k, 5) * 0.3, rr = 8 + (9 + 12 * hash(k, 9)) * age * (1 - 0.12 * age); dPos[o * 3] = PAD.x + Math.cos(a) * rr; dPos[o * 3 + 1] = padY + 0.6 + age * (1.5 + 2 * hash(k, 11)); dPos[o * 3 + 2] = PAD.y + Math.sin(a) * rr; dA[o] = str * 0.42 * (1 - age / life) ** 1.5 * smooth(0, 0.2, age); dS[o] = 3 + age * 7; o++; } // the burn's dust, blown out across the pad in a ring
+    dustGeo.attributes.position.needsUpdate = dustGeo.attributes.aA.needsUpdate = dustGeo.attributes.aS.needsUpdate = true;
+    DEVILS.forEach((dv, k) => { const u = (((t * dv.v) / (dv.x1 - dv.x0) + dv.ph) % 1 + 1) % 1, x = dv.x0 + (dv.x1 - dv.x0) * u; devils[k].position.set(x, groundH(x, dv.z) - 2, dv.z); devils[k].scale.set(dv.W, dv.H, dv.W); devilU[k].uAmt.value = (night ? 0.3 : 0.7) * smooth(0, 0.12, u) * (1 - smooth(0.88, 1, u)); });
+    if (night) { const u = ((t / 900) % 1 + 1) % 1; phobos.position.copy(sph(-2.3 + 1.6 * u, 0.13 + 0.09 * Math.sin(Math.PI * u))).multiplyScalar(28000).add(C0); } // Phobos crossing the sky
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { craters: CRATERS.length, rocks: RN.length + RF.length, panels: PANELS.length, rovers: ROVERS.length, loop1: Math.round(P1.total), loop2: Math.round(P2.total), eye: +C0.y.toFixed(1), glows: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
