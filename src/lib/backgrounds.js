@@ -71,6 +71,7 @@ export const BG_STYLES = [
   { value: "futurecity", label: "Futuristic city", desc: "3D city of the future: flying cars stream along sky lanes down a grand avenue between glass towers, a maglev glides down the middle, screens and lane lights glow in your colour; at night the towers light up window by window and the traffic turns into streams of light", three: true },
   { value: "floatislands", label: "Floating islands", desc: "3D islands of rock adrift over a sea of clouds: waterfalls pour off their edges, airships with sails in your colour drift between them and birds wheel round the cliffs; at night crystals glow in the rock under a starry sky", three: true },
   { value: "marscolony", label: "Mars colony", desc: "3D base on Mars: glowing domes linked by tubes, greenhouses, rovers in your colour on their rounds and a lander touching down on its thrusters as dust devils whirl across the red plain; at night the domes glow, Phobos crosses the sky and Earth shines as a blue star", three: true },
+  { value: "pyramids", label: "Pyramids on the Nile", desc: "3D pyramids of Giza and the Sphinx above the Nile at golden hour: feluccas with sails in your colour glide past palm groves, a cruise boat and ibises go by; at night the pyramids light up for a sound-and-light show mirrored in the river under the stars", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);

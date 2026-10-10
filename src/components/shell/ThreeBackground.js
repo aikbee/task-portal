@@ -23130,7 +23130,586 @@ function marscolony(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony };
+/* ---------- Pyramids on the Nile: Giza across the river at golden hour; feluccas, a cruise boat, ibises; a sound-and-light show by night ---------- */
+// One height field holds the river's bed and banks, the green floodplain, the Giza plateau's escarpment and the desert behind; the
+// pyramids are crisp meshes of their own (flat faces, courses of stone that fade to their average once smaller than a pixel) that cast
+// their long shadows across the plateau through a shadow map. The river mirrors everything above it at half size; the boats follow the
+// river by the clock alone, each facing its way, its lateen sail trimmed to the wind blowing off the far bank.
+const NL_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform sampler2D uNightMap; uniform vec4 uNightRect; uniform vec3 uLampCol; uniform vec3 uShowAvg; uniform float uNight; uniform float uShadowAmt;
+  varying vec3 vPW; varying float vShade; varying float vSlope; varying float vVar;
+  float nlInRect(vec2 uv) { return step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); }
+  vec3 nlGround(vec3 p) {
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.013 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.08 + 0.7).r;
+    vec3 sand = mix(vec3(0.76, 0.61, 0.41), vec3(0.88, 0.75, 0.54), smoothstep(0.3, 0.75, n2 * 0.6 + n1 * 0.5)) * (0.9 + 0.2 * n3);
+    float fy = fwidth(p.y), strata = mix(0.86 + 0.14 * sin(p.y * 0.85 + n3 * 3.0), 0.93, smoothstep(0.6, 2.0, fy)); // the limestone's beds, fading to their average once smaller than a pixel
+    vec3 rock = mix(vec3(0.62, 0.52, 0.4), vec3(0.8, 0.69, 0.54), n3) * strata;
+    vec3 col = mix(sand, rock, smoothstep(0.06, 0.2, vSlope)); // bare limestone where the escarpment steepens
+    // the floodplain: fields in plots, green, ripening or harvested
+    float flood = smoothstep(4.5, 3.0, p.y) * step(p.z, -420.0) * (1.0 - smoothstep(0.04, 0.1, vSlope));
+    vec2 plot = floor(vec2(p.x / 46.0, p.z / 70.0)); float ph = fract(sin(dot(plot, vec2(12.9898, 78.233))) * 43758.5453);
+    vec3 field = ph < 0.55 ? mix(vec3(0.16, 0.34, 0.1), vec3(0.3, 0.46, 0.14), n2) : ph < 0.8 ? mix(vec3(0.42, 0.5, 0.18), vec3(0.52, 0.56, 0.2), n2) : vec3(0.48, 0.38, 0.26) * (0.9 + 0.2 * n3);
+    col = mix(col, field, flood);
+    col = mix(col, vec3(0.32, 0.27, 0.2) * (0.85 + 0.3 * n3), smoothstep(1.4, 0.3, p.y)); // the mud bank at the water's edge, and the river's bed
+    return col;
+  }
+  vec3 nlLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    vec3 m = texture2D(uNightMap, clamp(uv, 0.0, 1.0)).rgb * nlInRect(uv);
+    return albedo * (uLampCol * m.r + uShowAvg * m.g * 1.6) * uNight;
+  }
+`;
+// the pyramids' stone: limestone blocks laid in courses (the shadowed joint under each one fading to its average once a course is
+// smaller than a pixel), Khafre still wearing its casing at the top, rubble at the foot; floodlit from the foot by night, each
+// pyramid in the colour of the show's moment
+const NL_PYR_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uNight; uniform vec3 uShow[3];
+  varying vec3 vPW; varying float vH; varying float vPyr; varying vec3 vON;
+  vec3 nlPyr(out vec3 glow) {
+    float course = vPW.y / 1.35, fc = fwidth(course);
+    float n1 = texture2D(uNoise, vPW.xz * 0.05 + vPW.y * 0.03).r, n2 = texture2D(uNoise, vec2(vPW.x + vPW.z, vPW.y) * 0.2).g;
+    vec3 col = mix(vec3(0.72, 0.6, 0.44), vec3(0.86, 0.75, 0.58), n1) * (0.92 + 0.16 * n2);
+    float joint = smoothstep(0.75, 0.95, fract(course));
+    col *= 1.0 - 0.22 * mix(joint, 0.2, smoothstep(0.25, 0.7, fc));
+    if (vPyr > 0.5 && vPyr < 1.5 && vH > 0.82) col = mix(vec3(0.86, 0.78, 0.64), vec3(0.94, 0.88, 0.76), n1); // Khafre's casing, still on at the top
+    col *= 0.85 + 0.15 * smoothstep(0.0, 0.08, vH); // rubble at the foot
+    glow = vec3(0.0);
+    if (uNight > 0.0) { // the floodlights stand out in front, to the left: that face brighter, the light fading up the faces
+      vec3 c = vPyr < 0.5 ? uShow[0] : vPyr < 1.5 ? uShow[1] : uShow[2];
+      float hl = length(vON.xz), face = hl > 0.01 ? 0.5 + 0.5 * clamp(dot(vON.xz / hl, normalize(vec2(-0.45, 1.0))), 0.0, 1.0) : 0.6;
+      glow = c * (0.14 + 0.86 * pow(1.0 - vH, 1.3)) * face * uNight;
+    }
+    return col;
+  }
+`;
+// the Nile: ripples carried downstream (two phases blended, so the pattern never smears), the boats' wakes, the mirrored world
+// pushed about by both, the river's own muddy green through the shallows, haze far off
+const NL_WATER_VS = /* glsl */ `
+  attribute float aDepth;
+  varying vec3 vWorld; varying float vDepth;
+  void main() { vDepth = aDepth; vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const NL_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNoise; uniform float uTime; uniform vec3 uGlintDir; uniform vec3 uGlintCol; uniform float uGlint;
+  uniform vec3 uBed; uniform vec3 uDeep; uniform vec3 uFoam; uniform vec3 uHaze; uniform float uFogD; uniform vec4 uBoats[8]; // x, z, heading, wake scale (0: none)
+  varying vec3 vWorld; varying float vDepth;
+  vec2 nlWaves(vec2 q, vec2 off) { return (texture2D(uNoise, q * vec2(0.03, 0.08) + off).rg - 0.5) + (texture2D(uNoise, q * vec2(0.09, 0.22) - off * 1.7 + 0.37).rg - 0.5) * 0.45; }
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz;
+    float ph = fract(uTime * 0.05), w0 = abs(ph * 2.0 - 1.0);
+    vec2 s = (nlWaves(p, vec2(-ph * 0.3, 0.0)) * w0 + nlWaves(p + 7.3, vec2(-fract(ph + 0.5) * 0.3, 0.0)) * (1.0 - w0)) * 0.55;
+    float wake = 0.0;
+    for (int i = 0; i < 8; i++) {
+      vec4 b = uBoats[i];
+      if (b.w <= 0.0) continue;
+      vec2 q = p - b.xy; float c = cos(b.z), sn = sin(b.z), behind = -(c * q.x + sn * q.y), across = -sn * q.x + c * q.y, L = 140.0 * b.w;
+      if (behind > -4.0 * b.w && behind < L) {
+        float fade = 1.0 - clamp(behind / L, 0.0, 1.0), bb = max(behind, 0.0);
+        float arms = exp(-abs(abs(across) - bb * 0.32) * (0.7 / b.w)) * fade * fade * smoothstep(0.0, 4.0, bb), trail = exp(-abs(across) * 0.35 / b.w) * exp(-bb * 0.09 / b.w);
+        float br = smoothstep(0.3, 0.7, texture2D(uNoise, p * 0.11 + uTime * 0.02).r); // broken up, never a line
+        wake += (arms * 0.28 + trail * 0.14) * br; s += vec2(-sn, c) * sign(across) * arms * 0.25;
+      }
+    }
+    vec3 N = normalize(vec3(s.x * 0.5, 1.0, s.y * 0.5)), Nf = normalize(vec3(s.x * 0.06, 1.0, s.y * 0.06));
+    float fres = 0.03 + 0.97 * pow(1.0 - max(dot(Nf, V), 0.0), 5.0);
+    float d = max(vDepth, 0.0);
+    vec3 body = mix(uBed, uDeep, smoothstep(0.2, 2.5, d));
+    vec2 uv = gl_FragCoord.xy / uRes + vec2(s.x * 0.02, s.y * 0.05), dv = vec2(0.0, 0.004);
+    vec3 refl = (texture2D(tReflect, clamp(uv, 0.001, 0.999)).rgb * 2.0 + texture2D(tReflect, clamp(uv + dv, 0.001, 0.999)).rgb + texture2D(tReflect, clamp(uv - dv, 0.001, 0.999)).rgb) * 0.25;
+    vec3 col = mix(body, refl, clamp(0.12 + 0.85 * fres, 0.0, 0.86));
+    col *= 1.0 + 0.16 * (s.x + s.y) * (1.0 - smoothstep(140.0, 420.0, dist)); // the ripples' shimmer close by
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    float sd = max(dot(R, uGlintDir), 0.0);
+    col += uGlintCol * uGlint * (pow(sd, 900.0) * 6.0 + pow(sd, 70.0) * 0.3);
+    col = mix(col, uFoam, clamp(wake, 0.0, 0.6) * 0.5);
+    col = mix(col, uFoam * 0.8, (1.0 - smoothstep(0.02, 0.2, d)) * smoothstep(-0.02, 0.05, vDepth) * 0.35); // where the water laps the bank
+    float fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the show's beams: soft cones of light from between the pyramids sweeping the night sky, brightest at their source (additive; MC_FLAME_VS)
+const NL_BEAM_FS = /* glsl */ `
+  uniform vec3 uCol; uniform float uAmt; uniform sampler2D uNoise; uniform float uTime;
+  varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+  void main() {
+    float along = vUv.y, face = abs(dot(normalize(vN), normalize(cameraPosition - vW)));
+    float n = texture2D(uNoise, vec2(vUv.x * 4.0, along * 3.0 - uTime * 0.03)).r; // dust drifting through the beam
+    float a = face * face * face * exp(-along * 3.2) * smoothstep(0.0, 0.004, along) * (0.55 + 0.45 * n) * uAmt;
+    gl_FragColor = vec4(uCol * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+/** A crescent moon low in the west after sunset: the thin lit crescent, the rest of the disc faint in earthshine, on a transparent card. */
+function nlCrescent(THREE) {
+  return canvasTexture(THREE, 128, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = "rgba(150,165,200,0.16)"; g.beginPath(); g.arc(64, 64, 52, 0, Math.PI * 2); g.fill(); // earthshine
+    const t = document.createElement("canvas"); t.width = w; t.height = h; const tg = t.getContext("2d");
+    const gr = tg.createRadialGradient(52, 58, 8, 64, 64, 54); gr.addColorStop(0, "#fffbe8"); gr.addColorStop(1, "#e8dcc0");
+    tg.fillStyle = gr; tg.beginPath(); tg.arc(64, 64, 52, 0, Math.PI * 2); tg.fill();
+    tg.globalCompositeOperation = "destination-out"; tg.beginPath(); tg.arc(80, 54, 50, 0, Math.PI * 2); tg.fill(); // the dark limb bites away all but the crescent, lit from low on the left
+    g.drawImage(t, 0, 0);
+  });
+}
+/** The night's light on the ground from above, over rect [x0, z0, x1, z1]: radial pools [x, z, radius, strength, channel] — r the lamps, g the show's floodlights. */
+function nlNightMap(THREE, pools, [x0, z0, x1, z1]) {
+  const W = 512, H = 512, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (z) => ((z1 - z) / (z1 - z0)) * H, SX = W / (x1 - x0), SY = H / (z1 - z0);
+  for (const [x, z, rad, a, ch] of pools) {
+    g.save(); g.translate(X(x), Y(z)); g.scale(rad * SX, rad * SY);
+    const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1), rgb = ch ? "0,255,0" : "255,0,0";
+    [[0, 1], [0.3, 0.6], [0.6, 0.24], [0.85, 0.06], [1, 0]].forEach(([s, k]) => gr.addColorStop(s, `rgba(${rgb},${a * k})`));
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+function pyramids(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2626);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 32; camera.near = 0.5; camera.far = 60000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 10) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const prism = (pts, h) => new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([a, b]) => new THREE.Vector2(a, b))), { depth: h, bevelEnabled: false }).rotateX(-Math.PI / 2); // an outline in (x, z), raised h up from y 0
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(2.45, 0.27), MOON = sph(-Math.PI / 2 - 0.105, 0.19), MOONLIGHT = sph(-1.2, 0.7), CITY = sph(-0.3, 0.02); // the morning sun low behind our left shoulder; a crescent in the west by night, the glow of Cairo's lights on the right
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; windows and lanterns (lit at night)
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+
+  /* --- the land: the river's bed, the far bank's floodplain, the plateau's low escarpment, the plateau rising to the pyramids, dunes behind --- */
+  const C0 = new THREE.Vector3(0, 24, 0); // a hotel's roof terrace on the east bank
+  const NEAR = -15, FAR = -430; // the river between these (z); the water's surface at y 0; the Nile flows north, to the right (+x)
+  const riseAt = (x, z) => smooth(-815, -852, z + 55 * Math.sin(x / 240 + 0.7) + 22 * Math.sin(x / 93 + 1) + 8 * Math.sin(x / 31 + 2)); // 0 on the floodplain, 1 on the plateau: the escarpment's foot wanders in bays and spurs
+  function plateauH(x, z) {
+    if (z > NEAR) return 3.2 + 0.02 * (z - NEAR); // our bank's quay
+    if (z > FAR) { const u = (NEAR - z) / (NEAR - FAR); return -5.5 * (1 - u * u * u) + 0.3 * Math.sin(x / 37 + z / 23); } // deep under the quay, shelving up to the far bank
+    let h = 1.6 * smooth(FAR, FAR - 30, z) + 0.6 * (fbm(x * 0.01, z * 0.01, 2) - 0.5) + 0.4 * Math.sin(x / 47) * Math.sin(z / 31); // the floodplain
+    const rise = z > -725 ? 0 : riseAt(x, z);
+    if (rise > 0) h += rise * (14 + 6 * Math.sin(x / 180 + 2) + 6 * fbm(x * 0.008, 3.3, 2) + 26 * smooth(-880, -1650, z) + 10 * smooth(150, -450, x) * smooth(-1150, -1700, z) + 6 * (fbm(x * 0.004 + 5, z * 0.004, 3) - 0.5)); // the plateau, climbing to the pyramids and on to the south-west
+    if (rise > 0 && rise < 1) h += 11 * (fbm(x * 0.045, z * 0.045 + 1.7, 3) - 0.5) * 4 * rise * (1 - rise); // the escarpment's broken face
+    if (z < -2400) h += 18 * smooth(-2400, -3200, z) * (0.5 + 0.5 * Math.sin(x / 260 + Math.sin(z / 400))) * (0.6 + 0.8 * fbm(x * 0.002, z * 0.002, 2)); // dunes far behind
+    return h;
+  }
+  const PYR = [ // centre, base side, height, which (0 Khufu, 1 Khafre, 2 Menkaure, 3 the queens'), how much of it is left (Khufu has lost its top)
+    { x: 180, z: -1250, B: 230, H: 146, id: 0, tr: 0.955 }, { x: -60, z: -1450, B: 215, H: 143.5, id: 1 }, { x: -330, z: -1640, B: 103, H: 65, id: 2 },
+    { x: -415, z: -1765, B: 46, H: 28, id: 3 }, { x: -468, z: -1726, B: 44, H: 27, id: 3 }, { x: -520, z: -1687, B: 40, H: 25, id: 3 },
+  ];
+  const PYAW = 0.6, CY = Math.cos(PYAW), SY = Math.sin(PYAW); // all of them turned alike: we see two faces of each, one in the sun
+  for (const P of PYR) P.base = plateauH(P.x, P.z);
+  const SPX = { x: -15, z: -925, ry: -Math.PI / 2 - 0.95, s: 1.25 }; SPX.base = plateauH(SPX.x, SPX.z); // the Sphinx at the plateau's edge, gazing east over the river, its face turned into the morning sun
+  function groundH(x, z) {
+    let h = plateauH(x, z);
+    for (const P of PYR) { const dx = x - P.x, dz = z - P.z, m = Math.max(Math.abs(dx * CY - dz * SY), Math.abs(dx * SY + dz * CY)) - P.B / 2; if (m < 40) h += (P.base - h) * smooth(40, 0, m); } // each on its own levelled pavement
+    const sd = Math.hypot(x - SPX.x, z - SPX.z); if (sd < 80) h += (SPX.base - h) * smooth(80, 40, sd);
+    return h;
+  }
+  // the sun's shade on the land: marched once per point of a coarse grid, sampled per vertex
+  const GS = preview ? 60 : 30, GX0 = -2400, GZ0 = -4000, GNX = Math.round(4800 / GS) + 1, GNZ = Math.round(3600 / GS) + 1, HG = new Float32Array(GNX * GNZ);
+  for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) HG[j * GNX + i] = groundH(GX0 + i * GS, GZ0 + j * GS);
+  const hGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return null; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j, a = HG[j * GNX + i], b = HG[j * GNX + i + 1], c = HG[(j + 1) * GNX + i], d = HG[(j + 1) * GNX + i + 1]; return (a * (1 - u) + b * u) * (1 - w) + (c * (1 - u) + d * u) * w; };
+  const SH = new THREE.Vector2(SUN.x, SUN.z).normalize(), TAN_EL = SUN.y / Math.hypot(SUN.x, SUN.z);
+  const shadeAt = (x, z, h0) => { let m = -1, t = 4; for (let k = 0; k < 40; k++) { const hh = hGrid(x + SH.x * t, z + SH.y * t); if (hh === null) break; m = Math.max(m, (hh - h0) / t); if (m > TAN_EL + 0.03) break; t = t * 1.12 + 2; } return 1 - smooth(TAN_EL - 0.04, TAN_EL + 0.02, m); };
+  const SHG = new Float32Array(GNX * GNZ); for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) SHG[j * GNX + i] = shadeAt(GX0 + i * GS, GZ0 + j * GS, HG[j * GNX + i]);
+  const shadeGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return 1; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j; return (SHG[j * GNX + i] * (1 - u) + SHG[j * GNX + i + 1] * u) * (1 - w) + (SHG[(j + 1) * GNX + i] * (1 - u) + SHG[(j + 1) * GNX + i + 1] * u) * w; };
+  // rings round the camera: coarse below the view's lower edge and over open water, close across the far bank and the escarpment; the land keeps the cells above the water, the river the ones below
+  const RINGS = [];
+  for (let rr = 3; rr < 40000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 60 ? 0.08 : rr < 400 ? 0.03 : rr < 1000 ? 0.008 : rr < 1900 ? 0.014 : 0.022)) RINGS.push(rr);
+  RINGS.push(40000);
+  const NA = preview ? 130 : 300, AW = 0.9, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry()), riverGeo = keep(new THREE.BufferGeometry());
+  {
+    const pos = new Float32Array(nv * 3), wpos = new Float32Array(nv * 3), HV = new Float32Array(nv), depth = new Float32Array(nv), sh = new Float32Array(nv), vari = new Float32Array(nv);
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) {
+      const a = -AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i, h = groundH(x, z);
+      pos[k * 3] = wpos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = wpos[k * 3 + 2] = z; HV[k] = h; depth[k] = -h; sh[k] = shadeGrid(x, z); vari[k] = vnoise(x * 0.01 + 40.5, z * 0.01 - 17.25);
+    }
+    const li = [], wi = [];
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) {
+      const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1, hi = Math.max(HV[a], HV[b], HV[c], HV[d]), lo = Math.min(HV[a], HV[b], HV[c], HV[d]);
+      if (hi > -1.0) li.push(a, b, c, b, d, c);
+      if (lo < 0.5) wi.push(a, b, c, b, d, c);
+    }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(li); landGeo.computeVertexNormals();
+    landGeo.setAttribute("aShade", new THREE.BufferAttribute(sh, 1)); landGeo.setAttribute("aVar", new THREE.BufferAttribute(vari, 1));
+    riverGeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3)); riverGeo.setIndex(wi); riverGeo.setAttribute("aDepth", new THREE.BufferAttribute(depth, 1));
+  }
+
+  /* --- materials: the ground; the pyramids' stone; painted ones with markers --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const NIGHT_RECT = [-700, -1900, 700, -420];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, shadowAmtU = { value: 1 }, nightMapU = { value: null }, lampColU = { value: new THREE.Color(1.0, 0.8, 0.55).multiplyScalar(1.1) }, showAvgU = { value: new THREE.Color() }, floodU = { value: new THREE.Color() };
+  const showU = { value: [new THREE.Color(), new THREE.Color(), new THREE.Color()] };
+  const LIT_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= nlSun;");
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uLampCol: lampColU, uShowAvg: showAvgU, uNight: nightU, uShadowAmt: shadowAmtU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aShade; attribute float aVar; varying float vShade; varying float vSlope; varying float vVar; varying vec3 vPW;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vShade = aShade; vVar = aVar; vSlope = 1.0 - normalize(objectNormal).y; vPW = position; // the local position: the mirrored pass keeps the colours");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + NL_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float nlSun = mix(1.0, vShade, uShadowAmt);\n  diffuseColor.rgb = nlGround(vPW);")
+      .replace("#include <lights_fragment_begin>", LIT_BEGIN)
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += nlLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "nl-ground";
+  const pyrMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0 }));
+  pyrMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNight: nightU, uShow: showU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aPyr; attribute float aH; varying vec3 vPW; varying float vH; varying float vPyr; varying vec3 vON;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vH = aH; vPyr = aPyr; vPW = position; vON = objectNormal;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + NL_PYR_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n  vec3 nlGlow; diffuseColor.rgb = nlPyr(nlGlow);").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += nlGlow * diffuseColor.rgb * 1.3;");
+  };
+  pyrMat.customProgramCacheKey = () => "nl-pyr";
+  const lit = (mat, key, extraVS = "", flood = false, trans = false) => { // markers: the accent; lamps dark glass by day, lit by night; with flood, the night's floodlights on it from in front, strongest low down; with trans, the sun through the cloth
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time, uFlood: floodU });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime; varying float vLY;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vLY = position.y;\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight; uniform vec3 uFlood; varying float vLY;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float nlLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.1, 0.08, 0.06), isLamp); nlLamp = isLamp; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.74, 0.42) * nlLamp * (0.04 + 1.5 * uNight);" + (flood ? "\n  totalEmissiveRadiance += diffuseColor.rgb * uFlood * (1.15 - 0.75 * smoothstep(0.0, 26.0, vLY)) * (0.3 + 0.7 * max(dot(normal, normalize(vViewPosition)), 0.0));" : "") + (trans ? "\n#if NUM_DIR_LIGHTS > 0\n  totalEmissiveRadiance += diffuseColor.rgb * directionalLights[0].color * max(-dot(normal, directionalLights[0].direction), 0.0) * 0.11;\n#endif" : ""));
+    };
+    mat.customProgramCacheKey = () => "nl-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 })), "paint");
+  const sailMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide })), "sail", "", false, true);
+  const sphinxMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 })), "sphinx", "", true);
+  const world = new THREE.Group(); scene.add(world); // everything the river mirrors
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; land.renderOrder = 1; world.add(land); // after the palms and the village: early-z skips the ground behind them
+
+  /* --- the pyramids and the Sphinx --- */
+  const pyrGeo = (() => { // all six in one geometry: flat faces wound outwards, with which pyramid and how far up
+    const pos = [], aP = [], aH = [];
+    const tri = (a, b, c, P) => {
+      const A = new THREE.Vector3(...a), n = new THREE.Vector3(...b).sub(A).cross(new THREE.Vector3(...c).sub(A)), out = A.add(new THREE.Vector3(...b)).add(new THREE.Vector3(...c)).multiplyScalar(1 / 3).sub(V.set(0, P.H * 0.3, 0));
+      if (n.dot(out) < 0) [b, c] = [c, b];
+      for (const q of [a, b, c]) { pos.push(P.x + q[0] * CY + q[2] * SY, P.base - 0.6 + q[1], P.z - q[0] * SY + q[2] * CY); aP.push(P.id); aH.push(q[1] / P.H); }
+    };
+    for (const P of PYR) {
+      const h = P.B / 2, tr = P.tr || 1, tH = P.H * tr, th = h * (1 - tr), C = [[-h, 0, -h], [h, 0, -h], [h, 0, h], [-h, 0, h]], T = [[-th, tH, -th], [th, tH, -th], [th, tH, th], [-th, tH, th]];
+      for (let k = 0; k < 4; k++) { const k1 = (k + 1) % 4; if (tr < 1) { tri(C[k], T[k], T[k1], P); tri(C[k], T[k1], C[k1], P); } else tri(C[k], [0, P.H, 0], C[k1], P); }
+      if (tr < 1) { tri(T[0], T[1], T[2], P); tri(T[0], T[2], T[3], P); } // Khufu's flat top, its capstone long gone
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("aPyr", new THREE.Float32BufferAttribute(aP, 1)); g.setAttribute("aH", new THREE.Float32BufferAttribute(aH, 1)); g.computeVertexNormals(); return keep(g);
+  })();
+  const pyrMesh = new THREE.Mesh(pyrGeo, pyrMat); pyrMesh.frustumCulled = false; world.add(pyrMesh);
+  const sphinxGeo = (() => { // a lion couchant facing +x: the body's side outline rounded off, the forelegs stretched out, the head in its headdress
+    const body = new THREE.ExtrudeGeometry(new THREE.Shape([[-36, 0], [-36.5, 4], [-35, 8], [-31, 10.5], [-24, 10.8], [-10, 11.4], [0, 12.4], [5, 13.6], [8.5, 13.8], [10.5, 11], [11.5, 6], [11, 2.5], [12, 0]].map(([a, b]) => new THREE.Vector2(a, b))), { depth: 12, bevelEnabled: true, bevelThickness: 1.6, bevelSize: 1.4, bevelSegments: 2, curveSegments: 4 }).translate(0, 0, -6);
+    const nemes = new THREE.ExtrudeGeometry(new THREE.Shape([[-3.4, 22.6], [3.4, 22.6], [5.6, 13.4], [-5.6, 13.4]].map(([a, b]) => new THREE.Vector2(a, b))), { depth: 6.2, bevelEnabled: true, bevelThickness: 0.5, bevelSize: 0.4, bevelSegments: 1 }).rotateY(Math.PI / 2).translate(5.6, 0, 0);
+    const paw = new THREE.CapsuleGeometry(1.8, 15, 3, 8).rotateZ(Math.PI / 2);
+    return keep(mergeColored(THREE, [
+      [body, new THREE.Matrix4(), 0xc8b494], [paw, at(19, 1.8, 4.3), 0xc0ac8c], [paw.clone(), at(19, 1.8, -4.3), 0xc0ac8c],
+      [nemes, new THREE.Matrix4(), 0xd4c2a2], [blob(3.2, 1.3, 3.5), at(8.7, 22.4, 0), 0xd4c2a2], [box(2.6, 6.2, 4.6), at(12.6, 18.2, 0), 0xcdb898], [box(1.2, 1.4, 1.4), at(14.2, 18.6, 0), 0xbca888], // the headdress and its top; the face; the worn nose
+      [box(0.4, 0.6, 1.0), at(13.95, 19.6, 1.15), 0x6a5a48], [box(0.4, 0.6, 1.0), at(13.95, 19.6, -1.15), 0x6a5a48], [box(2.4, 3.0, 2.2), at(10.8, 14.6, 0), 0xc4b090], // the eyes in shadow; the beard's stub, the chest below it
+    ]));
+  })();
+  const sphinx = new THREE.Mesh(sphinxGeo, sphinxMat); sphinx.position.set(SPX.x, SPX.base - 0.4, SPX.z); sphinx.rotation.y = SPX.ry; sphinx.scale.setScalar(SPX.s); world.add(sphinx);
+
+  /* --- the far bank: date palms in groves, broad trees and bushes, reeds at the water; the village with its mosque --- */
+  const barkTex = keep(dcBark(THREE)); barkTex.repeat.set(1, 12);
+  const trunkMat = keep(new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95 }));
+  const frondMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.8 })), "frond", "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.21;\n#endif\n  float d = length(position.xz); transformed.xz += vec2(-0.55, -0.85) * (0.08 + 0.06 * sin(uTime * 1.3 + ph)) * d * d * 0.04; transformed.y += sin(uTime * 2.1 + ph + d * 1.7) * 0.03 * d; } // the wind in the fronds");
+  const VILLAGE = { x0: 60, x1: 360, z0: -650, z1: -468 };
+  const inVillage = (x, z, m = 8) => x > VILLAGE.x0 - m && x < VILLAGE.x1 + m && z < VILLAGE.z1 + m && z > VILLAGE.z0 - m;
+  const PALMS = [], grid = new Map(), cell = (x, z) => Math.floor(x / 8) + "," + Math.floor(z / 8);
+  const near = (x, z, d) => { const cx = Math.floor(x / 8), cz = Math.floor(z / 8); for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const [px, pz] of grid.get(cx + i + "," + (cz + j)) || []) if (Math.hypot(px - x, pz - z) < d) return true; return false; };
+  for (let tries = 0; PALMS.length < (preview ? 170 : 430) && tries < 14000; tries++) {
+    const x = r(-1250, 1250), z = FAR - 6 - 400 * Math.pow(r(), 1.5); // thickest along the bank
+    if (riseAt(x, z) > 0.02 || (inVillage(x, z) && r() < 0.8)) continue;
+    if (r() > 0.2 + 0.8 * smooth(0.38, 0.6, vnoise(x * 0.011, z * 0.011)) || near(x, z, 5.5)) continue; // in groves
+    PALMS.push([x, z, r(9, 19)]); const c = cell(x, z); if (!grid.has(c)) grid.set(c, []); grid.get(c).push([x, z]);
+  }
+  const crownGeo = (() => { // fronds radiating from the top, young ones reaching up, old ones drooping, a few dead and brown below; solid, so they hold up far off
+    const pos = [], col = [], idx = []; let base = 0;
+    const NF = preview ? 16 : 26, cc = new THREE.Color();
+    for (let f = 0; f < NF; f++) {
+      const tier = f % 4, az = (f / NF) * Math.PI * 2 * 3.7 + r(-0.2, 0.2), up = [1.25, 0.75, 0.3, -0.25][tier], L = r(4.4, 5.8) * (tier === 3 ? 0.85 : 1), W = r(1.2, 1.7), dir = new THREE.Vector3(Math.cos(az), 0, Math.sin(az)), sd = new THREE.Vector3(-dir.z, 0, dir.x), N = 5;
+      cc.set(tier === 3 && r() < 0.5 ? 0x7a6038 : [0x587a2c, 0x4a6a26, 0x3e5a22, 0x485a28][tier]).multiplyScalar(r(0.85, 1.12));
+      for (let k = 0; k <= N; k++) { const t = k / N, c = dir.clone().multiplyScalar(L * t).add(V.set(0, L * (up * t - 1.0 * t * t), 0)), w = W * (0.2 + 0.8 * Math.sin(Math.PI * Math.min(1, t * 1.1 + 0.08))); for (const s of [-0.5, 0.5]) { const q = c.clone().addScaledVector(sd, s * w).add(V.set(0, -Math.abs(s) * 0.22 * w, 0)); pos.push(q.x, q.y, q.z); col.push(cc.r, cc.g, cc.b); } if (k) { const a = base + (k - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
+      base += (N + 1) * 2;
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); g.setIndex(idx); g.computeVertexNormals(); return keep(g);
+  })();
+  const trunks = new THREE.InstancedMesh(keep(new THREE.CylinderGeometry(0.22, 0.34, 1, 7, 1, true).translate(0, 0.5, 0)), trunkMat, PALMS.length), crowns = new THREE.InstancedMesh(crownGeo, frondMat, PALMS.length);
+  PALMS.forEach(([x, z, H], i) => { const y = groundH(x, z) - 0.3, lx = r(-0.08, 0.08), lz = r(-0.08, 0.08) + (z > FAR - 25 ? 0.12 : 0); E.set(lz, 0, -lx); trunks.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E), V2.set(1, H, 1))); const top = new THREE.Vector3(0, H, 0).applyEuler(E).add(V.set(x, y, z)); crowns.setMatrixAt(i, new THREE.Matrix4().compose(top, Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.setScalar(r(0.9, 1.15)))); }); // those on the bank lean out over the water
+  for (const m of [trunks, crowns]) { m.frustumCulled = false; world.add(m); keep(m); }
+  const treeGeo = keep(mergeColored(THREE, [[cyl(0.35, 0.55, 5, 6), at(0, 2.5, 0), 0x5a4632], [blob(4.6, 3.1, 4.6), at(0, 6.6, 0), 0x3e5a26], [blob(3.3, 2.6, 3.3), at(2.3, 7.9, 1.0), 0x4a6a2c], [blob(3.1, 2.4, 3.1), at(-2.1, 7.6, -1.3), 0x34501f]])); // a sycamore fig: a short trunk, a broad dark crown
+  const bushGeo = keep(mergeColored(THREE, [[blob(2.6, 1.7, 2.6, 0), at(0, 1.1, 0), 0x3a5622], [blob(1.8, 1.3, 1.8, 0), at(1.6, 1.3, 0.6), 0x46622a]]));
+  const TREES = [], BUSHES = [];
+  for (let tries = 0; TREES.length < (preview ? 30 : 80) && tries < 4000; tries++) { const x = r(-1250, 1250), z = r(FAR - 30, -800); if (riseAt(x, z) > 0.02 || inVillage(x, z, 2) || near(x, z, 9)) continue; TREES.push([x, z, r(0.8, 1.4)]); }
+  for (let tries = 0; BUSHES.length < (preview ? 60 : 170) && tries < 4000; tries++) { const x = r(-1250, 1250), z = FAR - 4 - 380 * Math.pow(r(), 2); if (riseAt(x, z) > 0.02 || inVillage(x, z, 1) || near(x, z, 4)) continue; BUSHES.push([x, z, r(0.7, 1.4)]); }
+  const trees = new THREE.InstancedMesh(treeGeo, paintMat, TREES.length), bushes = new THREE.InstancedMesh(bushGeo, paintMat, BUSHES.length);
+  TREES.forEach(([x, z, s], i) => trees.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z) - 0.3, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.85, 1.1), s))));
+  BUSHES.forEach(([x, z, s], i) => bushes.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z) - 0.3, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.8, 1.1), s))));
+  for (const m of [trees, bushes]) { m.frustumCulled = false; world.add(m); keep(m); }
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]);
+  const REEDS = []; for (let x = -1150; x < 1150; x += r(2.5, 5)) { if (r() < 0.18) { x += r(10, 40); continue; } REEDS.push([x, FAR - r(1.5, 6), r(0.75, 1.3)]); } // reeds along the water's edge, in clumps
+  const reedGeo = keep(mergeColored(THREE, [0, 1, 2, 3, 4].map((b) => { const h = r(1.8, 3.4); return [new THREE.ConeGeometry(0.13, h, 4), at(r(-0.8, 0.8), h / 2 - 0.2, r(-0.6, 0.6), r(-0.18, 0.18), 0, r(-0.18, 0.18)), [0x5a7a30, 0x6e8a3a, 0x8a8048][b % 3]]; })));
+  const reeds = new THREE.InstancedMesh(reedGeo, paintMat, REEDS.length), tint = new THREE.Color();
+  REEDS.forEach(([x, z, s], i) => { reeds.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z) - 0.2, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.8, 1.2), s))); reeds.setColorAt(i, tint.setScalar(r(0.8, 1.12))); });
+  reeds.frustumCulled = false; world.add(reeds); keep(reeds);
+  const HOUSES = [], GL = [], POOLS = [], WARM = [2.5, 1.75, 0.95];
+  const HCOL = [0xb0654a, 0xa45a40, 0xd8c4a0, 0xe8e2d4, 0xb4c4c4, 0xd8ae98, 0xc8a070];
+  for (let tries = 0; HOUSES.length < (preview ? 22 : 44) && tries < 3000; tries++) { // flat-roofed houses of brick in concrete frames, or plastered and painted; windows towards the river, the roofs cluttered
+    const x = r(VILLAGE.x0, VILLAGE.x1), z = r(VILLAGE.z0, VILLAGE.z1), w = r(7, 13), d = r(7, 12), fl = 1 + Math.floor(r() * r() * 4.5), h = fl * 3.2 + 0.4;
+    if (HOUSES.some(([hx, hz, hw, hd]) => Math.abs(hx - x) < (hw + w) / 2 + 1.5 && Math.abs(hz - z) < (hd + d) / 2 + 1.5) || Math.hypot(x - 210, z - 575) < 24) continue;
+    HOUSES.push([x, z, w, d, h]); const y = groundH(x, z) - 0.3, ci = Math.floor(r() * HCOL.length), col = HCOL[ci], brick = ci < 2;
+    P(box(w, h, d), at(x, y + h / 2, z), col); P(box(w + 0.3, 0.9, d + 0.3), at(x, y + h + 0.3, z), brick ? 0x9a948a : col); // the walls, the parapet
+    if (brick) for (let k = 1; k < fl; k++) P(box(w + 0.12, 0.32, d + 0.12), at(x, y + k * 3.2, z), 0x9a948a); // the frame's floor beams
+    for (let k = 0; k < fl; k++) for (let c = 0; c < Math.floor(w / 3.3); c++) if (r() < 0.75) P(box(1.15, 1.35, 0.2), at(x - w / 2 + 1.75 + c * 3.3, y + 1.7 + k * 3.2, z + d / 2 + 0.05), LAMP);
+    if (r() < 0.5) P(box(2.6, 2.6, 2.6), at(x + r(-w / 4, w / 4), y + h + 1.3, z + r(-d / 4, d / 4)), brick ? 0x9a948a : col); // the stairhead
+    if (r() < 0.45) P(cyl(0.75, 0.75, 1.3, 8), at(x + r(-w / 3, w / 3), y + h + 1.4, z + r(-d / 3, d / 3)), r() < 0.5 ? 0x3a3a3a : 0xd8d8d0); // a water tank
+    if (brick && r() < 0.6) for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) P(cyl(0.06, 0.06, 1.4, 4), at(x + sx * (w / 2 - 0.2), y + h + 1.2, z + sz * (d / 2 - 0.2)), 0x4a3a30); // rebar left for the next floor
+    POOLS.push([x, z + d / 2 + 4, w * 0.9 + 4, 0.45, 0]);
+  }
+  { const x = 210, z = -575, y = groundH(x, z) - 0.3; // the mosque: a prayer hall, its dome, a minaret with two balconies
+    P(box(18, 9, 16), at(x, y + 4.5, z), 0xece4d4); P(new THREE.SphereGeometry(6.5, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), at(x, y + 9, z), 0xd8d0c0); P(cyl(0.4, 0.4, 2.5, 6), at(x, y + 16.5, z), 0xc0a060);
+    P(cyl(1.6, 2.0, 30, 10), at(x + 12, y + 15, z + 4), 0xece4d4); P(cyl(2.5, 2.5, 0.8, 12), at(x + 12, y + 24, z + 4), 0xd8d0c0); P(cyl(1.3, 1.5, 8, 10), at(x + 12, y + 32, z + 4), 0xece4d4); P(cyl(2.0, 2.0, 0.6, 12), at(x + 12, y + 33, z + 4), 0xd8d0c0); P(cyl(0.9, 0.9, 3, 10), at(x + 12, y + 37.5, z + 4), 0xece4d4); P(new THREE.ConeGeometry(1.1, 3.5, 10), at(x + 12, y + 40.7, z + 4), 0x3a8a5a);
+    for (let k = 0; k < 4; k++) P(box(1.4, 2.6, 0.2), at(x - 6 + k * 4, y + 3.6, z + 8.05), LAMP);
+    for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; GL.push([x + 12 + Math.cos(a) * 2.7, y + 24.6, z + 4 + Math.sin(a) * 2.7, 0.35, 0.4, 2.6, 0.9, 1.1], [x + 12 + Math.cos(a + 0.5) * 2.2, y + 33.5, z + 4 + Math.sin(a + 0.5) * 2.2, 0.3, 0.4, 2.6, 0.9, 1.0]); } // its green balcony lights
+    POOLS.push([x, z + 10, 22, 0.5, 0]); }
+  for (let k = 0; k < 30; k++) { const x = -720 + k * 50, z = FAR - 12, y = groundH(x, z); P(cyl(0.08, 0.1, 5, 5), at(x, y + 2.5, z), 0x3a3836); GL.push([x, y + 5.1, z, 0.32, ...WARM, 1.2]); POOLS.push([x, z, 12, 0.55, 0]); } // lamps along the far bank's promenade
+  const NSTATIC_LAMPS = GL.length;
+  for (const Pp of PYR.slice(0, 3)) POOLS.push([Pp.x + 0.6 * Pp.B * Math.sin(-PYAW + 0.8), Pp.z + 0.6 * Pp.B * Math.cos(-PYAW + 0.8), Pp.B * 0.8, 0.6, 1]); // the show's floodlit ground at each pyramid's foot
+  POOLS.push([SPX.x + 20, SPX.z + 40, 50, 0.6, 0]);
+  nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+
+  /* --- the boats: feluccas under their lateen sails in lanes of their own, a moored one, a cruise boat --- */
+  const sheer = (g) => { const p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i); if (y > -0.2) p.setY(i, y + 0.65 * Math.pow(Math.max(0, x / 5.4), 3) * ((y + 0.2) / 0.85) + 0.12 * Math.pow(Math.max(0, -x / 5.4), 3)); } g.computeVertexNormals(); return g; }; // the bow sweeping up, the stern a little
+  const bowl = (t0, t1, s = 1) => sheer(new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, t0, t1 - t0).scale(5.4 * s, 1.1 * s, 1.35 * s).translate(0, 0.32, 0));
+  const hullGeo = keep(mergeColored(THREE, [
+    [bowl(Math.acos(0.45), Math.PI), at(0, 0, 0), 0xf2efe8], [bowl(Math.acos(0.45), Math.acos(0.25), 1.012), at(0, 0, 0), 0x2f68a8], [new THREE.CircleGeometry(1, 16).rotateX(-Math.PI / 2).scale(4.9, 1, 1.15), at(0, 0.74, 0), 0x8a6a48], // the open hull, white with a blue band at the gunwale; the deck inside
+    [cyl(0.11, 0.15, 6, 6), at(2.0, 3.6, 0), 0x6a5038], [box(0.5, 1.0, 0.45), at(-3.9, 1.25, 0), 0x2a2420], [new THREE.SphereGeometry(0.2, 8, 6), at(-3.9, 1.95, 0), 0x6a4a34], [box(0.3, 0.4, 0.3), at(-4.7, 1.6, 0), LAMP], // the mast; the boatman at the tiller; a lantern
+  ]));
+  const sailGeo = (side) => { // the lateen sail round the mast: tack at the bow, the yard up through the masthead to the peak high aft, clew low at the stern; bellied out to the lee side
+    const T = new THREE.Vector3(2.8, 1.2, 0), Pk = new THREE.Vector3(-4.5, 14.8, 0), Cl = new THREE.Vector3(-7.2, 1.4, 0), n = 6, pos = [], col = [], idx = [];
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) { const a = i / n, b = j / n, c = 1 - a - b, q = T.clone().multiplyScalar(c).addScaledVector(Pk, a).addScaledVector(Cl, b); q.z = side * 17 * a * b * c; pos.push(q.x, q.y, q.z); col.push(1, 0, 1); }
+    const id = (i, j) => { let k = 0; for (let ii = 0; ii < i; ii++) k += n - ii + 1; return k + j; };
+    for (let i = 0; i < n; i++) for (let j = 0; j < n - i; j++) { idx.push(id(i, j), id(i + 1, j), id(i, j + 1)); if (j < n - i - 1) idx.push(id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)); }
+    const sail = new THREE.BufferGeometry(); sail.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); sail.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); sail.setIndex(idx); sail.computeVertexNormals();
+    const spar = (a, b, rad) => { const d = b.clone().sub(a); return [new THREE.CylinderGeometry(rad, rad, 1, 5).translate(0, 0.5, 0), new THREE.Matrix4().compose(a, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize()), new THREE.Vector3(1, d.length(), 1)), 0x6a5038]; };
+    return keep(mergeColored(THREE, [[sail, new THREE.Matrix4(), ACC], spar(T.clone().addScaledVector(Pk.clone().sub(T), -0.06), Pk.clone().addScaledVector(Pk.clone().sub(T), 0.05), 0.09), spar(T, Cl, 0.07)])); // the sail; the yard, overhanging both ends; the boom along the foot
+  };
+  const WIND = new THREE.Vector2(-0.5, 0.87).normalize(); // a north-westerly off the far bank: upstream boats on a broad reach, downstream ones on a close reach, every sail out towards us and the morning sun
+  const LANES = [{ z: -118, dir: -1, v: 2.3, xs: 22 }, { z: -168, dir: 1, v: 1.5, xs: -42 }, { z: -222, dir: -1, v: 2.7, xs: 78 }, { z: -276, dir: 1, v: 1.8, xs: -96 }, { z: -392, dir: -1, v: 2.1, xs: 230 }]; // x at load; each lane loops just beyond the widest view
+  const laneHalf = (z, len) => Math.abs(z) * 0.74 + len;
+  const wrapIn = (x, half) => ((((x + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
+  const boats = LANES.map((L) => { const lee = Math.sign(L.dir * WIND.y) || 1, g = new THREE.Group(); g.add(new THREE.Mesh(hullGeo, paintMat)); const s = new THREE.Mesh(sailGeo(lee), sailMat); s.position.x = 2.0; g.add(s); world.add(g); return { g, sail: s, half: laneHalf(L.z, 30) }; });
+  const moored = new THREE.Group(); { moored.add(new THREE.Mesh(hullGeo, paintMat)); moored.add(new THREE.Mesh(keep(mergeColored(THREE, [[cyl(0.08, 0.1, 17, 5).rotateZ(-1.1), at(-2.2, 4.4, 0), 0x6a5038], [cyl(0.32, 0.18, 13, 8).rotateZ(-1.1), at(-2.0, 4.15, 0.12), 0xf0ece0], ...[-4, -1.5, 1, 3.5].map((u) => [cyl(0.36, 0.36, 0.25, 8).rotateZ(-1.1), at(-2.0 + u * 0.891, 4.15 + u * 0.454, 0.12), 0x8a6a48])])), paintMat)); } // its yard lowered at a slant from the masthead, the sail furled along it and lashed
+  moored.position.set(33, 0.1, -108); moored.rotation.y = Math.PI + 0.12; world.add(moored);
+  const cruiseGeo = (() => { // a Nile cruiser: a long white hull with a sharp bow, three decks of cabins with their windows, the sun deck's awning in the accent, the wheelhouse forward
+    const parts = [[prism([[-36, -6.3], [24, -6.3], [31, -4.2], [36, 0], [31, 4.2], [24, 6.3], [-36, 6.3]], 3.6), at(0, -0.9, 0), 0xf4f4f0], [prism([[-36.1, -6.35], [24, -6.35], [31.05, -4.25], [36.1, 0], [31.05, 4.25], [24, 6.35], [-36.1, 6.35]], 0.5), at(0, 1.3, 0), 0x2a4a7a], [prism([[-36.15, -6.4], [24, -6.4], [31.1, -4.3], [36.15, 0], [31.1, 4.3], [24, 6.4], [-36.15, 6.4]], 0.8), at(0, -0.4, 0), 0x4a3a34]];
+    [[-34, 25, 2.7, 2.7, 6.0], [-33, 21, 2.7, 5.4, 5.8], [-30, 15, 2.6, 8.1, 5.6]].forEach(([x0, x1, h, y, hw], k) => {
+      parts.push([prism([[x0, -hw], [x1 - 3, -hw], [x1, -hw * 0.55], [x1, hw * 0.55], [x1 - 3, hw], [x0, hw]], h), at(0, y, 0), 0xf4f4f0], [box(x1 - x0 + 0.6, 0.18, hw * 2 + 0.6), at((x0 + x1) / 2, y + h, 0), 0xd8d8d0]); // a deck of cabins, its overhanging floor above
+      for (let x = x0 + 1.6; x < x1 - 3.4; x += 2.9) parts.push([box(1.7, k ? 1.25 : 1.1, 0.12), at(x, y + 1.35, hw + 0.04), LAMP]); // its windows, on our side
+    });
+    parts.push([box(30, 0.25, 11.6), at(-9, 13.6, 0), ACC]); for (const x of [-23, -16, -9, -2, 5]) for (const z of [-5.5, 5.5]) parts.push([cyl(0.09, 0.09, 2.9, 4), at(x, 12.15, z), 0xd0d0d0]); // the awning on its posts
+    parts.push([box(6, 2.4, 7.4), at(12, 11.9, 0), 0xf4f4f0], [box(0.2, 1.0, 6.4), at(15.05, 12.2, 0), LAMP], [box(4.8, 1.0, 0.2), at(12, 12.2, 3.75), LAMP], [cyl(0.07, 0.07, 6, 4), at(33, 5.6, 0), 0xb0b0b0], [box(0.08, 0.9, 1.4), at(33, 8.2, 0.7), ACC]); // the wheelhouse; a staff at the bow with its flag
+    return keep(mergeColored(THREE, parts));
+  })();
+  const cruise = new THREE.Mesh(cruiseGeo, paintMat); world.add(cruise);
+  const CRUISE = { z: -332, v: 1.4, xs: -58, half: laneHalf(-332, 50) }; // drifting downstream with the current
+  const G_BOAT = GL.length; for (let k = 0; k < LANES.length + 1; k++) GL.push([0, 0, 0, 0, ...WARM, 1.2]);
+  const G_CRUISE = GL.length; for (let k = 0; k < 7; k++) GL.push([0, 0, 0, 0, 2.5, 2.1, 1.5, 1.2]);
+  const FLOODS = [[0, -0.55], [0, 0.55], [1, -0.55], [1, 0.55], [2, -0.4], [2, 0.4]].map(([i, s]) => { const Pp = PYR[i], a = -PYAW + 0.8 + s * 0.5; return [i, Pp.x + Pp.B * 0.66 * Math.sin(a), Pp.z + Pp.B * 0.66 * Math.cos(a)]; }); // the floodlights before each pyramid
+  const G_FLOOD = GL.length; for (const [i, x, z] of FLOODS) GL.push([x, groundH(x, z) + 1.5, z, i < 2 ? 1.5 : 1.0, 2.6, 2.4, 2.0, 1.4]);
+  GL.push([SPX.x + 34, SPX.base + 1.2, SPX.z + 42, 1.1, ...WARM, 1.3], [SPX.x - 26, SPX.base + 1.2, SPX.z + 44, 1.1, ...WARM, 1.3]); // the Sphinx's own
+  const NFLOOD = FLOODS.length + 2;
+
+  /* --- ibises flying along the river; the show's beams, rising from behind the pyramids --- */
+  const ibisGeo = keep(mergeColored(THREE, [[box(0.9, 0.2, 0.22), at(0, 0, 0), 0xf6f4ee], [box(0.5, 0.06, 0.06), at(0.66, 0.02, 0, 0, 0, -0.5), 0x2a2420], [box(0.14, 0.14, 0.14), at(0.48, 0.08, 0), 0x2a2420], ...[-1, 1].flatMap((sd) => [[box(0.42, 0.04, 0.6), at(0.02, 0.05, sd * 0.4), 0xf6f4ee], [box(0.34, 0.04, 0.5), at(-0.06, 0.05, sd * 0.95), 0x2a2420]])])); // white, the wing tips and the curved bill black
+  const FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].y * 0.7;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.12, 0.0), f = sin(uTime * 5.5 + ph) * 0.7 * smoothstep(0.1, 0.5, sin(uTime * 0.7 + ph)) + 0.05;\n  transformed.y += span * sin(f); transformed.z = side * (0.12 + span * cos(f)); } // a few beats, then a glide";
+  const ibisMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 })), "ibis", FLAP);
+  const NIB = preview ? 5 : 9, ibises = new THREE.InstancedMesh(ibisGeo, ibisMat, NIB); ibises.frustumCulled = false; ibises.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(ibises); keep(ibises);
+  const BEAM_AT = [[110, -1560], [-200, -1720]];
+  const beamU = BEAM_AT.map(() => ({ uCol: { value: new THREE.Color() }, uAmt: { value: 0 }, uNoise: { value: noise }, uTime: time }));
+  const beamGeo = keep(new THREE.CylinderGeometry(75, 1.6, 1, 20, 1, true).translate(0, 0.5, 0));
+  const beams = BEAM_AT.map(([x, z], k) => { const m = new THREE.Mesh(beamGeo, shader(MC_FLAME_VS, NL_BEAM_FS, beamU[k], { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })); m.position.set(x, groundH(x, z) + 1, z); m.scale.set(1, 2600, 1); m.frustumCulled = false; m.renderOrder = 16; world.add(m); return m; });
+
+  /* --- the sky: a clear morning; by night the stars, the Milky Way and a crescent moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: nightU, uNoise: { value: noise },
+    uGalN: { value: new THREE.Vector3(0.4, 0.5, 0.77).normalize() }, uGalC: { value: new THREE.Vector3() } };
+  skyU.uGalC.value.set(-0.5, 0.3, -0.8).normalize(); skyU.uGalC.value.addScaledVector(skyU.uGalN.value, -skyU.uGalC.value.dot(skyU.uGalN.value)).normalize();
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(45000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 500 : 1600, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 35000, Math.sin(e) * 35000, Math.sin(a) * Math.cos(e) * 35000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(nlCrescent(THREE)), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide })));
+  moon.position.copy(MOON).multiplyScalar(30000).add(C0); moon.scale.setScalar(900); moon.lookAt(C0); moon.renderOrder = -8; world.add(moon); // mirrored in the river with everything else
+
+  /* --- glows --- */
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- the river: drawn last, mirroring the world above it --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const fogD = { value: 1 / 5200 };
+  const boatsU = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };
+  const waterU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uGlintDir: { value: SUN.clone() }, uGlintCol: { value: new THREE.Color() }, uGlint: { value: 0 },
+    uBed: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFogD: fogD, uBoats: boatsU };
+  const river = new THREE.Mesh(riverGeo, shader(NL_WATER_VS, NL_WATER_FS, waterU));
+  river.frustumCulled = false; river.renderOrder = 2; scene.add(river);
+
+  /* --- light, the long shadows --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+  if (!preview) {
+    sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.3; sun.shadow.intensity = 0.82;
+    for (const m of [pyrMesh, sphinx, trunks, crowns, site, trees]) m.castShadow = true;
+    land.receiveShadow = site.receiveShadow = true;
+  }
+  const LIT_MATS = [groundMat, pyrMat, paintMat, sailMat, sphinxMat, trunkMat, frondMat, ibisMat];
+  const shadowFit = () => { // the light's box round the far bank, the plateau, the pyramids and the Sphinx
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [-760, 760]) for (const y of [-5, 200]) for (const z of [-1850, -425]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x; cam.right = hi.x; cam.bottom = lo.y; cam.top = hi.y; cam.near = Math.max(0.5, -hi.z - 200); cam.far = -lo.z + 200; cam.updateProjectionMatrix();
+  };
+  let shadowsOn = false;
+
+  const GOLD = new THREE.Color(1.0, 0.7, 0.36), BLUE = new THREE.Color(0.42, 0.58, 1.0), WHITE = new THREE.Color(1.0, 0.9, 0.76), ANTI = new THREE.Vector3(-SUN.x, SUN.y, -SUN.z);
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#030612" : "#3c70b8"); skyU.uMid.value.set(d ? "#0a1430" : "#86aed6"); skyU.uHorizon.value.set(d ? "#1c2240" : "#f0d0a8");
+    skyU.uSunDir.value.copy(d ? CITY : ANTI); skyU.uGlow.value.set(d ? "#ff9a50" : "#ffb898").multiplyScalar(d ? 0.07 : 0.22); skyU.uSunColor.value.set("#fff0d0"); // by day a warm band low in the west, opposite the sun; by night the glow over Cairo's lights on the right
+    starU.uAmt.value = d ? 1 : 0; stars.visible = moon.visible = d;
+    sun.position.copy(d ? MOONLIGHT : SUN).multiplyScalar(800); sun.color.set(d ? "#8ea0cc" : "#ffc488"); sun.intensity = d ? 0.32 : 3.4; sun.castShadow = !preview && !d; if (!preview && !d) shadowFit();
+    hemi.color.set(d ? "#2a3660" : "#9cb4d8"); hemi.groundColor.set(d ? "#1a1410" : "#c09068"); hemi.intensity = d ? 0.42 : 0.6;
+    const haze = new THREE.Color(d ? "#141a30" : "#e6cfae"); scene.fog.color.copy(haze); fogD.value = d ? 1 / 4600 : 1 / 5200; scene.fog.density = fogD.value;
+    nightU.value = d ? 1 : 0; shadowAmtU.value = d ? 0 : 1;
+    floodU.value.setRGB(1.0, 0.84, 0.62).multiplyScalar(d ? 0.7 : 0.14); // by day a little fill: the light off the sand
+    waterU.uBed.value.set(d ? "#0c1210" : "#5a5a40"); waterU.uDeep.value.set(d ? "#04080a" : "#22403a"); waterU.uFoam.value.set(d ? "#4a5468" : "#eef0e8"); waterU.uHaze.value.copy(haze);
+    waterU.uGlintDir.value.copy(d ? MOON : SUN); waterU.uGlintCol.value.set(d ? "#c8d0ff" : "#fff0d8"); waterU.uGlint.value = d ? 0.11 : 0.3;
+    glowU.uAmt.value = d ? 1 : 0;
+    for (let i = 0; i < NSTATIC_LAMPS; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    aGlow.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera on its terrace; the mirrored pass, clipped at the water, drawn only below the far bank on screen --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 32 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = 0.0 + k * 0.05, pitch = 0.015 + k * 0.05; // a phone turns to Khafre and Khufu and looks a little higher
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [], primeRT = keep(new THREE.WebGLRenderTarget(1, 1));
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    if (!preview && !shadowsOn) { // before the first frame: compiled once, with shadows, and the shadow map drawn by a throwaway render, so the mirrored pass never samples a map that is not there yet (a still frame is that first frame)
+      shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true;
+      const before = renderer.getRenderTarget(); renderer.setRenderTarget(primeRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    }
+    renderer.getDrawingBufferSize(buf); waterU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    V.set(0, 0, FAR).project(camera); // the far bank on screen: the river lies below it
+    const top = Math.min(h, Math.ceil(((V.y + 1) / 2) * h) + 12);
+    if (top > 0) {
+      reflectRT.scissor.set(0, 0, w, top); reflectRT.scissorTest = true;
+      const auto = renderer.shadowMap.autoUpdate, need = renderer.shadowMap.needsUpdate, si = sun.shadow.intensity; // (never zero here: zero is the mirrored pass's)
+      renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false; sun.shadow.intensity = 0; // the mirrored world must not draw the shadow map, nor read it
+      world.scale.y = -1; world.updateMatrixWorld(true); river.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+      const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
+      renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+      renderer.clippingPlanes = NONE; world.scale.y = 1; world.updateMatrixWorld(true); river.visible = true;
+      renderer.shadowMap.autoUpdate = auto; renderer.shadowMap.needsUpdate = need; sun.shadow.intensity = si;
+    }
+    glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
+    reflecting = false;
+  };
+
+  const mA = new THREE.Matrix4(), P2 = new THREE.Vector3(), P3 = new THREE.Vector3(), T0 = 40;
+  const facing = (p, q) => Math.atan2(-(q.z - p.z), q.x - p.x); // the yaw that points a model's +x from p towards q
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    LANES.forEach((L, k) => { // each felucca facing the way it goes, its sail let out to the lee side the further it is off the wind, heeling a little
+      const b = boats[k], x = wrapIn(L.xs + L.dir * L.v * clock, b.half), w = 0.03, z = L.z + 5 * Math.sin(clock * w + k * 1.7);
+      const vx = L.dir * L.v, vz = 5 * w * Math.cos(clock * w + k * 1.7), hl = Math.hypot(vx, vz), fx = vx / hl, fz = vz / hl;
+      const off = Math.acos(Math.max(-1, Math.min(1, -(fx * WIND.x + fz * WIND.y)))), lee = Math.sign(fx * WIND.y - fz * WIND.x) || 1;
+      b.g.position.set(x, 0.1 * Math.sin(clock * 1.3 + k), z); b.g.rotation.set(0, Math.atan2(-fz, fx), 0); b.g.rotateX(lee * 0.1 * Math.sin(off)); b.g.rotateZ(0.02 * Math.sin(clock * 0.9 + k));
+      b.sail.rotation.y = lee * Math.min(0.95, Math.max(0.15, (off - 0.45) * 0.5));
+      boatsU.value[k].set(x, z, Math.atan2(fz, fx), 1);
+      b.g.updateMatrixWorld(true); V.set(-4.7, 1.6, 0).applyMatrix4(b.g.matrixWorld); aGlow.setXYZW(G_BOAT + k, V.x, V.y, V.z, night ? 0.3 : 0);
+    });
+    moored.position.y = 0.1 + 0.08 * Math.sin(clock * 1.1); moored.rotation.z = 0.015 * Math.sin(clock * 0.8); moored.updateMatrixWorld(true); V.set(-4.7, 1.6, 0).applyMatrix4(moored.matrixWorld); aGlow.setXYZW(G_BOAT + LANES.length, V.x, V.y, V.z, night ? 0.3 : 0);
+    { const x = wrapIn(CRUISE.xs + CRUISE.v * clock, CRUISE.half); cruise.position.set(x, 0.05 * Math.sin(clock * 0.6), CRUISE.z); boatsU.value[5].set(x + 30, CRUISE.z, 0, 2.2); for (let k = 0; k < 7; k++) aGlow.setXYZW(G_CRUISE + k, x - 23 + k * 5, 13.4, CRUISE.z + 5.6, night ? 0.3 : 0); } // the cruise boat drifting downstream, its awning's lights by night
+    boatsU.value[6].set(0, 0, 0, 0); boatsU.value[7].set(0, 0, 0, 0);
+    for (let k = 0; k < NIB; k++) { // ibises in a loose line along the river, facing the way they fly
+      const u = wrapIn(-60 + 9 * clock, 380), x = u - k * 6.5, ph = clock * 0.13 + k * 0.7, y = 46 + k * 1.1 + 1.5 * Math.sin(clock * 0.4 + k), z = -205 + k * 3.2 + 4 * Math.sin(ph);
+      P2.set(x, y, z); P3.set(x + 9, y, z + 4 * 0.13 * Math.cos(ph)); ibises.setMatrixAt(k, mA.compose(P2, Q.setFromEuler(E.set(0, facing(P2, P3), 0)), V2.setScalar(night ? 0 : 1.3)));
+    }
+    ibises.instanceMatrix.needsUpdate = true;
+    if (night) { // the show: four acts of a 64 s cycle, cross-fading; two beams sweeping the sky, brightest through the last two acts
+      const u = (((t % 64) + 64) % 64) / 16, k = Math.floor(u), f = smooth(0.8, 1.0, u - k), A = accentU.value;
+      const acts = [[GOLD, GOLD, GOLD], [BLUE, A, BLUE], [A, WHITE, A], [A, A, A]];
+      for (let i = 0; i < 3; i++) showU.value[i].copy(acts[k][i]).lerp(acts[(k + 1) % 4][i], f);
+      showAvgU.value.copy(showU.value[0]).add(showU.value[1]).add(showU.value[2]).multiplyScalar(1 / 3);
+      FLOODS.forEach(([i], j) => { const c = showU.value[i]; aGlow.setW(G_FLOOD + j, GL[G_FLOOD + j][3]); aTint.setXYZ(G_FLOOD + j, c.r * 2.4, c.g * 2.4, c.b * 2.4); });
+      aGlow.setW(G_FLOOD + NFLOOD - 2, 1.1); aGlow.setW(G_FLOOD + NFLOOD - 1, 1.1);
+      const beamAmt = 0.4 + 0.6 * smooth(1.6, 2.0, u) * (1 - smooth(3.85, 4.0, u));
+      beams.forEach((m, j) => { m.rotation.set(-0.12 + 0.08 * Math.sin(t * 0.07 + j * 2.1), 0, (j ? 1 : -1) * (0.3 + 0.22 * Math.sin(t * (0.09 + j * 0.02) + j * 4.4))); beamU[j].uCol.value.copy(A).lerp(WHITE, 0.45).multiplyScalar(0.55); beamU[j].uAmt.value = beamAmt * (0.75 + 0.25 * Math.sin(t * 0.2 + j * 2)); m.visible = true; });
+    } else { for (let i = 0; i < NFLOOD; i++) aGlow.setW(G_FLOOD + i, 0); beams.forEach((m) => { m.visible = false; }); }
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { palms: PALMS.length, trees: TREES.length, bushes: BUSHES.length, houses: HOUSES.length, feluccas: LANES.length, ibises: NIB, glows: NGL, sphinxY: +SPX.base.toFixed(1), khufuY: +PYR[0].base.toFixed(1), khafreY: +PYR[1].base.toFixed(1), accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
