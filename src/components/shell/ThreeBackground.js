@@ -21766,13 +21766,26 @@ const FC_BLD_FS = /* glsl */ `
       vec3 spandrel = mix(frameC * sunLit, glass * 0.8, curtain), mullion = vec3(0.56, 0.6, 0.64) * sunLit; // between the floors: stone, or opaque glass; the thin mullions between panes
       vec3 pane = glass + uSunCol * pow(max(dot(R, uSunDir), 0.0), 300.0) * 4.0 * (1.0 - 0.7 * aa);
       vec3 day = mix(spandrel, mix(mullion, pane, wx), wy) * ao; // the floor band where wy is 0, a mullion where wx is
-      // by night: some windows lit, whole floors dark; seen from further off, the lit floors as bands, then a dim average
-      float floorOn = step(0.3, fcH(vec2(cell.y * 1.7, seed * 3.1)));
-      float office = step(1.0 - vB2.x, fcH(vec2(floor(g.x / 6.0), cell.y) + seed * 2.9)), aaG = smoothstep(0.3, 0.8, fw.x / 6.0); // lights go on an office (six bays) at a time
-      float on = mix(mix(mix(step(0.25, fcH(cell + seed * 5.3)) * office, 0.75 * office, aaX), 0.75 * vB2.x, aaG) * floorOn, 0.75 * vB2.x * 0.7 * 0.5, aaY); // a window; its office; the floor; the tower, dimmed
-      float lk = fract(seed * 7.7);
-      vec3 lamp = (lk < 0.4 ? vec3(1.0, 0.72, 0.42) : lk < 0.75 ? vec3(0.8, 0.9, 1.0) : vec3(1.0, 0.93, 0.8)) * (0.55 + 0.7 * hp); // warm, cool, neutral by tower
-      vec3 night = mix(frameC * uAmb * 0.3, glass * 0.25, curtain) + lamp * on * wx * wy * 1.7;
+      // by night, one lamp colour and brightness per tower: an office tower's floors busy, quiet or dark (in runs of a few floors), its
+      // rooms lit by that chance; a tower of flats window by window, warm, a television's blue here and there; the slab edges of lit
+      // floors glow faintly, the glass mirrors the night sky and the street's glow smoothly, the street's light washes up the lowest
+      // floors. Seen from further off a floor becomes a band as bright as it is busy, then bands of six floors, then the tower a dim average.
+      float flats = 1.0 - curtain, share = vB2.x, lk = fract(seed * 7.7);
+      float run = floor(cell.y / (1.0 + floor(fract(seed * 9.1) * 3.0))), busyH = fcH(vec2(run * 1.7 + 0.5, seed * 3.1));
+      float busy = (busyH < 0.36 ? 0.0 : busyH < 0.66 ? 0.28 : 0.86) * clamp(share * 1.7, 0.45, 1.0);
+      float bay = fcH(cell + seed * 5.3), roomW = 2.0 + floor(fract(seed * 6.1) * 3.0), room = fcH(vec2(floor(g.x / roomW), cell.y) + seed * 2.9); // an office floor's rooms, two to four bays each
+      float winOn = mix(step(room, busy) * step(0.05, bay), step(1.0 - share, bay), flats);
+      float grp = fcH(vec2(floor(g.y / 6.0) * 1.3 + 0.7, seed * 4.9)), aaGr = smoothstep(0.3, 0.8, fw.y / 6.0); // far off, six floors at a time brighter or darker, then the tower's average
+      float on = mix(mix(winOn, mix(busy * 1.1, share * 1.1, flats), aaX), share * 0.55 * mix(mix(0.3, 1.6, grp * grp), 1.0, aaGr), aaY); // a window; the floor's average (a little over, as lights too small to see are brighter than their share); the tower's, dimmed
+      vec3 lamp = flats > 0.5 ? (lk < 0.65 ? vec3(1.0, 0.68, 0.36) : vec3(1.0, 0.8, 0.52)) : (lk < 0.5 ? vec3(0.58, 0.77, 1.0) : lk < 0.8 ? vec3(1.0, 0.9, 0.7) : vec3(1.0, 0.74, 0.44)); // flats warm; offices cool white, neutral or warm
+      lamp = mix(lamp, vec3(0.55, 0.68, 1.0), step(0.93, fcH(cell * 1.31 + seed)) * flats * (1.0 - aaX));
+      float bright = (0.8 + 0.2 * fract(seed * 4.3)) * mix(0.94 + 0.12 * mix(fcH(cell.yx + seed * 2.2), room, curtain), 1.0, aaX) * mix(0.82 + 0.3 * f.y, 0.97, aaY); // the tower's, a little per room or window, brighter towards each ceiling
+      vec3 R0 = reflect(-V, N), skyN = R0.y > 0.0 ? mix(uSkyH, uSkyZ, smoothstep(0.0, 0.7, R0.y)) : mix(uSkyH * 0.35, vec3(0.032, 0.028, 0.034), smoothstep(0.0, -0.35, R0.y));
+      vec3 facade = mix(frameC * vec3(0.012, 0.014, 0.019) + uAmb * 0.3, tint * 0.008 + skyN * (0.05 + 0.36 * fres), curtain);
+      facade += lamp * busy * (1.0 - wy) * 0.035 * curtain * (1.0 - aaY); // the slab edges of lit floors
+      facade += vec3(1.0, 0.72, 0.46) * 0.022 * (1.0 - smoothstep(0.0, 18.0, vW.y)); // the street's light washing up the lowest floors
+      float mxN = mix(0.16, 0.085, curtain), wxN = mix(fcStep(mxN, f.x, fw.x) * fcStep(mxN, 1.0 - f.x, fw.x), 1.0 - 2.0 * mxN, aaX); // by night the mullions show against the lit rooms
+      vec3 night = facade + lamp * on * bright * wxN * wy * 1.2;
       col = mix(day, night, uNight);
       // the accent: a band round the crown, or strips up the corners
       float led = 0.0;
