@@ -23722,7 +23722,441 @@ function pyramids(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids };
+/* ---------- Great Wall at dawn: the Wall winding over misty ridges at sunrise, the slopes in autumn colours; lanterns along it by night ---------- */
+// The mountains are one height field: the ridge the Wall follows (its crest smoothed under it), spurs running away either side and
+// ranges crossing behind in layers, eroded by noise; meshed as rings round the camera, the low sun's shading baked once. The Wall is a
+// ribbon swept along a spline over the crest (its outer face and battlements, the walkway, the inner parapet), its merlons and towers
+// placed by arc length. The air: a haze that warms towards the sun and layers the far ranges, and mist lying in the valleys, drifting.
+const GW_AIR = /* glsl */ `
+  uniform vec3 uHazeCool; uniform vec3 uHazeWarm; uniform vec3 uAirSun; uniform float uHazeD; uniform vec3 uMistLit; uniform vec3 uMistShade; uniform float uMistTop; uniform float uMistAmt; uniform float uAirT; uniform sampler2D uAirNoise;
+  varying vec3 vGW;
+  vec3 gwAir(vec3 col) {
+    vec3 d = vGW - cameraPosition; float dist = length(d); vec3 dir = d / max(dist, 1e-3);
+    float toSun = max(dot(normalize(dir.xz + 1e-5), normalize(uAirSun.xz)), 0.0), glare = pow(max(dot(dir, uAirSun), 0.0), 8.0);
+    vec3 haze = mix(uHazeCool, uHazeWarm, clamp(toSun * toSun * toSun * 0.85 + glare * 0.5, 0.0, 1.0));
+    col = mix(col, haze, 1.0 - exp(-dist * uHazeD));
+    float below = smoothstep(uMistTop, uMistTop - 110.0, vGW.y);
+    vec2 q = vGW.xz;
+    float n = texture2D(uAirNoise, q * 0.00032 + vec2(uAirT * 0.0012, 0.0)).r * 0.6 + texture2D(uAirNoise, q * 0.0011 - vec2(0.0, uAirT * 0.0016)).g * 0.4;
+    float mist = below * smoothstep(0.28, 0.66, n) * (1.0 - exp(-dist / 650.0)) * uMistAmt;
+    return mix(col, mix(uMistShade, uMistLit, toSun * 0.7 + 0.3), clamp(mist, 0.0, 0.94));
+  }
+`;
+const GW_AIR_VS = /* glsl */ `
+  { vec4 gwP = vec4(transformed, 1.0);
+  #ifdef USE_INSTANCING
+    gwP = instanceMatrix * gwP;
+  #endif
+    vGW = (modelMatrix * gwP).xyz; }
+`;
+// the slopes: forest in autumn by patches (pines dark green, oaks russet, maples red, larches and birches gold), its crowns and the
+// gaps between them close by; bare rock where it steepens; the crest under the Wall grassy and worn
+const GW_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uShadowAmt; uniform float uNight;
+  varying vec3 vPW; varying float vShade; varying float vSlope; varying float vVar; varying float vRidge;
+  float gwHash(vec2 q) { q = fract(q * vec2(123.34, 456.21)); q += dot(q, q + 45.32); return fract(q.x * q.y); }
+  float gwVN(vec2 q) { vec2 i = floor(q), f = fract(q), u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0); return mix(mix(gwHash(i), gwHash(i + vec2(1.0, 0.0)), u.x), mix(gwHash(i + vec2(0.0, 1.0)), gwHash(i + vec2(1.0, 1.0)), u.x), u.y); } // smooth to the second derivative: a bump from a texture's bilinear texels shows their grid
+  float gwCanopy(vec3 p) { // the forest's crowns as a height in metres, gone once they are smaller than a pixel
+    vec2 q = mat2(0.8, -0.6, 0.6, 0.8) * p.xz;
+    float fw = fwidth(p.x) + fwidth(p.z), c = gwVN(q / 6.5) * 0.65 + gwVN(q / 2.9 + 17.0) * 0.35;
+    return c * 4.5 * (1.0 - 0.55 * uNight) * (1.0 - smoothstep(0.8, 3.0, fw)) * (1.0 - smoothstep(0.45, 0.66, vSlope)) * smoothstep(9.0, 16.0, vRidge);
+  }
+  vec3 gwBump(vec3 pos, vec3 n, float h) { // a surface-gradient bump from the height's screen derivatives
+    vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(h), dhy = dFdy(h);
+    vec3 r1 = cross(dpy, n), r2 = cross(n, dpx); float det = dot(dpx, r1);
+    return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2));
+  }
+  vec3 gwGround(vec3 p) {
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.0085 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.021 + 0.7).r, n4 = texture2D(uNoise, p.xz * 0.09 + 0.1).b;
+    float k = fract(n2 * 1.6 + n1 * 0.35 + n3 * 0.3); // patches of each kind, all over, their edges ragged
+    vec3 pine = vec3(0.06, 0.11, 0.05), green = vec3(0.16, 0.22, 0.06), gold = vec3(0.48, 0.32, 0.04), russet = vec3(0.34, 0.13, 0.04), red = vec3(0.36, 0.07, 0.035);
+    vec3 forest = mix(pine, green, smoothstep(0.1, 0.22, k));
+    forest = mix(forest, gold, smoothstep(0.3, 0.42, k)); forest = mix(forest, russet, smoothstep(0.52, 0.62, k)); forest = mix(forest, red, smoothstep(0.66, 0.78, k) * smoothstep(0.35, 0.65, n4)); forest = mix(forest, pine, smoothstep(0.86, 0.96, k)); // the reds scattered among the rest, not in blots
+    forest = mix(forest, pine, 0.5 * step(0.66, n3)); // pines all through
+    float fw = fwidth(p.x) + fwidth(p.z);
+    forest *= mix(0.6 + 0.64 * n4, 0.92, smoothstep(1.5, 6.0, fw)); // crowns and the gaps between them, close by
+    vec3 rock = mix(vec3(0.36, 0.34, 0.31), vec3(0.54, 0.51, 0.46), n3);
+    vec3 col = mix(forest, rock, smoothstep(0.4, 0.66, vSlope + (n3 - 0.5) * 0.3));
+    col = mix(col, mix(vec3(0.42, 0.34, 0.2), vec3(0.5, 0.44, 0.3), n4), smoothstep(16.0, 5.0, vRidge) * 0.8); // the crest under the Wall
+    return mix(col, vec3(dot(col, vec3(0.3, 0.59, 0.11))), 0.7 * uNight); // by moonlight the colours all but gone
+  }
+`;
+// the Wall and its towers: grey brick in courses above, dressed stone below (each joint fading to its average once smaller than a
+// pixel), weathered in patches; the walkway's steps where it climbs
+const GW_WALL_PARS = /* glsl */ `
+  uniform sampler2D uNoise;
+  varying vec3 vPW; varying vec3 vON; varying vec2 vWk;
+  vec3 gwWall(vec3 base) {
+    float n = texture2D(uNoise, vPW.xz * 0.02 + vPW.y * 0.013).r, n2 = texture2D(uNoise, vPW.xz * 0.11 + vPW.y * 0.07).g;
+    vec3 col = base * (0.84 + 0.26 * n) * (0.93 + 0.12 * n2);
+    if (abs(vON.y) < 0.5) {
+      float stone = step(vPW.y, vWk.x - 3.4), cy = vPW.y / mix(0.17, 0.52, stone), fc = fwidth(cy);
+      col *= 1.0 - 0.2 * mix(smoothstep(0.8, 0.95, fract(cy)), 0.16, smoothstep(0.25, 0.7, fc));
+      col = mix(col, col * vec3(1.1, 1.03, 0.9), stone);
+    } else if (vWk.y > 0.1) {
+      float sy = vPW.y / 0.24, fs = fwidth(sy);
+      col *= 1.0 - 0.32 * mix(smoothstep(0.82, 0.96, fract(sy)), 0.14, smoothstep(0.25, 0.7, fs)) * smoothstep(0.1, 0.2, vWk.y);
+    }
+    return col;
+  }
+`;
+// a flag on its pole: rippling in the wind, more towards its free end (MeshStandard vertex code; local x along the flag)
+const GW_FLAG_VS = /* glsl */ `
+  { float ph = 0.0;
+  #ifdef USE_INSTANCING
+    ph = instanceMatrix[3].x * 0.13 + instanceMatrix[3].z * 0.07;
+  #endif
+    float u = position.x / 2.6; transformed.z += sin(position.x * 2.2 - uTime * 7.0 + ph) * 0.32 * u + sin(position.x * 4.1 - uTime * 11.0 + ph) * 0.08 * u; transformed.y -= 0.12 * u * u; }
+`;
+function greatwall(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1368);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 32; camera.near = 1; camera.far = 80000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
+  const SUN = sph(0.12, 0.1), MOON = sph(-Math.PI / 2 - 0.1, 0.12), MOONLIGHT = sph(-Math.PI / 2 + 0.5, 0.6); // the sun just risen, low on the right: the Wall's face towards us lit, a lit side and a shaded side to every ridge; a full moon ahead by night
+  const ACC = 0xff00ff, LAMP = 0xffff00, COAT = 0xffffff; // vertex-colour markers: the accent; windows lit at night; a hiker's own coat colour
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+
+  /* --- the Wall's line: a spline through the crests (x, z, the crest's height), tabled by z (it always runs away from us) --- */
+  const CTRL = [[-60, 260, 280], [-40, 120, 288], [0, -20, 300], [-70, -230, 232], [30, -470, 335], [210, -690, 352], [170, -980, 268], [-90, -1290, 420], [-360, -1540, 372], [-300, -1900, 468], [-40, -2280, 392], [260, -2700, 488], [520, -3200, 455], [700, -3800, 520], [820, -4500, 560]];
+  const cr = (p0, p1, p2, p3, t) => { const t2 = t * t, t3 = t2 * t; return 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3); };
+  const PTS = [];
+  for (let i = 0; i < CTRL.length - 1; i++) { const p0 = CTRL[Math.max(0, i - 1)], p1 = CTRL[i], p2 = CTRL[i + 1], p3 = CTRL[Math.min(CTRL.length - 1, i + 2)]; for (let k = 0; k < 160; k++) { const t = k / 160; PTS.push([0, 1, 2].map((c) => cr(p0[c], p1[c], p2[c], p3[c], t))); } }
+  PTS.push(CTRL[CTRL.length - 1].slice());
+  const ZT0 = 260, NZT = 4761, XC = new Float32Array(NZT), HC = new Float32Array(NZT);
+  { let j = 0; for (let i = 0; i < NZT; i++) { const z = ZT0 - i; while (j < PTS.length - 2 && PTS[j + 1][1] > z) j++; const a = PTS[j], b = PTS[j + 1], t = Math.min(1, Math.max(0, (a[1] - z) / (a[1] - b[1] || 1))); XC[i] = a[0] + (b[0] - a[0]) * t; HC[i] = a[2] + (b[2] - a[2]) * t; } }
+  const pathAt = (z, out) => { const f = Math.min(NZT - 1.001, Math.max(0, ZT0 - z)), i = Math.floor(f), t = f - i; out[0] = XC[i] + (XC[i + 1] - XC[i]) * t; out[1] = HC[i] + (HC[i + 1] - HC[i]) * t; out[2] = XC[i + 1] - XC[i]; return out; }; // x, crest, dx per metre of z
+  const PA = [0, 0, 0];
+  const distWall = (x, z) => { pathAt(z, PA); return Math.abs(x - PA[0]) / Math.sqrt(1 + PA[2] * PA[2]); };
+
+  /* --- the mountains --- */
+  const VAL = 95; // the valley floors
+  const SIDE = [{ x0: 620, a: 170, l: 520, h: 250, hv: 70, hl: 700, w: 230, ph: 0.4 }, { x0: -700, a: 220, l: 610, h: 300, hv: 80, hl: 800, w: 260, ph: 2.2 }, { x0: 1500, a: 300, l: 900, h: 380, hv: 90, hl: 1100, w: 420, ph: 1.1 }, { x0: -1750, a: 300, l: 950, h: 420, hv: 100, hl: 1000, w: 450, ph: 3.0 }]; // spurs running away either side
+  const CROSS = [{ z0: -2600, a: 260, l: 900, h: 520, hv: 90, w: 420, ph: 0.3 }, { z0: -4300, a: 420, l: 1400, h: 660, hv: 120, w: 620, ph: 1.7 }, { z0: -6800, a: 650, l: 1900, h: 800, hv: 150, w: 900, ph: 2.9 }, { z0: -10000, a: 900, l: 2700, h: 960, hv: 180, w: 1300, ph: 4.1 }, { z0: -15000, a: 1300, l: 3600, h: 1120, hv: 200, w: 1900, ph: 5.3 }]; // ranges across the view, further and higher, in layers
+  const ridge = (d, H, w) => { const e = Math.sqrt(d * d + 400) - 20; return H - (H - VAL) * (1 - Math.exp(-e / w)); }; // a crest rounded over 20 m
+  const smax = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.max(a, b) + h * h * k * 0.25; };
+  function groundH(x, z, fine = true) { // fine: the rough ground too (not worth it beyond a few km)
+    const dW = distWall(x, z), Hw = PA[1];
+    let h = ridge(Math.max(0, dW - 6), Hw, 175); // the Wall's ridge, a flat crest under it
+    for (const s of SIDE) { const d = Math.abs(x - (s.x0 + s.a * Math.sin(z / s.l + s.ph))); if (d < 4 * s.w) h = smax(h, ridge(d, s.h + s.hv * Math.sin(z / s.hl + s.ph * 1.3), s.w), 40); }
+    for (const c of CROSS) { const d = Math.abs(z - (c.z0 + c.a * Math.sin(x / c.l + c.ph))); if (d < 4 * c.w) h = smax(h, ridge(d, c.h + c.hv * Math.sin(x / (c.l * 1.6) + c.ph * 2), c.w), 60); }
+    const damp = smooth(8, 70, dW); // the crest under the Wall stays smooth
+    const sp = 1 - Math.abs(fbm(x * 0.0055 + 3.1, z * 0.0055 - 1.7, 3) - 0.5) * 2; // ridged: spurs and the gullies between them
+    h += damp * (60 * (fbm(x * 0.0022, z * 0.0022, 3) - 0.5) + 46 * (sp * sp - 0.35) + (fine ? 12 * (fbm(x * 0.02, z * 0.02, 2) - 0.5) : 0)) * smooth(VAL - 20, VAL + 70, h); // big swells, spurs, rough ground; the valley floors flatter
+    return h;
+  }
+  // the sun's shade on the land: marched once per point of a coarse grid, sampled per vertex
+  const GS = preview ? 100 : 50, GX0 = -3200, GZ0 = -7000, GNX = Math.round(6400 / GS) + 1, GNZ = Math.round(7600 / GS) + 1, HG = new Float32Array(GNX * GNZ);
+  for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) HG[j * GNX + i] = groundH(GX0 + i * GS, GZ0 + j * GS, false);
+  const hGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return null; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j, a = HG[j * GNX + i], b = HG[j * GNX + i + 1], c = HG[(j + 1) * GNX + i], d = HG[(j + 1) * GNX + i + 1]; return (a * (1 - u) + b * u) * (1 - w) + (c * (1 - u) + d * u) * w; };
+  const SH = new THREE.Vector2(SUN.x, SUN.z).normalize(), TAN_EL = SUN.y / Math.hypot(SUN.x, SUN.z);
+  const shadeAt = (x, z, h0) => { let m = -1, t = 6; for (let k = 0; k < 44; k++) { const hh = hGrid(x + SH.x * t, z + SH.y * t); if (hh === null) break; m = Math.max(m, (hh - h0) / t); if (m > TAN_EL + 0.03) break; t = t * 1.12 + 3; } return 1 - smooth(TAN_EL - 0.03, TAN_EL + 0.02, m); };
+  const SHG = new Float32Array(GNX * GNZ); for (let j = 0; j < GNZ; j++) for (let i = 0; i < GNX; i++) SHG[j * GNX + i] = shadeAt(GX0 + i * GS, GZ0 + j * GS, HG[j * GNX + i]);
+  const shadeGrid = (x, z) => { const fx = (x - GX0) / GS, fz = (z - GZ0) / GS; if (fx < 0 || fz < 0 || fx >= GNX - 1 || fz >= GNZ - 1) return 1; const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j; return (SHG[j * GNX + i] * (1 - u) + SHG[j * GNX + i + 1] * u) * (1 - w) + (SHG[(j + 1) * GNX + i] * (1 - u) + SHG[(j + 1) * GNX + i + 1] * u) * w; };
+
+  /* --- the camera: on a summit beside the Wall, looking along it --- */
+  const C0 = new THREE.Vector3(150, 400, 300), LOOK0 = new THREE.Vector3(-20, 303, -560);
+  const YAW = Math.atan2(LOOK0.x - C0.x, -(LOOK0.z - C0.z));
+  const RINGS = [];
+  for (let rr = 4; rr < 60000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 120 ? 0.05 : rr < 2500 ? 0.014 : rr < 9000 ? 0.018 : 0.035)) RINGS.push(rr);
+  RINGS.push(60000);
+  const NA = preview ? 120 : 270, AW = 0.95, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  {
+    const pos = new Float32Array(nv * 3), sh = new Float32Array(nv), vari = new Float32Array(nv), rid = new Float32Array(nv);
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) {
+      const a = YAW - AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i, h = groundH(x, z, RINGS[j] < 3500);
+      pos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = z; sh[k] = shadeGrid(x, z); vari[k] = vnoise(x * 0.008 + 40.5, z * 0.008 - 17.25); rid[k] = distWall(x, z);
+    }
+    const idx = [];
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; idx.push(a, b, c, b, d, c); }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(idx); landGeo.computeVertexNormals();
+    landGeo.setAttribute("aShade", new THREE.BufferAttribute(sh, 1)); landGeo.setAttribute("aVar", new THREE.BufferAttribute(vari, 1)); landGeo.setAttribute("aRidge", new THREE.BufferAttribute(rid, 1));
+  }
+
+  /* --- materials: the air on all of them; the ground; the Wall; painted ones with markers --- */
+  const airU = { uHazeCool: { value: new THREE.Color() }, uHazeWarm: { value: new THREE.Color() }, uAirSun: { value: SUN.clone() }, uHazeD: { value: 1 / 5200 }, uMistLit: { value: new THREE.Color() }, uMistShade: { value: new THREE.Color() }, uMistTop: { value: 205 }, uMistAmt: { value: 1 }, uAirT: time, uAirNoise: { value: noise } };
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, shadowAmtU = { value: 1 };
+  const withAir = (sh) => { Object.assign(sh.uniforms, airU); sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vGW;").replace("#include <project_vertex>", "#include <project_vertex>\n" + GW_AIR_VS); sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + GW_AIR).replace("#include <colorspace_fragment>", "gl_FragColor.rgb = gwAir(gl_FragColor.rgb);\n#include <colorspace_fragment>"); };
+  const LIT_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= gwSun;");
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.96, metalness: 0, fog: false }));
+  groundMat.onBeforeCompile = (sh) => {
+    withAir(sh); Object.assign(sh.uniforms, { uNoise: { value: noise }, uShadowAmt: shadowAmtU, uNight: nightU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aShade; attribute float aVar; attribute float aRidge; varying float vShade; varying float vSlope; varying float vVar; varying float vRidge; varying vec3 vPW;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vShade = aShade; vVar = aVar; vRidge = aRidge; vSlope = 1.0 - normalize(objectNormal).y; vPW = position;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + GW_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float gwSun = mix(1.0, vShade, uShadowAmt);\n  diffuseColor.rgb = gwGround(vPW);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = gwBump(-vViewPosition, normal, gwCanopy(vPW));")
+      .replace("#include <lights_fragment_begin>", LIT_BEGIN);
+  };
+  groundMat.customProgramCacheKey = () => "gw-ground";
+  const wallMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0, fog: false }));
+  wallMat.onBeforeCompile = (sh) => {
+    withAir(sh); Object.assign(sh.uniforms, { uNoise: { value: noise } });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute vec2 aWk; varying vec3 vPW; varying vec3 vON; varying vec2 vWk;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPW = position; vON = objectNormal; vWk = aWk;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + GW_WALL_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = gwWall(diffuseColor.rgb);");
+  };
+  wallMat.customProgramCacheKey = () => "gw-wall";
+  const lit = (mat, key, extraVS = "", coat = false) => { // markers: the accent; lamps dark by day, lit by night; with coat, each instance's own colour (or the accent)
+    mat.fog = false;
+    mat.onBeforeCompile = (sh) => {
+      withAir(sh); Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime;" + (coat ? "\nattribute vec3 aCoat; varying vec3 vCoat;" : "")).replace("#include <begin_vertex>", "#include <begin_vertex>\n" + (coat ? "  vCoat = aCoat;\n" : "") + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;" + (coat ? "\nvarying vec3 vCoat;" : ""))
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float gwLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.08, 0.06, 0.05), isLamp); gwLamp = isLamp;${coat ? `
+    float isCoat = step(0.95, c.r) * step(0.95, c.g) * step(0.95, c.b); diffuseColor.rgb = mix(diffuseColor.rgb, vCoat.r < 0.0 ? uAccent * 0.9 : vCoat, isCoat);` : ""} }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.62, 0.3) * gwLamp * (0.03 + 1.6 * uNight);");
+    };
+    mat.customProgramCacheKey = () => "gw-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })), "paint");
+  const world = new THREE.Group(); scene.add(world);
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; land.renderOrder = 1; world.add(land); // after the Wall and the trees: early-z skips the ground behind them
+
+  /* --- the Wall: sampled every 2 m along its line; a ribbon of faces, merlons on the battlements, towers on the crests --- */
+  const STEP = 2, WS = []; // [x, z, tx, tz, walkway, ground, s]
+  {
+    let s = 0, prev = null;
+    for (let i = 0; i < PTS.length; i++) { const p = PTS[i]; if (prev) { const d = Math.hypot(p[0] - prev[0], p[1] - prev[1]); s += d; } prev = p; p.s = s; }
+    const total = s, at = (sv) => { let lo = 0, hi = PTS.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (PTS[m].s < sv) lo = m; else hi = m; } const a = PTS[lo], b = PTS[hi], t = (sv - a.s) / Math.max(1e-6, b.s - a.s); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; };
+    for (let sv = 0; sv <= total; sv += STEP) { const [x, z] = at(sv), [x2, z2] = at(Math.min(total, sv + 1)), [x0, z0] = at(Math.max(0, sv - 1)), tl = Math.hypot(x2 - x0, z2 - z0) || 1; WS.push([x, z, (x2 - x0) / tl, (z2 - z0) / tl, 0, groundH(x, z), sv]); }
+    const raw = WS.map((w) => w[5]);
+    WS.forEach((w, i) => { let sum = 0, n = 0; for (let k = -3; k <= 3; k++) { const j = Math.min(WS.length - 1, Math.max(0, i + k)); sum += raw[j]; n++; } w[4] = sum / n + 6.4; }); // the walkway, a little smoothed, 6.4 m over the crest
+  }
+  const NWS = WS.length;
+  const walkAt = (sv) => { const f = Math.min(NWS - 1.001, Math.max(0, sv / STEP)), i = Math.floor(f), t = f - i; return WS[i][4] + (WS[i + 1][4] - WS[i][4]) * t; };
+  const wallGeo = keep(new THREE.BufferGeometry());
+  { // the profile across the Wall (from the outer side at +n): faces as strips of their own, so each keeps its normal
+    const OUT = 3.0, PAR = 2.45, PH = 1.05, IPH = 0.9;
+    const pos = [], nrm = [], col = [], wk = [], idx = [];
+    const strips = [ // [across0, up0 (rel. walkway, or "base"), across1, up1, normal kind]
+      [OUT, "base", OUT, PH, "out"], [OUT, PH, PAR, PH, "up"], [PAR, PH, PAR, 0, "in"], [PAR, 0, -PAR, 0, "walk"], [-PAR, 0, -PAR, IPH, "in"], [-PAR, IPH, -OUT, IPH, "up"], [-OUT, IPH, -OUT, "base", "out"], // out: facing away from the middle; in: towards it (wound to match)
+    ];
+    const cBrick = new THREE.Color(0xb8ae9c), cStone = new THREE.Color(0xc4b494);
+    for (const [a0, u0, a1, u1, kind] of strips) {
+      const base0 = pos.length / 3;
+      for (let i = 0; i < NWS; i++) {
+        const [x, z, tx, tz, wy, gy] = WS[i], nx = -tz, nz = tx, grade = i > 0 && i < NWS - 1 ? (WS[i + 1][4] - WS[i - 1][4]) / (2 * STEP) : 0, baseY = Math.min(gy, groundH(x + nx * OUT, z + nz * OUT), groundH(x - nx * OUT, z - nz * OUT)) - 3;
+        for (const [ac, up] of [[a0, u0], [a1, u1]]) { const y = up === "base" ? baseY : wy + up; pos.push(x + nx * ac, y, z + nz * ac); const c = up === "base" || y < wy - 3.4 ? cStone : cBrick; col.push(c.r, c.g, c.b); wk.push(wy, Math.abs(grade)); }
+        const N = kind === "up" ? [0, 1, 0] : kind === "walk" ? (() => { const l = Math.hypot(grade, 1); return [-tx * grade / l, 1 / l, -tz * grade / l]; })() : kind === "out" ? [nx * Math.sign(a0), 0, nz * Math.sign(a0)] : [-nx * Math.sign(a0), 0, -nz * Math.sign(a0)];
+        nrm.push(...N, ...N);
+        if (i) { const a = base0 + (i - 1) * 2, b = a + 1, c = a + 2, d = a + 3; idx.push(a, c, b, b, c, d); }
+      }
+    }
+    wallGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); wallGeo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3)); wallGeo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); wallGeo.setAttribute("aWk", new THREE.Float32BufferAttribute(wk, 2)); wallGeo.setIndex(idx);
+  }
+  const wall = new THREE.Mesh(wallGeo, wallMat); wall.frustumCulled = false; world.add(wall);
+  // merlons along the outer battlements, each level
+  const MER = []; for (let sv = 1; sv < WS[NWS - 1][6] - 1; sv += 2.3) MER.push(sv);
+  const merlonGeo = keep(mergeColored(THREE, [[box(1.35, 0.95, 0.6), at(0, 0.47, 0), 0xb8ae9c]]));
+  const merlons = new THREE.InstancedMesh(merlonGeo, wallMat, MER.length);
+  { const aWk = new Float32Array(MER.length * 2); MER.forEach((sv, k) => { const i = Math.min(NWS - 2, Math.floor(sv / STEP)), [x, z, tx, tz] = WS[i], wy = walkAt(sv), f = sv / STEP - i, px = x + (WS[i + 1][0] - x) * f, pz = z + (WS[i + 1][1] - z) * f; merlons.setMatrixAt(k, new THREE.Matrix4().compose(V.set(px - tz * 2.72, wy + 1.04, pz + tx * 2.72), Q.setFromEuler(E.set(0, Math.atan2(-tz, tx), 0)), ONE)); aWk[k * 2] = -1e4; /* no stone courses on a merlon */ }); merlonGeo.setAttribute("aWk", new THREE.InstancedBufferAttribute(aWk, 2)); }
+  merlons.frustumCulled = false; world.add(merlons); keep(merlons);
+
+  /* --- towers: on the crests, and wherever the Wall runs long without one --- */
+  const TOWERS = [];
+  { const peak = (i) => { for (let k = -30; k <= 30; k++) { const j = i + k; if (j >= 0 && j < NWS && WS[j][4] > WS[i][4] + 0.01) return false; } return true; };
+    let last = -1e9; for (let i = 40; i < NWS - 20; i++) if (peak(i) && WS[i][6] - last > 180) { TOWERS.push(i); last = WS[i][6]; }
+    TOWERS.sort((a, b) => a - b); const fill = []; for (let k = 0; k < TOWERS.length; k++) { const s0 = k ? WS[TOWERS[k - 1]][6] : 0, s1 = WS[TOWERS[k]][6]; if (s1 - s0 > 520) fill.push(Math.round((TOWERS[k - 1] || 0) / 2 + TOWERS[k] / 2)); } TOWERS.push(...fill); TOWERS.sort((a, b) => a - b); }
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]), GL = [], LANTERNS = [], RED = [2.6, 0.55, 0.18], WARM = [2.5, 1.6, 0.8];
+  const FLAGS = [];
+  TOWERS.forEach((i, k) => {
+    const [x, z, tx, tz, wy] = WS[i], yaw = Math.atan2(-tz, tx), nx = -tz, nz = tx, W = 10.5, D = 11, top = wy + 9.5;
+    let base = wy; for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) base = Math.min(base, groundH(x + tx * u * W / 2 + nx * v * D / 2, z + tz * u * W / 2 + nz * v * D / 2)); base -= 2;
+    const M = (lx, ly, lz) => at(x + tx * lx + nx * lz, ly, z + tz * lx + nz * lz, 0, yaw, 0);
+    P(box(W, top - base, D), M(0, (top + base) / 2, 0), 0xb4aa98);
+    for (const sd of [-1, 1]) { for (let w = -1; w <= 1; w++) P(box(1.15, 1.9, 0.3), M(w * 3, wy + 4.8, sd * (D / 2 + 0.02)), LAMP); P(box(0.3, 2.7, 1.7), M(sd * (W / 2 + 0.02), wy + 1.35, 0), 0x231f1b); for (const w of [-2.5, 2.5]) P(box(0.3, 1.9, 1.15), M(sd * (W / 2 + 0.02), wy + 4.8, w), LAMP); } // its windows (lit by night), the doorways the walkway runs through
+    for (let u = 0; u < 4; u++) for (const sd of [-1, 1]) { P(box(1.2, 0.9, 0.5), M(-W / 2 + 1.3 + u * 2.65, top + 0.45, sd * (D / 2 - 0.25)), 0xb4aa98); P(box(0.5, 0.9, 1.2), M(sd * (W / 2 - 0.25), top + 0.45, -D / 2 + 1.4 + u * 2.75), 0xb4aa98); } // its battlements
+    if (k % 2 === 0) { P(box(5.6, 3.0, 5.6), M(0, top + 1.5, 0), 0x8a6a52); P(new THREE.ConeGeometry(4.9, 2.4, 4).rotateY(Math.PI / 4), M(0, top + 4.2, 0), 0x3d3a38); P(box(1.2, 1.6, 0.25), M(0, top + 1.6, 2.82), LAMP); } // a small watch room with its hipped roof
+    P(cyl(0.07, 0.09, 6, 5), M(W / 2 - 0.8, top + 3, D / 2 - 0.8), 0x5a4a3a); FLAGS.push([x + tx * (W / 2 - 0.8) + nx * (D / 2 - 0.8), top + 5.3, z + tz * (W / 2 - 0.8) + nz * (D / 2 - 0.8), yaw]);
+    for (const sd of [-1, 1]) { const lx = sd * (W / 2 - 0.6), lz = D / 2 + 0.7; LANTERNS.push(GL.length); GL.push([x + tx * lx + nx * lz, wy + 7.2, z + tz * lx + nz * lz, 1.0, ...RED, 2.0]); } // lanterns hung at its outer corners, in the accent by night
+    GL.push([x, top + 2.2, z, 1.1, ...WARM, 1.4]); // and a lamp on top
+  });
+  for (let sv = 15; sv < Math.min(WS[NWS - 1][6], 4300); sv += 24) { const i = Math.floor(sv / STEP), [x, z, tx, tz, wy] = WS[i]; GL.push([x + tz * 2.1, wy + 1.4, z - tx * 2.1, 0.42, ...WARM, 1.35]); } // lamps along the inner parapet, the Wall's line drawn in light by night
+  const NSTATIC_GL = GL.length;
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+  const flagGeo = keep(mergeColored(THREE, [[new THREE.PlaneGeometry(2.6, 1.6, 8, 1).translate(1.3, -0.8, 0), new THREE.Matrix4(), ACC]]));
+  const flagMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })), "flag", GW_FLAG_VS);
+  const flags = new THREE.InstancedMesh(flagGeo, flagMat, FLAGS.length);
+  FLAGS.forEach(([x, y, z], k) => flags.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y, z), Q.setFromEuler(E.set(0, Math.PI * 0.92, 0)), ONE))); // all streaming the same way, downwind
+  flags.frustumCulled = false; world.add(flags); keep(flags);
+
+  /* --- autumn trees on the slopes near by --- */
+  const TREES = [], PINES = [];
+  for (let tries = 0; PINES.length < (preview ? 200 : 600) && tries < 6000; tries++) { // pines close by the Wall on both sides
+    const sv = r(250, 2300), i = Math.floor(sv / STEP), [wx, wz, tx, tz] = WS[i], side = r() < 0.5 ? -1 : 1, off = side * r(8, 55), x = wx - tz * off, z = wz + tx * off;
+    if (Math.hypot(x - C0.x, z - C0.z) < 300 || r() > smooth(0.25, 0.55, vnoise(x * 0.02, z * 0.02))) continue;
+    const h = groundH(x, z), sl = Math.abs(groundH(x + 3, z) - h) + Math.abs(groundH(x, z + 3) - h);
+    if (sl > 4.5) continue; // not on the cliffs
+    PINES.push([x, h, z, r(0.45, 0.9)]);
+  }
+  const AUTUMN = [0x9a3a12, 0xb85a14, 0xc88a1c, 0x8a2410, 0x6a7a24, 0xa86a1a].map((c) => new THREE.Color(c));
+  const treeGeo = keep(mergeColored(THREE, [[blob(3.4, 3.9, 3.4), at(0, 3.2, 0), COAT]]));
+  const pineGeo = keep(mergeColored(THREE, [[new THREE.ConeGeometry(2.6, 9, 7), at(0, 5, 0), 0x1c3216]]));
+  const tCoat = new Float32Array(Math.max(1, TREES.length) * 3);
+  const trees = new THREE.InstancedMesh(treeGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 })), "tree", "", true), Math.max(1, TREES.length));
+  TREES.forEach(([x, y, z, s], k) => { trees.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y - 0.8, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.8, 1.15), s))); const c = AUTUMN[Math.floor(r() * AUTUMN.length)]; tCoat.set([c.r * r(0.8, 1.1), c.g * r(0.8, 1.1), c.b], k * 3); });
+  treeGeo.setAttribute("aCoat", new THREE.InstancedBufferAttribute(tCoat, 3));
+  const pines = new THREE.InstancedMesh(pineGeo, paintMat, Math.max(1, PINES.length));
+  PINES.forEach(([x, y, z, s], k) => pines.setMatrixAt(k, new THREE.Matrix4().compose(V.set(x, y - 0.5, z), Q.identity(), V2.set(s, s * r(0.85, 1.25), s))));
+  for (const m of [trees, pines]) { m.frustumCulled = false; world.add(m); keep(m); }
+
+  /* --- hikers on the walkway, swallows round the near tower --- */
+  const NH = preview ? 14 : 34, HIKE = [];
+  for (let k = 0; k < NH; k++) HIKE.push({ s0: r(30, 1500), v: r(0.55, 1.15) * (r() < 0.5 ? 1 : -1), off: r(-1.5, 1.5), ph: r(0, 6.28) });
+  const hikerGeo = keep(mergeColored(THREE, [[box(0.18, 0.85, 0.2), at(0, 0.42, 0.13), 0x3a3a44], [box(0.18, 0.85, 0.2), at(0, 0.42, -0.13), 0x3a3a44], [box(0.32, 0.62, 0.48), at(0, 1.18, 0), COAT], [new THREE.SphereGeometry(0.13, 8, 6), at(0, 1.62, 0), 0xc8a088], [box(0.26, 0.46, 0.36), at(-0.26, 1.2, 0), 0x2c3036]])); // legs, coat, head, a pack
+  const hCoat = new Float32Array(NH * 3), HC_COLS = [[0.6, 0.06, 0.05], [0.08, 0.2, 0.55], [0.9, 0.62, 0.05], [0.85, 0.85, 0.82], [0.12, 0.35, 0.18]];
+  for (let k = 0; k < NH; k++) hCoat.set(k % 5 < 2 ? [-1, -1, -1] : HC_COLS[k % HC_COLS.length], k * 3); // two in five in the accent
+  hikerGeo.setAttribute("aCoat", new THREE.InstancedBufferAttribute(hCoat, 3));
+  const WALK = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 0.9;\n#endif\n  if (position.y < 0.9) { float sw = sin(uTime * 5.2 + ph) * 0.42 * sign(position.z), dy = position.y - 0.88; transformed.x = position.x + sin(sw) * -dy; transformed.y = 0.88 + cos(sw) * dy; } } // the legs swinging from the hips";
+  const hikers = new THREE.InstancedMesh(hikerGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "hiker", WALK, true), NH);
+  hikers.frustumCulled = false; hikers.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(hikers); keep(hikers);
+  const NSW = preview ? 6 : 12, SWIFT = [];
+  for (let k = 0; k < NSW; k++) SWIFT.push({ cx: r(-40, 50), cz: r(-90, 10), cy: r(318, 345), rx: r(22, 50), rz: r(16, 36), w: r(0.4, 0.7) * (r() < 0.5 ? 1 : -1), ph: r(0, 6.28), bob: r(3, 7) });
+  const swiftGeo = keep(mergeColored(THREE, [[box(0.34, 0.09, 0.1), at(0, 0, 0), 0x1c2030], [box(0.1, 0.02, 0.62), at(0.02, 0, 0.36, 0, 0.5, 0), 0x1c2030], [box(0.1, 0.02, 0.62), at(0.02, 0, -0.36, 0, -0.5, 0), 0x1c2030], [box(0.16, 0.015, 0.05), at(-0.24, 0, 0.04, 0, 0.35, 0), 0x1c2030], [box(0.16, 0.015, 0.05), at(-0.24, 0, -0.04, 0, -0.35, 0), 0x1c2030]])); // swept wings, a forked tail
+  const FLIT = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].y * 0.7;\n#endif\n  float span = max(abs(position.z) - 0.06, 0.0), f = sin(uTime * 15.0 + ph) * 0.55 * step(0.0, sin(uTime * 1.3 + ph)) + 0.1;\n  transformed.y += span * sin(f); } // quick wingbeats, then a glide";
+  const swifts = new THREE.InstancedMesh(swiftGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 })), "swift", FLIT), NSW);
+  swifts.frustumCulled = false; swifts.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(swifts); keep(swifts);
+  const G_TORCH = GL.length; for (let k = 0; k < NH; k++) GL.push([0, 0, 0, 0, 2.4, 2.3, 2.1, 1.0]); // head torches by night
+  const kiteGeo = (() => { // a swallow kite (sha yan): spread wings, a forked tail, a white face; flat, both sides
+    const pts = [[0, 0.95], [0.35, 0.6], [1.75, 0.42], [1.9, 0.02], [0.62, -0.12], [0.56, -1.62], [0, -1.02], [-0.56, -1.62], [-0.62, -0.12], [-1.9, 0.02], [-1.75, 0.42], [-0.35, 0.6]];
+    const g = new THREE.ShapeGeometry(new THREE.Shape(pts.map(([a, b]) => new THREE.Vector2(a, b))));
+    const face = new THREE.CircleGeometry(0.26, 12).translate(0, 0.42, 0.01);
+    return keep(mergeColored(THREE, [[g, new THREE.Matrix4(), ACC], [face, new THREE.Matrix4(), 0xf4efe6], [new THREE.CircleGeometry(0.2, 10).translate(0.95, 0.16, 0.01), new THREE.Matrix4(), 0xf4efe6], [new THREE.CircleGeometry(0.2, 10).translate(-0.95, 0.16, 0.01), new THREE.Matrix4(), 0xf4efe6]]));
+  })();
+  const kiteMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide })), "kite");
+  const KITES = [{ s: 420, off: -1.2, ph: 0, up: 104, dn: 40 }, { s: 700, off: 1.0, ph: 2.3, up: 62, dn: 30 }].map((k) => { const m = new THREE.Mesh(kiteGeo, kiteMat); m.scale.setScalar(3.0); world.add(m); const lg = keep(new THREE.BufferGeometry()); lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3)); const line = new THREE.Line(lg, keep(new THREE.LineBasicMaterial({ color: 0x2a2a2a, transparent: true, opacity: 0.55, fog: false }))); line.frustumCulled = false; world.add(line); return { ...k, m, line }; });
+
+  /* --- the sky; by night the stars, the Milky Way and a full moon --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunColor: { value: new THREE.Color() }, uSun: { value: 0 }, uNight: nightU, uNoise: { value: noise },
+    uGalN: { value: new THREE.Vector3(0.3, 0.6, 0.74).normalize() }, uGalC: { value: new THREE.Vector3() } };
+  skyU.uGalC.value.set(0.4, 0.25, -0.88).normalize(); skyU.uGalC.value.addScaledVector(skyU.uGalN.value, -skyU.uGalC.value.dot(skyU.uGalN.value)).normalize();
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(70000, 48, 24)), shader(LANTERN_SKY_VS, DC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; sky.position.copy(C0); world.add(sky);
+  const NSTAR = preview ? 500 : 1700, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)), b = r(); starPos.set([C0.x + Math.cos(a) * Math.cos(e) * 50000, C0.y + Math.sin(e) * 50000, C0.z + Math.sin(a) * Math.cos(e) * 50000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+  const quad = keep(new THREE.PlaneGeometry(1, 1));
+  const moon = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: keep(sakuraMoon(THREE)), transparent: true, depthWrite: false, fog: false })));
+  moon.position.copy(MOON).multiplyScalar(40000).add(C0); moon.scale.setScalar(950); moon.lookAt(C0); moon.renderOrder = -8; world.add(moon);
+  const moonHalo = new THREE.Mesh(quad, keep(new THREE.MeshBasicMaterial({ map: glow, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, color: new THREE.Color(0.12, 0.14, 0.2), fog: false })));
+  moonHalo.position.copy(moon.position); moonHalo.scale.setScalar(6500); moonHalo.lookAt(C0); moonHalo.renderOrder = -8; world.add(moonHalo);
+
+  /* --- glows --- */
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr0, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr0, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- light: the low sun (the land's shade from it baked; no shadow map: from this far the Wall's own shadow only drew a ghost of it across the next mountain) --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target); sun.target.position.set(0, 250, -600);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#030714" : "#2b4b86"); skyU.uMid.value.set(d ? "#0a1430" : "#8ea6c8"); skyU.uHorizon.value.set(d ? "#18203c" : "#e6c2a8");
+    skyU.uSunDir.value.copy(SUN); skyU.uGlow.value.set(d ? "#000000" : "#ff9850").multiplyScalar(d ? 0 : 0.42); skyU.uSunColor.value.set("#ffd7a0"); skyU.uSun.value = 0;
+    starU.uAmt.value = d ? 1 : 0; stars.visible = moon.visible = moonHalo.visible = d;
+    airU.uHazeCool.value.set(d ? "#1a2240" : "#a8b6cc"); airU.uHazeWarm.value.set(d ? "#1a2240" : "#f0c690"); airU.uHazeD.value = d ? 1 / 8000 : 1 / 7600;
+    airU.uMistLit.value.set(d ? "#56648a" : "#fff0dc"); airU.uMistShade.value.set(d ? "#303a5a" : "#c4ccd8"); airU.uMistAmt.value = d ? 0.75 : 1;
+    sun.color.set(d ? "#8ea4d8" : "#ffb878"); sun.intensity = d ? 0.55 : 3.2;
+    sun.position.copy(sun.target.position).addScaledVector(d ? MOONLIGHT : SUN, 3000);
+    hemi.color.set(d ? "#33407a" : "#8ea4cc"); hemi.groundColor.set(d ? "#181420" : "#5a4636"); hemi.intensity = d ? 0.62 : 0.62;
+    nightU.value = d ? 1 : 0; shadowAmtU.value = d ? 0 : 1;
+    glowU.uAmt.value = d ? 1 : 0;
+    for (let i = 0; i < NSTATIC_GL; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    for (const i of LANTERNS) aTint.setXYZ(i, accentU.value.r * 2.6 + 0.15, accentU.value.g * 2.6 + 0.15, accentU.value.b * 2.6 + 0.15);
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 32 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = YAW + k * 0.02, pitch = Math.atan2(LOOK0.y - C0.y, Math.hypot(LOOK0.x - C0.x, LOOK0.z - C0.z)) + k * 0.04;
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900)), buf = new THREE.Vector2();
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y);
+  };
+
+  const mA = new THREE.Matrix4(), P2 = new THREE.Vector3(), P3 = new THREE.Vector3(), T0 = 30;
+  const facing = (p, q) => Math.atan2(-(q.z - p.z), q.x - p.x); // the yaw that points a model's +x from p towards q
+  const HIKE_LEN = 1500;
+  const onWall = (sv, off, out) => { const f = Math.min(NWS - 1.001, Math.max(0, sv / STEP)), i = Math.floor(f), t = f - i, a = WS[i], b = WS[i + 1]; const x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t; return out.set(x - a[3] * off, a[4] + (b[4] - a[4]) * t, z + a[2] * off); }; // off: across the walkway, towards the battlements
+  function frame(dt) {
+    clock += dt; time.value = clock; airU.uAirT.value = clock;
+    const t = clock + T0, night = pal.dark;
+    HIKE.forEach((h, k) => { // along the walkway, facing the way they walk, slower up the steps
+      const sv = 20 + ((((h.s0 + h.v * t - 20) % HIKE_LEN) + HIKE_LEN) % HIKE_LEN);
+      onWall(sv, h.off, P2); onWall(sv + Math.sign(h.v) * 0.5, h.off, P3);
+      hikers.setMatrixAt(k, mA.compose(P2, Q.setFromEuler(E.set(0, facing(P2, P3), 0)), V2.setScalar(1.5)));
+      aGlow.setXYZW(G_TORCH + k, P2.x, P2.y + 1.6, P2.z, night ? 0.22 : 0);
+    });
+    hikers.instanceMatrix.needsUpdate = true;
+    SWIFT.forEach((b, k) => { // swallows looping round the near tower and over the Wall, banking into their turns
+      const a = t * b.w + b.ph, x = b.cx + b.rx * Math.cos(a), z = b.cz + b.rz * Math.sin(a * 1.0), y = b.cy + b.bob * Math.sin(a * 2.0 + k);
+      const a2 = a + 0.02 * Math.sign(b.w); P2.set(x, y, z); P3.set(b.cx + b.rx * Math.cos(a2), b.cy + b.bob * Math.sin(a2 * 2.0 + k), b.cz + b.rz * Math.sin(a2));
+      const bank = Math.sign(b.w) * 0.6; // rolled towards the inside of the turn, about its own length, before it pitches and turns
+      swifts.setMatrixAt(k, mA.compose(P2, Q.setFromEuler(E.set(bank, facing(P2, P3), Math.atan2(P3.y - P2.y, Math.hypot(P3.x - P2.x, P3.z - P2.z)), "YZX")), V2.setScalar(night ? 0 : 2.6)));
+    });
+    swifts.instanceMatrix.needsUpdate = true;
+    KITES.forEach((k) => { // downwind of the hand that flies it, high up, nodding and swaying on the breeze; its face into the wind
+      onWall(k.s, k.off, P2); P2.y += 1.3;
+      P3.set(P2.x - k.dn + 4 * Math.sin(t * 0.43 + k.ph), P2.y + k.up + 3 * Math.sin(t * 0.61 + k.ph), P2.z + 7 * Math.sin(t * 0.37 + k.ph));
+      k.m.position.copy(P3); k.m.lookAt(V.copy(P3).add(V2.set(1, 0.5, 0.35))); k.m.rotateZ(0.18 * Math.sin(t * 1.3 + k.ph)); k.m.visible = k.line.visible = !night;
+      const a = k.line.geometry.attributes.position; a.setXYZ(0, P2.x, P2.y, P2.z); a.setXYZ(1, P3.x, P3.y - 0.6, P3.z); a.needsUpdate = true;
+    });
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { kites: KITES.length, towers: TOWERS.length, wallM: Math.round(WS[NWS - 1][6]), merlons: MER.length, trees: TREES.length, pines: PINES.length, hikers: NH, glows: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),

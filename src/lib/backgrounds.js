@@ -72,6 +72,7 @@ export const BG_STYLES = [
   { value: "floatislands", label: "Floating islands", desc: "3D islands of rock adrift over a sea of clouds: waterfalls pour off their edges, airships with sails in your colour drift between them and birds wheel round the cliffs; at night crystals glow in the rock under a starry sky", three: true },
   { value: "marscolony", label: "Mars colony", desc: "3D base on Mars: glowing domes linked by tubes, greenhouses, rovers in your colour on their rounds and a lander touching down on its thrusters as dust devils whirl across the red plain; at night the domes glow, Phobos crosses the sky and Earth shines as a blue star", three: true },
   { value: "pyramids", label: "Pyramids on the Nile", desc: "3D pyramids of Giza and the Sphinx above the Nile at golden hour: feluccas with sails in your colour glide past palm groves, a cruise boat and ibises go by; at night the pyramids light up for a sound-and-light show mirrored in the river under the stars", three: true },
+  { value: "greatwall", label: "Great Wall at dawn", desc: "3D Great Wall winding over misty mountain ridges at sunrise, the slopes in autumn colours: watchtowers along the crests, swallow kites and hikers in your colour, flags on the towers, swallows on the wind and mist in the valleys; at night lamps trace the Wall over the ridges and lanterns in your colour glow at the towers under a full moon and stars", three: true },
   { value: "none", label: "None", desc: "Plain background" },
 ];
 export const BG_KEYS = BG_STYLES.map((b) => b.value);
