@@ -107,6 +107,19 @@ export async function removeConnection(user, id) {
   return connectionsOf(user.id);
 }
 
+/* ---------- a person's own defaults ---------- */
+
+export async function prefsOf(userId) {
+  const row = await queryOne("SELECT close_reason FROM pms_prefs WHERE user_id = ?", [userId]);
+  return { close_reason: row?.close_reason ?? null };
+}
+/** { close_reason }: empty means the built-in "Done in Task Portal." (or its Chinese for tasks written in Chinese). */
+export async function setPrefs(user, body) {
+  const reason = String(body?.close_reason ?? "").replace(/\s+/g, " ").trim().slice(0, 500) || null;
+  await execute("INSERT INTO pms_prefs (user_id, close_reason) VALUES (?, ?) AS new ON DUPLICATE KEY UPDATE close_reason = new.close_reason", [user.id, reason]);
+  return prefsOf(user.id);
+}
+
 /* ---------- which PMS project each project goes to (per person, for the open workspace) ---------- */
 
 export const mapsOf = (user) =>
@@ -237,7 +250,7 @@ export async function briefOf(user, taskId) {
 export async function planTask(user, taskId) {
   const task = await loadTask(user, taskId);
   const link = await queryOne("SELECT * FROM pms_links WHERE task_id = ?", [taskId]);
-  const [target, parts, sent, conns] = await Promise.all([targetOf(user, task, link), partsOf(user, taskId), sentRows(taskId, link?.ticket_key), connectionsOf(user.id)]);
+  const [target, parts, sent, conns, prefs] = await Promise.all([targetOf(user, task, link), partsOf(user, taskId), sentRows(taskId, link?.ticket_key), connectionsOf(user.id), prefsOf(user.id)]);
   const ticketSent = sent.get(`ticket:${taskId}`);
   const conn = target.conn ? conns.find((c) => c.id === target.conn.id) : null;
   return {
@@ -248,6 +261,7 @@ export async function planTask(user, taskId) {
     connected: conns.length > 0,
     can_send: can(user, "editor"),
     lang: guessLang(task.title, task.description),
+    close_reason: prefs.close_reason,
     ticket: { state: !link ? "none" : !link.ticket_key ? "unknown" : !link.created_here ? "linked" : stateOf(sent, "ticket", taskId, itemHash.ticket(task)), checklist_in_description: Boolean(ticketSent?.meta?.checklist) },
     checklist: { total: parts.checklist.length, done: parts.checklist.filter((i) => Number(i.done)).length, state: parts.checklist.length ? stateOf(sent, "checklist", taskId, itemHash.checklist(parts.checklist)) : "none" },
     outputs: parts.outputs.map((o) => ({ id: o.id, title: o.title, chars: String(o.content ?? "").length, state: stateOf(sent, "output", o.id, itemHash.output(o)) })),
@@ -662,6 +676,7 @@ export async function sweepPms() {
   const a = await execute(`DELETE x FROM pms_links x WHERE ${gone}`);
   const b = await execute(`DELETE x FROM pms_sent x WHERE ${gone}`);
   await execute("DELETE x FROM pms_connections x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x.user_id)");
+  await execute("DELETE x FROM pms_prefs x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x.user_id)");
   await execute("DELETE x FROM pms_project_map x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x.user_id) OR (NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = x.project_id) AND NOT EXISTS (SELECT 1 FROM trash b WHERE b.entity = 'project' AND b.entity_id = x.project_id))");
   return (a.affectedRows ?? 0) + (b.affectedRows ?? 0);
 }

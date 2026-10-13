@@ -259,6 +259,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET / POST | `/api/pms/connections` | my Bitara PMS connections (never the token) and where each project of the open workspace goes (`?brief=1`: `{ connected }`) / `{ token, label?, base_url? }`: the token is checked with PMS first and kept encrypted |
 | PUT / DELETE | `/api/pms/connections/:id` | `{ label }` or `{ token }` (checked again) / forget it here (it stays valid in PMS) |
 | POST | `/api/pms/connections/:id/check` | ask PMS again what the token reaches |
+| GET / PUT | `/api/pms/prefs` | my defaults `{ close_reason }` (empty = the built-in text) |
 | GET / PUT | `/api/pms/maps` | the open workspace's projects and their PMS project (mine) / `{ project_id, connection_id, pms_project }` (empty `pms_project` removes it) |
 | GET | `/api/pms/tasks` | tasks that can go to PMS (in a paired project, or linked), with their tickets (`?q=`, `?project_id=`) |
 | GET | `/api/pms/tasks/:id` | one task's parts (outputs, comments, checklist, files, my time) marked new / changed / sent, and its ticket (`?brief=1`: only the ticket) |
@@ -482,7 +483,9 @@ time as worklogs), check the exact text in a dry run, send. A new ticket is clai
 another slot (developer, tester) or none; a linked ticket can be claimed from the dialog or the task's card
 (`POST /tickets/{key}/claim`, or assigning yourself with `PATCH` when the token may not claim). **Close the ticket**
 (with the reason PMS asks for) runs the `close` transition after everything else was sent; PMS accepts it only
-in projects whose token autonomy is `FULL`, and the dialog says so for `SUGGEST_ONLY` projects. Every part is marked *not sent*, *changed* or *sent*,
+in projects whose token autonomy is `FULL`, and the dialog says so for `SUGGEST_ONLY` projects. The reason it
+starts with is each person's own (**When you close a ticket** on Integrations, `pms_prefs`), else "Done in Task
+Portal." in the task's language. Every part is marked *not sent*, *changed* or *sent*,
 so nothing goes twice: worklogs carry `externalRef` `taskportal-<install>-time-<id>` and changed entries are
 corrected (`PATCH`), changed outputs go as a new comment, a ticket raised from here can be updated, but never
 when somebody edited it in PMS since. Everything goes out as the token's owner with `X-PMS-Client: task-portal`.

@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { Plug, Ticket, Plus, RefreshCw, Trash2, Pencil, Check, X, KeyRound, FolderKanban, ArrowRight, Send } from "lucide-react";
+import { Plug, Ticket, Plus, RefreshCw, Trash2, Pencil, Check, X, KeyRound, FolderKanban, ArrowRight, Send, TicketCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useFeature } from "@/lib/auth-context";
@@ -43,6 +43,7 @@ function BitaraPms() {
   const [editing, setEditing] = useState(null); // { id, label?, token? }
   const [removing, setRemoving] = useState(null);
   const [adding, setAdding] = useState(false); // the form for another token, once there is one
+  const [reason, setReason] = useState(null); // the default close reason being edited (null = as saved)
   const connections = data?.connections ?? [];
   const maps = data?.maps ?? [];
 
@@ -98,6 +99,19 @@ function BitaraPms() {
       setRemoving(null);
     } catch (e) {
       toast.error(tr("Could not remove"), tr(e.message));
+    }
+  };
+  const saveReason = async () => {
+    setBusy("prefs");
+    try {
+      const prefs = await api.put("/api/pms/prefs", { close_reason: reason ?? "" });
+      setData((d) => ({ ...d, prefs }));
+      setReason(null);
+      toast.success(tr("Saved"));
+    } catch (e) {
+      toast.error(tr("Could not save"), tr(e.message));
+    } finally {
+      setBusy(null);
     }
   };
   const pair = async (projectId, value) => {
@@ -229,6 +243,17 @@ function BitaraPms() {
             <Send size={13} className="mt-0.5 shrink-0" />
             <span>{tr("Then open Tasks and press Bitara PMS to pick the tasks to send, or use the button on a task.")} <Link href="/tasks" className="text-accent hover:underline">{tr("Open Tasks")}</Link></span>
           </p>
+        </Card>
+      ) : null}
+
+      {connections.length ? (
+        <Card className="pms-prefs">
+          <CardHeader icon={TicketCheck} title={tr("When you close a ticket")} description={tr("The reason filled in when you tick Close the ticket in the send dialog. You can still change it there each time.")} />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={reason ?? data?.prefs?.close_reason ?? ""} onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => e.key === "Enter" && reason != null && saveReason()} maxLength={500} placeholder={locale === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal."} className="pms-close-default min-w-0 flex-1" aria-label={tr("Default reason for closing")} />
+            <Button icon={Check} onClick={saveReason} loading={busy === "prefs"} disabled={reason == null || reason.trim() === (data?.prefs?.close_reason ?? "")} className="pms-close-save">{tr("Save")}</Button>
+          </div>
+          <p className="mt-2 text-xs text-fg-muted">{tr("Left empty, it is “Done in Task Portal.”, or “已在 Task Portal 完成。” for tasks written in Chinese.")}</p>
         </Card>
       ) : null}
 

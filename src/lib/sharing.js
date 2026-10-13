@@ -133,6 +133,7 @@ export const forgetMember = async (userId) => {
   await execute("DELETE FROM api_tokens WHERE user_id = ?", [userId]).catch(() => {});
   await execute("DELETE FROM pms_project_map WHERE user_id = ?", [userId]).catch(() => {});
   await execute("DELETE FROM pms_connections WHERE user_id = ?", [userId]).catch(() => {});
+  await execute("DELETE FROM pms_prefs WHERE user_id = ?", [userId]).catch(() => {});
 };
 
 /* ---------- handing a profile to somebody else ---------- */

@@ -3044,6 +3044,9 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   const t4 = (await call("POST", "/api/tasks", { body: { title: `PMS close ${suffix}`, project_id: projectId } })).data;
   const shut = await call("POST", `/api/pms/tasks/${t4.id}/send`, { body: { ticket: { mode: "link", key: "DEMOV1-1" }, close: { reason: "Done in Task Portal." } } });
   check("a project set to Full: linked, then closed with the reason", shut.data.results.map((r) => `${r.op}:${r.ok}`).join() === "ticket.link:true,ticket.close:true" && pms.tickets.get("DEMOV1-1").status === "CLOSED" && pms.tickets.get("DEMOV1-1").closeReason === "Done in Task Portal." && shut.data.link.ticket_status === "CLOSED", JSON.stringify(shut.raw).slice(0, 300));
+  check("no default close reason at first", (await call("GET", "/api/pms/prefs")).data.close_reason === null && (await call("GET", `/api/pms/tasks/${t4.id}`)).data.close_reason === null);
+  const pref = await call("PUT", "/api/pms/prefs", { body: { close_reason: "  Finished,   see the report  " } });
+  check("PUT /api/pms/prefs keeps a tidied default close reason, and the dialog gets it", pref.data.close_reason === "Finished, see the report" && (await call("GET", `/api/pms/tasks/${t4.id}`)).data.close_reason === "Finished, see the report" && (await call("GET", "/api/pms/connections")).data.prefs.close_reason === "Finished, see the report");
   check("…closing again is skipped, and the history says it was closed", (await call("POST", `/api/pms/tasks/${t4.id}/send`, { body: { close: { reason: "again" }, dry_run: true } })).data.results[0].skip === true && (await call("GET", `/api/tasks/${t4.id}/history`)).data.some((h) => h.action === "pms_sent" && /closed/.test(h.new_value)));
 
   // PMS's answers that go wrong
@@ -3070,7 +3073,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
   jar = {};
   await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
-  check("connections are personal", (await call("GET", "/api/pms/connections")).data.connections.length === 0 && (await call("GET", `/api/pms/tasks/${tid}`)).status === 404);
+  check("connections and defaults are personal", (await call("GET", "/api/pms/connections")).data.connections.length === 0 && (await call("GET", "/api/pms/prefs")).data.close_reason === null && (await call("GET", `/api/pms/tasks/${tid}`)).status === 404);
   jar = { ...adminJar };
   await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: ["pms"] } });
   jar = {};
@@ -3083,6 +3086,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   await call("DELETE", `/api/tokens/${tok.data.row.id}`);
 
   // cleanup
+  check("an empty default close reason goes back to the built-in one", (await call("PUT", "/api/pms/prefs", { body: { close_reason: "   " } })).data.close_reason === null);
   for (const id of [tid, t2.id, t3.id, t4.id]) await call("DELETE", `/api/tasks/${id}`);
   const gone = await call("DELETE", `/api/pms/connections/${conn.id}`);
   check("removing the connection removes its pairings", gone.status === 200 && gone.data.connections.length === 0 && gone.data.maps.every((m) => m.pms_project === null));

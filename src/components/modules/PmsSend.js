@@ -242,7 +242,7 @@ function TaskChoice({ plan, choice, set, onDrop }) {
           <p className="flex items-center gap-1.5 px-1.5 text-xs text-fg-muted"><TicketCheck size={13} /> {tr("Closed in Bitara PMS")}</p>
         ) : (
           <div className="space-y-1.5 px-1.5">
-            <Checkbox checked={choice.close} onChange={(v) => set({ ...choice, close: v, reason: v && !choice.reason ? (choice.lang === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal.") : choice.reason })} label={tr("Close the ticket in Bitara PMS")} className="pms-close-on" />
+            <Checkbox checked={choice.close} onChange={(v) => set({ ...choice, close: v, reason: v && !choice.reason ? plan.close_reason || (choice.lang === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal.") : choice.reason })} label={tr("Close the ticket in Bitara PMS")} className="pms-close-on" />
             {choice.close ? (
               <div className="space-y-1 pl-6">
                 <Input value={choice.reason} onChange={(e) => set({ ...choice, reason: e.target.value })} maxLength={500} placeholder={tr("Why it is closed")} className="pms-close-reason h-8 text-xs" aria-label={tr("Why it is closed")} />

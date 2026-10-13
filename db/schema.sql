@@ -933,6 +933,13 @@ CREATE TABLE IF NOT EXISTS pms_links (
   KEY idx_pms_links_ticket (ticket_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- A person's own choices for sending (today: the reason filled in when they close a ticket).
+CREATE TABLE IF NOT EXISTS pms_prefs (
+  user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+  close_reason VARCHAR(500) NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS pms_sent (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   task_id INT UNSIGNED NOT NULL,
