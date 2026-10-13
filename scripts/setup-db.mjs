@@ -318,6 +318,11 @@ async function migrate(db, adminId) {
     log("migrating: time_entries.began_at");
     await db.query("ALTER TABLE time_entries ADD COLUMN began_at DATETIME NULL AFTER started_at");
   }
+  if (!(await hasColumn(db, "pms_connections", "acting_uid"))) {
+    log("migrating: pms_connections.acting_uid, pms_links.claimed_as");
+    await db.query("ALTER TABLE pms_connections ADD COLUMN acting_uid VARCHAR(64) NULL AFTER acting_as");
+    await db.query("ALTER TABLE pms_links ADD COLUMN claimed_as VARCHAR(10) NULL AFTER status_at");
+  }
 }
 
 /** Every user gets a default profile (also covers users created before profiles existed). */

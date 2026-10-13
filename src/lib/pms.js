@@ -211,8 +211,8 @@ export function scopesIn(x) {
   }
   return null;
 }
-/** "Name (email)" of the person behind a token, from /auth/me or the manifest. */
-export function personIn(x) {
+/** The person behind a token, from /auth/me or the manifest: { label: "Name (email)", uid } or null. */
+export function personOf(x) {
   const v = unwrap(x);
   // the person may be the answer itself (/auth/me) or sit inside it; a bare object only counts when it has an email,
   // so a token's own name is never taken for its owner
@@ -220,8 +220,11 @@ export function personIn(x) {
   if (!isObj(u)) return null;
   const name = str(u.name ?? u.displayName ?? u.fullName ?? u.full_name);
   const email = str(u.email);
-  return (name && email ? `${name} (${email})` : name || email || "").slice(0, 190) || null;
+  const label = (name && email ? `${name} (${email})` : name || email || "").slice(0, 190) || null;
+  const uid = str(u.uid ?? u.userUid ?? u.user_uid ?? u.id).slice(0, 64) || null;
+  return label || uid ? { label, uid } : null;
 }
+export const personIn = (x) => personOf(x)?.label ?? null;
 /** externalRef → PMS uid of the worklogs in a batch answer (created ones and the `duplicates`). */
 export function worklogUids(x) {
   const map = new Map();
@@ -275,7 +278,11 @@ export async function probeToken(conn) {
       throw manifestError ?? e;
     }
   }
-  let acting = manifest ? personIn(manifest) : null;
-  if (!acting) acting = personIn(await pmsFetch(conn, "GET", "/auth/me").catch(() => null));
-  return { acting_as: acting, projects, scopes: manifest ? scopesIn(manifest) : null };
+  // who: the manifest usually says; /auth/me fills in what it does not (the uid is what claiming a slot needs)
+  let person = manifest ? personOf(manifest) : null;
+  if (!person?.label || !person?.uid) {
+    const me = personOf(await pmsFetch(conn, "GET", "/auth/me").catch(() => null));
+    person = { label: person?.label || me?.label || null, uid: person?.uid || me?.uid || null };
+  }
+  return { acting_as: person.label, acting_uid: person.uid, projects, scopes: manifest ? scopesIn(manifest) : null };
 }

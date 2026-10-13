@@ -61,8 +61,8 @@ export async function addConnection(user, body) {
   const probe = await probeToken({ token, base_url });
   const label = clip(body?.label, 80) || clip(probe.projects.map((p) => p.name || p.key).join(", "), 80) || "Bitara PMS";
   const res = await execute(
-    "INSERT INTO pms_connections (user_id, label, base_url, token_enc, token_hint, acting_as, projects, scopes, status, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', NOW())",
-    [user.id, label, base_url, encryptSecret(token), `…${token.slice(-4)}`, probe.acting_as, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null]
+    "INSERT INTO pms_connections (user_id, label, base_url, token_enc, token_hint, acting_as, acting_uid, projects, scopes, status, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NOW())",
+    [user.id, label, base_url, encryptSecret(token), `…${token.slice(-4)}`, probe.acting_as, probe.acting_uid, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null]
   );
   return { id: res.insertId, connections: await connectionsOf(user.id) };
 }
@@ -79,8 +79,8 @@ export async function updateConnection(user, id, body) {
     const token = readToken(body.token);
     const probe = await probeToken({ token, base_url: row.base_url });
     await execute(
-      "UPDATE pms_connections SET token_enc = ?, token_hint = ?, acting_as = ?, projects = ?, scopes = ?, status = 'ok', last_error = NULL, checked_at = NOW() WHERE id = ?",
-      [encryptSecret(token), `…${token.slice(-4)}`, probe.acting_as, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null, row.id]
+      "UPDATE pms_connections SET token_enc = ?, token_hint = ?, acting_as = ?, acting_uid = ?, projects = ?, scopes = ?, status = 'ok', last_error = NULL, checked_at = NOW() WHERE id = ?",
+      [encryptSecret(token), `…${token.slice(-4)}`, probe.acting_as, probe.acting_uid, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null, row.id]
     );
   }
   return connectionsOf(user.id);
@@ -91,7 +91,7 @@ export async function checkConnection(user, id) {
   const row = await ownConnection(user, id);
   try {
     const probe = await probeToken(row);
-    await execute("UPDATE pms_connections SET acting_as = ?, projects = ?, scopes = ?, status = 'ok', last_error = NULL, checked_at = NOW() WHERE id = ?", [probe.acting_as, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null, row.id]);
+    await execute("UPDATE pms_connections SET acting_as = ?, acting_uid = ?, projects = ?, scopes = ?, status = 'ok', last_error = NULL, checked_at = NOW() WHERE id = ?", [probe.acting_as, probe.acting_uid, JSON.stringify(probe.projects), probe.scopes ? JSON.stringify(probe.scopes) : null, row.id]);
   } catch (e) {
     if (!(e instanceof PmsError)) throw e;
     await execute("UPDATE pms_connections SET status = 'error', last_error = ?, checked_at = NOW() WHERE id = ?", [e.message.slice(0, 255), row.id]);
@@ -223,7 +223,7 @@ const stateOf = (sent, kind, id, hash) => {
   return !r ? "new" : r.hash === hash ? "sent" : "changed";
 };
 const shapeLink = (l) =>
-  l ? { pms_project: l.pms_project, ticket_key: l.ticket_key || null, created_here: Boolean(l.created_here), ticket_title: l.ticket_title, ticket_status: l.ticket_status, ticket_url: l.ticket_url, status_at: l.status_at, created_at: l.created_at } : null;
+  l ? { pms_project: l.pms_project, ticket_key: l.ticket_key || null, created_here: Boolean(l.created_here), ticket_title: l.ticket_title, ticket_status: l.ticket_status, ticket_url: l.ticket_url, status_at: l.status_at, claimed_as: l.claimed_as ?? null, created_at: l.created_at } : null;
 export const linkOf = async (taskId) => shapeLink(await queryOne("SELECT * FROM pms_links WHERE task_id = ?", [taskId]));
 
 /** What the task page shows: the linked ticket and whether this person can send anything. Never calls PMS. */
@@ -273,6 +273,17 @@ async function instanceId() {
   return globalThis.__pmsInstance;
 }
 
+/** The PMS uid of the connection's owner, asked for once when an older connection does not know it yet. */
+async function uidFor(conn) {
+  if (conn.acting_uid) return conn.acting_uid;
+  const probe = await probeToken(conn).catch(() => null);
+  if (!probe?.acting_uid) return null;
+  await execute("UPDATE pms_connections SET acting_uid = ? WHERE id = ?", [probe.acting_uid, conn.id]);
+  return probe.acting_uid;
+}
+/** Which ticket field holds a slot, for when the claim call itself is refused. */
+const SLOT_FIELD = { owner: "assigneeUid", dev: "devAssigneeUid", test: "testAssigneeUid" };
+
 async function remember(user, taskId, key, kind, itemId, hash, { remote = null, meta = null } = {}) {
   await execute(
     `INSERT INTO pms_sent (task_id, ticket_key, kind, item_id, remote_id, hash, meta, sent_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -293,6 +304,7 @@ async function saveLink(user, taskId, project, key, ticket, createdHere) {
  *   ticket   { mode: "create", category, lang, include_checklist, estimate } | { mode: "link", key } | { mode: "update", include_checklist }
  *   outputs, comments, files: [ids]      checklist: true → the checklist as a comment
  *   time: [{ id, started_at }]  kind     internal: comments hidden from a PMS reporter    lang: words we add
+ *   claim: "owner" | "dev" | "test" → take that slot of the ticket (a new one, or the linked one)
  * Answers { dry_run, link, results: [{ op, label, ok, error?, text?, … }] }. Steps after a failed ticket step are
  * skipped; other failures do not stop the rest.
  */
@@ -317,6 +329,7 @@ export async function sendTask(user, taskId, body = {}) {
   const mode = t?.mode ?? null;
   if (mode && !["create", "link", "update"].includes(mode)) throw new HttpError("Unknown ticket choice.", 400);
   const lang = PMS_LANGS[body.lang] ? body.lang : PMS_LANGS[t?.lang] ? t.lang : guessLang(task.title, task.description);
+  const claim = ["owner", "dev", "test"].includes(body.claim) ? body.claim : null;
 
   // where it goes
   let conn;
@@ -427,6 +440,33 @@ export async function sendTask(user, taskId, body = {}) {
     }
   }
 
+  if (claim) {
+    if (key && mode !== "link" && link?.claimed_as === claim) {
+      steps.push({ op: "ticket.claim", role: claim, key, label: `${key} is claimed as ${claim} already`, skip: true, run: async () => ({}) });
+    } else {
+      steps.push({
+        op: "ticket.claim", role: claim, key: mode === "create" ? null : key, label: `Claim ${mode === "create" ? "the new ticket" : key} as ${claim}`,
+        run: async () => {
+          const k = ticketDone.key;
+          let note = null;
+          try {
+            await pmsFetch(conn, "POST", `/tickets/${encodeURIComponent(k)}/claim`, { json: { role: claim } });
+          } catch (e) {
+            if (e instanceof PmsError && e.pmsStatus === 409) throw new HttpError(`The ${claim} slot of ${k} is taken already (by you or somebody else).`, 409);
+            // the claim call needs the tickets:claim scope; putting yourself in the slot is the same thing through tickets:write
+            if (!(e instanceof PmsError) || ![403, 404, 422].includes(e.pmsStatus)) throw e;
+            const uid = await uidFor(conn);
+            if (!uid) throw e;
+            await pmsFetch(conn, "PATCH", `/tickets/${encodeURIComponent(k)}`, { json: { [SLOT_FIELD[claim]]: uid } });
+            note = "Bitara PMS refused the claim call for this token, so you were put in the slot by editing the ticket instead.";
+          }
+          await execute("UPDATE pms_links SET claimed_as = ? WHERE task_id = ?", [claim, taskId]);
+          return { key: k, note };
+        },
+      });
+    }
+  }
+
   const comment = (what, itemId, text, hash, label, extra = {}) =>
     steps.push({
       op: "comment", what, item_id: itemId, label, text, internal, ...extra,
@@ -524,7 +564,7 @@ export async function sendTask(user, taskId, body = {}) {
         if (!(e instanceof HttpError)) console.error("[pms]", e);
         const error = e instanceof HttpError ? e.message : `Unexpected error: ${e?.message ?? e}`;
         results.push({ ...view(s), ok: false, error });
-        if (s.op.startsWith("ticket.") && s.op !== "ticket.update") blocked = "Skipped: there is no ticket to send it to.";
+        if (s.op === "ticket.create" || s.op === "ticket.link") blocked = "Skipped: there is no ticket to send it to.";
       }
     }
     // the ticket's status as PMS has it now
@@ -544,6 +584,7 @@ export async function sendTask(user, taskId, body = {}) {
       count("ticket.create") ? "raised" : null,
       count("ticket.link") ? "linked" : null,
       count("ticket.update") ? "updated" : null,
+      count("ticket.claim") ? `claimed:${done.find((r) => r.op === "ticket.claim").role}` : null,
       count("comment") ? `comments:${count("comment")}` : null,
       count("file") ? `files:${count("file")}` : null,
       timeCount ? `time:${timeCount}` : null,

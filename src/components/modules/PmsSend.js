@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X } from "lucide-react";
+import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
@@ -34,6 +34,18 @@ const localParts = (iso) => {
 const startedAt = (date, time) => `${date}T${time}:00${offsetOf(date, time)}`;
 const KEY_RE = /^[A-Za-z][A-Za-z0-9]{1,9}-\d{1,9}$/;
 const FIELD = { title: "title", description: "description", priority: "priority", dueAt: "due date" };
+/** The slots of a PMS ticket: the owner answers for it overall, developer and tester for their stage. */
+const ROLE_WORD = { owner: "ticket owner", dev: "developer", test: "tester" };
+
+function ClaimSelect({ value, onChange, withNone = true, className }) {
+  const tr = useT();
+  return (
+    <Select value={value} onChange={(e) => onChange(e.target.value)} className={cn("pms-claim h-8 w-40 text-xs", className)} aria-label={tr("Claim it")}>
+      {withNone ? <option value="">{tr("Don't claim")}</option> : null}
+      {Object.entries(ROLE_WORD).map(([k, w]) => <option key={k} value={k}>{tr("As {role}", { role: tr(w) })}</option>)}
+    </Select>
+  );
+}
 
 /** The linked ticket: its key and status. */
 export function TicketChip({ link, className }) {
@@ -73,6 +85,11 @@ function opLabel(tr, o) {
     case "ticket.create": return tr("Raise a ticket in {project}", { project: o.project });
     case "ticket.link": return tr("Link to {key}", { key: o.key });
     case "ticket.update": return o.skip ? tr("{key} already shows the task as it is", { key: o.key }) : tr("Update {key}: {fields}", { key: o.key, fields: (o.changed ?? []).map((f) => tr(FIELD[f] ?? f)).join(", ") });
+    case "ticket.claim": {
+      const role = tr(ROLE_WORD[o.role] ?? o.role);
+      if (o.skip) return tr("{key} is claimed as {role} already", { key: o.key, role });
+      return o.key ? tr("Claim {key} as {role}", { key: o.key, role }) : tr("Claim the new ticket as {role}", { role });
+    }
     case "comment":
       if (o.what === "output") return tr("Comment: output “{name}”", { name: o.name || tr("Untitled") });
       if (o.what === "checklist") return tr("Comment: the checklist");
@@ -83,7 +100,7 @@ function opLabel(tr, o) {
     default: return o.label;
   }
 }
-const OP_ICON = { "ticket.create": Ticket, "ticket.link": Ticket, "ticket.update": Ticket, comment: MessageSquare, file: Paperclip, worklogs: Clock, "worklog.update": Clock };
+const OP_ICON = { "ticket.create": Ticket, "ticket.link": Ticket, "ticket.update": Ticket, "ticket.claim": UserCheck, comment: MessageSquare, file: Paperclip, worklogs: Clock, "worklog.update": Clock };
 
 /* ---------- the choice per task ---------- */
 
@@ -96,6 +113,7 @@ function initialChoice(plan) {
   return {
     mode: plan.link ? "keep" : plan.target ? "create" : "link",
     update: false,
+    claim: plan.link ? "" : "owner", // a ticket raised from here is claimed as its owner unless the person says otherwise
     key: "",
     category: "FEATURE",
     lang: plan.lang,
@@ -107,7 +125,7 @@ function initialChoice(plan) {
     time,
   };
 }
-const pickedCount = (c) => (c.mode === "create" || c.mode === "link" ? 1 : 0) + (c.update ? 1 : 0) + (c.checklist ? 1 : 0) + c.outputs.length + c.comments.length + c.files.length + Object.values(c.time).filter((t) => t.on).length;
+const pickedCount = (c) => (c.mode === "create" || c.mode === "link" ? 1 : 0) + (c.update ? 1 : 0) + (c.claim && c.mode === "keep" ? 1 : 0) + (c.checklist ? 1 : 0) + c.outputs.length + c.comments.length + c.files.length + Object.values(c.time).filter((t) => t.on).length;
 function problemOf(tr, plan, c) {
   if (c.mode === "create" && !plan.target) return plan.target_error ? tr(plan.target_error) : tr("This task has nowhere to go yet.");
   if (c.mode === "link" && !KEY_RE.test(c.key.trim())) return tr("Enter the key of the ticket, like {example}.", { example: `${plan.target?.pms_project ?? "PROJECT"}-12` });
@@ -116,7 +134,7 @@ function problemOf(tr, plan, c) {
 }
 function bodyOf(c, { kind, internal }) {
   const body = {
-    kind, internal, lang: c.lang, checklist: c.checklist, outputs: c.outputs, comments: c.comments, files: c.files,
+    kind, internal, lang: c.lang, checklist: c.checklist, outputs: c.outputs, comments: c.comments, files: c.files, claim: c.claim || null,
     time: Object.entries(c.time).filter(([, t]) => t.on).map(([id, t]) => ({ id: Number(id), started_at: startedAt(t.date, t.time) })),
   };
   if (c.mode === "create") body.ticket = { mode: "create", category: c.category, lang: c.lang, include_checklist: c.includeChecklist };
@@ -180,9 +198,19 @@ function TaskChoice({ plan, choice, set, onDrop }) {
               <span className="block text-[11px] text-fg-muted">{plan.ticket.state === "changed" ? tr("The task changed since it was sent. A ticket somebody edited in Bitara PMS is never overwritten.") : tr("The ticket already shows the task as it is.")}</span>
             </Row>
           ) : <p className="px-1.5 text-xs text-fg-muted">{tr("Linked to an existing ticket: what you pick below goes to it.")}</p>
+        ) : null}
+        {linked?.ticket_key ? (
+          linked.claimed_as ? (
+            <p className="flex items-center gap-1.5 px-1.5 text-xs text-emerald-600 dark:text-emerald-400"><UserCheck size={13} /> {tr("You claimed it as {role}", { role: tr(ROLE_WORD[linked.claimed_as] ?? linked.claimed_as) })}</p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 rounded-app-sm px-1.5 py-0.5">
+              <Checkbox checked={Boolean(choice.claim)} onChange={(v) => set({ ...choice, claim: v ? "owner" : "" })} label={tr("Claim this ticket")} className="pms-claim-on" />
+              {choice.claim ? <ClaimSelect value={choice.claim} onChange={(r) => set({ ...choice, claim: r })} withNone={false} /> : null}
+            </div>
+          )
         ) : (
           <div className="space-y-2 px-1.5">
-            <Segmented size="sm" value={choice.mode} onChange={(v) => set({ ...choice, mode: v })} className="pms-mode" options={[{ value: "create", label: tr("New ticket") }, { value: "link", label: tr("Existing ticket") }]} />
+            <Segmented size="sm" value={choice.mode} onChange={(v) => set({ ...choice, mode: v })} className="pms-mode [&_.ui-seg-btn]:whitespace-nowrap [&_.ui-seg-btn]:px-3" options={[{ value: "create", label: tr("New ticket") }, { value: "link", label: tr("Existing ticket") }]} />
             {choice.mode === "create" ? (
               plan.target ? (
                 <div className="space-y-2">
@@ -192,11 +220,15 @@ function TaskChoice({ plan, choice, set, onDrop }) {
                     </Select>
                     <span className="text-xs text-fg-muted">{facts}</span>
                   </div>
+                  <label className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">{tr("Claim it")} <ClaimSelect value={choice.claim} onChange={(r) => set({ ...choice, claim: r })} /></label>
                   {plan.checklist.total ? <Checkbox checked={choice.includeChecklist} onChange={(v) => set({ ...choice, includeChecklist: v })} label={tr("Put the checklist in the description ({done}/{total})", { done: plan.checklist.done, total: plan.checklist.total })} className="text-xs" /> : null}
                 </div>
               ) : <p className="text-xs text-amber-600">{tr(plan.target_error ?? "This task has nowhere to go yet.")} <Link href="/integrations" className="text-accent hover:underline">{tr("Integrations")}</Link></p>
             ) : (
-              <Input value={choice.key} onChange={(e) => set({ ...choice, key: e.target.value })} placeholder={`${plan.target?.pms_project ?? "PROJECT"}-12`} className="pms-key h-8 w-48 font-mono text-xs uppercase" aria-label={tr("Ticket key")} />
+              <div className="flex flex-wrap items-center gap-2">
+                <Input value={choice.key} onChange={(e) => set({ ...choice, key: e.target.value })} placeholder={`${plan.target?.pms_project ?? "PROJECT"}-12`} className="pms-key h-8 w-48 font-mono text-xs uppercase" aria-label={tr("Ticket key")} />
+                <label className="flex items-center gap-2 text-xs text-fg-muted">{tr("Claim it")} <ClaimSelect value={choice.claim} onChange={(r) => set({ ...choice, claim: r })} /></label>
+              </div>
             )}
           </div>
         )}
@@ -548,6 +580,21 @@ export function PmsTaskCard({ taskId, onChanged }) {
       setBusy(null);
     }
   };
+  const claimIt = async () => {
+    setBusy("claim");
+    try {
+      const res = await api.post(`/api/pms/tasks/${taskId}/send`, { claim: "owner" });
+      const step = res.results.find((r) => r.op === "ticket.claim");
+      setData((d) => ({ ...d, link: res.link }));
+      if (step?.ok) toast.success(tr("Claimed as {role}", { role: tr(ROLE_WORD.owner) }), step.note ? tr(step.note) : undefined);
+      else toast.error(tr("Could not claim it"), step?.error ? tr(step.error) : undefined);
+      onChanged?.();
+    } catch (e) {
+      toast.error(tr("Could not claim it"), tr(e.message));
+    } finally {
+      setBusy(null);
+    }
+  };
   const unlink = async () => {
     try {
       await api.del(`/api/pms/tasks/${taskId}/link`);
@@ -572,6 +619,11 @@ export function PmsTaskCard({ taskId, onChanged }) {
           </div>
           {link.ticket_title ? <p className="truncate text-xs">{link.ticket_title}</p> : null}
           <p className="text-[11px] text-fg-faint">{[link.created_here ? tr("Raised from Task Portal") : tr("Linked to an existing ticket"), link.status_at ? tr("status from {when}", { when: relativeTime(link.status_at) }) : null].filter(Boolean).join(" · ")}</p>
+          {link.claimed_as ? (
+            <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400"><UserCheck size={12} /> {tr("You claimed it as {role}", { role: tr(ROLE_WORD[link.claimed_as] ?? link.claimed_as) })}</p>
+          ) : link.ticket_key && data.connected && data.can_send ? (
+            <Button size="xs" variant="outline" icon={UserCheck} loading={busy === "claim"} onClick={claimIt} className="pms-claim-card" data-tip={tr("Take the owner slot of this ticket in Bitara PMS")}>{tr("Claim it")}</Button>
+          ) : null}
         </div>
       ) : <p className="text-xs text-fg-muted">{tr("Not sent to Bitara PMS yet.")}</p>}
       {data.connected && data.can_send ? <Button size="sm" variant="secondary" icon={Send} onClick={() => setOpen(true)} className="pms-task-send w-full">{tr("Send to Bitara PMS…")}</Button> : null}

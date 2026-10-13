@@ -262,7 +262,7 @@ All endpoints return `{ data }` or `{ error }`.
 | GET / PUT | `/api/pms/maps` | the open workspace's projects and their PMS project (mine) / `{ project_id, connection_id, pms_project }` (empty `pms_project` removes it) |
 | GET | `/api/pms/tasks` | tasks that can go to PMS (in a paired project, or linked), with their tickets (`?q=`, `?project_id=`) |
 | GET | `/api/pms/tasks/:id` | one task's parts (outputs, comments, checklist, files, my time) marked new / changed / sent, and its ticket (`?brief=1`: only the ticket) |
-| POST | `/api/pms/tasks/:id/send` | `{ ticket?: { mode: create\|link\|update, … }, outputs, comments, files, checklist, time: [{ id, started_at }], kind, internal, lang, dry_run }` → every step and how it went (with `dry_run`, exactly what would be sent) |
+| POST | `/api/pms/tasks/:id/send` | `{ ticket?: { mode: create\|link\|update, … }, claim?: owner\|dev\|test, outputs, comments, files, checklist, time: [{ id, started_at }], kind, internal, lang, dry_run }` → every step and how it went (with `dry_run`, exactly what would be sent) |
 | POST / DELETE | `/api/pms/tasks/:id/refresh`, `/api/pms/tasks/:id/link` | read the ticket's status again / unlink here (the ticket stays in PMS) |
 | GET | `/api/pms/tickets?project=KEY&q=` | search a PMS project's tickets |
 | POST | `/api/profiles/:id/transfer` | owner only: `{ user_id, keep_role: manager \| editor \| viewer \| null }` hands the profile to that active member; every record inside re-owns, the Info vault moves to the old owner's own profile, the old owner stays with `keep_role` or leaves |
@@ -478,7 +478,9 @@ Task Portal checks it with PMS (`/agent/manifest`), keeps it encrypted with `DAT
 They then choose, per project of a workspace, which PMS project its tasks go to. The **Bitara PMS** button on
 Tasks (or **Send to PMS** on a selection, or the card on a task) opens the dialog: pick tasks, tick what goes from
 each (a new ticket or an existing one, outputs and comments as ticket comments, the checklist, files, your own
-time as worklogs), check the exact text in a dry run, send. Every part is marked *not sent*, *changed* or *sent*,
+time as worklogs), check the exact text in a dry run, send. A new ticket is claimed as its owner unless you pick
+another slot (developer, tester) or none; a linked ticket can be claimed from the dialog or the task's card
+(`POST /tickets/{key}/claim`, or assigning yourself with `PATCH` when the token may not claim). Every part is marked *not sent*, *changed* or *sent*,
 so nothing goes twice: worklogs carry `externalRef` `taskportal-<install>-time-<id>` and changed entries are
 corrected (`PATCH`), changed outputs go as a new comment, a ticket raised from here can be updated, but never
 when somebody edited it in PMS since. Everything goes out as the token's owner with `X-PMS-Client: task-portal`.

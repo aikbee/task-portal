@@ -2994,6 +2994,10 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   check("…both time entries are logged on the ticket as DEV", res[5].ok && pms.worklogs.length === 2 && pms.worklogs.every((w) => w.ticketKey === "DEMOV2-1" && w.kind === "DEV"));
   check("…the task knows its ticket and its status", sent.data.link?.ticket_key === "DEMOV2-1" && sent.data.link.created_here === true && sent.data.link.ticket_status === "OPEN");
   check("…and its history says so", (await call("GET", `/api/tasks/${tid}/history`)).data.some((h) => h.action === "pms_sent" && /DEMOV2-1/.test(h.new_value)));
+  check("…unclaimed, as nobody asked to claim it", sent.data.link.claimed_as === null && ticket.claims.owner === null);
+  const claimed = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { claim: "owner" } });
+  check("claim: the linked ticket's owner slot is mine", claimed.status === 200 && claimed.data.results[0].op === "ticket.claim" && claimed.data.results[0].ok && ticket.claims.owner === "u_1" && claimed.data.link.claimed_as === "owner", JSON.stringify(claimed.raw).slice(0, 300));
+  check("…claiming it again is skipped", (await call("POST", `/api/pms/tasks/${tid}/send`, { body: { claim: "owner", dry_run: true } })).data.results[0].skip === true);
 
   const again = (await call("GET", `/api/pms/tasks/${tid}`)).data;
   check("afterwards everything sent shows as sent, the refused file as new", again.ticket.state === "sent" && again.ticket.checklist_in_description && again.checklist.state === "sent" && again.outputs[0].state === "sent" && again.comments[0].state === "sent" && again.files.find((f) => f.id === small.id).state === "sent" && again.files.find((f) => f.id === big.id).state === "new" && again.time.every((e) => e.state === "sent" && e.remote));
@@ -3034,10 +3038,13 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
 
   // PMS's answers that go wrong
   pms.state.options.refuseDueAt = true;
+  pms.state.options.refuseClaim = true;
   const t2 = (await call("POST", "/api/tasks", { body: { title: `PMS due ${suffix}`, project_id: projectId, due_date: "2026-11-01" } })).data;
-  const r2 = await call("POST", `/api/pms/tasks/${t2.id}/send`, { body: { ticket: { mode: "create" } } });
+  const r2 = await call("POST", `/api/pms/tasks/${t2.id}/send`, { body: { ticket: { mode: "create" }, claim: "owner" } });
   check("a refused due date: raised without it, and told", r2.data.results[0].ok && /due date/.test(r2.data.results[0].note) && pms.tickets.get(r2.data.results[0].key)?.dueAt === null);
+  check("a refused claim call: put in the owner slot by editing the ticket, and told", r2.data.results[1]?.op === "ticket.claim" && r2.data.results[1].ok && /editing the ticket/.test(r2.data.results[1].note) && pms.tickets.get(r2.data.results[0].key)?.claims.owner === "u_1" && r2.data.link.claimed_as === "owner", JSON.stringify(r2.raw).slice(0, 300));
   pms.state.options.refuseDueAt = false;
+  pms.state.options.refuseClaim = false;
   pms.state.options.omitKey = true;
   const t3 = (await call("POST", "/api/tasks", { body: { title: `PMS nokey ${suffix}`, project_id: projectId } })).data;
   const r3 = await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "create" } } });
@@ -3045,6 +3052,9 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   check("a ticket whose key cannot be read is not raised twice", !r3.data.results[0].ok && /no ticket key/.test(r3.data.results[0].error) && (await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "create" } } })).status === 409);
   const lost = [...pms.tickets.values()].find((x) => x.title === `PMS nokey ${suffix}`);
   check("…and can be linked by its key", (await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "link", key: lost.key } } })).data.results[0].ok);
+  lost.claims.dev = "u_somebody_else";
+  const taken = await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { claim: "dev" } });
+  check("a slot somebody else holds is reported, not taken", !taken.data.results[0].ok && /taken already/.test(taken.data.results[0].error) && lost.claims.dev === "u_somebody_else" && taken.data.link.claimed_as === null);
 
   // who may
   const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;

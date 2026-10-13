@@ -27,7 +27,7 @@ export async function startFakePms({ port = 0, tokens, projects, maxFileBytes = 
     counters: {},
     worklogs: [], // { uid, projectKey, ownerUid, externalRef, … }
     requests: [], // { method, path, client, body }
-    options: { refuseDueAt: false, omitKey: false },
+    options: { refuseDueAt: false, omitKey: false, refuseClaim: false },
   };
   const uid = (p) => `${p}_${crypto.randomBytes(5).toString("hex")}`;
   const problem = (res, status, title, extra = {}) => send(res, status, { type: `https://pms.example/errors/${title.toLowerCase().replace(/\W+/g, "-")}`, title, status, ...extra }, "application/problem+json");
@@ -95,7 +95,7 @@ export async function startFakePms({ port = 0, tokens, projects, maxFileBytes = 
         if (body?.dueAt != null && (state.options.refuseDueAt || Number.isNaN(Date.parse(body.dueAt)))) errors.push("dueAt must be a valid ISO 8601 date string");
         if (errors.length) return problem(res, 422, "Validation failed", { message: errors });
         state.counters[key] = (state.counters[key] ?? 0) + 1;
-        const t = { uid: uid("tk"), key: `${key}-${state.counters[key]}`, projectKey: key, title: body.title, description: body.description ?? "", category: body.category ?? "FEATURE", priority: body.priority ?? "P3", lang: body.lang ?? "en", dueAt: body.dueAt ?? null, estimateMinutes: body.estimateMinutes ?? null, status: "OPEN", reporterUid: who.uid, comments: [], attachments: [] };
+        const t = { uid: uid("tk"), key: `${key}-${state.counters[key]}`, projectKey: key, title: body.title, description: body.description ?? "", category: body.category ?? "FEATURE", priority: body.priority ?? "P3", lang: body.lang ?? "en", dueAt: body.dueAt ?? null, estimateMinutes: body.estimateMinutes ?? null, status: "OPEN", reporterUid: who.uid, claims: { owner: body.assigneeUid ?? null, dev: null, test: null }, comments: [], attachments: [] };
         state.tickets.set(t.key, t);
         const { comments, attachments, ...shown } = t;
         return send(res, 201, state.options.omitKey ? { data: { uid: t.uid } } : { data: shown });
@@ -111,8 +111,17 @@ export async function startFakePms({ port = 0, tokens, projects, maxFileBytes = 
       }
       if (req.method === "PATCH" && !sub) {
         for (const k of ["title", "description", "priority", "dueAt", "category"]) if (body?.[k] !== undefined) t[k] = body[k];
+        for (const [k, slot] of [["assigneeUid", "owner"], ["devAssigneeUid", "dev"], ["testAssigneeUid", "test"]]) if (body?.[k] !== undefined) t.claims[slot] = body[k] || null;
         const { comments, attachments, ...shown } = t;
         return send(res, 200, shown);
+      }
+      if (req.method === "POST" && sub === "/claim") {
+        if (state.options.refuseClaim) return problem(res, 403, "Forbidden", { detail: "Scope missing: tickets:claim" });
+        if (!["owner", "dev", "test"].includes(body?.role)) return problem(res, 422, "Validation failed", { message: ["role must be one of owner, dev, test"] });
+        if (t.claims[body.role] && t.claims[body.role] !== who.uid) return problem(res, 409, "Already claimed", { detail: `The ${body.role} slot is taken` });
+        t.claims[body.role] = who.uid;
+        const { comments, attachments, ...shown } = t;
+        return send(res, 201, { data: shown });
       }
       if (req.method === "POST" && sub === "/comments") {
         if (!body || typeof body.body !== "string" || !body.body.trim()) return problem(res, 422, "Validation failed", { message: ["body should not be empty"] });

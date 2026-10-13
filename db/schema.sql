@@ -897,6 +897,7 @@ CREATE TABLE IF NOT EXISTS pms_connections (
   token_enc TEXT NOT NULL,
   token_hint VARCHAR(16) NOT NULL,
   acting_as VARCHAR(190) NULL, -- who PMS says the token belongs to
+  acting_uid VARCHAR(64) NULL, -- their PMS user uid (assigning a slot to yourself needs it)
   projects JSON NULL, -- [{ key, name, mode, role }] the token reached at the last check
   scopes JSON NULL,
   status ENUM('ok','error') NOT NULL DEFAULT 'ok',
@@ -926,6 +927,7 @@ CREATE TABLE IF NOT EXISTS pms_links (
   ticket_status VARCHAR(40) NULL,
   ticket_url VARCHAR(500) NULL,
   status_at DATETIME NULL,
+  claimed_as VARCHAR(10) NULL, -- owner | dev | test once a person here claimed the ticket's slot
   linked_by INT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_pms_links_ticket (ticket_key)

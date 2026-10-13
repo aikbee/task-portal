@@ -194,6 +194,9 @@ const zhCN = {
   "Choose a ticket first: raise a new one or link an existing one.": "请先选择工单：创建新工单或关联现有工单。", "Enter a ticket key like BITWINEXV2-12.": "请输入工单编号，例如 BITWINEXV2-12。", "Only a ticket raised from Task Portal can be updated from here.": "只有由 Task Portal 创建的工单可以在这里更新。",
   "Bitara PMS made a ticket for this task earlier, but its answer had no ticket key Task Portal could read. Link the ticket by its key.": "Bitara PMS 之前已为此任务创建了工单，但其回复中没有 Task Portal 能读取的工单编号。请按编号关联该工单。", "Bitara PMS raised the ticket, but its answer had no ticket key Task Portal could read. Find it in Bitara PMS and link it here by its key.": "Bitara PMS 已创建工单，但其回复中没有 Task Portal 能读取的工单编号。请在 Bitara PMS 中找到它，并在这里按编号关联。",
   "Nothing to send: pick something first.": "没有要发送的内容：请先选择。", "This task is being sent already.": "此任务正在发送中。", "Skipped: there is no ticket to send it to.": "已跳过：没有可发送到的工单。", "Could not read the ticket's description from Bitara PMS, so it was not overwritten.": "无法从 Bitara PMS 读取工单描述，因此未覆盖。", "Give the connection a name.": "请为连接命名。",
+  "Claim it": "认领", "Don't claim": "不认领", "As {role}": "作为{role}", "ticket owner": "负责人", "developer": "开发", "tester": "测试", "{key} is claimed as {role} already": "{key} 已作为{role}认领", "Claim {key} as {role}": "认领 {key}，作为{role}", "Claim the new ticket as {role}": "认领新工单，作为{role}",
+  "You claimed it as {role}": "你已作为{role}认领", "Claim this ticket": "认领此工单", "Claimed as {role}": "已作为{role}认领", "Could not claim it": "无法认领", "Take the owner slot of this ticket in Bitara PMS": "在 Bitara PMS 中认领此工单的负责人位置", "claimed it as {role}": "作为{role}认领了工单",
+  "Bitara PMS refused the claim call for this token, so you were put in the slot by editing the ticket instead.": "Bitara PMS 拒绝了此令牌的认领请求，因此改为通过编辑工单把你设为该位置。",
   "The Bitara PMS address cannot be changed on this server.": "此服务器上不能更改 Bitara PMS 地址。", "Connection not found.": "未找到连接。", "Unknown Bitara PMS project.": "未知的 Bitara PMS 项目。",
 };
 
