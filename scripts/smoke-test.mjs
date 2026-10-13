@@ -3036,6 +3036,16 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   ticket.status = "IN_DEV";
   check("POST …/refresh reads the status again", (await call("POST", `/api/pms/tasks/${tid}/refresh`)).data.link.ticket_status === "IN_DEV");
 
+  // closing: only where the project lets tokens do more than suggest
+  check("closing needs a reason", (await call("POST", `/api/pms/tasks/${tid}/send`, { body: { close: { reason: "  " } } })).status === 400);
+  const refused = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { close: { reason: "Done in Task Portal." } } });
+  check("a project that only takes suggestions: the close is refused and said so, the ticket stays as it is", refused.data.results[0].op === "ticket.close" && !refused.data.results[0].ok && /refused to close DEMOV2-1/.test(refused.data.results[0].error) && ticket.status === "IN_DEV" && refused.data.link.ticket_status === "IN_DEV", JSON.stringify(refused.raw).slice(0, 300));
+  pms.state.tickets.set("DEMOV1-1", { uid: "tk_v1", key: "DEMOV1-1", projectKey: "DEMOV1", title: "A v1 ticket", description: "", category: "FEATURE", priority: "P3", lang: "en", dueAt: null, estimateMinutes: null, status: "OPEN", reporterUid: "u_1", claims: { owner: null, dev: null, test: null }, comments: [], attachments: [] });
+  const t4 = (await call("POST", "/api/tasks", { body: { title: `PMS close ${suffix}`, project_id: projectId } })).data;
+  const shut = await call("POST", `/api/pms/tasks/${t4.id}/send`, { body: { ticket: { mode: "link", key: "DEMOV1-1" }, close: { reason: "Done in Task Portal." } } });
+  check("a project set to Full: linked, then closed with the reason", shut.data.results.map((r) => `${r.op}:${r.ok}`).join() === "ticket.link:true,ticket.close:true" && pms.tickets.get("DEMOV1-1").status === "CLOSED" && pms.tickets.get("DEMOV1-1").closeReason === "Done in Task Portal." && shut.data.link.ticket_status === "CLOSED", JSON.stringify(shut.raw).slice(0, 300));
+  check("…closing again is skipped, and the history says it was closed", (await call("POST", `/api/pms/tasks/${t4.id}/send`, { body: { close: { reason: "again" }, dry_run: true } })).data.results[0].skip === true && (await call("GET", `/api/tasks/${t4.id}/history`)).data.some((h) => h.action === "pms_sent" && /closed/.test(h.new_value)));
+
   // PMS's answers that go wrong
   pms.state.options.refuseDueAt = true;
   pms.state.options.refuseClaim = true;
@@ -3073,7 +3083,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   await call("DELETE", `/api/tokens/${tok.data.row.id}`);
 
   // cleanup
-  for (const id of [tid, t2.id, t3.id]) await call("DELETE", `/api/tasks/${id}`);
+  for (const id of [tid, t2.id, t3.id, t4.id]) await call("DELETE", `/api/tasks/${id}`);
   const gone = await call("DELETE", `/api/pms/connections/${conn.id}`);
   check("removing the connection removes its pairings", gone.status === 200 && gone.data.connections.length === 0 && gone.data.maps.every((m) => m.pms_project === null));
   await call("DELETE", "/api/trash");

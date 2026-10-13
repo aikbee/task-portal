@@ -305,6 +305,7 @@ async function saveLink(user, taskId, project, key, ticket, createdHere) {
  *   outputs, comments, files: [ids]      checklist: true → the checklist as a comment
  *   time: [{ id, started_at }]  kind     internal: comments hidden from a PMS reporter    lang: words we add
  *   claim: "owner" | "dev" | "test" → take that slot of the ticket (a new one, or the linked one)
+ *   close: { reason } → close the ticket once everything else went (PMS allows it only in projects set to FULL)
  * Answers { dry_run, link, results: [{ op, label, ok, error?, text?, … }] }. Steps after a failed ticket step are
  * skipped; other failures do not stop the rest.
  */
@@ -330,6 +331,8 @@ export async function sendTask(user, taskId, body = {}) {
   if (mode && !["create", "link", "update"].includes(mode)) throw new HttpError("Unknown ticket choice.", 400);
   const lang = PMS_LANGS[body.lang] ? body.lang : PMS_LANGS[t?.lang] ? t.lang : guessLang(task.title, task.description);
   const claim = ["owner", "dev", "test"].includes(body.claim) ? body.claim : null;
+  const close = body.close && typeof body.close === "object" ? { reason: String(body.close.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 500) } : null;
+  if (close && !close.reason) throw new HttpError("Give a reason for closing the ticket: Bitara PMS asks for one.", 400);
 
   // where it goes
   let conn;
@@ -535,6 +538,29 @@ export async function sendTask(user, taskId, body = {}) {
     }
   }
 
+  // closing comes last, after what was picked has reached the ticket
+  if (close) {
+    if (key && mode !== "link" && link?.ticket_status === "CLOSED") {
+      steps.push({ op: "ticket.close", key, reason: close.reason, label: `${key} is closed already`, skip: true, run: async () => ({}) });
+    } else {
+      steps.push({
+        op: "ticket.close", key: mode === "create" ? null : key, reason: close.reason, label: `Close ${mode === "create" ? "the new ticket" : key}`,
+        run: async () => {
+          const k = ticketDone.key;
+          try {
+            await pmsFetch(conn, "POST", `/tickets/${encodeURIComponent(k)}/transition`, { json: { action: "close", reason: close.reason } });
+          } catch (e) {
+            if (e instanceof PmsError && e.pmsStatus === 403) throw new HttpError(`Bitara PMS refused to close ${k} with your token${e.info?.title ? ` (${e.info.title})` : ""}. While ${project} lets tokens only suggest, a person closes tickets in Bitara PMS itself.`, 403);
+            if (e instanceof PmsError && e.pmsStatus === 422) throw new HttpError(`Bitara PMS cannot close ${k} from the status it is in${e.info?.allowed?.length ? ` (it allows: ${e.info.allowed.join(", ")})` : ""}.`, 422);
+            throw e;
+          }
+          await execute("UPDATE pms_links SET ticket_status = 'CLOSED', status_at = NOW() WHERE task_id = ?", [taskId]);
+          return { key: k };
+        },
+      });
+    }
+  }
+
   const view = (s) => {
     const { run: _run, ...rest } = s;
     return rest;
@@ -585,6 +611,7 @@ export async function sendTask(user, taskId, body = {}) {
       count("ticket.link") ? "linked" : null,
       count("ticket.update") ? "updated" : null,
       count("ticket.claim") ? `claimed:${done.find((r) => r.op === "ticket.claim").role}` : null,
+      count("ticket.close") ? "closed" : null,
       count("comment") ? `comments:${count("comment")}` : null,
       count("file") ? `files:${count("file")}` : null,
       timeCount ? `time:${timeCount}` : null,

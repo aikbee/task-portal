@@ -197,6 +197,9 @@ const zhCN = {
   "Claim it": "认领", "Don't claim": "不认领", "As {role}": "作为{role}", "ticket owner": "负责人", "developer": "开发", "tester": "测试", "{key} is claimed as {role} already": "{key} 已作为{role}认领", "Claim {key} as {role}": "认领 {key}，作为{role}", "Claim the new ticket as {role}": "认领新工单，作为{role}",
   "You claimed it as {role}": "你已作为{role}认领", "Claim this ticket": "认领此工单", "Claimed as {role}": "已作为{role}认领", "Could not claim it": "无法认领", "Take the owner slot of this ticket in Bitara PMS": "在 Bitara PMS 中认领此工单的负责人位置", "claimed it as {role}": "作为{role}认领了工单",
   "Bitara PMS refused the claim call for this token, so you were put in the slot by editing the ticket instead.": "Bitara PMS 拒绝了此令牌的认领请求，因此改为通过编辑工单把你设为该位置。",
+  "Close the ticket in Bitara PMS": "在 Bitara PMS 中关闭工单", "Why it is closed": "关闭原因", "It closes after everything else you picked here has been sent.": "会在你选择的其他内容都发送后再关闭。", "Closed in Bitara PMS": "已在 Bitara PMS 中关闭", "Give a reason for closing the ticket.": "请填写关闭工单的原因。",
+  "{project} lets tokens only suggest, so Bitara PMS will refuse this unless its owner sets the project to Full in Bitara PMS.": "{project} 只允许令牌提出建议，因此除非项目负责人在 Bitara PMS 中把项目设为“完全”，否则 Bitara PMS 会拒绝此操作。",
+  "{key} is closed already": "{key} 已关闭", "Close {key} in Bitara PMS": "在 Bitara PMS 中关闭 {key}", "Close the new ticket in Bitara PMS": "在 Bitara PMS 中关闭新工单", "Reason: {reason}": "原因：{reason}", "closed the ticket": "关闭了工单", "Give a reason for closing the ticket: Bitara PMS asks for one.": "请填写关闭工单的原因：Bitara PMS 需要原因。",
   "The Bitara PMS address cannot be changed on this server.": "此服务器上不能更改 Bitara PMS 地址。", "Connection not found.": "未找到连接。", "Unknown Bitara PMS project.": "未知的 Bitara PMS 项目。",
 };
 

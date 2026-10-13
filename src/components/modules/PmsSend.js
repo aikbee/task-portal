@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck } from "lucide-react";
+import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck, TicketCheck } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
@@ -85,6 +85,9 @@ function opLabel(tr, o) {
     case "ticket.create": return tr("Raise a ticket in {project}", { project: o.project });
     case "ticket.link": return tr("Link to {key}", { key: o.key });
     case "ticket.update": return o.skip ? tr("{key} already shows the task as it is", { key: o.key }) : tr("Update {key}: {fields}", { key: o.key, fields: (o.changed ?? []).map((f) => tr(FIELD[f] ?? f)).join(", ") });
+    case "ticket.close":
+      if (o.skip) return tr("{key} is closed already", { key: o.key });
+      return o.key ? tr("Close {key} in Bitara PMS", { key: o.key }) : tr("Close the new ticket in Bitara PMS");
     case "ticket.claim": {
       const role = tr(ROLE_WORD[o.role] ?? o.role);
       if (o.skip) return tr("{key} is claimed as {role} already", { key: o.key, role });
@@ -100,7 +103,7 @@ function opLabel(tr, o) {
     default: return o.label;
   }
 }
-const OP_ICON = { "ticket.create": Ticket, "ticket.link": Ticket, "ticket.update": Ticket, "ticket.claim": UserCheck, comment: MessageSquare, file: Paperclip, worklogs: Clock, "worklog.update": Clock };
+const OP_ICON = { "ticket.create": Ticket, "ticket.link": Ticket, "ticket.update": Ticket, "ticket.claim": UserCheck, "ticket.close": TicketCheck, comment: MessageSquare, file: Paperclip, worklogs: Clock, "worklog.update": Clock };
 
 /* ---------- the choice per task ---------- */
 
@@ -114,6 +117,8 @@ function initialChoice(plan) {
     mode: plan.link ? "keep" : plan.target ? "create" : "link",
     update: false,
     claim: plan.link ? "" : "owner", // a ticket raised from here is claimed as its owner unless the person says otherwise
+    close: false,
+    reason: "",
     key: "",
     category: "FEATURE",
     lang: plan.lang,
@@ -125,16 +130,17 @@ function initialChoice(plan) {
     time,
   };
 }
-const pickedCount = (c) => (c.mode === "create" || c.mode === "link" ? 1 : 0) + (c.update ? 1 : 0) + (c.claim && c.mode === "keep" ? 1 : 0) + (c.checklist ? 1 : 0) + c.outputs.length + c.comments.length + c.files.length + Object.values(c.time).filter((t) => t.on).length;
+const pickedCount = (c) => (c.mode === "create" || c.mode === "link" ? 1 : 0) + (c.update ? 1 : 0) + (c.claim && c.mode === "keep" ? 1 : 0) + (c.close ? 1 : 0) + (c.checklist ? 1 : 0) + c.outputs.length + c.comments.length + c.files.length + Object.values(c.time).filter((t) => t.on).length;
 function problemOf(tr, plan, c) {
   if (c.mode === "create" && !plan.target) return plan.target_error ? tr(plan.target_error) : tr("This task has nowhere to go yet.");
   if (c.mode === "link" && !KEY_RE.test(c.key.trim())) return tr("Enter the key of the ticket, like {example}.", { example: `${plan.target?.pms_project ?? "PROJECT"}-12` });
   if (Object.values(c.time).some((t) => t.on && !/^\d{2}:\d{2}$/.test(t.time))) return tr("Give each time entry you send a start time.");
+  if (c.close && !c.reason.trim()) return tr("Give a reason for closing the ticket.");
   return null;
 }
 function bodyOf(c, { kind, internal }) {
   const body = {
-    kind, internal, lang: c.lang, checklist: c.checklist, outputs: c.outputs, comments: c.comments, files: c.files, claim: c.claim || null,
+    kind, internal, lang: c.lang, checklist: c.checklist, outputs: c.outputs, comments: c.comments, files: c.files, claim: c.claim || null, close: c.close ? { reason: c.reason.trim() } : null,
     time: Object.entries(c.time).filter(([, t]) => t.on).map(([id, t]) => ({ id: Number(id), started_at: startedAt(t.date, t.time) })),
   };
   if (c.mode === "create") body.ticket = { mode: "create", category: c.category, lang: c.lang, include_checklist: c.includeChecklist };
@@ -230,6 +236,20 @@ function TaskChoice({ plan, choice, set, onDrop }) {
                 <label className="flex items-center gap-2 text-xs text-fg-muted">{tr("Claim it")} <ClaimSelect value={choice.claim} onChange={(r) => set({ ...choice, claim: r })} /></label>
               </div>
             )}
+          </div>
+        )}
+        {linked?.ticket_status === "CLOSED" ? (
+          <p className="flex items-center gap-1.5 px-1.5 text-xs text-fg-muted"><TicketCheck size={13} /> {tr("Closed in Bitara PMS")}</p>
+        ) : (
+          <div className="space-y-1.5 px-1.5">
+            <Checkbox checked={choice.close} onChange={(v) => set({ ...choice, close: v, reason: v && !choice.reason ? (choice.lang === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal.") : choice.reason })} label={tr("Close the ticket in Bitara PMS")} className="pms-close-on" />
+            {choice.close ? (
+              <div className="space-y-1 pl-6">
+                <Input value={choice.reason} onChange={(e) => set({ ...choice, reason: e.target.value })} maxLength={500} placeholder={tr("Why it is closed")} className="pms-close-reason h-8 text-xs" aria-label={tr("Why it is closed")} />
+                {plan.target?.mode && plan.target.mode !== "FULL" ? <p className="flex items-start gap-1.5 text-[11px] text-amber-600"><TriangleAlert size={12} className="mt-0.5 shrink-0" />{tr("{project} lets tokens only suggest, so Bitara PMS will refuse this unless its owner sets the project to Full in Bitara PMS.", { project: plan.target.pms_project })}</p> : null}
+                <p className="text-[11px] text-fg-faint">{tr("It closes after everything else you picked here has been sent.")}</p>
+              </div>
+            ) : null}
           </div>
         )}
       </Section>
@@ -521,6 +541,7 @@ function Outcome({ plan, answer, dry = false }) {
                   {o.op === "ticket.link" && o.title ? <p className="text-xs text-fg-muted"><span className="font-medium text-fg">{o.title}</span>{o.status ? ` · ${pmsStatusText(o.status, locale)}` : ""}</p> : null}
                   {o.op === "ticket.update" && o.title ? <p className="text-xs text-fg-muted">{o.title}</p> : null}
                   {o.op === "comment" && o.again ? <p className="text-[11px] text-fg-faint">{tr("Sent before: this goes as a new comment.")}</p> : null}
+                  {o.op === "ticket.close" && o.reason && !o.skip ? <p className="text-xs text-fg-muted">{tr("Reason: {reason}", { reason: o.reason })}</p> : null}
                   {(o.op === "worklogs" || (o.op === "worklog.update" && !o.skip)) && o.entries ? (
                     <ul className="mt-0.5 space-y-0.5 text-xs text-fg-muted">
                       {o.entries.map((e, j) => <li key={j} className="tabular-nums">{e.startedAt ? `${formatDate(e.startedAt.slice(0, 10))} ${e.startedAt.slice(11, 16)}` : ""} · {formatMinutes(e.minutes)}{e.note ? ` · ${e.note}` : ""}</li>)}

@@ -19,7 +19,7 @@ export async function startFakePms({ port = 0, tokens, projects, maxFileBytes = 
   const state = {
     projects: projects ?? [
       { key: "DEMOV2", name: "Demo v2", agentMode: "SUGGEST_ONLY", role: "DEVELOPER" },
-      { key: "DEMOV1", name: "Demo v1", agentMode: "SUGGEST_ONLY", role: "DEVELOPER" },
+      { key: "DEMOV1", name: "Demo v1", agentMode: "FULL", role: "DEVELOPER" },
     ],
     // token → the person and the projects it may reach (a token can be limited to one project)
     tokens: tokens ?? { [FAKE_TOKEN]: { uid: "u_1", name: "Test Person", email: "test.person@example.com", projects: null } },
@@ -114,6 +114,17 @@ export async function startFakePms({ port = 0, tokens, projects, maxFileBytes = 
         for (const [k, slot] of [["assigneeUid", "owner"], ["devAssigneeUid", "dev"], ["testAssigneeUid", "test"]]) if (body?.[k] !== undefined) t.claims[slot] = body[k] || null;
         const { comments, attachments, ...shown } = t;
         return send(res, 200, shown);
+      }
+      if (req.method === "POST" && sub === "/transition") {
+        const project = state.projects.find((p) => p.key === t.projectKey);
+        if (project?.agentMode !== "FULL") return problem(res, 403, "Transition refused", { detail: `${t.projectKey} lets tokens only suggest (agentMode ${project?.agentMode})` });
+        if (body?.action !== "close") return problem(res, 422, "Invalid transition", { allowed: ["close"] });
+        if (t.status === "CLOSED") return problem(res, 422, "Invalid transition", { allowed: [] });
+        if (t.status !== "RELEASE_PRODUCTION" && !String(body.reason ?? "").trim()) return problem(res, 422, "Validation failed", { message: ["reason is required"] });
+        t.status = "CLOSED";
+        t.closeReason = body.reason;
+        const { comments, attachments, ...shown } = t;
+        return send(res, 201, { data: shown });
       }
       if (req.method === "POST" && sub === "/claim") {
         if (state.options.refuseClaim) return problem(res, 403, "Forbidden", { detail: "Scope missing: tickets:claim" });

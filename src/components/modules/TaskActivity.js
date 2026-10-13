@@ -31,6 +31,7 @@ function pmsWhat(v, tr) {
     if (k === "raised") return tr("raised the ticket");
     if (k === "linked") return tr("linked the ticket");
     if (k === "updated") return tr("updated the ticket");
+    if (k === "closed") return tr("closed the ticket");
     if (k === "claimed") return tr("claimed it as {role}", { role: tr({ owner: "ticket owner", dev: "developer", test: "tester" }[n] ?? n) });
     if (k === "comments") return tr(Number(n) === 1 ? "1 comment" : "{n} comments", { n });
     if (k === "files") return tr(Number(n) === 1 ? "1 file" : "{n} files", { n });
