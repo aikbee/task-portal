@@ -23,6 +23,7 @@ import TaskActivity from "./TaskActivity";
 import TaskChecklist from "./TaskChecklist";
 import TaskDependencies from "./TaskDependencies";
 import TaskTime from "./TaskTime";
+import { PmsTaskCard } from "./PmsSend";
 import { REPEAT_RULES } from "@/lib/recurrence";
 import { TagChips, putTask, deletedToast } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
@@ -40,6 +41,7 @@ export default function TaskDetail({ id }) {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [pmsTick, setPmsTick] = useState(0); // a send to Bitara PMS adds a history row
   const { data: employees } = useFetch("/api/employees");
 
   if (error) return <EmptyState title="Task not found" description={error.message} action={<Button onClick={() => router.push("/tasks")}>Back to tasks</Button>} />;
@@ -109,7 +111,7 @@ export default function TaskDetail({ id }) {
           <TaskChecklist taskId={task.id} items={task.checklist ?? []} onChange={(checklist) => setData((t) => ({ ...t, checklist, checklist_total: checklist.length, checklist_done: checklist.filter((i) => i.done).length }))} />
           <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} />
           <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} />
-          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.dependency_count}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
+          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.dependency_count}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}:${pmsTick}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
         </div>
 
         <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
@@ -201,6 +203,7 @@ export default function TaskDetail({ id }) {
             </fieldset>
           </Card>
           <TaskTime taskId={task.id} estimateHours={task.estimate_hours} onTotal={(m) => setData((t) => ({ ...t, minutes_logged: m }))} />
+          <PmsTaskCard taskId={task.id} onChanged={() => setPmsTick((n) => n + 1)} />
           <TaskDependencies taskId={task.id} onChange={(d) => setData((t) => ({ ...t, blocked_by_open: d.open, dependency_count: d.blocked_by.length }))} />
           <Card className="space-y-2 text-xs text-fg-muted">
             <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useVisibleModules, useAccess } from "@/lib/auth-context";
+import { useAuth, useVisibleModules, useAccess, useFeature } from "@/lib/auth-context";
 
 /** Modules whose records live inside a (possibly shared) profile. */
 const SHARED_DATA = new Set(["projects", "requirements", "employees", "tasks", "info", "drawboards"]);
@@ -12,7 +12,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   PanelLeft, Search, Plus, Sun, Moon, Monitor, SlidersHorizontal, ChevronRight, ArrowLeft, ArrowRight,
-  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, ChevronDown, Keyboard, Plus as PlusIcon, X, Brush, Wallpaper, ShieldCheck,
+  FolderKanban, Users, CheckSquare, Home, User, LogOut, Command, Pin, PinOff, Lock, Columns2, Columns3, LayoutPanelLeft, PanelRightOpen, Check, Briefcase, ClipboardList, BookOpen, Languages, Download, ChevronDown, Keyboard, Plus as PlusIcon, X, Brush, Wallpaper, ShieldCheck, Plug,
 } from "lucide-react";
 import { moduleFromPath, MODULE_MAP, TASK_STATUS } from "@/lib/modules";
 import { usePrefs, useUI } from "@/lib/store";
@@ -47,6 +47,7 @@ export default function TopBar() {
   const pageMeta = useUI((s) => s.pageMeta);
   const togglePrefs = useUI((s) => s.togglePrefs);
   const { user, logout, isAdmin } = useAuth();
+  const pmsOn = useFeature("pms");
   const visibleModules = useVisibleModules();
   const { data: allUsers } = useFetch(isAdmin ? "/api/users" : null);
   const switchWorkspace = async (id) => {
@@ -266,6 +267,7 @@ export default function TopBar() {
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
           { label: tr("Security & sessions"), icon: ShieldCheck, onClick: () => router.push("/security") },
+          ...(pmsOn ? [{ label: tr("Integrations"), icon: Plug, onClick: () => router.push("/integrations") }] : []),
           { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true), hint: "⌘⇧." },
           ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },

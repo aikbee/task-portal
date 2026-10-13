@@ -18,6 +18,7 @@ export const FEATURES = {
   calls: { label: "Voice and video calls", description: "Start and receive calls in Chat.", needs: "chat" },
   api_tokens: { label: "API tokens", description: "Create tokens for scripts and other tools. Turning this off also stops their existing tokens." },
   webhooks: { label: "Webhooks", description: "Tell other systems about changes in their profiles." },
+  pms: { label: "Bitara PMS", description: "Connect their own Bitara PMS token and send tasks, outputs, comments, files and their time to PMS tickets.", needs: "tasks" },
 };
 
 const parse = (raw) => { try { return (typeof raw === "string" ? JSON.parse(raw) : raw) ?? {}; } catch { return {}; } };
@@ -66,6 +67,7 @@ export function apiRule(method, pathname) {
   if (/^\/api\/import(\/|$)/.test(p)) return { feature: "import" };
   if (/^\/api\/tokens(\/|$)/.test(p)) return { feature: "api_tokens" };
   if (/^\/api\/profiles\/\d+\/webhooks(\/|$)/.test(p)) return { feature: "webhooks" };
+  if (/^\/api\/pms(\/|$)/.test(p)) return { module: "tasks", feature: "pms" };
   if (/^\/api\/profiles\/\d+\/(members|invites|transfer)(\/|$)/.test(p)) return read ? null : { feature: "sharing" };
   if (/^\/api\/chat\/admin(\/|$)/.test(p)) return null;
   if (/^\/api\/chat\/calls(\/|$)/.test(p)) return { module: "chat", feature: "calls" };

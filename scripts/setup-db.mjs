@@ -314,6 +314,10 @@ async function migrate(db, adminId) {
     log("migrating: dropping users -> employees foreign key");
     await db.query("ALTER TABLE users DROP FOREIGN KEY fk_users_employee");
   }
+  if (!(await hasColumn(db, "time_entries", "began_at"))) {
+    log("migrating: time_entries.began_at");
+    await db.query("ALTER TABLE time_entries ADD COLUMN began_at DATETIME NULL AFTER started_at");
+  }
 }
 
 /** Every user gets a default profile (also covers users created before profiles existed). */

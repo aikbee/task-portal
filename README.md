@@ -57,7 +57,7 @@ An administrator can turn modules and features off for one person: **Users → t
 Switchable modules: Projects, Requirements, Employees, Tasks, My tasks, Board, Calendar, Timeline, Time, Info,
 Draw Board, Chat and Recycle bin (Dashboard, Profiles and Notifications are always on; Board, Timeline, My tasks and
 Time go with Tasks). Switchable features: spreadsheet import, export and reports, bulk edit, sharing profiles,
-calls, API tokens and webhooks. What is off disappears from that person's menus, dashboard, search and buttons,
+calls, API tokens, webhooks and Bitara PMS. What is off disappears from that person's menus, dashboard, search and buttons,
 the page shows a "turned off for your account" notice, and the API answers 403: one table in
 `src/lib/access-control.js` (`apiRule`, `moduleOfPath`) drives both sides. It applies in every profile the person
 opens, shared ones included. Administrators always have everything. Two deliberate softenings: with Projects,
@@ -256,6 +256,15 @@ All endpoints return `{ data }` or `{ error }`.
 | PUT / DELETE | `/api/profiles/:id/webhooks/:hid` | `{ url?, events?, active? }` (turning a paused hook on clears its failures) / remove |
 | POST | `/api/profiles/:id/webhooks/:hid/test` | send a `ping` now and answer with the delivery result |
 | GET | `/api/profiles/:id/webhooks/:hid/deliveries` | the last 30 deliveries: status, attempts, response, error, next retry |
+| GET / POST | `/api/pms/connections` | my Bitara PMS connections (never the token) and where each project of the open workspace goes (`?brief=1`: `{ connected }`) / `{ token, label?, base_url? }`: the token is checked with PMS first and kept encrypted |
+| PUT / DELETE | `/api/pms/connections/:id` | `{ label }` or `{ token }` (checked again) / forget it here (it stays valid in PMS) |
+| POST | `/api/pms/connections/:id/check` | ask PMS again what the token reaches |
+| GET / PUT | `/api/pms/maps` | the open workspace's projects and their PMS project (mine) / `{ project_id, connection_id, pms_project }` (empty `pms_project` removes it) |
+| GET | `/api/pms/tasks` | tasks that can go to PMS (in a paired project, or linked), with their tickets (`?q=`, `?project_id=`) |
+| GET | `/api/pms/tasks/:id` | one task's parts (outputs, comments, checklist, files, my time) marked new / changed / sent, and its ticket (`?brief=1`: only the ticket) |
+| POST | `/api/pms/tasks/:id/send` | `{ ticket?: { mode: create\|link\|update, … }, outputs, comments, files, checklist, time: [{ id, started_at }], kind, internal, lang, dry_run }` → every step and how it went (with `dry_run`, exactly what would be sent) |
+| POST / DELETE | `/api/pms/tasks/:id/refresh`, `/api/pms/tasks/:id/link` | read the ticket's status again / unlink here (the ticket stays in PMS) |
+| GET | `/api/pms/tickets?project=KEY&q=` | search a PMS project's tickets |
 | POST | `/api/profiles/:id/transfer` | owner only: `{ user_id, keep_role: manager \| editor \| viewer \| null }` hands the profile to that active member; every record inside re-owns, the Info vault moves to the old owner's own profile, the old owner stays with `keep_role` or leaves |
 | POST/PUT | `/api/requirements/:id/attachments` | multipart upload (`files`), or `{ order: [ids] }` |
 | GET/PATCH/DELETE | `/api/attachments/:kind/:id` | `kind` = `task` or `requirement` (the old `/api/attachments/:id` still serves task files) |
@@ -460,6 +469,25 @@ A delivery that gets no 2xx within 8 seconds is retried after 1, 5 and 25 minute
 (`/api/cron/reminders`); after 20 failures in a row the hook pauses itself and its owner is told. **Send test**
 posts a `ping`; the last 30 deliveries are listed per hook and kept for 14 days. Addresses inside the server's
 own network are refused in production (`WEBHOOK_ALLOW_LOCAL=1` lifts that).
+
+## Bitara PMS
+
+Anybody can send what they choose from a task to [Bitara PMS](https://pms.bitara.co) tickets (Integrations, in
+the account menu; an administrator can turn it off per person). Each person pastes their own `pms_pat_…` token:
+Task Portal checks it with PMS (`/agent/manifest`), keeps it encrypted with `DATA_KEY` and never shows it again.
+They then choose, per project of a workspace, which PMS project its tasks go to. The **Bitara PMS** button on
+Tasks (or **Send to PMS** on a selection, or the card on a task) opens the dialog: pick tasks, tick what goes from
+each (a new ticket or an existing one, outputs and comments as ticket comments, the checklist, files, your own
+time as worklogs), check the exact text in a dry run, send. Every part is marked *not sent*, *changed* or *sent*,
+so nothing goes twice: worklogs carry `externalRef` `taskportal-<install>-time-<id>` and changed entries are
+corrected (`PATCH`), changed outputs go as a new comment, a ticket raised from here can be updated, but never
+when somebody edited it in PMS since. Everything goes out as the token's owner with `X-PMS-Client: task-portal`.
+PMS needs a real start for every worklog: a stopped timer keeps its start in `time_entries.began_at`; typed-in
+time gets one in the dialog. Tokens cannot delete tickets, so the preview is not optional. Status changes are not
+sent (projects in `SUGGEST_ONLY` refuse them); the ticket's status is shown on the task instead.
+Tables: `pms_connections`, `pms_project_map`, `pms_links`, `pms_sent` (no foreign keys; a link survives the
+recycle bin, the scheduler drops what belongs to tasks gone for good). `scripts/fake-pms.mjs` is a stand-in PMS
+for tests (`node scripts/fake-pms.mjs`); outside production the Integrations page takes its address.
 
 ## Push notifications
 

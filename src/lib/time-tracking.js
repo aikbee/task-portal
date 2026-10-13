@@ -20,11 +20,14 @@ export const runningFor = (userId) =>
     [userId]
   );
 
-/** Stop my running timer: at least a minute, at most a day (a forgotten timer must not log a week). */
+/**
+ * Stop my running timer: at least a minute, at most a day (a forgotten timer must not log a week). The start stays
+ * in began_at, so the entry can tell other tools when the work happened (Bitara PMS wants real times).
+ */
 export async function stopRunning(userId) {
   const run = await runningFor(userId);
   if (!run) return null;
   const minutes = Math.min(24 * 60, Math.max(1, Math.round(Number(run.elapsed_seconds) / 60)));
-  await execute("UPDATE time_entries SET minutes = ?, started_at = NULL WHERE id = ?", [minutes, run.id]);
+  await execute("UPDATE time_entries SET minutes = ?, began_at = started_at, started_at = NULL WHERE id = ?", [minutes, run.id]);
   return { ...run, minutes };
 }

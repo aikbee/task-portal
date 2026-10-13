@@ -9,6 +9,7 @@ import { pruneMailLog, pruneTokens } from "@/lib/mail";
 import { pruneImportBatches } from "@/lib/import";
 import { retryDeliveries, pruneDeliveries } from "@/lib/webhooks";
 import { sendDueDigests } from "@/lib/digest";
+import { sweepPms } from "@/lib/pms-sync";
 
 /**
  * Scheduler entry point: generates due/overdue reminders for every profile so pushes go
@@ -35,6 +36,7 @@ export const GET = handler(
     const webhooksRetried = await retryDeliveries().catch(() => 0);
     const digests = await sendDueDigests().catch(() => 0);
     await pruneDeliveries().catch(() => {});
+    await sweepPms().catch(() => {});
     const backup = await ensureDailyBackup().catch((e) => ({ ran: true, ok: false, error: e.message }));
     return ok({ profiles: profiles.length, created, event_reminders: events, chat_purged: chatPurged, trash_purged: trashPurged, webhooks_retried: webhooksRetried, digests, backup, at: new Date().toISOString() });
   },

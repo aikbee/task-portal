@@ -603,6 +603,7 @@ CREATE TABLE IF NOT EXISTS time_entries (
   spent_on DATE NOT NULL,
   note VARCHAR(255) NULL,
   started_at DATETIME NULL,
+  began_at DATETIME NULL, -- when a timer-made entry started; kept after the timer stops (NULL for time typed in)
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_te_task (task_id, spent_on),
@@ -881,4 +882,66 @@ CREATE TABLE IF NOT EXISTS app_releases (
   uploaded_by INT UNSIGNED NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_app_releases_version (platform, package_name, version_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Bitara PMS (pms.bitara.co): a person sends what they pick from a task to a PMS ticket. Everybody connects with
+-- their own pms_pat_ token (encrypted with DATA_KEY, never shown again) and says which PMS project each Task Portal
+-- project goes to. pms_links is the ticket a task belongs to and pms_sent what went to it, so nothing goes twice and
+-- later changes show. No foreign keys (see import_batches): a link stays while its task is in the recycle bin and
+-- comes back with it; the scheduler drops rows whose task or account is gone for good.
+CREATE TABLE IF NOT EXISTS pms_connections (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  label VARCHAR(80) NOT NULL,
+  base_url VARCHAR(200) NULL, -- a local test server, honoured outside production only; NULL = Bitara PMS itself
+  token_enc TEXT NOT NULL,
+  token_hint VARCHAR(16) NOT NULL,
+  acting_as VARCHAR(190) NULL, -- who PMS says the token belongs to
+  projects JSON NULL, -- [{ key, name, mode, role }] the token reached at the last check
+  scopes JSON NULL,
+  status ENUM('ok','error') NOT NULL DEFAULT 'ok',
+  last_error VARCHAR(255) NULL,
+  checked_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_pms_conn_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS pms_project_map (
+  user_id INT UNSIGNED NOT NULL,
+  project_id INT UNSIGNED NOT NULL,
+  connection_id INT UNSIGNED NOT NULL,
+  pms_project VARCHAR(20) NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, project_id),
+  KEY idx_pms_map_conn (connection_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS pms_links (
+  task_id INT UNSIGNED NOT NULL PRIMARY KEY,
+  pms_project VARCHAR(20) NOT NULL,
+  ticket_key VARCHAR(40) NOT NULL, -- '' when PMS made the ticket but its answer had no readable key
+  created_here TINYINT(1) NOT NULL DEFAULT 0, -- raised from Task Portal: its title and description may be updated from here
+  ticket_title VARCHAR(300) NULL,
+  ticket_status VARCHAR(40) NULL,
+  ticket_url VARCHAR(500) NULL,
+  status_at DATETIME NULL,
+  linked_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_pms_links_ticket (ticket_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS pms_sent (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_id INT UNSIGNED NOT NULL,
+  ticket_key VARCHAR(40) NOT NULL,
+  kind ENUM('ticket','output','comment','checklist','file','time') NOT NULL,
+  item_id INT UNSIGNED NOT NULL, -- the output, comment, file or time entry; the task itself for ticket and checklist
+  remote_id VARCHAR(64) NULL, -- the PMS uid of a worklog, when PMS says
+  hash CHAR(40) NOT NULL, -- of what was sent, so a later change shows
+  meta JSON NULL,
+  sent_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_pms_sent (task_id, ticket_key, kind, item_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

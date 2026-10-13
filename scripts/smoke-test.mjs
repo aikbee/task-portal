@@ -2919,6 +2919,157 @@ console.log("email (password reset, invitations, notification emails)");
   check("the smoke builds are cleaned up", (await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true })).data.release === null);
 }
 
+console.log("Bitara PMS (connections, project pairing, sending a task)");
+{
+  jar = { ...adminJar };
+  const { startFakePms, FAKE_TOKEN } = await import(new URL("./fake-pms.mjs", import.meta.url));
+  const compose = await import(new URL("../src/lib/pms-compose.js", import.meta.url));
+  const pms = await startFakePms({ maxFileBytes: 1024 });
+  const posts = () => pms.requests.filter((r) => r.method !== "GET").length;
+
+  // what a task becomes (pure functions)
+  check("Chinese text -> zh-CN, else en", compose.guessLang("Fix login", "检查一下") === "zh-CN" && compose.guessLang("Fix login") === "en");
+  const tf = compose.ticketFields({ id: 7, title: " Ship\nit ", description: "See @[Ann Lee](employee:3)", priority: "urgent", due_date: "2026-10-20", estimate_hours: "1.5", tags: "release,qa" }, { checklist: [{ title: "A", done: 1 }, { title: "B", done: 0 }], includeChecklist: true, lang: "zh-CN", link: "https://x/tasks/7", withEstimate: true });
+  check("ticket fields: one-line title, P1, mention as @name, checklist and facts in the ticket's language, link back", tf.title === "Ship it" && tf.priority === "P1" && tf.dueAt === "2026-10-20" && tf.estimateMinutes === 90 && tf.description.includes("@Ann Lee") && tf.description.includes("**检查清单** (1/2)") && tf.description.includes("- [x] A") && tf.description.includes("截止: 2026-10-20") && tf.description.includes("#release #qa") && tf.description.includes("(https://x/tasks/7)"), JSON.stringify(tf));
+  check("a legacy table output becomes a Markdown table", compose.outputComment({ title: "T", format: "table", content: JSON.stringify({ columns: ["a", "b"], rows: [["1", "2"]] }) }).includes("| a   | b   |"));
+
+  // connections
+  check("a connection needs a pms_pat_ token", (await call("POST", "/api/pms/connections", { body: { token: "hello", base_url: pms.url } })).status === 400);
+  const wrong = await call("POST", "/api/pms/connections", { body: { token: "pms_pat_wrong_1234567890", base_url: pms.url } });
+  check("a token PMS refuses is not kept", wrong.status === 400 && /refused the token/.test(wrong.error) && (await call("GET", "/api/pms/connections")).data.connections.length === 0, JSON.stringify(wrong.raw));
+  const added = await call("POST", "/api/pms/connections", { body: { token: FAKE_TOKEN, base_url: pms.url } });
+  const conn = added.data?.connections?.[0];
+  check("POST /api/pms/connections checks the token and keeps what it reaches", added.status === 201 && conn?.acting_as === "Test Person (test.person@example.com)" && conn.projects.map((p) => p.key).join() === "DEMOV2,DEMOV1" && conn.projects[0].mode === "SUGGEST_ONLY" && conn.scopes.includes("tickets:write") && conn.token_hint === "…cdef" && conn.label === "Demo v2, Demo v1", JSON.stringify(added.raw));
+  check("…the token never comes back", !JSON.stringify(added.raw).includes(FAKE_TOKEN) && !JSON.stringify((await call("GET", "/api/pms/connections")).raw).includes(FAKE_TOKEN));
+  check("…and every call says it comes from Task Portal", pms.requests.length > 0 && pms.requests.every((r) => r.client === "task-portal"));
+  check("rename + check again", (await call("PUT", `/api/pms/connections/${conn.id}`, { body: { label: "Demo PMS" } })).data.connections[0].label === "Demo PMS" && (await call("POST", `/api/pms/connections/${conn.id}/check`)).data.connections[0].status === "ok");
+
+  // which PMS project each project goes to
+  check("pairing a project of another workspace -> 404", (await call("PUT", "/api/pms/maps", { body: { project_id: 999999, connection_id: conn.id, pms_project: "DEMOV2" } })).status === 404);
+  check("pairing with a project the token does not reach -> 400", (await call("PUT", "/api/pms/maps", { body: { project_id: projectId, connection_id: conn.id, pms_project: "NOPE" } })).status === 400);
+  const mapped = await call("PUT", "/api/pms/maps", { body: { project_id: projectId, connection_id: conn.id, pms_project: "DEMOV2" } });
+  check("PUT /api/pms/maps pairs a project", mapped.status === 200 && mapped.data.find((m) => m.project_id === projectId)?.pms_project === "DEMOV2");
+
+  // a task with a bit of everything
+  const task = (await call("POST", "/api/tasks", { body: { title: `PMS smoke ${suffix}`, description: `Ship it with @[Smoke Person](employee:${employeeId})`, project_id: projectId, priority: "high", due_date: "2026-10-20", estimate_hours: 3, tags: "release" } })).data;
+  const tid = task.id;
+  const items = (await call("POST", `/api/tasks/${tid}/checklist`, { body: { title: "Write\nTest\nShip" } })).data;
+  await call("PUT", `/api/tasks/${tid}/checklist/${items[0].id}`, { body: { done: true } });
+  const out = (await call("POST", `/api/tasks/${tid}/outputs`, { body: { title: "Results", content: "Numbers:\n\n| step | ms |\n| --- | --- |\n| build | 1200 |" } })).data.items[0];
+  const cm = { id: (await call("POST", `/api/tasks/${tid}/comments`, { body: { body: "Looks good 👍" } })).data.created_id };
+  const form = new FormData();
+  form.append("files", new Blob(["hello pms"], { type: "text/plain" }), "notes.txt");
+  form.append("files", new Blob(["x".repeat(2048)], { type: "text/plain" }), "big.txt");
+  const [small, big] = (await call("POST", `/api/tasks/${tid}/attachments`, { form })).data;
+  await call("POST", `/api/tasks/${tid}/time`, { body: { duration: "1h 30m", spent_on: "2026-10-01", note: "drafting" } });
+  await call("POST", `/api/tasks/${tid}/time`, { body: { start: true } });
+  await call("POST", "/api/time/stop", { body: {} });
+
+  const pick = await call("GET", "/api/pms/tasks");
+  check("GET /api/pms/tasks lists tasks of paired projects", pick.status === 200 && pick.data.connected && pick.data.tasks.find((t) => t.id === tid)?.pms_project === "DEMOV2");
+  const plan = (await call("GET", `/api/pms/tasks/${tid}`)).data;
+  const manual = plan.time.find((e) => !e.began_at), timed = plan.time.find((e) => e.began_at);
+  check("GET /api/pms/tasks/:id: where it goes, and everything new", plan.target?.pms_project === "DEMOV2" && plan.target.mode === "SUGGEST_ONLY" && plan.ticket.state === "none" && plan.checklist.total === 3 && plan.outputs[0].state === "new" && plan.comments[0].state === "new" && plan.files.length === 2 && plan.time.length === 2, JSON.stringify(plan).slice(0, 400));
+  check("a stopped timer keeps its start (began_at), typed time has none", Boolean(manual) && Boolean(timed));
+  const brief = await call("GET", `/api/pms/tasks/${tid}?brief=1`);
+  check("?brief=1 answers just the link", brief.status === 200 && brief.data.link === null && brief.data.connected === true && brief.data.outputs === undefined);
+
+  const choice = { ticket: { mode: "create", category: "BUG", lang: "en", include_checklist: true }, outputs: [out.id], comments: [cm.id], files: [small.id, big.id], time: [{ id: manual.id, started_at: "2026-10-01T09:00:00+08:00" }, { id: timed.id, started_at: new Date(Date.now() - 10 * 60000).toISOString() }], kind: "DEV", internal: true };
+  check("a typed time entry needs a start time", (await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ...choice, time: [{ id: manual.id }] } })).status === 400);
+  check("…one that would end in the future is refused before PMS sees it", (await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ...choice, time: [{ id: manual.id, started_at: new Date(Date.now() + 3600000).toISOString() }] } })).status === 400);
+  const before = posts();
+  const dry = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ...choice, dry_run: true } });
+  const ops = dry.data?.results ?? [];
+  check("dry run: exactly what would go, in order, and nothing sent", dry.status === 200 && dry.data.dry_run && ops.map((o) => o.op).join() === "ticket.create,comment,comment,file,file,worklogs" && posts() === before, JSON.stringify(dry.raw).slice(0, 300));
+  check("…the ticket: P2, the category, due date, estimate, checklist, mention as a name, link back", ops[0].fields.priority === "P2" && ops[0].fields.category === "BUG" && ops[0].fields.dueAt === "2026-10-20" && ops[0].fields.estimateMinutes === 180 && ops[0].text.includes("@Smoke Person") && ops[0].text.includes("- [x] Write") && ops[0].text.includes(`/tasks/${tid}`));
+  check("…comments: the output with its table, the comment under its author", ops[1].text.startsWith("### Results") && ops[1].text.includes("| build | 1200 |") && ops[2].text.startsWith("**Admin User**") && ops[2].internal === true);
+  check("…worklogs carry a stable externalRef", ops[5].entries.length === 2 && ops[5].entries.every((e) => /^taskportal-[0-9a-f]+-time-\d+$/.test(e.externalRef)) && ops[5].entries[0].startedAt === "2026-10-01T09:00:00+08:00");
+
+  const sent = await call("POST", `/api/pms/tasks/${tid}/send`, { body: choice });
+  const res = sent.data?.results ?? [];
+  const ticket = pms.tickets.get("DEMOV2-1");
+  check("send: the ticket is raised as DEMOV2-1", sent.status === 200 && res[0]?.ok && res[0].key === "DEMOV2-1" && ticket?.title === `PMS smoke ${suffix}` && ticket.category === "BUG" && ticket.priority === "P2" && ticket.estimateMinutes === 180, JSON.stringify(sent.raw).slice(0, 400));
+  check("…two comments, hidden from the reporter", ticket.comments.length === 2 && ticket.comments.every((c) => c.isInternal));
+  check("…the small file goes, the big one is refused with a reason", res[3].ok && ticket.attachments.length === 1 && ticket.attachments[0].filename === "notes.txt" && !res[4].ok && /Too large/.test(res[4].error));
+  check("…both time entries are logged on the ticket as DEV", res[5].ok && pms.worklogs.length === 2 && pms.worklogs.every((w) => w.ticketKey === "DEMOV2-1" && w.kind === "DEV"));
+  check("…the task knows its ticket and its status", sent.data.link?.ticket_key === "DEMOV2-1" && sent.data.link.created_here === true && sent.data.link.ticket_status === "OPEN");
+  check("…and its history says so", (await call("GET", `/api/tasks/${tid}/history`)).data.some((h) => h.action === "pms_sent" && /DEMOV2-1/.test(h.new_value)));
+
+  const again = (await call("GET", `/api/pms/tasks/${tid}`)).data;
+  check("afterwards everything sent shows as sent, the refused file as new", again.ticket.state === "sent" && again.ticket.checklist_in_description && again.checklist.state === "sent" && again.outputs[0].state === "sent" && again.comments[0].state === "sent" && again.files.find((f) => f.id === small.id).state === "sent" && again.files.find((f) => f.id === big.id).state === "new" && again.time.every((e) => e.state === "sent" && e.remote));
+  check("raising a second ticket for the task -> 409", (await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "create" } } })).status === 409);
+
+  // changes since
+  await call("PUT", `/api/outputs/${out.id}`, { body: { content: "Numbers changed" } });
+  check("an edited output shows as changed", (await call("GET", `/api/pms/tasks/${tid}`)).data.outputs[0].state === "changed");
+  const re = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { outputs: [out.id] } });
+  check("…and goes again as an updated comment", re.data.results[0].ok && ticket.comments.length === 3 && ticket.comments[2].body.includes("(updated)") && ticket.comments[2].body.includes("Numbers changed"));
+  await call("PUT", `/api/tasks/${tid}`, { body: { title: `PMS smoke renamed ${suffix}` } });
+  check("a renamed task shows its ticket as changed", (await call("GET", `/api/pms/tasks/${tid}`)).data.ticket.state === "changed");
+  const upd = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "update" } } });
+  check("…update sends only what changed", upd.data.results[0].ok && upd.data.results[0].changed.join() === "title" && ticket.title === `PMS smoke renamed ${suffix}` && pms.requests.filter((r) => r.method === "PATCH" && r.path === "/tickets/DEMOV2-1").at(-1).body.description === undefined);
+  ticket.description = "Rewritten by the project manager";
+  await call("PUT", `/api/tasks/${tid}`, { body: { description: "New words" } });
+  const clash = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "update" } } });
+  check("…but never overwrites a ticket somebody edited in PMS", !clash.data.results[0].ok && /edited in Bitara PMS/.test(clash.data.results[0].error) && ticket.description === "Rewritten by the project manager");
+  const entries = (await call("GET", `/api/tasks/${tid}/time`)).data.entries;
+  await call("PUT", `/api/tasks/${tid}/time/${manual.id}`, { body: { duration: "2h" } });
+  check("an edited time entry shows as changed", (await call("GET", `/api/pms/tasks/${tid}`)).data.time.find((e) => e.id === manual.id).state === "changed" && entries.length === 2);
+  const fix = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { time: [{ id: manual.id, started_at: "2026-10-01T09:00:00+08:00" }, { id: timed.id, started_at: choice.time[1].started_at }] } });
+  check("…and is corrected in PMS, not logged twice; the unchanged one is left alone", fix.data.results.map((r) => r.op).join() === "worklog.update,worklog.update" && fix.data.results[0].ok && !fix.data.results[0].skip && fix.data.results[1].skip && pms.worklogs.length === 2 && pms.worklogs.some((w) => w.minutes === 120), JSON.stringify(fix.raw).slice(0, 300));
+
+  // unlink, link an existing ticket, search, refresh
+  check("DELETE …/link forgets the ticket here", (await call("DELETE", `/api/pms/tasks/${tid}/link`)).status === 200 && (await call("GET", `/api/pms/tasks/${tid}?brief=1`)).data.link === null && pms.tickets.has("DEMOV2-1"));
+  const look = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "link", key: "demov2-1" }, dry_run: true } });
+  check("linking shows the ticket first", look.data.results[0].op === "ticket.link" && look.data.results[0].title === `PMS smoke renamed ${suffix}` && look.data.results[0].status === "OPEN");
+  const missing = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "link", key: "DEMOV2-99" }, outputs: [out.id] } });
+  check("a ticket PMS does not have: the link fails and nothing else is sent", !missing.data.results[0].ok && /not found/i.test(missing.data.results[0].error) && /no ticket/.test(missing.data.results[1].error) && ticket.comments.length === 3);
+  const relinked = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ticket: { mode: "link", key: "DEMOV2-1" } } });
+  const back = (await call("GET", `/api/pms/tasks/${tid}`)).data;
+  check("linking it again picks up what was already sent", relinked.data.results[0].ok && back.ticket.state === "linked" && back.comments[0].state === "sent");
+  const found = await call("GET", "/api/pms/tickets?project=DEMOV2&q=renamed");
+  check("GET /api/pms/tickets searches a project's tickets", found.status === 200 && found.data[0]?.key === "DEMOV2-1");
+  ticket.status = "IN_DEV";
+  check("POST …/refresh reads the status again", (await call("POST", `/api/pms/tasks/${tid}/refresh`)).data.link.ticket_status === "IN_DEV");
+
+  // PMS's answers that go wrong
+  pms.state.options.refuseDueAt = true;
+  const t2 = (await call("POST", "/api/tasks", { body: { title: `PMS due ${suffix}`, project_id: projectId, due_date: "2026-11-01" } })).data;
+  const r2 = await call("POST", `/api/pms/tasks/${t2.id}/send`, { body: { ticket: { mode: "create" } } });
+  check("a refused due date: raised without it, and told", r2.data.results[0].ok && /due date/.test(r2.data.results[0].note) && pms.tickets.get(r2.data.results[0].key)?.dueAt === null);
+  pms.state.options.refuseDueAt = false;
+  pms.state.options.omitKey = true;
+  const t3 = (await call("POST", "/api/tasks", { body: { title: `PMS nokey ${suffix}`, project_id: projectId } })).data;
+  const r3 = await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "create" } } });
+  pms.state.options.omitKey = false;
+  check("a ticket whose key cannot be read is not raised twice", !r3.data.results[0].ok && /no ticket key/.test(r3.data.results[0].error) && (await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "create" } } })).status === 409);
+  const lost = [...pms.tickets.values()].find((x) => x.title === `PMS nokey ${suffix}`);
+  check("…and can be linked by its key", (await call("POST", `/api/pms/tasks/${t3.id}/send`, { body: { ticket: { mode: "link", key: lost.key } } })).data.results[0].ok);
+
+  // who may
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  check("connections are personal", (await call("GET", "/api/pms/connections")).data.connections.length === 0 && (await call("GET", `/api/pms/tasks/${tid}`)).status === 404);
+  jar = { ...adminJar };
+  await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: ["pms"] } });
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  check("an administrator can turn Bitara PMS off for a person", (await call("GET", "/api/pms/connections")).status === 403);
+  jar = { ...adminJar };
+  await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: [] } });
+  const tok = await call("POST", "/api/tokens", { body: { name: `PMS token ${suffix}`, scope: "write" } });
+  check("API tokens cannot use the Bitara PMS routes", (await fetch(`${BASE}/api/pms/connections`, { headers: { Authorization: `Bearer ${tok.data.token}` } })).status === 403);
+  await call("DELETE", `/api/tokens/${tok.data.row.id}`);
+
+  // cleanup
+  for (const id of [tid, t2.id, t3.id]) await call("DELETE", `/api/tasks/${id}`);
+  const gone = await call("DELETE", `/api/pms/connections/${conn.id}`);
+  check("removing the connection removes its pairings", gone.status === 200 && gone.data.connections.length === 0 && gone.data.maps.every((m) => m.pms_project === null));
+  await call("DELETE", "/api/trash");
+  await pms.close();
+}
+
 console.log("cleanup");
 {
   const u = await call("DELETE", `/api/users/${userId}`);

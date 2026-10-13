@@ -20,6 +20,7 @@ import { useT } from "@/lib/i18n";
 import { CanEdit } from "@/lib/auth-context";
 import { ImportButton } from "./ImportDialog";
 import { BulkEditButton } from "./BulkEditTasks";
+import { PmsSendButton } from "./PmsSend";
 import { formatMinutes } from "@/lib/duration";
 import ReportButton from "@/components/report/ReportButton";
 
@@ -79,7 +80,7 @@ export default function TasksList() {
 
   return (
     <>
-      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><CanEdit><ImportButton kind="tasks" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit></>} />
+      <PageHeader title={tr("Tasks")} description={tr(mod.description)} icon={mod.icon} color={mod.color} crumbs={[]} actions={<><ReportButton module="tasks" /><CanEdit><PmsSendButton onDone={refetch} /><ImportButton kind="tasks" onImported={refetch} /><Button icon={Plus} onClick={openNew}>{tr("New task")}</Button></CanEdit></>} />
       <DataTable
         id="tasks"
         views={{ module: "tasks", filters: f, setFilters: setF }}
@@ -97,7 +98,7 @@ export default function TasksList() {
         onRowClick={(r) => router.push(`/tasks/${r.id}`)}
         selectable
         onDeleteSelected={(ids) => del.setTarget({ ids })}
-        bulkActions={(ids, clear) => <BulkEditButton ids={ids} clear={clear} onDone={refetch} />}
+        bulkActions={(ids, clear) => <><BulkEditButton ids={ids} clear={clear} onDone={refetch} /><PmsSendButton taskIds={ids} size="xs" variant="secondary" label={tr("Send to PMS")} onDone={() => { clear?.(); refetch(); }} /></>}
         rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => { setEditing(r); setFormOpen(true); }} onDelete={() => del.setTarget(r)} />}
         filters={
           <>
