@@ -23767,7 +23767,7 @@ const GW_GROUND_PARS = /* glsl */ `
     return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2));
   }
   vec3 gwGround(vec3 p) {
-    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.0085 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.021 + 0.7).r, n4 = texture2D(uNoise, p.xz * 0.09 + 0.1).b;
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.0085 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.021 + 0.7).r, n4 = texture2D(uNoise, p.xz * 0.09 + 0.43).g; // (the noise has two channels: r and g)
     float k = fract(n2 * 1.6 + n1 * 0.35 + n3 * 0.3); // patches of each kind, all over, their edges ragged
     vec3 pine = vec3(0.06, 0.11, 0.05), green = vec3(0.16, 0.22, 0.06), gold = vec3(0.48, 0.32, 0.04), russet = vec3(0.34, 0.13, 0.04), red = vec3(0.36, 0.07, 0.035);
     vec3 forest = mix(pine, green, smoothstep(0.1, 0.22, k));
@@ -24156,7 +24156,300 @@ function greatwall(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall };
+/* ---------- Space station over Earth: a station in low orbit, the Earth sliding by beneath; city lights, lightning and aurora by night ---------- */
+// The Earth is ray-traced in a background shader, in kilometres: the ray from 410 km up meets the sphere, and the point it meets is
+// read as distances along the ground from the point beneath us, so a tiling noise draws coasts, mountains, deserts and clouds without
+// seams, sliding by as we orbit (every period divides 5040 km, and the drift wraps there on the CPU, so no large numbers reach the GPU).
+// The air thickens towards the horizon and stands edge-on along it as a thin blue band; by night the cities glow, storms flash and an
+// aurora hangs along the horizon. The station itself is ordinary geometry in metres, drawn over it.
+const SS_EARTH_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform vec3 uSun; uniform vec3 uSunCol; uniform float uNight; uniform float uTime; uniform vec4 uDrift;
+  varying vec3 vDir;
+  const float R = 6371.0, ALT = 410.0, C2 = 410.0 * (2.0 * 6371.0 + 410.0); // |o|^2 - R^2, exactly
+  float ssH(vec2 q) { // the land's height: continents down to hills (the noise has two channels, r and g)
+    return texture2D(uNoise, q / 5040.0 + 0.11).r * 0.5 + texture2D(uNoise, q / 1680.0 + 0.37).g * 0.25 + texture2D(uNoise, q / 630.0 + 0.71).r * 0.14 + texture2D(uNoise, q / 210.0 + 0.19).g * 0.07 + texture2D(uNoise, q / 70.0 + 0.53).r * 0.04;
+  }
+  float ssCloud(vec2 q, float graze) { // weather: fronts and swirls (the ground warped by a slower noise), cumulus within them; seen slantwise, their sides close the gaps
+    q += (vec2(texture2D(uNoise, q / 2520.0 + 0.3).r, texture2D(uNoise, q / 2520.0 + 0.8).g) - 0.5) * 900.0;
+    float c = texture2D(uNoise, q / 1260.0 + 0.6).g * 0.5 + texture2D(uNoise, q / 504.0 + 0.2).r * 0.28 + texture2D(uNoise, q / 168.0 + 0.9).g * 0.14 + texture2D(uNoise, q / 56.0 + 0.4).r * 0.08;
+    return smoothstep(0.5 - 0.17 * graze, 0.74 - 0.12 * graze, c);
+  }
+  float ssHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float ssRays(float az) { // an aurora's curtain along the horizon: where it is bright, and the fine rays in it, drifting
+    float n = texture2D(uNoise, vec2(az * 1.9 + uTime * 0.004, 0.37)).r;
+    float m = texture2D(uNoise, vec2(az * 26.0 - uTime * 0.012, 0.71)).g * 0.6 + texture2D(uNoise, vec2(az * 67.0 + uTime * 0.02, 0.13)).r * 0.4;
+    return smoothstep(0.46, 0.72, n) * pow(m, 2.2) * 2.2 * smoothstep(-1.05, -0.6, az) * (1.0 - smoothstep(0.75, 1.15, az));
+  }
+  float ssTowns(vec2 q, float fw) { // towns: one at a random spot in some cells of 60 km, 2 to 14 km across, lit in sparkles; their average once smaller than a pixel
+    vec2 c = q / 60.0, ci = floor(c), cf = fract(c); float sum = 0.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      vec2 o = vec2(float(i), float(j)), id = mod(ci + o, 84.0); float h1 = ssHash(id), h2 = ssHash(id + 17.3), h3 = ssHash(id + 41.9); // the cells repeat every 5040 km, like everything else
+      vec2 pos = o + vec2(h1, h2) * 0.8 + 0.1 - cf; float size = mix(0.035, 0.24, h3 * h3);
+      sum += step(0.42, h2 * 0.7 + h3 * 0.6) * exp(-dot(pos, pos) / (size * size) * 1.6) * (0.55 + h1);
+    }
+    sum *= 0.4 + 0.9 * texture2D(uNoise, q / 14.0 + 0.3).g * texture2D(uNoise, q / 4.5 + 0.7).r; // periods that divide 5040 km
+    return mix(sum, 0.045, smoothstep(5.0, 22.0, fw));
+  }
+  void main() {
+    vec3 d = normalize(vDir), o = vec3(0.0, R + ALT, 0.0);
+    float b = d.y * (R + ALT), disc = b * b - C2;
+    vec3 col = vec3(0.0);
+    if (disc > 0.0 && b < 0.0) { // the ground
+      float t = -b - sqrt(disc); vec3 p = o + d * t, n = p / R;
+      float ang = acos(clamp(n.y, -1.0, 1.0)); vec2 dir2 = n.xz / max(length(n.xz), 1e-6), q = dir2 * ang * R; // km along the ground from beneath us
+      vec2 qg = q + vec2(0.0, -uDrift.x), qc = q + vec2(-uDrift.z, -uDrift.y);
+      float h = ssH(qg), fh = fwidth(h) + 0.002, land = smoothstep(0.515 - fh, 0.515 + fh, h), shelf = smoothstep(0.47, 0.515, h) * (1.0 - land);
+      float dry = texture2D(uNoise, qg / 1260.0 + 0.66).g, rough = smoothstep(0.62, 0.78, h);
+      vec3 ground = mix(mix(vec3(0.045, 0.1, 0.03), vec3(0.11, 0.14, 0.05), smoothstep(0.35, 0.55, dry)), vec3(0.36, 0.28, 0.16), smoothstep(0.55, 0.75, dry)); // forest, grassland, desert
+      ground = mix(ground, vec3(0.3, 0.29, 0.27), rough * 0.6); ground = mix(ground, vec3(0.85, 0.87, 0.9), smoothstep(0.76, 0.84, h)); // mountains, their snow
+      vec3 sea = mix(vec3(0.006, 0.026, 0.085), vec3(0.012, 0.05, 0.12), texture2D(uNoise, qg / 2520.0 + 0.9).g);
+      vec3 surf = mix(mix(sea, vec3(0.03, 0.17, 0.24), shelf), ground, land);
+      float mu = max(dot(n, -d), 0.0), graze = (1.0 - mu) * (1.0 - mu), cl = ssCloud(qc, graze), lam = max(dot(n, uSun), 0.0);
+      float glint = pow(max(dot(reflect(d, n), uSun), 0.0), 250.0) * (1.0 - land) * (1.0 - cl);
+      vec3 day = surf * lam * uSunCol * 1.6 + uSunCol * glint * 3.0;
+      day = mix(day, vec3(0.95, 0.97, 1.0) * (lam * 1.25 + 0.04), cl * 0.92);
+      // by night: cities on the land, brightest along the coasts, none in the deserts; lightning in the storms; the clouds faintly lit
+      float fw = fwidth(qg.x) + fwidth(qg.y);
+      float town = ssTowns(qg, fw);
+      float coast = smoothstep(0.515, 0.535, h) * (1.0 - smoothstep(0.535, 0.6, h));
+      vec3 cities = vec3(1.0, 0.66, 0.3) * town * land * (0.45 + 1.6 * coast) * smoothstep(0.75, 0.45, dry + rough * 0.4) * 1.5;
+      vec2 cq = qc / 70.0, cell = floor(cq); float fl = ssHash(cell + floor(uTime * 2.3) * 7.13), ph = fract(uTime * 2.3);
+      float bolt = step(0.985, fl) * exp(-ph * 7.0) * smoothstep(0.62, 0.92, cl) * (1.0 - smoothstep(0.0, 0.5, length(fract(cq) - 0.5)));
+      vec3 night = cities * (1.0 - cl * 0.75) + vec3(0.035, 0.045, 0.07) * cl + vec3(0.6, 0.72, 1.0) * bolt * 2.5;
+      float azg = atan(dir2.x, -dir2.y), dist = ang * R;
+      night += vec3(0.15, 1.0, 0.45) * ssRays(azg) * smoothstep(1750.0, 2000.0, dist) * (1.0 - smoothstep(2150.0, 2290.0, dist)) * 0.25; // the aurora's foot, seen from above towards the horizon
+      col = mix(day, night, uNight);
+      float air = 1.0 - exp(-0.17 / (mu + 0.05)); // the air, thicker the more slantwise we look through it: a blue veil even straight down
+      col = mix(col, mix(vec3(0.36, 0.58, 1.0) * (0.3 + lam) * 0.95, vec3(0.015, 0.025, 0.05), uNight), air);
+    } else { // above the horizon: the atmosphere edge-on, then space
+      float hmin = length(o + d * max(-b, 0.0)) - R, az = atan(d.x, -d.z);
+      vec3 band = mix(vec3(0.12, 0.3, 1.0), vec3(0.75, 0.88, 1.0), exp(-max(hmin, 0.0) / 6.0)) * exp(-max(hmin, 0.0) / 9.0) * 1.6;
+      vec3 airglow = vec3(0.32, 0.62, 0.3) * exp(-pow((hmin - 95.0) / 4.5, 2.0)) * 0.2 + vec3(0.04, 0.06, 0.12) * exp(-max(hmin, 0.0) / 14.0);
+      float rays = ssRays(az), edge = 100.0 + 9.0 * sin(az * 11.0 + uTime * 0.05) + 4.0 * sin(az * 37.0), lowA = exp(-max(hmin - edge, 0.0) / 45.0) * smoothstep(edge - 4.0, edge + 2.0, hmin);
+      vec3 aurora = (vec3(0.15, 1.0, 0.45) * lowA + vec3(0.8, 0.2, 0.45) * smoothstep(160.0, 220.0, hmin) * exp(-max(hmin - 210.0, 0.0) / 60.0) * 0.35) * rays;
+      col = mix(band, airglow + aurora * 0.55, uNight) * step(b, 0.0);
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the stars, only where the Earth does not hide them (DC_STAR_FS draws them)
+const SS_STAR_VS = /* glsl */ `
+  attribute float aSize; attribute vec3 aCol; uniform float uAmt; uniform float uTime;
+  varying vec3 vCol;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    vec3 d = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);
+    float b = d.y * 6781.0, hidden = step(0.0, b * b - 410.0 * 13152.0) * step(b, 0.0); // behind the Earth
+    float tw = 0.8 + 0.2 * sin(uTime * (1.1 + fract(aSize * 7.13) * 2.3) + position.x * 0.013);
+    vCol = aCol * uAmt * tw * (1.0 - hidden);
+    gl_PointSize = hidden > 0.5 ? 0.0 : aSize;
+  }
+`;
+// the solar arrays: rows of cells in the accent, dark gaps, gold busbars every ten cells (each fading to its average once smaller than
+// a pixel); a faint glow by night from the station's floodlights
+const SS_PANEL_PARS = /* glsl */ `
+  uniform vec3 uAccent; uniform float uNight;
+  varying vec2 vPUv;
+  vec3 ssPanel(out vec3 glow) {
+    vec2 g = vPUv / 1.15, f = fract(g), fw = fwidth(g), aa = smoothstep(0.25, 0.75, fw);
+    float cellX = mix(smoothstep(0.05, 0.1, f.x) * smoothstep(0.05, 0.1, 1.0 - f.x), 0.85, aa.x), cellY = mix(smoothstep(0.05, 0.1, f.y) * smoothstep(0.05, 0.1, 1.0 - f.y), 0.85, aa.y);
+    float bus = mix(step(0.9, fract(g.x / 10.0)), 0.1, smoothstep(0.25, 0.75, fw.x / 10.0));
+    vec3 cells = uAccent * 0.62;
+    vec3 col = mix(vec3(0.03, 0.035, 0.05), cells, cellX * cellY);
+    col = mix(col, vec3(0.62, 0.5, 0.22), bus * 0.7);
+    glow = uAccent * 0.07 * uNight * cellX * cellY;
+    return col;
+  }
+`;
+function spacestation(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(4100);
+  camera.fov = 40; camera.near = 0.5; camera.far = 4000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 2; // the Earth near the horizon is seen at a grazing angle
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 16) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const SUN_DAY = new THREE.Vector3(-0.45, 0.55, 0.7).normalize(), SUN_NIGHT = new THREE.Vector3(0.25, -0.92, -0.3).normalize(), MOONLIGHT = new THREE.Vector3(-0.5, 0.7, 0.4).normalize(); // by day the sun behind us, up and to the left: the Earth below lit, the arrays turned towards us; by night it is under the Earth
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; windows lit at night
+  const WHITE = 0xe6e4de, GREY = 0xa8acb4, GOLD = 0xe0b450, DARK = 0x2a2c30;
+  const between = (a, b, rad, hex, seg = 8) => { const d = new THREE.Vector3().subVectors(b, a); return [new THREE.CylinderGeometry(rad, rad, 1, seg).translate(0, 0.5, 0), new THREE.Matrix4().compose(a, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize()), new THREE.Vector3(1, d.length(), 1)), hex]; };
+  const alongZ = (rad, len, hex, x, y, z, seg = 18) => [cyl(rad, rad, len, seg).rotateX(Math.PI / 2), at(x, y, z), hex];
+  const alongX = (rad, len, hex, x, y, z, seg = 18) => [cyl(rad, rad, len, seg).rotateZ(Math.PI / 2), at(x, y, z), hex];
+
+  /* --- materials --- */
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 };
+  const lit = (mat, key) => { // markers: the accent; windows dark by day, lit by night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU });
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float ssLamp = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.06, 0.08), isLamp); ssLamp = isLamp; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.82, 0.55) * ssLamp * (0.02 + 1.4 * uNight);");
+    };
+    mat.customProgramCacheKey = () => "ss-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.15 })), "paint");
+  const foilMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.3, emissive: 0x3a2808 })), "foil"); // gold foil blankets (no environment to reflect: kept only a little metallic, so they stay gold, not brown)
+  const panelMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.12, side: THREE.DoubleSide }));
+  panelMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec2 vPUv;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPUv = uv;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + SS_PANEL_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n  vec3 ssGlow; diffuseColor.rgb = ssPanel(ssGlow);").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += ssGlow;");
+  };
+  panelMat.customProgramCacheKey = () => "ss-panel";
+
+  /* --- the Earth, drawn behind everything: ray-traced in its shader, in kilometres --- */
+  const earthU = { uNoise: { value: noise }, uSun: { value: SUN_DAY.clone() }, uSunCol: { value: new THREE.Color(1.0, 0.96, 0.9) }, uNight: nightU, uTime: time, uDrift: { value: new THREE.Vector4() } };
+  const earth = new THREE.Mesh(keep(new THREE.SphereGeometry(2000, 48, 24)), shader(LANTERN_SKY_VS, SS_EARTH_FS, earthU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  earth.renderOrder = -10; earth.frustumCulled = false; scene.add(earth);
+  const NSTAR = preview ? 500 : 1500, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(-0.3, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 1800, Math.sin(e) * 1800, Math.sin(a) * Math.cos(e) * 1800], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(SS_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+
+  /* --- the station: a truss across, its arrays at either end turned to the sun, radiators, a string of modules under it --- */
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]), F = [], PF = (geo, m, hex) => F.push([geo, m, hex]);
+  const TL = 40, TW = 1.4; // the truss: half its length, half its width
+  for (const y of [-TW, TW]) for (const z of [-TW, TW]) P(box(TL * 2, 0.16, 0.16), at(0, y, z), GREY); // the longerons
+  const BAY = preview ? 5.6 : 2.8; // (the admin preview: half the bays)
+  for (let x = -TL; x <= TL + 1e-6; x += BAY) { // each bay: a frame, and a diagonal on each face
+    for (const [a, b] of [[[x, -TW, -TW], [x, TW, -TW]], [[x, TW, -TW], [x, TW, TW]], [[x, TW, TW], [x, -TW, TW]], [[x, -TW, TW], [x, -TW, -TW]]]) S.push(between(new THREE.Vector3(...a), new THREE.Vector3(...b), 0.07, GREY, 4));
+    if (x + BAY <= TL + 1e-6) for (const [a, b] of [[[x, -TW, -TW], [x + BAY, TW, -TW]], [[x, TW, TW], [x + BAY, -TW, TW]], [[x, TW, -TW], [x + BAY, TW, TW]], [[x, -TW, TW], [x + BAY, -TW, -TW]]]) S.push(between(new THREE.Vector3(...a), new THREE.Vector3(...b), 0.06, GREY, 4));
+  }
+  for (const sx of [-1, 1]) { // equipment boxes on the truss, its rotary joints
+    for (let k = 0; k < 5; k++) P(box(2.2, 1.0, 1.6), at(sx * (5 + k * 6.5), TW + 0.5, r(-0.6, 0.6)), k % 2 ? WHITE : GREY);
+    P(cyl(1.9, 1.9, 1.4, 20).rotateZ(Math.PI / 2), at(sx * (TL - 1.5), 0, 0), GREY);
+    for (let k = 0; k < 3; k++) { const x = sx * (13 + k * 4.2); P(box(3.4, 0.12, 10.5), at(x, -TW - 6.2, 0, 0, 0, sx * 0.25), WHITE); P(box(0.25, 5.2, 0.25), at(x, -TW - 2.6, 0), GREY); } // the radiators, hanging under the truss
+  }
+  // the modules, along the station under the truss: the docking adapter at the front, nodes, labs, the rear segment with its own arrays
+  const MY = -5.2, PORT = new THREE.Vector3(0, MY, -27.4);
+  for (const part of [alongZ(0.95, 2.4, GREY, 0, MY, -26.2), alongZ(2.2, 7, WHITE, 0, MY, -21.4), alongZ(2.25, 0.3, GREY, 0, MY, -17.9), alongZ(2.2, 9.5, WHITE, 0, MY, -12.8), alongZ(2.25, 0.3, GREY, 0, MY, -8.0), alongZ(2.2, 6, WHITE, 0, MY, -4.6),
+    alongX(2.1, 8, WHITE, -6.9, MY, -21.4), alongX(2.1, 9, WHITE, 7.4, MY, -21.4), alongZ(2.0, 11, WHITE, 0, MY, 4.0), alongZ(1.45, 7, WHITE, 0, MY, 13.0), alongZ(0.9, 2, GREY, 0, MY, 17.4)]) S.push(part);
+  P(box(1.6, 3.8, 1.6), at(0, MY + 3.0, -4.6), GREY); // the pylon up to the truss
+  for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; P(box(0.5, 0.35, 0.5), at(Math.cos(a) * 1.2, MY - 2.55, -4.6 + Math.sin(a) * 1.2), LAMP); } // the cupola's windows, under the node
+  P(cyl(1.5, 1.6, 0.9, 16), at(0, MY - 2.3, -4.6), GREY);
+  for (const z of [-24.5, -18.6, -16.2, -10.2, -2.4, 1.2, 7.0]) for (const s of [-1, 1]) P(box(0.45, 0.3, 0.08), at(s * 1.45, MY + 1.6, z), LAMP); // portholes
+  PF(alongZ(2.05, 4.2, GOLD, 0, MY, 3.0)[0], at(0, MY, 3.0), GOLD); PF(alongZ(1.5, 3.0, GOLD, 0, MY, 12.0)[0], at(0, MY, 12.0), GOLD); // gold foil blankets round the rear segment
+  for (const sx of [-1, 1]) { P(box(9.5, 0.06, 2.2), at(sx * 6.4, MY, 13.0), 0x26365a); P(box(9.5, 0.12, 0.12), at(sx * 6.4, MY + 0.05, 13.0), GREY); } // the rear segment's own small arrays
+  // the robotic arm, its elbow up over the lab
+  const ARM = [new THREE.Vector3(-6, TW + 0.4, 0), new THREE.Vector3(-5, TW + 9, -8), new THREE.Vector3(-2.5, MY + 4.5, -15.5)];
+  S.push(between(ARM[0], ARM[1], 0.32, WHITE, 10), between(ARM[1], ARM[2], 0.3, WHITE, 10)); for (const j of ARM) P(new THREE.SphereGeometry(0.55, 10, 8), at(j.x, j.y, j.z), GREY);
+  const station = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat), foil = new THREE.Mesh(keep(mergeColored(THREE, F)), foilMat);
+  scene.add(station, foil);
+  // the arrays: at either end two long wings on a mast, the whole turned about the truss to face the sun
+  const panelGeo = (() => { const g = new THREE.PlaneGeometry(11.5, 32, 1, 1).rotateX(-Math.PI / 2); const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 11.5, uv.getY(i) * 32); return keep(g); })(); // uv in metres
+  const WINGS = [-1, 1].map((sx) => {
+    const g = new THREE.Group(); g.position.set(sx * (TL + 5.5), 0, 0);
+    for (const sz of [-1, 1]) { const m = new THREE.Mesh(panelGeo, panelMat); m.position.set(0, 0, sz * 17.2); g.add(m); }
+    g.add(new THREE.Mesh(keep(mergeColored(THREE, [[box(0.35, 0.35, 68), at(0, 0.1, 0), GREY], [box(3.2, 1.2, 1.4), at(0, 0, 0), WHITE], [box(11.6, 0.12, 0.3), at(0, 0.05, 33.1), GREY], [box(11.6, 0.12, 0.3), at(0, 0.05, -33.1), GREY]])), paintMat));
+    g.rotation.x = Math.atan2(SUN_DAY.z, SUN_DAY.y); scene.add(g); return g;
+  });
+
+  /* --- the crew capsule: approaching the front port on its thrusters, docked a while, then leaving --- */
+  const capsule = new THREE.Group(); scene.add(capsule);
+  capsule.add(new THREE.Mesh(keep(mergeColored(THREE, [[cyl(0.95, 1.95, 2.5, 20).rotateX(Math.PI / 2), at(0, 0, 0), WHITE], [cyl(1.95, 1.95, 3.2, 20).rotateX(Math.PI / 2), at(0, 0, -2.85), GREY], [cyl(0.6, 0.6, 0.4, 12).rotateX(Math.PI / 2), at(0, 0, 1.45), DARK], [box(5.2, 0.06, 1.7), at(4.6, 0, -2.9), 0x26365a], [box(5.2, 0.06, 1.7), at(-4.6, 0, -2.9), 0x26365a], [box(0.5, 0.3, 0.08), at(0.75, 0.55, 0.3), LAMP], [box(0.5, 0.3, 0.08), at(-0.75, 0.55, 0.3), LAMP]])), paintMat)); // its nose (+z) to the port
+  const CAP = { period: 260, inT: 110, stay: 80, outT: 60, far: 150 };
+  const capsuleAt = (t, out) => { const u = ((t % CAP.period) + CAP.period) % CAP.period; let s; if (u < CAP.inT) s = Math.pow(1 - u / CAP.inT, 2); else if (u < CAP.inT + CAP.stay) s = 0; else if (u < CAP.inT + CAP.stay + CAP.outT) s = Math.pow((u - CAP.inT - CAP.stay) / CAP.outT, 2); else s = 1; out.set(PORT.x + 5 * s * s, PORT.y + 3 * s * s, PORT.z - 1.65 - CAP.far * s); return u; }; // along the port's axis, the last of a sidestep easing out; arrives and leaves at no speed
+
+  /* --- an astronaut on a spacewalk, tethered to a handrail on the lab --- */
+  const eva = new THREE.Mesh(keep(mergeColored(THREE, [[box(0.62, 0.82, 0.46), at(0, 0, 0), WHITE], [box(0.56, 0.72, 0.28), at(0, 0.02, -0.36), GREY], [new THREE.SphereGeometry(0.24, 12, 10), at(0, 0.6, 0.02), WHITE], [new THREE.SphereGeometry(0.17, 12, 8).scale(1, 0.8, 0.6), at(0, 0.6, 0.16), GOLD], [box(0.2, 0.62, 0.2), at(0.42, 0.08, 0.1, 0, 0, 0.5), WHITE], [box(0.2, 0.62, 0.2), at(-0.42, 0.08, 0.1, 0, 0, -0.4), WHITE], [box(0.22, 0.8, 0.24), at(0.16, -0.78, 0.05, 0.25, 0, 0), WHITE], [box(0.22, 0.8, 0.24), at(-0.16, -0.78, 0.05, -0.15, 0, 0), WHITE], [box(0.24, 0.14, 0.12), at(0.12, 0.16, 0.26), ACC]])), paintMat); // suit, pack, helmet and visor, arms, legs, a patch in the accent
+  eva.scale.setScalar(1.45); scene.add(eva);
+  const tetherGeo = keep(new THREE.BufferGeometry()); tetherGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 12), 3));
+  const tether = new THREE.Line(tetherGeo, keep(new THREE.LineBasicMaterial({ color: 0xd8d4c8, transparent: true, opacity: 0.7 }))); tether.frustumCulled = false; scene.add(tether);
+  const RAIL = new THREE.Vector3(0.8, MY + 2.25, -12.8);
+
+  /* --- lights: nav lights at the wing tips, strobes, floodlights, the capsule's; the accent on the station by night --- */
+  const GL = [], WARM = [2.3, 2.0, 1.6];
+  WINGS.forEach((w, k) => { w.updateMatrixWorld(true); for (const sz of [-1, 1]) { V.set(0, 0.4, sz * 34).applyMatrix4(w.matrixWorld); GL.push([V.x, V.y, V.z, 0.5, ...(k ? [0.2, 2.4, 0.6] : [2.6, 0.2, 0.15]), 1.6]); } }); // at the wing tips: red to port, green to starboard
+  const G_STROBE = GL.length; GL.push([0, TW + 1.4, -2, 0.5, 2.6, 2.6, 2.6, 1.8], [0, MY - 2.4, 17.5, 0.45, 2.6, 2.6, 2.6, 1.8]);
+  const G_FLOOD = GL.length; for (const x of [-24, -10, 10, 24]) GL.push([x, TW + 0.6, 1.6, 0.7, ...WARM, 1.3]); GL.push([1.8, MY + 1.8, -26, 0.6, ...WARM, 1.3]);
+  const G_ACC = GL.length; for (const [x, y, z] of [[-TL, TW + 0.4, 0], [TL, TW + 0.4, 0], [0, MY, -27.4], [0, MY, 18.4], [-11, MY, -21.4], [11.9, MY, -21.4]]) GL.push([x, y, z, 0.42, 1, 1, 1, 1.4]);
+  const G_CAP = GL.length; GL.push([0.6, 0.3, 1.7, 0.35, ...WARM, 1.3], [-0.6, 0.3, 1.7, 0.35, ...WARM, 1.3], [0, 1.95, -2.9, 0.4, 2.6, 2.6, 2.6, 1.6], [2.0, 0, -1.4, 0.0, 2.6, 2.6, 2.6, 1.2], [-2.0, 0, -1.4, 0.0, 2.6, 2.6, 2.6, 1.2]); // headlights, strobe, two thruster puffs
+  const G_EVA = GL.length; GL.push([0, 0, 0, 0, ...WARM, 1.1], [0, 0, 0, 0, ...WARM, 1.1]); // helmet lamps
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  scene.add(hemi, sun, sun.target);
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    earthU.uSun.value.copy(d ? SUN_NIGHT : SUN_DAY);
+    sun.position.copy(d ? MOONLIGHT : SUN_DAY).multiplyScalar(500); sun.color.set(d ? "#7f90c4" : "#fff4e4"); sun.intensity = d ? 0.32 : 3.0;
+    hemi.color.set(d ? "#000000" : "#0a0e18"); hemi.groundColor.set(d ? "#2a2018" : "#8cb2e6"); hemi.intensity = d ? 0.35 : 0.95; // the Earth's light from below: blue-white by day, the faint orange of its cities by night
+    nightU.value = d ? 1 : 0; starU.uAmt.value = d ? 1 : 0; stars.visible = d;
+    glowU.uAmt.value = d ? 1 : 0.6;
+    for (let i = G_FLOOD; i < G_ACC; i++) aGlow.setW(i, d ? GL[i][3] : 0); // floodlights only by night
+    for (let i = G_ACC; i < G_CAP; i++) { aGlow.setW(i, d ? GL[i][3] : 0); aTint.setXYZ(i, accentU.value.r * 2.6 + 0.1, accentU.value.g * 2.6 + 0.1, accentU.value.b * 2.6 + 0.1); }
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera: above and behind the station, looking forward and down, the horizon near the top --- */
+  const C0 = new THREE.Vector3(30, 107, 85), look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 40 + k * 18;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = -0.16 + k * 0.1, pitch = -0.69 - k * 0.24, roll = 0.17 * (1 - k); // the horizon tilted, rising to the left, so the page's title sits over the Earth's bright limb, not black space; a phone looks further down
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * Math.cos(pitch) * 100, C0.y + Math.sin(pitch) * 100, C0.z - Math.cos(yaw) * Math.cos(pitch) * 100));
+    camera.rotateZ(roll); camera.updateMatrixWorld(); earth.position.copy(C0); stars.position.copy(C0);
+  }
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900)), buf = new THREE.Vector2();
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); };
+
+  const P2 = new THREE.Vector3(), T0 = 60, DRIFT = 0.9, WRAP = 5040; // the ground goes by at 0.9 km/s (an eighth of the real 7.7); every pattern repeats in 5040 km
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    earthU.uDrift.value.set((DRIFT * t) % WRAP, (DRIFT * 0.86 * t) % WRAP, (0.05 * t) % WRAP, 0); // the clouds a little slower, and drifting across; each wrapped on its own, so none jumps
+    const u = capsuleAt(t, P2); capsule.position.copy(P2);
+    const moving = u < CAP.inT || (u > CAP.inT + CAP.stay && u < CAP.inT + CAP.stay + CAP.outT);
+    capsule.updateMatrixWorld(true);
+    [[0.6, 0.3, 1.7], [-0.6, 0.3, 1.7], [0, 1.95, -2.9], [2.0, 0, -1.4], [-2.0, 0, -1.4]].forEach(([x, y, z], j) => { V.set(x, y, z).applyMatrix4(capsule.matrixWorld); let w = GL[G_CAP + j][3]; if (j === 2) w *= Math.sin(t * 6.3) > 0.85 ? 1 : 0; if (j >= 3) w = moving && Math.sin(t * 2.1 + j * 1.7) > 0.8 ? 0.55 : 0; if (j < 2 && !night) w *= 0.6; aGlow.setXYZW(G_CAP + j, V.x, V.y, V.z, w); }); // the strobe blinks; puffs from its thrusters now and then while it moves
+    for (let j = 0; j < 2; j++) aGlow.setW(G_STROBE + j, Math.sin(t * 4.0 + j * 2.1) > 0.92 ? GL[G_STROBE + j][3] : 0);
+    // the astronaut: working along the handrail, drifting a little, the tether slack between them
+    const ex = 2.2 * Math.sin(t * 0.06), ey = MY + 3.05 + 0.15 * Math.sin(t * 0.4), ez = -12.8 + 1.5 * Math.sin(t * 0.045 + 1);
+    eva.position.set(ex, ey, ez); eva.rotation.set(0.12 * Math.sin(t * 0.3), 0.6 + 0.3 * Math.sin(t * 0.05), 0.08 * Math.sin(t * 0.37));
+    const tp = tetherGeo.attributes.position; for (let k = 0; k < 12; k++) { const s = k / 11; tp.setXYZ(k, RAIL.x + (ex - RAIL.x) * s, RAIL.y + (ey - 0.2 - RAIL.y) * s + 0.6 * Math.sin(Math.PI * s), RAIL.z + (ez - RAIL.z) * s); } tp.needsUpdate = true;
+    eva.updateMatrixWorld(true); for (let j = 0; j < 2; j++) { V.set(j ? -0.18 : 0.18, 0.78, 0.2).applyMatrix4(eva.matrixWorld); aGlow.setXYZW(G_EVA + j, V.x, V.y, V.z, night ? 0.2 : 0); }
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { wings: WINGS.length, glows: NGL, capsule: +capsule.position.z.toFixed(1), accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
