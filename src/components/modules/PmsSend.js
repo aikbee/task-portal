@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck, TicketCheck } from "lucide-react";
+import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck, TicketCheck, Lock } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
@@ -178,6 +178,8 @@ function TaskChoice({ plan, choice, set, onDrop }) {
   const linked = plan.link;
   const facts = [PRIORITY_TO_PMS[t.priority], t.due_date ? tr("due {date}", { date: formatDate(t.due_date) }) : null, t.estimate_hours != null ? tr("estimate {time}", { time: formatMinutes(Number(t.estimate_hours) * 60) }) : null].filter(Boolean).join(" · ");
   const problem = problemOf(tr, plan, choice);
+  // a project that lets tokens only suggest refuses every status change, closing included: no point offering it
+  const closeBlocked = Boolean(plan.target?.mode && plan.target.mode !== "FULL");
   return (
     <Card className="pms-task space-y-3 !p-4">
       <div className="flex flex-wrap items-start gap-2">
@@ -242,11 +244,12 @@ function TaskChoice({ plan, choice, set, onDrop }) {
           <p className="flex items-center gap-1.5 px-1.5 text-xs text-fg-muted"><TicketCheck size={13} /> {tr("Closed in Bitara PMS")}</p>
         ) : (
           <div className="space-y-1.5 px-1.5">
-            <Checkbox checked={choice.close} onChange={(v) => set({ ...choice, close: v, reason: v && !choice.reason ? plan.close_reason || (choice.lang === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal.") : choice.reason })} label={tr("Close the ticket in Bitara PMS")} className="pms-close-on" />
-            {choice.close ? (
+            <Checkbox checked={choice.close && !closeBlocked} disabled={closeBlocked} onChange={(v) => set({ ...choice, close: v, reason: v && !choice.reason ? plan.close_reason || (choice.lang === "zh-CN" ? "已在 Task Portal 完成。" : "Done in Task Portal.") : choice.reason })} label={tr("Close the ticket in Bitara PMS")} className={cn("pms-close-on", closeBlocked && "cursor-not-allowed opacity-50")} />
+            {closeBlocked ? (
+              <p className="pms-close-blocked flex items-start gap-1.5 pl-6 text-[11px] text-fg-muted"><Lock size={12} className="mt-0.5 shrink-0" />{tr("{project} lets tokens only suggest, so Bitara PMS refuses closing from Task Portal. Close it in Bitara PMS, or ask the project owner to set the project to Full there, then press Check again on Integrations.", { project: plan.target.pms_project })}</p>
+            ) : choice.close ? (
               <div className="space-y-1 pl-6">
                 <Input value={choice.reason} onChange={(e) => set({ ...choice, reason: e.target.value })} maxLength={500} placeholder={tr("Why it is closed")} className="pms-close-reason h-8 text-xs" aria-label={tr("Why it is closed")} />
-                {plan.target?.mode && plan.target.mode !== "FULL" ? <p className="flex items-start gap-1.5 text-[11px] text-amber-600"><TriangleAlert size={12} className="mt-0.5 shrink-0" />{tr("{project} lets tokens only suggest, so Bitara PMS will refuse this unless its owner sets the project to Full in Bitara PMS.", { project: plan.target.pms_project })}</p> : null}
                 <p className="text-[11px] text-fg-faint">{tr("It closes after everything else you picked here has been sent.")}</p>
               </div>
             ) : null}
