@@ -487,6 +487,12 @@ system find its task again, and an `Idempotency-Key` header on a POST makes retr
 key on another request → 422). Endpoints are described once in `src/lib/api-docs.js`, which feeds both the guide
 and the OpenAPI file; helpers live in `src/lib/api-v1.js`, routes under `src/app/api/v1/`.
 
+`examples/api/task-portal-api-demo.mjs` plays a third party end to end and checks every answer (Node 18+, no
+dependencies): who am I, create (assigned by email, `external_id`, `Idempotency-Key`), a retry that must not
+duplicate, update, status, comment, time, a file up and down, `updated_since` paging, two refused mistakes, done,
+delete. The token comes from the environment: `TASK_PORTAL_URL=https://… TASK_PORTAL_TOKEN=tp_… node
+examples/api/task-portal-api-demo.mjs [--keep] [--assignee email] [--project CODE] [--quiet]`.
+
 **Webhooks** (Profiles → the webhook button on a profile; owner and managers) tell another system what happens
 in a profile: `task.created`, `task.updated`, `task.status_changed` (`data.from`, `data.to`), `task.assigned`
 (`data.added`, `data.removed`), `task.completed`, `task.deleted`, `task.comment`,
