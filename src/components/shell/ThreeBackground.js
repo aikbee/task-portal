@@ -24449,7 +24449,681 @@ function spacestation(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation };
+/* ---------- African savanna sunset: elephants at a waterhole, acacias, a safari jeep, Kilimanjaro far off; the camp's lights by night ---------- */
+// The plain is one height field round the camera (gentle swells, the waterhole's bowl), its grass golden in the low sun behind us, with
+// long shadows from a shadow map; Kilimanjaro stands 70 km off, drawn behind everything in painter's order, its snow pink in the last
+// light, under a sky that turns from peach to lavender with the Belt of Venus opposite the sun. The animals are rigs of rigid parts
+// (body, legs, trunk, ears, neck, tail) posed each frame from the clock alone; a leg's swing follows the distance its animal has walked,
+// so the feet stay planted. The waterhole mirrors everything above it.
+const SV_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uSunDir; uniform vec3 uSunGlow; uniform vec3 uBelt; uniform vec3 uShadow; uniform float uDay;
+  uniform float uNight; uniform sampler2D uNoise; uniform vec3 uGalN; uniform vec3 uGalC;
+  varying vec3 vDir;
+  void main() {
+    vec3 dir = normalize(vec3(vDir.x, abs(vDir.y), vDir.z)); // symmetric: the waterhole's mirrored pass sees the same sky
+    float h = dir.y;
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.2, h));
+    col = mix(col, uZenith, smoothstep(0.16, 0.85, h));
+    float toSun = dot(normalize(dir.xz + 1e-6), normalize(uSunDir.xz)) * 0.5 + 0.5, anti = (1.0 - toSun) * (1.0 - toSun);
+    col += uSunGlow * exp(-h * 6.0) * pow(toSun, 3.0) * uDay; // the warm glow low towards the sun, behind us
+    col = mix(col, uBelt, exp(-pow((h - 0.1) / 0.07, 2.0)) * anti * 0.7 * uDay); // the Belt of Venus: a pink band above the horizon opposite the sun
+    col = mix(col, uShadow, exp(-h / 0.04) * anti * 0.5 * uDay); // the Earth's shadow rising under it
+    if (uNight > 0.0) { // the Milky Way: a band along the galactic plane, its dark rift, the bright core over the mountain
+      float b = dot(dir, uGalN);
+      vec3 inPlane = normalize(dir - uGalN * b);
+      float l = atan(dot(inPlane, cross(uGalN, uGalC)), dot(inPlane, uGalC));
+      vec2 p = vec2(l * 2.0, b * 8.0);
+      float n1 = texture2D(uNoise, p * vec2(0.35, 0.45) + 0.13).r, n2 = texture2D(uNoise, p * vec2(1.2, 1.5) + 0.71).g, n3 = texture2D(uNoise, p * vec2(3.3, 3.9) + 0.37).r;
+      float width = 0.06 + 0.05 * exp(-l * l * 1.6);
+      float band = exp(-pow(b / width, 2.0)) * pow(0.25 + 0.75 * n1, 1.6) * (0.55 + 0.65 * n3);
+      float rift = smoothstep(0.42, 0.72, n2) * exp(-pow((b + 0.014 * sin(l * 4.0 + 1.0)) / 0.04, 2.0)) * smoothstep(1.6, 0.2, abs(l));
+      float core = exp(-(l * l) / 0.05 - (b * b) / 0.0045);
+      vec3 mw = (vec3(0.55, 0.62, 0.92) * band * 0.045 + vec3(1.0, 0.8, 0.58) * core * 0.05) * (1.0 - 0.8 * rift) * smoothstep(-0.02, 0.12, h);
+      col += mw * uNight + vec3(0.04, 0.05, 0.035) * exp(-h * 14.0) * uNight; // and a faint airglow along the horizon
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the plain: dry grass gold and grey in patches, bare red earth, greener and trampled to mud round the water, the jeep's ruts and the
+// elephants' trail worn into it; close by the grass stands in tussocks (a bump that fades out once a tussock is smaller than a pixel);
+// by night the camp's lamps and fire on the ground, and the jeep's headlights sweeping ahead of it
+const SV_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform sampler2D uTracks; uniform vec4 uTrackRect; uniform sampler2D uNightMap; uniform vec4 uNightRect; uniform vec4 uPool; uniform vec3 uCamp;
+  uniform float uNight; uniform float uTime; uniform vec3 uLampCol; uniform vec3 uFireCol; uniform vec3 uJeepP; uniform vec3 uJeepD; uniform float uJeepOn;
+  varying vec3 vPW; varying float vVar;
+  float svIn(vec2 uv) { return step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); }
+  float svPoolE(vec2 p) { vec2 d = (p - uPool.xy) / uPool.zw; float a = atan(d.y, d.x); return length(d) / (1.0 + 0.12 * sin(a * 3.0 + 1.0) + 0.07 * sin(a * 7.0)); }
+  float svHash(vec2 q) { q = fract(q * vec2(123.34, 456.21)); q += dot(q, q + 45.32); return fract(q.x * q.y); }
+  float svVN(vec2 q) { vec2 i = floor(q), f = fract(q), u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0); return mix(mix(svHash(i), svHash(i + vec2(1.0, 0.0)), u.x), mix(svHash(i + vec2(0.0, 1.0)), svHash(i + vec2(1.0, 1.0)), u.x), u.y); }
+  float svTufts(vec3 p) { // the grass's tussocks as a height in metres, gone once they are smaller than a pixel
+    vec2 q = mat2(0.8, -0.6, 0.6, 0.8) * p.xz; float fw = fwidth(p.x) + fwidth(p.z);
+    return (svVN(q / 0.9) * 0.6 + svVN(q / 0.37 + 9.0) * 0.4) * 0.24 * (1.0 - smoothstep(0.12, 0.6, fw)) * smoothstep(1.25, 1.6, svPoolE(p.xz)) * smoothstep(0.7, 1.1, length(p.xz - uCamp.xy) / uCamp.z);
+  }
+  vec3 svBump(vec3 pos, vec3 n, float h) { vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(h), dhy = dFdy(h); vec3 r1 = cross(dpy, n), r2 = cross(n, dpx); float det = dot(dpx, r1); return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2)); }
+  vec3 svGround(vec3 p) {
+    float n1 = vVar, n2 = texture2D(uNoise, p.xz * 0.006 + 0.3).g, n3 = texture2D(uNoise, p.xz * 0.045 + 0.7).r, n4 = texture2D(uNoise, p.xz * 0.21 + 0.43).g;
+    vec3 grass = mix(vec3(0.68, 0.5, 0.22), vec3(0.88, 0.7, 0.36), smoothstep(0.3, 0.7, n2 * 0.6 + n1 * 0.4)) * (0.86 + 0.24 * n3);
+    grass = mix(grass, vec3(0.56, 0.47, 0.3), smoothstep(0.6, 0.8, n3) * 0.45); // greyer, shorter patches
+    vec3 soil = mix(vec3(0.5, 0.27, 0.15), vec3(0.62, 0.36, 0.2), n4); // the red earth
+    vec3 col = mix(grass, soil, smoothstep(0.68, 0.86, n2 * 0.5 + n3 * 0.5) * 0.55); // bare patches
+    float e = svPoolE(p.xz);
+    col = mix(col, vec3(0.42, 0.44, 0.2) * (0.85 + 0.3 * n3), smoothstep(1.75, 1.2, e)); // greener round the water
+    col = mix(col, vec3(0.3, 0.22, 0.15) * (0.85 + 0.25 * n4), smoothstep(1.2, 1.02, e)); // trampled to mud at the edge
+    col = mix(col, vec3(0.17, 0.12, 0.08), smoothstep(1.0, 0.95, e)); // wet, under the water
+    vec2 tuv = (p.xz - uTrackRect.xy) * uTrackRect.zw;
+    col = mix(col, soil * 0.9, texture2D(uTracks, clamp(tuv, 0.0, 1.0)).r * svIn(tuv) * 0.85);
+    col = mix(col, mix(vec3(0.46, 0.3, 0.19), vec3(0.56, 0.38, 0.24), n4), (1.0 - smoothstep(0.75, 1.05, length(p.xz - uCamp.xy) / uCamp.z)) * 0.85); // the camp's ground, trodden bare
+    return col;
+  }
+  vec3 svLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    vec3 m = texture2D(uNightMap, clamp(uv, 0.0, 1.0)).rgb * svIn(uv);
+    float flick = 0.85 + 0.15 * sin(uTime * 9.0) * sin(uTime * 13.7 + 1.0);
+    vec2 rel = p.xz - uJeepP.xz; float along = dot(rel, uJeepD.xz), across = dot(rel, vec2(-uJeepD.z, uJeepD.x)), w = 1.4 + along * 0.32;
+    float beam = smoothstep(0.0, 3.0, along) * exp(-along / 26.0) * exp(-across * across / (w * w)) * uJeepOn;
+    return albedo * (uLampCol * m.r + uFireCol * m.g * flick + vec3(1.0, 0.92, 0.78) * beam * 1.6) * uNight;
+  }
+`;
+// the waterhole: a breath of wind on it, rings where the elephants' trunks dip, the mirrored world, the muddy water through it
+const SV_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNoise; uniform float uTime; uniform vec3 uBody; uniform vec3 uHaze; uniform float uFogD;
+  uniform vec4 uDrops[8]; uniform vec3 uGlintDir; uniform vec3 uGlintCol; uniform float uGlint;
+  varying vec3 vWorld;
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz;
+    vec2 s = (texture2D(uNoise, p * 0.05 + vec2(uTime * 0.01, 0.0)).rg - 0.5) * 0.3 + (texture2D(uNoise, p * 0.17 - vec2(0.0, uTime * 0.016)).rg - 0.5) * 0.18;
+    for (int i = 0; i < 8; i++) {
+      vec4 d = uDrops[i];
+      if (d.w <= 0.0) continue;
+      vec2 q = p - d.xy; float rr = length(q), age = uTime - d.z, front = age * 1.1;
+      if (age < 0.0 || age > 6.0) continue;
+      float ring = sin((rr - front) * 9.0) * exp(-abs(rr - front) * 1.6) * exp(-age * 0.55) * step(rr, front + 0.6);
+      s += q / max(rr, 0.05) * ring * 0.5 * d.w;
+    }
+    vec3 N = normalize(vec3(s.x * 0.35, 1.0, s.y * 0.35));
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec2 uv = gl_FragCoord.xy / uRes + vec2(s.x * 0.012, s.y * 0.03);
+    vec3 refl = texture2D(tReflect, clamp(uv, 0.001, 0.999)).rgb;
+    vec3 col = mix(uBody, refl, clamp(0.15 + 0.85 * fres, 0.0, 0.9));
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    col += uGlintCol * uGlint * pow(max(dot(R, uGlintDir), 0.0), 120.0);
+    float fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the animals' coats, from each part's own position: an elephant's wrinkled hide, a giraffe's patches between cream lines (cells of a
+// jittered grid), a zebra's stripes (across the body's length, round the legs and neck); each pattern fades to its average once smaller
+// than a pixel; parts not painted in the coat marker keep their own colour
+const SV_COAT_PARS = /* glsl */ `
+  varying vec3 vLP; varying float vPat;
+  float svH3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float svN3(vec3 p) { vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(svH3(i), svH3(i + vec3(1, 0, 0)), f.x), mix(svH3(i + vec3(0, 1, 0)), svH3(i + vec3(1, 1, 0)), f.x), f.y), mix(mix(svH3(i + vec3(0, 0, 1)), svH3(i + vec3(1, 0, 1)), f.x), mix(svH3(i + vec3(0, 1, 1)), svH3(i + vec3(1, 1, 1)), f.x), f.y), f.z); }
+  vec3 svCoat(vec3 base) {
+    bool coat = base.r > 0.95 && base.g > 0.95 && base.b > 0.95;
+  #ifdef ELEPHANT
+    float n = svN3(vLP * 1.6) * 0.6 + svN3(vLP * 5.3 + 3.0) * 0.4;
+    return base * (0.78 + 0.34 * n);
+  #elif defined( GIRAFFE )
+    if (!coat) return base;
+    vec3 q = vLP / 0.3, i = floor(q), f = fract(q); float d1 = 8.0, d2 = 8.0;
+    for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+      vec3 o = vec3(float(x), float(y), float(z)), c = i + o, r = o + vec3(svH3(c), svH3(c + 7.1), svH3(c + 13.7)) * 0.8 + 0.1 - f; float d = dot(r, r);
+      if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+    }
+    float edge = sqrt(d2) - sqrt(d1), fw = fwidth(q.x) + fwidth(q.y), line = 1.0 - smoothstep(0.07, 0.17 + fw, edge);
+    line = mix(line, 0.32, smoothstep(0.35, 0.9, fw));
+    return mix(vec3(0.52, 0.26, 0.1), vec3(0.9, 0.82, 0.64), line);
+  #else
+    if (!coat) return base;
+    float k = vPat < 0.5 ? vLP.x + 0.12 * sin(vLP.y * 4.0) : vLP.y, s = k / 0.26, fs = fwidth(s);
+    float stripe = smoothstep(0.5 - fs, 0.5 + fs, abs(fract(s) - 0.5) * 2.0);
+    stripe = mix(stripe, 0.5, smoothstep(0.3, 0.8, fs));
+    return mix(vec3(0.07, 0.065, 0.06), vec3(0.93, 0.91, 0.86), stripe);
+  #endif
+  }
+`;
+/** Worn tracks from above, over rect [x0, z0, x1, z1]: [points, closed, width, ruts] paths as soft bands, one stroke each so their joins never double up; ruts leave a strip of grass down the middle. */
+function svTracks(THREE, paths, [x0, z0, x1, z1]) {
+  const W = 1024, H = 1024, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (z) => ((z1 - z) / (z1 - z0)) * H, S = W / (x1 - x0); // the canvas's top row is the far edge (v = 1 once flipped)
+  g.lineCap = g.lineJoin = "round";
+  const stroke = (pts, closed, w, style) => { g.strokeStyle = style; g.lineWidth = Math.max(1, w * S); g.beginPath(); pts.forEach(([x, z], i) => (i ? g.lineTo(X(x), Y(z)) : g.moveTo(X(x), Y(z)))); if (closed) g.closePath(); g.stroke(); };
+  for (const [pts, closed, w, ruts] of paths) {
+    stroke(pts, closed, w * 1.7, "rgba(255,255,255,0.3)"); stroke(pts, closed, w, "rgba(255,255,255,0.85)");
+    if (ruts) stroke(pts, closed, w * 0.32, "rgba(0,0,0,0.75)");
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+function savanna(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(5151);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 26; camera.near = 1; camera.far = 160000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), M = new THREE.Matrix4(), M2 = new THREE.Matrix4(), B = new THREE.Matrix4();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)); // az from straight ahead (−z), positive to the right
+  const between = (a, b, rad, hex, seg = 6, r1 = rad) => { const d = new THREE.Vector3().subVectors(b, a); return [new THREE.CylinderGeometry(r1, rad, 1, seg).translate(0, 0.5, 0), new THREE.Matrix4().compose(a, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize()), new THREE.Vector3(1, d.length(), 1)), hex]; };
+  const SUN = sph(-2.27, 0.19), STARLIGHT = sph(0.4, 0.95); // the evening sun low behind our left shoulder; by night only starlight from above
+  const GAL_C = sph(-0.12, 0.13), GAL_N = new THREE.Vector3().crossVectors(GAL_C, new THREE.Vector3(0.6, 0.8, -0.1).normalize()).normalize(); // the Milky Way's core just over the mountain, its band rising to the right
+  GAL_C.addScaledVector(GAL_N, -GAL_C.dot(GAL_N)).normalize();
+  const ACC = 0xff00ff, LAMP = 0xffff00, COAT = 0xffffff; // vertex-colour markers: the accent; lamps lit at night; a coat or shirt in each instance's own colour (or the pattern)
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const chaikin = (pts, closed, n) => { let p = pts.map((q) => q.slice()); for (let k = 0; k < n; k++) { const o = [], m = closed ? p.length : p.length - 1; if (!closed) o.push(p[0]); for (let i = 0; i < m; i++) { const a = p[i], b = p[(i + 1) % p.length]; o.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]); } if (!closed) o.push(p[p.length - 1]); p = o; } return p; };
+  const pathOf = (raw, closed) => { // a smoothed path, walked by arc length
+    const pts = chaikin(raw, closed, 4), n = pts.length, seg = closed ? n : n - 1, cum = [0];
+    for (let i = 0; i < seg; i++) { const a = pts[i], b = pts[(i + 1) % n]; cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+    const L = cum[seg];
+    const at = (s, out) => { s = closed ? ((s % L) + L) % L : Math.min(L, Math.max(0, s)); let lo = 0, hi = seg; while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; } const a = pts[lo], b = pts[(lo + 1) % n], t = (s - cum[lo]) / Math.max(1e-6, cum[lo + 1] - cum[lo]); out[0] = a[0] + (b[0] - a[0]) * t; out[1] = a[1] + (b[1] - a[1]) * t; return out; };
+    return { pts, L, at, closed };
+  };
+  const nearPath = (path, x, z, d) => path.pts.some(([px, pz]) => Math.abs(px - x) < d && Math.abs(pz - z) < d && Math.hypot(px - x, pz - z) < d);
+
+  /* --- the land: gentle swells, the waterhole's bowl, a rise under the kopje, the Earth's curve --- */
+  const C0 = new THREE.Vector3(0, 9.3, 0); // the lodge's deck
+  const POOL = { x: -12, z: -128, rx: 46, rz: 15 }; // the water's surface at y 0
+  const poolE = (x, z) => { const dx = (x - POOL.x) / POOL.rx, dz = (z - POOL.z) / POOL.rz, a = Math.atan2(dz, dx); return Math.hypot(dx, dz) / (1 + 0.12 * Math.sin(a * 3 + 1) + 0.07 * Math.sin(a * 7)); }; // under 1 at the water's edge (about 0.97)
+  const KOPJE = { x: -235, z: -455 };
+  const curve = (x, z) => (Math.pow(x - C0.x, 2) + Math.pow(z - C0.z, 2)) / 12742000;
+  function groundH(x, z) {
+    let h = 0.55 + 1.6 * (fbm(x * 0.0035, z * 0.0035, 3) - 0.5) + 0.3 * (fbm(x * 0.03 + 7, z * 0.03, 2) - 0.5);
+    const e = poolE(x, z);
+    if (e < 1.7) { const k = smooth(1.05, 1.7, e); h = h * k + 0.3 * (1 - k); }
+    if (e < 1.08) h -= 1.55 * (1 - (e / 1.08) * (e / 1.08));
+    const dk = Math.hypot(x - KOPJE.x, z - KOPJE.z); if (dk < 60) h += 5 * smooth(60, 10, dk);
+    return h - curve(x, z);
+  }
+  const RINGS = [];
+  for (let rr = 28; rr < 46000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 400 ? 0.016 : rr < 3000 ? 0.024 : 0.05)) RINGS.push(rr); // none nearer: the ground under the bottom of the frame is ~40 m off
+  RINGS.push(46000);
+  const NA = preview ? 100 : 210, AW = 0.66, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  {
+    const pos = new Float32Array(nv * 3), vari = new Float32Array(nv), idx = [];
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) { const a = -AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i; pos[k * 3] = x; pos[k * 3 + 1] = groundH(x, z); pos[k * 3 + 2] = z; vari[k] = vnoise(x * 0.01 + 40.5, z * 0.01 - 17.25); }
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; idx.push(a, b, c, b, d, c); }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(idx); landGeo.computeVertexNormals();
+    landGeo.setAttribute("aVar", new THREE.BufferAttribute(vari, 1));
+  }
+
+  /* --- paths: the jeep's game drive round the waterhole from the camp; the elephants' trail along its far shore --- */
+  const JEEP = pathOf([[-205, -232], [-140, -240], [-70, -246], [0, -240], [70, -236], [140, -246], [205, -252]], false); // a dirt road across the plain behind the waterhole
+  const HERD = pathOf([[98, -180], [60, -160], [30, -150], [12, -148], [-48, -148], [-66, -151], [-92, -163], [-128, -180]], false); // in from the right, along the far shore (where they drink, facing the water), out to the left
+  const TRACK_RECT = [-215, -270, 215, -40];
+  const tracksTex = keep(svTracks(THREE, [[JEEP.pts, false, 2.6, true], [HERD.pts, false, 3.2, false]], TRACK_RECT));
+
+  /* --- materials --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const NIGHT_RECT = [-70, -120, 20, -40];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, nightMapU = { value: null }, lampColU = { value: new THREE.Color(1.0, 0.78, 0.5).multiplyScalar(1.2) }, fireColU = { value: new THREE.Color(1.0, 0.5, 0.2).multiplyScalar(1.5) };
+  const jeepPU = { value: new THREE.Vector3() }, jeepDU = { value: new THREE.Vector3(1, 0, 0) }, jeepOnU = { value: 0 };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uTracks: { value: tracksTex }, uTrackRect: rectU(TRACK_RECT), uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uPool: { value: new THREE.Vector4(POOL.x, POOL.z, POOL.rx, POOL.rz) }, uCamp: { value: new THREE.Vector3(-26, -84, 24) }, uNight: nightU, uTime: time, uLampCol: lampColU, uFireCol: fireColU, uJeepP: jeepPU, uJeepD: jeepDU, uJeepOn: jeepOnU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aVar; varying float vVar; varying vec3 vPW;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vVar = aVar; vPW = position; // the local position: the mirrored pass keeps the colours");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + SV_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = svGround(vPW);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = svBump(-vViewPosition, normal, svTufts(vPW));")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += svLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "sv-ground";
+  const lit = (mat, key, extraVS = "", coat = false) => { // markers: the accent; lamps dark by day, lit by night; with coat, each instance's own colour (negative: the accent)
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time });
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime;" + (coat ? "\nattribute vec3 aCoat; varying vec3 vCoat;" : "")).replace("#include <begin_vertex>", "#include <begin_vertex>\n" + (coat ? "  vCoat = aCoat;\n" : "") + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;" + (coat ? "\nvarying vec3 vCoat;" : ""))
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float svLamp = 0.0, svAcc = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.08, 0.06, 0.05), isLamp); svLamp = isLamp; svAcc = isAcc;${coat ? `
+    float isCoat = step(0.95, c.r) * step(0.95, c.g) * step(0.95, c.b); diffuseColor.rgb = mix(diffuseColor.rgb, vCoat.r < 0.0 ? uAccent * 0.9 : vCoat, isCoat);` : ""} }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.7, 0.38) * svLamp * (0.03 + 1.6 * uNight) + uAccent * svAcc * 0.12 * uNight; // the accent faintly lit by the camp's lights at night");
+    };
+    mat.customProgramCacheKey = () => "sv-" + key;
+    return mat;
+  };
+  const coatMat = (kind) => { // an animal's hide or coat from its part's own position (SV_COAT_PARS)
+    const m = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88 }));
+    m.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aPat; varying vec3 vLP; varying float vPat;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vLP = position; vPat = aPat;");
+      sh.fragmentShader = "#define " + kind + "\n" + sh.fragmentShader.replace("#include <common>", "#include <common>\n" + SV_COAT_PARS).replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = svCoat(diffuseColor.rgb);");
+    };
+    m.customProgramCacheKey = () => "sv-coat-" + kind;
+    return m;
+  };
+  const withPat = (g, v) => { g.setAttribute("aPat", new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(v), 1)); return keep(g); };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })), "paint");
+  const world = new THREE.Group(); scene.add(world); // everything the waterhole mirrors
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; land.renderOrder = 1; world.add(land); // after the trees and the animals: early-z skips the ground behind them
+
+  /* --- Kilimanjaro, 70 km off: drawn behind everything (in painter's order, far triangles first), its own haze --- */
+  const KILI = { x: -7400, z: -70000 }; KILI.y = -curve(KILI.x, KILI.z);
+  const kiliH = (dx, dz) => {
+    const rr = Math.hypot(dx, dz), a = Math.atan2(dz, dx);
+    let h = rr < 1700 ? 4720 + 70 * Math.sin((rr / 1700) * Math.PI) : rr < 7500 ? 4720 - 2150 * Math.pow((rr - 1700) / 5800, 0.9) : 2570 * Math.pow(Math.max(0, 1 - (rr - 7500) / 26500), 1.7); // Kibo: the flat summit and its rim, the cone, the long lower slopes
+    h *= 1 + (0.05 * Math.sin(a * 11 + 0.5) + 0.03 * Math.sin(a * 23)) * smooth(1700, 4000, rr) * (1 - smooth(9000, 16000, rr)); // gullies down the cone
+    const dm = Math.hypot(dx + 11500, dz + 1500), dsh = Math.hypot(dx - 13000, dz - 2500);
+    h = Math.max(h, 3950 * Math.exp(-((dm / 3200) ** 2)) * (1 + 0.12 * Math.sin(Math.atan2(dz + 1500, dx + 11500) * 9))); // Mawenzi, jagged, to the east (our left)
+    h = Math.max(h, 2650 * Math.exp(-((dsh / 8500) ** 4))); // the Shira plateau to the west: flat-topped, a long shoulder
+    return h;
+  };
+  const kiliGeo = (() => {
+    const NRk = preview ? 40 : 70, NSk = preview ? 120 : 220, pos = [], col = [], cs = new THREE.Color(), cTop = new THREE.Color(0xf2eeee), cRock = new THREE.Color(0x5e5048), cMoor = new THREE.Color(0x6c5e4a), cForest = new THREE.Color(0x2c3822), cLow = new THREE.Color(0x857250);
+    for (let i = 0; i <= NRk; i++) for (let j = 0; j < NSk; j++) {
+      const rr = 36000 * Math.pow(i / NRk, 1.55), a = (j / NSk) * Math.PI * 2, dx = Math.cos(a) * rr, dz = Math.sin(a) * rr, h = kiliH(dx, dz);
+      pos.push(KILI.x + dx, KILI.y + h - (rr > 30000 ? (rr - 30000) * 0.1 : 0), KILI.z + dz);
+      const n = vnoise(dx * 0.0011 + 3, dz * 0.0011), gully = Math.sin(a * 11 + 0.5) + 0.6 * Math.sin(a * 23);
+      const snow = smooth(3950 + 220 * n - 420 * Math.max(0, -gully) * smooth(3000, 4500, h), 4180 + 220 * n, h); // the summit's ice, streaks of it down the gullies
+      cs.copy(cLow).lerp(cForest, smooth(1300, 1900, h)).lerp(cMoor, smooth(2700, 3200, h)).lerp(cRock, smooth(3500, 4000, h)).lerp(cTop, snow);
+      col.push(cs.r, cs.g, cs.b);
+    }
+    const tris = [];
+    for (let i = 0; i < NRk; i++) for (let j = 0; j < NSk; j++) { const j1 = (j + 1) % NSk, a = i * NSk + j, b = i * NSk + j1, c = (i + 1) * NSk + j, d = (i + 1) * NSk + j1; tris.push([a, c, b], [b, c, d]); }
+    const P = (k) => V.set(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]).distanceToSquared(C0);
+    tris.sort((u, w) => (P(w[0]) + P(w[1]) + P(w[2])) - (P(u[0]) + P(u[1]) + P(u[2]))); // far first: drawn without depth, the near flanks cover the far ones
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); g.setIndex(tris.flat()); g.computeVertexNormals();
+    return keep(g);
+  })();
+  const kiliHazeU = { value: new THREE.Color() }, kiliHazeAmt = { value: 0.35 };
+  const kiliMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, fog: false, depthTest: false, depthWrite: false }));
+  kiliMat.onBeforeCompile = (sh) => { Object.assign(sh.uniforms, { uHaze: kiliHazeU, uHazeAmt: kiliHazeAmt }); sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uHaze; uniform float uHazeAmt;").replace("#include <colorspace_fragment>", "gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, uHazeAmt);\n#include <colorspace_fragment>"); };
+  kiliMat.customProgramCacheKey = () => "sv-kili";
+  const kili = new THREE.Mesh(kiliGeo, kiliMat); kili.renderOrder = -8; kili.frustumCulled = false; world.add(kili);
+
+  /* --- the sky, its clouds, the stars --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunGlow: { value: new THREE.Color() }, uBelt: { value: new THREE.Color() }, uShadow: { value: new THREE.Color() }, uDay: { value: 1 },
+    uNight: nightU, uNoise: { value: noise }, uGalN: { value: GAL_N }, uGalC: { value: GAL_C } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(150000, 48, 24)), shader(LANTERN_SKY_VS, SV_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const cloudU = { uNoise: { value: noise }, uTime: time, uSunDir: { value: SUN.clone() }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() } };
+  const clouds = new THREE.Mesh(keep(new THREE.PlaneGeometry(90000, 90000).rotateX(Math.PI / 2)), shader(LANTERN_LAKE_VS, SANTORINI_CLOUD_FS, cloudU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  clouds.position.set(0, 2600, -20000); clouds.renderOrder = -6; clouds.frustumCulled = false; world.add(clouds);
+  const NSTAR = preview ? 500 : 1700, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)), b = r(); starPos.set([Math.cos(a) * Math.cos(e) * 120000, Math.sin(e) * 120000, Math.sin(a) * Math.cos(e) * 120000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+
+  /* --- acacias: flat-topped umbrella thorns, a few variants; near ones, scattered ones, far silhouettes on the horizon --- */
+  const BARK = 0x4e3e30, LEAF = [0x4c5a28, 0x5a6630, 0x3e4a22];
+  const acaciaGeo = (seed, pads) => {
+    const rr = koiRng(seed), parts = [], Ht = rr(5.5, 7.5), fork = new THREE.Vector3(rr(-0.4, 0.4), Ht * rr(0.38, 0.5), rr(-0.4, 0.4));
+    parts.push(between(new THREE.Vector3(0, -0.3, 0), fork, 0.3, BARK, 7, 0.2));
+    const NB = 3 + Math.floor(rr() * 3);
+    for (let b = 0; b < NB; b++) {
+      const a = (b / NB) * Math.PI * 2 + rr(-0.35, 0.35), out = rr(2.2, 4.4), top = new THREE.Vector3(fork.x + Math.cos(a) * out, Ht * rr(0.84, 0.96), fork.z + Math.sin(a) * out);
+      parts.push(between(fork, top, 0.14, BARK, 5, 0.07));
+      for (let k = 0; k < pads; k++) parts.push([blob(rr(2.0, 3.2), rr(0.42, 0.68), rr(1.9, 3.0), 1), at(top.x + rr(-1.3, 1.3), top.y + rr(-0.1, 0.4), top.z + rr(-1.3, 1.3), 0, rr(0, 3), 0), LEAF[Math.floor(rr() * 3)]]); // pads of leaves, a flat crown
+    }
+    return keep(mergeColored(THREE, parts));
+  };
+  const TREE_GEOS = [acaciaGeo(11, 3), acaciaGeo(23, 3), acaciaGeo(37, 4), acaciaGeo(41, 2)];
+  const FAR_GEO = keep(mergeColored(THREE, [[cyl(0.18, 0.25, 4.5, 4), at(0, 2.2, 0), BARK], [blob(4.2, 0.75, 3.6, 0), at(0, 5.1, 0), LEAF[0]]])); // far off: a flat crown on its trunk is all that shows
+  const TREES = [[-112, -222, 1.15, 0], [58, -174, 1.0, 1], [118, -278, 1.1, 2], [-70, -266, 0.95, 3], [20, -312, 1.05, 0], [-40, -420, 1.0, 1], [160, -400, 1.1, 2]]; // x, z, scale, variant
+  for (let tries = 0; TREES.length < (preview ? 22 : 48) && tries < 3000; tries++) {
+    const a = r(-0.62, 0.62), d = 190 + 1100 * Math.pow(r(), 1.4), x = C0.x + d * Math.sin(a), z = C0.z - d * Math.cos(a);
+    if (poolE(x, z) < 2.3 || nearPath(JEEP, x, z, 9) || nearPath(HERD, x, z, 10) || Math.hypot(x - KOPJE.x, z - KOPJE.z) < 50 || TREES.some(([tx, tz]) => Math.hypot(tx - x, tz - z) < 22)) continue;
+    TREES.push([x, z, r(0.75, 1.15), Math.floor(r() * 4)]);
+  }
+  const treeMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 })), "tree");
+  const treeMeshes = TREE_GEOS.map((g, v) => { const list = TREES.filter((t) => t[3] === v), m = new THREE.InstancedMesh(g, treeMat, Math.max(1, list.length)); list.forEach(([x, z, s], i) => m.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z), z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.9, 1.1), s)))); m.count = list.length; m.frustumCulled = false; world.add(m); keep(m); return m; });
+  const FAR = [];
+  for (let tries = 0; FAR.length < (preview ? 120 : 280) && tries < 4000; tries++) { const a = r(-0.62, 0.62), d = 1300 + 9000 * Math.pow(r(), 1.8), x = C0.x + d * Math.sin(a), z = C0.z - d * Math.cos(a); if (r() > 0.25 + 0.75 * smooth(0.35, 0.6, vnoise(x * 0.0015, z * 0.0015))) continue; FAR.push([x, z, r(0.8, 1.3)]); } // in loose groves
+  const farTrees = new THREE.InstancedMesh(FAR_GEO, treeMat, FAR.length);
+  FAR.forEach(([x, z, s], i) => farTrees.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z), z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s, s))));
+  farTrees.frustumCulled = false; world.add(farTrees); keep(farTrees);
+
+  /* --- tall grass near by, termite mounds, the kopje's boulders --- */
+  const grassGeo = keep(mergeColored(THREE, [0, 1, 2, 3, 4, 5, 6].map((k) => { const a = (k / 7) * Math.PI * 2, h = 0.55 + 0.45 * ((k * 37) % 5) / 5; return [new THREE.ConeGeometry(0.05, h, 3, 1, true).translate(0, h / 2, 0), at(Math.cos(a) * 0.2, 0, Math.sin(a) * 0.2, Math.sin(a) * 0.42, 0, -Math.cos(a) * 0.42), [0xc8a060, 0xa88a58, 0xd8b878, 0x9a8a6a][k % 4]]; }))); // a tuft of blades leaning out, some greyer
+  const SWAY = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.21;\n#endif\n  transformed.x += (0.06 + 0.05 * sin(uTime * 1.7 + ph)) * position.y * position.y; } // the evening breeze in the grass";
+  const GRASS = [];
+  if (!preview) for (let tries = 0; GRASS.length < 1500 && tries < 20000; tries++) {
+    const a = r(-0.6, 0.6), d = 36 + 54 * Math.pow(r(), 1.2), x = C0.x + d * Math.sin(a), z = C0.z - d * Math.cos(a);
+    if (poolE(x, z) < 1.3 || (x > -52 && x < 6 && z < -56 && z > -106) || r() > 0.3 + 0.7 * smooth(0.35, 0.6, vnoise(x * 0.08, z * 0.08)) || nearPath(JEEP, x, z, 2.2)) continue;
+    GRASS.push([x, z, r(0.5, 1.05)]);
+  }
+  const grass = new THREE.InstancedMesh(grassGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 })), "grass", SWAY), Math.max(1, GRASS.length));
+  GRASS.forEach(([x, z, s], i) => grass.setMatrixAt(i, new THREE.Matrix4().compose(V.set(x, groundH(x, z) - 0.05, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.set(s, s * r(0.8, 1.3), s))));
+  grass.count = GRASS.length; grass.frustumCulled = false; world.add(grass); keep(grass);
+  const S = [], P = (geo, m, hex) => S.push([geo, m, hex]);
+  for (let tries = 0, n = 0; n < (preview ? 8 : 18) && tries < 800; tries++) { // termite mounds: lumpy towers of red earth
+    const x = r(-160, 160), z = r(-520, -60);
+    if (poolE(x, z) < 1.6 || nearPath(JEEP, x, z, 6) || nearPath(HERD, x, z, 6) || Math.abs(Math.atan2(x, -z)) > 0.62 || (x > -60 && x < 15 && z > -115)) continue;
+    const y = groundH(x, z), h = r(1.4, 3.6); n++;
+    P(new THREE.ConeGeometry(h * 0.3, h, 7).translate(0, h / 2 - 0.1, 0), at(x, y, z, r(-0.08, 0.08), r(0, 3), r(-0.08, 0.08)), 0x7e5640); P(blob(h * 0.45, h * 0.3, h * 0.42, 1), at(x, y + 0.05, z), 0x74503c); P(blob(h * 0.2, h * 0.35, h * 0.2, 0), at(x + r(-0.2, 0.2) * h, y + h * 0.35, z), 0x7e5640);
+    if (r() < 0.6) P(new THREE.ConeGeometry(h * 0.13, h * 0.55, 6).translate(0, h * 0.27, 0), at(x + h * 0.25, y + h * 0.32, z, 0, 0, -0.25), 0x7e5640); // a second chimney
+  }
+  for (let k = 0; k < (preview ? 7 : 14); k++) { const a = r(0, 6.28), d = r(0, 28), x = KOPJE.x + Math.cos(a) * d, z = KOPJE.z + Math.sin(a) * d, s = r(3, 9) * (1 - d / 40); P(blob(s, s * r(0.6, 0.9), s * r(0.8, 1.1), 1), at(x, groundH(x, z) + s * 0.3, z, r(0, 1), r(0, 3), r(0, 1)), r() < 0.5 ? 0x8a8178 : 0x9a8e82); } // the kopje: granite boulders on their rise
+
+  /* --- the camp: two safari tents on their platforms, a fire with chairs round it, lanterns, string lights, a flag --- */
+  const GL = [], POOLS = [], WARM = [2.5, 1.7, 0.9], CANVAS = 0xc9b48c, CANVAS_D = 0xae9a74, WOOD = 0x5a4232;
+  const TENTS = [[-24, -80, 0.25], [-38, -95, 0.5]];
+  for (const [tx, tz, ry] of TENTS) {
+    const y = groundH(tx, tz), M0 = (lx, ly, lz) => { const c = Math.cos(ry), s = Math.sin(ry); return at(tx + lx * c + lz * s, y + ly, tz - lx * s + lz * c, 0, ry, 0); };
+    P(box(6, 0.4, 7.4), M0(0, 0.2, 0), WOOD); P(box(4.4, 2.3, 4.6), M0(0, 1.55, -0.6), CANVAS);
+    const roof = new THREE.CylinderGeometry(0.01, 3.4, 1.3, 4, 1).rotateY(Math.PI / 4).scale(1, 1, 1.25); P(roof, M0(0, 3.35, -0.6), CANVAS_D); // a pitched canvas roof
+    P(box(4.6, 0.08, 2.6), M0(0, 2.75, 2.4), CANVAS_D); for (const sx of [-2.1, 2.1]) P(cyl(0.05, 0.05, 2.6, 5), M0(sx, 1.65, 3.5), WOOD); // the veranda's awning on its poles
+    P(box(1.5, 1.9, 0.08), M0(0, 1.35, 1.72), LAMP); // the door, glowing from inside by night
+    for (const sx of [-1.45, 1.45]) P(box(0.8, 0.7, 0.06), M0(sx, 1.8, 1.72), LAMP);
+    POOLS.push([tx + Math.sin(ry) * 4, tz + Math.cos(ry) * 4, 6, 0.7, 0]);
+  }
+  const FIRE = { x: -12, z: -67 }; FIRE.y = groundH(FIRE.x, FIRE.z);
+  for (let k = 0; k < 9; k++) { const a = (k / 9) * Math.PI * 2; P(blob(0.24, 0.16, 0.22, 0), at(FIRE.x + Math.cos(a) * 0.75, FIRE.y + 0.08, FIRE.z + Math.sin(a) * 0.75, 0, a, 0), 0x6a645c); }
+  for (let k = 0; k < 4; k++) P(cyl(0.07, 0.08, 1.1, 6).rotateZ(Math.PI / 2), at(FIRE.x, FIRE.y + 0.12, FIRE.z, 0, (k / 4) * Math.PI + 0.3, 0.12), 0x3a2a1e); // the logs
+  for (let k = 0; k < 4; k++) { const a = (k / 4) * Math.PI * 2 + 0.4, cx = FIRE.x + Math.cos(a) * 2.4, cz = FIRE.z + Math.sin(a) * 2.4, face = Math.atan2(-(FIRE.z - cz), FIRE.x - cx); P(box(0.6, 0.06, 0.55), at(cx, FIRE.y + 0.45, cz, 0, face, 0), 0x6a5a3a); P(box(0.08, 0.6, 0.55), at(cx - Math.cos(face) * 0.3, FIRE.y + 0.75, cz + Math.sin(face) * 0.3, 0, face, 0.15), 0x6a5a3a); } // camp chairs round it
+  POOLS.push([FIRE.x, FIRE.z, 9, 0.9, 1]);
+  const LANTERNS = [[-17, -71], [-31, -84], [-6, -76], [-44, -100]];
+  for (const [x, z] of LANTERNS) { const y = groundH(x, z); P(cyl(0.05, 0.06, 2.3, 5), at(x, y + 1.15, z), 0x2a2420); P(box(0.24, 0.32, 0.24), at(x, y + 2.35, z), LAMP); GL.push([x, y + 2.35, z, 0.35, ...WARM, 1.3]); POOLS.push([x, z, 5, 0.6, 0]); }
+  const STRING = [[-21.5, -77.3, 3.0], [-17, -71, 2.6], [-6, -76, 2.6]], G_STRING = GL.length; // fairy lights in the accent, sagging between the tent's veranda and the lanterns
+  for (let k = 0; k < STRING.length - 1; k++) { const [x0, z0, y0] = STRING[k], [x1, z1, y1] = STRING[k + 1]; for (let u = 0.1; u < 0.95; u += 0.12) GL.push([x0 + (x1 - x0) * u, groundH(x0, z0) + y0 + (y1 - y0) * u - 0.7 * Math.sin(Math.PI * u), z0 + (z1 - z0) * u, 0.12, 1, 1, 1, 1.0]); }
+  const N_STRING = GL.length - G_STRING;
+  const FLAGPOLE = { x: -46, z: -90 }; FLAGPOLE.y = groundH(FLAGPOLE.x, FLAGPOLE.z); P(cyl(0.05, 0.07, 7, 5), at(FLAGPOLE.x, FLAGPOLE.y + 3.5, FLAGPOLE.z), 0x8a8a88);
+  nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
+  const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+  const flagMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })), "flag", GW_FLAG_VS);
+  const flag = new THREE.Mesh(keep(mergeColored(THREE, [[new THREE.PlaneGeometry(2.6, 1.6, 8, 1).translate(1.3, -0.8, 0), new THREE.Matrix4(), ACC]])), flagMat);
+  flag.position.set(FLAGPOLE.x, FLAGPOLE.y + 6.9, FLAGPOLE.z); flag.rotation.y = -0.3; world.add(flag); // streaming downwind, to the right like the grass
+  const G_FIRE = GL.length; GL.push([FIRE.x, FIRE.y + 0.6, FIRE.z, 1.6, 2.6, 1.1, 0.35, 1.6]);
+  const fireU = { uTime: time, uStrength: { value: 1 } }, flames = [];
+  for (const [dx, dz, w, h, s] of [[0, 0, 0.9, 1.5, 0.1], [0.22, 0.12, 0.6, 1.1, 0.5], [-0.2, -0.1, 0.65, 1.2, 0.8]]) { const m = new THREE.Mesh(keep(new THREE.PlaneGeometry(1, 1)), keep(new THREE.ShaderMaterial({ uniforms: { uTime: time, uStrength: fireU.uStrength, uSeed: { value: s }, uSize: { value: new THREE.Vector2(w, h) } }, vertexShader: CAMP_FLAME_VS, fragmentShader: CAMP_FLAME_FS, transparent: true, depthWrite: false }))); m.position.set(FIRE.x + dx, FIRE.y + 0.1, FIRE.z + dz); m.renderOrder = 18; m.frustumCulled = false; world.add(m); flames.push(m); }
+  const NEMB = preview ? 20 : 50, embPos = new Float32Array(NEMB * 3), embSeed = new Float32Array(NEMB * 3);
+  for (let i = 0; i < NEMB; i++) { embPos.set([FIRE.x + r(-0.3, 0.3), FIRE.y + 0.3, FIRE.z + r(-0.3, 0.3)], i * 3); embSeed.set([r(0.6, 1.6), r(), r(0.04, 0.09)], i * 3); }
+  const embGeo = keep(new THREE.BufferGeometry()); embGeo.setAttribute("position", new THREE.BufferAttribute(embPos, 3)); embGeo.setAttribute("aSeed", new THREE.BufferAttribute(embSeed, 3));
+  const embU = { uTime: time, uPx: { value: 700 }, uRise: { value: 5.5 }, uWind: { value: 0.5 }, uOpacity: { value: 1 } };
+  const embers = new THREE.Points(embGeo, shader(CAMP_EMBER_VS, CAMP_EMBER_FS, embU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  embers.frustumCulled = false; embers.renderOrder = 19; world.add(embers);
+
+  /* --- the safari jeep in the accent: open sides, a canvas roof, its passengers; driving its loop round the waterhole --- */
+  const jeepGeo = keep(mergeColored(THREE, [
+    [box(4.3, 0.85, 1.85), at(0, 0.95, 0), ACC], [box(1.25, 0.32, 1.8), at(1.5, 1.52, 0), ACC], [box(0.3, 0.22, 1.9), at(2.25, 0.85, 0), 0x2a2a2a], // the body, the bonnet, the bumper
+    [box(0.08, 0.7, 1.7), at(0.9, 1.95, 0, 0, 0, -0.25), 0x2a3440], [box(2.9, 0.08, 1.98), at(-0.65, 2.8, 0), 0xb8a47e], ...[[0.95, 0.88], [0.95, -0.88], [-0.65, 0.88], [-0.65, -0.88], [-2.05, 0.88], [-2.05, -0.88]].map(([x, z]) => [cyl(0.035, 0.035, 1.4, 4), at(x, 2.1, z), 0x2a2a2a]), // the windscreen; the roof on its posts
+    ...[0.3, -0.75, -1.75].flatMap((x, k) => [[box(0.5, 0.42, 1.6), at(x, 1.62, 0), COAT], [new THREE.SphereGeometry(0.15, 8, 6), at(x + 0.05, 2.03, 0.42), 0xc49a7a], [new THREE.SphereGeometry(0.15, 8, 6), at(x + 0.05, 2.03, -0.42), k === 1 ? 0x5a3a2a : 0xd8b090]]), // passengers, two to a row
+    [cyl(0.42, 0.42, 0.28, 12).rotateZ(Math.PI / 2), at(-2.3, 1.15, 0), 0x222222], ...[[1.35, 0.85], [1.35, -0.85], [-1.35, 0.85], [-1.35, -0.85]].map(([x, z]) => [cyl(0.42, 0.42, 0.3, 12).rotateX(Math.PI / 2), at(x, 0.42, z), 0x1e1e1e]), // the spare wheel, the wheels
+    [box(0.06, 0.18, 0.3), at(2.16, 1.18, 0.62), LAMP], [box(0.06, 0.18, 0.3), at(2.16, 1.18, -0.62), LAMP], [box(0.06, 0.14, 0.2), at(-2.16, 1.1, 0.75), 0x8a1010], [box(0.06, 0.14, 0.2), at(-2.16, 1.1, -0.75), 0x8a1010], // headlights, tail lights
+  ]));
+  const jCoat = new Float32Array(jeepGeo.attributes.position.count * 3).fill(0); // (one jeep: its passengers' shirts in khaki, the coat marker's own colour)
+  for (let i = 0; i < jeepGeo.attributes.position.count; i++) jCoat.set([0.62, 0.55, 0.4], i * 3);
+  jeepGeo.setAttribute("aCoat", new THREE.BufferAttribute(jCoat, 3));
+  const jeep = new THREE.Mesh(jeepGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 })), "jeep", "", true)); jeep.name = "jeep"; world.add(jeep);
+  const G_JEEP = GL.length; GL.push([0, 0, 0, 0, 2.6, 2.4, 2.1, 1.4], [0, 0, 0, 0, 2.6, 2.4, 2.1, 1.4], [0, 0, 0, 0, 2.6, 0.25, 0.15, 1.1], [0, 0, 0, 0, 2.6, 0.25, 0.15, 1.1]);
+  const NDUST = preview ? 30 : 90, dustPos = new Float32Array(NDUST * 3), dustA = new Float32Array(NDUST), dustS = new Float32Array(NDUST), dustSeed = Array.from({ length: NDUST }, () => [r(-1, 1), r(-1, 1), r(0.6, 1.4)]);
+  const dustGeo = keep(new THREE.BufferGeometry()); dustGeo.setAttribute("position", new THREE.BufferAttribute(dustPos, 3)); dustGeo.setAttribute("aA", new THREE.BufferAttribute(dustA, 1)); dustGeo.setAttribute("aS", new THREE.BufferAttribute(dustS, 1));
+  const dustU = { uPx: { value: 700 }, uCol: { value: new THREE.Color() } };
+  const dust = new THREE.Points(dustGeo, shader(MC_DUST_VS, MC_DUST_FS, dustU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+  dust.frustumCulled = false; dust.renderOrder = 17; world.add(dust);
+
+  /* --- the animals: rigs of rigid parts, each hanging from its pivot (the animal faces +x) --- */
+  const partMesh = (geo, mat, count, name) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, count)); m.name = name; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); return m; };
+  const taper = (pts, r0, r1, hex, seg = 14, radial = 8) => { const crv = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p))), g = new THREE.TubeGeometry(crv, seg, 1, radial, false), pa = g.attributes.position; for (let i = 0; i <= seg; i++) { const c = crv.getPointAt(i / seg), rad = r0 + (r1 - r0) * (i / seg); for (let j = 0; j <= radial; j++) { const k = i * (radial + 1) + j; V.fromBufferAttribute(pa, k).sub(c).multiplyScalar(rad).add(c); pa.setXYZ(k, V.x, V.y, V.z); } } g.computeVertexNormals(); return [g, new THREE.Matrix4(), hex]; };
+  const gradient = (g, y0, y1, hex) => { const c = g.attributes.color, p = g.attributes.position, d = new THREE.Color(hex); for (let i = 0; i < c.count; i++) { const k = smooth(y0, y1, p.getY(i)); c.setXYZ(i, c.getX(i) + (d.r - c.getX(i)) * k, c.getY(i) + (d.g - c.getY(i)) * k, c.getZ(i) + (d.b - c.getZ(i)) * k); } return g; }; // dust up the legs
+  const placePart = (mesh, i, base, px, py, pz, rz = 0, ry = 0, rx = 0) => { M2.compose(V.set(px, py, pz), Q.setFromEuler(E.set(rx, ry, rz, "YZX")), ONE); M.multiplyMatrices(base, M2); mesh.setMatrixAt(i, M); };
+  const gait = (p) => { p = ((p % 1) + 1) % 1; return p < 0.64 ? [1 - 2 * (p / 0.64), 0] : [-1 + 2 * (0.5 - 0.5 * Math.cos(Math.PI * (p - 0.64) / 0.36)), Math.sin(Math.PI * (p - 0.64) / 0.36)]; }; // a leg's swing (+1 forward … −1 back, planted) and lift through one stride
+  // the elephants
+  const EL = 0x726862, EL_DUST = 0x8a6a56, EL_EAR = 0x665c58, IVORY = 0xe6dcc4;
+  const elTorso = (() => { // one smooth body turned on a lathe along x: round rump, deep belly, the shoulders higher than the hips, narrower than it is deep
+    const prof = [[-2.35, 0], [-2.2, 0.55], [-1.85, 0.88], [-1.2, 1.04], [-0.3, 1.1], [0.5, 1.12], [1.15, 1.06], [1.65, 0.86], [1.95, 0.5], [2.05, 0]].map(([x, rr]) => new THREE.Vector2(rr, x));
+    const g = new THREE.LatheGeometry(prof, 22).rotateZ(-Math.PI / 2), pa = g.attributes.position;
+    for (let i = 0; i < pa.count; i++) { const x = pa.getX(i), y = pa.getY(i); pa.setXYZ(i, x, y * (y > 0 ? 1.0 + 0.1 * smooth(-0.6, 0.9, x) : 0.95) + 0.14 * smooth(-1.2, 0.9, x) * (y > 0 ? 1 : 0.4), pa.getZ(i) * 0.9); }
+    g.computeVertexNormals(); return g;
+  })();
+  const elBody = withPat(mergeColored(THREE, [
+    [elTorso, at(-0.05, 2.05, 0), EL], // the body
+    [blob(0.82, 0.9, 0.7), at(2.22, 2.45, 0), EL], [blob(0.42, 0.5, 0.36), at(2.75, 2.15, 0), EL], // the head, the root of the trunk
+    [new THREE.ConeGeometry(0.075, 0.95, 6), at(2.95, 1.78, 0.3, 0, 0, -1.9), IVORY], [new THREE.ConeGeometry(0.075, 0.95, 6), at(2.95, 1.78, -0.3, 0, 0, -1.9), IVORY], // tusks curving forward
+    [cyl(0.035, 0.05, 1.1, 5), at(-2.15, 1.78, 0, 0, 0, 0.25), 0x6a5c54], [blob(0.07, 0.16, 0.07, 0), at(-2.28, 1.2, 0), 0x2a2420], // the tail and its tuft
+  ]), 0);
+  const elLeg = withPat(gradient(mergeColored(THREE, [[cyl(0.33, 0.3, 1.72, 10), at(0, -0.86, 0), EL], [cyl(0.36, 0.36, 0.14, 10), at(0, -1.67, 0), 0x5e524a]]), -0.7, -1.6, EL_DUST), 0);
+  const elTrunk = withPat(mergeColored(THREE, [taper([[0, 0, 0], [0.22, -0.45, 0], [0.3, -1.0, 0], [0.26, -1.5, 0], [0.36, -1.82, 0]], 0.26, 0.09, EL), [new THREE.SphereGeometry(0.09, 8, 6), at(0.36, -1.82, 0), 0x5e524a]]), 0);
+  const twoSided = (g) => { const back = g.toNonIndexed(), p = back.attributes.position, n = back.attributes.normal; for (let i = 0; i < p.count; i += 3) for (const a of [p, n]) { const x = a.getX(i + 1), y = a.getY(i + 1), z = a.getZ(i + 1); a.setXYZ(i + 1, a.getX(i + 2), a.getY(i + 2), a.getZ(i + 2)); a.setXYZ(i + 2, x, y, z); } for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i)); return back; }; // the same triangles wound the other way, facing the other way
+  const earShape = new THREE.ShapeGeometry(new THREE.Shape(Array.from({ length: 24 }, (_, k) => { const a = (k / 24) * Math.PI * 2; return new THREE.Vector2(-0.72 + Math.cos(a) * 0.74 * (a > Math.PI ? 1.05 : 0.95), -0.2 + Math.sin(a) * 0.98); })));
+  const elEar = withPat(mergeColored(THREE, [[earShape, new THREE.Matrix4(), EL_EAR], [twoSided(earShape), new THREE.Matrix4(), EL_EAR]]), 0); // a big ear, hinged at its front edge, seen from either side
+  const elMat = coatMat("ELEPHANT"), elEarMat = elMat; // (the ears carry their own back faces)
+  const HERD_M = [{ o: 0, sc: 0.92 }, { o: 8.5, sc: 0.86 }, { o: 17, sc: 0.95 }, { o: 19.5, sc: 0.42, lat: 2.6 }, { o: 26, sc: 0.84 }, { o: 34, sc: 0.62 }, { o: 41.5, sc: 0.9 }]; // a family: the matriarch first, a calf beside its mother, a young one
+  const NE = preview ? 4 : HERD_M.length;
+  const elBodies = partMesh(elBody, elMat, NE, "el-body"), elLegs = partMesh(elLeg, elMat, NE * 4, "el-leg"), elTrunks = partMesh(elTrunk, elMat, NE, "el-trunk"), elEars = partMesh(elEar, elEarMat, NE * 2, "el-ear");
+  const EL_LEGS = [[1.15, 1.72, 0.52, 0.25], [1.15, 1.72, -0.52, 0.75], [-1.2, 1.72, 0.55, 0], [-1.2, 1.72, -0.55, 0.5]]; // pivots, and each leg's place in the stride (a lateral walk: hind, fore, hind, fore)
+  const EL_STRIDE = 1.8, EL_SWING = (0.64 * EL_STRIDE) / (2 * 1.72), GI_STRIDE = 2.4, GI_SWING = (0.64 * GI_STRIDE) / (2 * 2.1); // the sine of a leg's swing, so a planted foot sweeps back exactly as far as the body goes forward
+  // the giraffes: two browsing at the big acacia, one walking slowly across the plain
+  const GI_HOOF = 0x2a2018;
+  const giBody = withPat(mergeColored(THREE, [[blob(1.15, 0.62, 0.5), at(0, 2.45, 0, 0, 0, 0.18), COAT], [blob(0.6, 0.55, 0.48), at(0.72, 2.72, 0), COAT], [blob(0.55, 0.5, 0.45), at(-0.8, 2.25, 0), COAT], [cyl(0.025, 0.035, 1.0, 4), at(-1.18, 1.95, 0, 0, 0, 0.2), 0x6a4a2a], [blob(0.06, 0.18, 0.06, 0), at(-1.28, 1.4, 0), 0x1a1410]]), 0);
+  const giLeg = withPat(mergeColored(THREE, [[cyl(0.1, 0.07, 2.05, 7), at(0, -1.03, 0), COAT], [cyl(0.085, 0.09, 0.12, 7), at(0, -2.1, 0), GI_HOOF]]), 1);
+  const giNeck = withPat(mergeColored(THREE, [taper([[0, 0, 0], [0.32, 0.8, 0], [0.6, 1.6, 0], [0.76, 2.1, 0]], 0.25, 0.12, COAT), [blob(0.36, 0.16, 0.14), at(0.95, 2.08, 0, 0, 0, -0.55), COAT], [blob(0.12, 0.09, 0.11), at(1.22, 1.92, 0), 0x3a2a20],
+    [cyl(0.025, 0.025, 0.2, 4), at(0.8, 2.3, 0.06, 0.15, 0, 0), 0x3a2a20], [cyl(0.025, 0.025, 0.2, 4), at(0.8, 2.3, -0.06, -0.15, 0, 0), 0x3a2a20], [blob(0.09, 0.04, 0.05, 0), at(0.75, 2.2, 0.13), 0xd8c8a8], [blob(0.09, 0.04, 0.05, 0), at(0.75, 2.2, -0.13), 0xd8c8a8]]), 1); // the neck, the head, its muzzle, ossicones, ears
+  const giMat = coatMat("GIRAFFE");
+  const GI = [{ x: -105.5, z: -216.5, browse: true }, { x: -116.5, z: -229, browse: true }, { walk: true, z: -305, v: 0.95, x0: 40 }];
+  const NG = GI.length, giBodies = partMesh(giBody, giMat, NG, "gi-body"), giLegs = partMesh(giLeg, giMat, NG * 4, "gi-leg"), giNecks = partMesh(giNeck, giMat, NG, "gi-neck");
+  const GI_LEGS = [[0.7, 2.15, 0.25, 0], [0.7, 2.15, -0.25, 0.5], [-0.72, 2.12, 0.25, 0], [-0.72, 2.12, -0.25, 0.5]]; // a pace: both legs on a side together
+  // the zebras, grazing
+  const ZE_DARK = 0x1a1816;
+  const zeBody = withPat(mergeColored(THREE, [[blob(1.05, 0.38, 0.32), at(0, 1.06, 0), COAT], [blob(0.46, 0.4, 0.33), at(-0.64, 1.08, 0), COAT], [blob(0.42, 0.42, 0.32), at(0.6, 1.1, 0), COAT]]), 0);
+  const zeLeg = withPat(mergeColored(THREE, [[cyl(0.07, 0.05, 0.85, 6), at(0, -0.425, 0), COAT], [cyl(0.055, 0.06, 0.07, 6), at(0, -0.87, 0), ZE_DARK]]), 1);
+  const zeNeck = withPat(mergeColored(THREE, [taper([[0, 0, 0], [0.24, 0.36, 0], [0.42, 0.62, 0]], 0.19, 0.12, COAT), [blob(0.34, 0.13, 0.11), at(0.7, 0.45, 0, 0, 0, -0.55), COAT], [blob(0.09, 0.08, 0.09), at(0.98, 0.24, 0), ZE_DARK], [box(0.52, 0.11, 0.05), at(0.17, 0.42, 0, 0, 0, 0.95), ZE_DARK], [blob(0.06, 0.1, 0.04, 0), at(0.46, 0.74, 0.08), COAT], [blob(0.06, 0.1, 0.04, 0), at(0.46, 0.74, -0.08), COAT]]), 1); // the neck, the head reaching forward, the dark muzzle, the mane, the ears
+  const zeTail = withPat(mergeColored(THREE, [[cyl(0.03, 0.03, 0.6, 4), at(0, -0.3, 0), COAT], [blob(0.06, 0.15, 0.06, 0), at(0, -0.66, 0), ZE_DARK]]), 1);
+  const zeMat = coatMat("ZEBRA");
+  const ZE = []; for (let k = 0; k < (preview ? 4 : 7); k++) ZE.push({ x: 25 + r(-10, 10), z: -101 + r(-5, 5), h: (r() < 0.5 ? 0 : Math.PI) + r(-0.45, 0.45), ph: r(0, 100) }); // mostly side-on to us
+  const NZ = ZE.length, zeBodies = partMesh(zeBody, zeMat, NZ, "ze-body"), zeLegs = partMesh(zeLeg, zeMat, NZ * 4, "ze-leg"), zeNecks = partMesh(zeNeck, zeMat, NZ, "ze-neck"), zeTails = partMesh(zeTail, zeMat, NZ, "ze-tail");
+  // vultures circling high over the plain
+  const vuGeo = keep(mergeColored(THREE, [[blob(0.45, 0.16, 0.18, 0), at(0, 0, 0), 0x3a3028], [blob(0.12, 0.1, 0.1, 0), at(0.5, 0.04, 0), 0xb8a890], ...[-1, 1].flatMap((sd) => [[box(0.7, 0.04, 1.15), at(0, 0.03, sd * 0.68), 0x3a3028], [box(0.55, 0.035, 0.45), at(-0.08, 0.05, sd * 1.45), 0x1e1814]]), [box(0.4, 0.03, 0.42), at(-0.55, 0, 0), 0x3a3028]])); // broad wings, their fingered tips, a pale head
+  const VU_FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].y * 0.7;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.15, 0.0), f = sin(uTime * 3.2 + ph) * 0.45 * smoothstep(0.85, 1.0, sin(uTime * 0.21 + ph)) + 0.06;\n  transformed.y += span * sin(f); transformed.z = side * (0.15 + span * cos(f)); } // gliding, now and then a few slow beats";
+  const NV = preview ? 3 : 5, VU = []; for (let k = 0; k < NV; k++) VU.push({ cx: r(-140, 40), cz: r(-700, -520), cy: r(68, 104), rx: r(45, 90), rz: r(35, 70), w: r(0.1, 0.17) * (r() < 0.5 ? 1 : -1), ph: r(0, 6.28) });
+  const vultures = partMesh(vuGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "vulture", VU_FLAP), NV, "vultures");
+
+  /* --- glows --- */
+  const quad = keep(new THREE.PlaneGeometry(1, 1)), NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+
+  /* --- the waterhole: drawn last, mirroring the world above it --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const fogD = { value: 1 / 40000 }, dropsU = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };
+  const waterU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uBody: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFogD: fogD, uDrops: dropsU, uGlintDir: { value: SUN.clone() }, uGlintCol: { value: new THREE.Color() }, uGlint: { value: 0 } };
+  const water = new THREE.Mesh(keep(new THREE.CircleGeometry(1, 64).rotateX(-Math.PI / 2)), shader(LANTERN_LAKE_VS, SV_WATER_FS, waterU));
+  water.position.set(POOL.x, 0, POOL.z); water.scale.set(POOL.rx * 1.22, 1, POOL.rz * 1.25); water.renderOrder = 2; scene.add(water);
+
+  /* --- light: the evening sun and its long shadows; by night starlight --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target); sun.target.position.set(0, 0, -200);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+  const CASTERS = [site, jeep, elBodies, elLegs, elTrunks, elEars, giBodies, giLegs, giNecks, zeBodies, zeLegs, zeNecks, ...treeMeshes];
+  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.35; sun.shadow.intensity = 0.78; for (const m of CASTERS) m.castShadow = true; land.receiveShadow = site.receiveShadow = true; }
+  const LIT_MATS = [groundMat, paintMat, treeMat, flagMat, grass.material, jeep.material, elMat, giMat, zeMat, vultures.material];
+  const shadowFit = () => { // the light's box round the near plain: the camp, the waterhole and the animals
+    sun.position.copy(sun.target.position).addScaledVector(SUN, 2000);
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [-190, 190]) for (const y of [-2, 12]) for (const z of [-30, -340]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x; cam.right = hi.x; cam.bottom = lo.y; cam.top = hi.y; cam.near = Math.max(1, -hi.z - 300); cam.far = -lo.z + 300; cam.updateProjectionMatrix();
+  };
+  let shadowsOn = false;
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#030612" : "#5f7ab2"); skyU.uMid.value.set(d ? "#0a1430" : "#c99bae"); skyU.uHorizon.value.set(d ? "#161e38" : "#f2bb8e");
+    skyU.uSunGlow.value.set("#ff9850").multiplyScalar(0.55); skyU.uBelt.value.set("#eaa2b2"); skyU.uShadow.value.set("#7e80aa"); skyU.uDay.value = d ? 0 : 1;
+    starU.uAmt.value = d ? 1 : 0; stars.visible = d; clouds.visible = !d;
+    cloudU.uLit.value.set("#ffb48e"); cloudU.uShade.value.set("#a08aa8"); cloudU.uGlow.value.set("#ff8040").multiplyScalar(0.35); cloudU.uHaze.value.set("#f2bb8e");
+    const haze = new THREE.Color(d ? "#121a30" : "#e8b494"); scene.fog.color.copy(haze); fogD.value = d ? 1 / 30000 : 1 / 40000; scene.fog.density = fogD.value;
+    kiliHazeU.value.set(d ? "#141c34" : "#c4a0b6"); kiliHazeAmt.value = d ? 0.55 : 0.42;
+    if (d) { sun.position.copy(sun.target.position).addScaledVector(STARLIGHT, 2000); sun.castShadow = false; } else { sun.castShadow = !preview; shadowFit(); }
+    sun.color.set(d ? "#7486b8" : "#ffb56c"); sun.intensity = d ? 0.3 : 3.4;
+    hemi.color.set(d ? "#2c3866" : "#a8aed2"); hemi.groundColor.set(d ? "#16120e" : "#a8744e"); hemi.intensity = d ? 0.55 : 0.92;
+    nightU.value = d ? 1 : 0; fireU.uStrength.value = d ? 1 : 0; for (const f of flames) f.visible = d; embers.visible = d;
+    dustU.uCol.value.set(d ? "#2a2420" : "#c9926a");
+    waterU.uBody.value.set(d ? "#06080a" : "#3a3626"); waterU.uHaze.value.copy(haze); waterU.uGlintDir.value.copy(SUN); waterU.uGlintCol.value.set("#ffd0a0"); waterU.uGlint.value = d ? 0 : 0.4;
+    glowU.uAmt.value = d ? 1 : 0;
+    for (let i = 0; i < G_JEEP; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    for (let i = G_STRING; i < G_STRING + N_STRING; i++) aTint.setXYZ(i, accentU.value.r * 2.4 + 0.12, accentU.value.g * 2.4 + 0.12, accentU.value.b * 2.4 + 0.12);
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera on the lodge's deck; the mirrored pass, clipped at the water, drawn only over the waterhole on screen --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 26 + k * 14;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = -0.04 * k, pitch = 0.009 + 0.03 * k; // a phone turns a little towards the mountain and looks a little higher
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [], primeRT = keep(new THREE.WebGLRenderTarget(1, 1));
+  const POOL_BOX = [[POOL.x - POOL.rx * 1.25, POOL.z], [POOL.x + POOL.rx * 1.25, POOL.z], [POOL.x, POOL.z - POOL.rz * 1.3], [POOL.x, POOL.z + POOL.rz * 1.3]];
+  let reflecting = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    if (!preview && !shadowsOn) { // before the first frame: compiled once, with shadows, and the shadow map drawn by a throwaway render, so the mirrored pass never samples a map that is not there yet (a still frame is that first frame)
+      shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true;
+      const before = renderer.getRenderTarget(); renderer.setRenderTarget(primeRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+    }
+    renderer.getDrawingBufferSize(buf); waterU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    let x0 = 1, x1 = -1, y0 = 1, y1 = -1; for (const [px, pz] of POOL_BOX) { V.set(px, 0, pz).project(camera); x0 = Math.min(x0, V.x); x1 = Math.max(x1, V.x); y0 = Math.min(y0, V.y); y1 = Math.max(y1, V.y); }
+    const sx0 = Math.max(0, Math.floor(((x0 + 1) / 2) * w) - 8), sx1 = Math.min(w, Math.ceil(((x1 + 1) / 2) * w) + 8), sy0 = Math.max(0, Math.floor(((y0 + 1) / 2) * h) - 8), sy1 = Math.min(h, Math.ceil(((y1 + 1) / 2) * h) + 8);
+    if (sx1 > sx0 && sy1 > sy0) {
+      reflectRT.scissor.set(sx0, sy0, sx1 - sx0, sy1 - sy0); reflectRT.scissorTest = true;
+      const auto = renderer.shadowMap.autoUpdate, need = renderer.shadowMap.needsUpdate, si = sun.shadow.intensity;
+      renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false; sun.shadow.intensity = 0; // the mirrored world must not draw the shadow map, nor read it
+      world.scale.y = -1; world.updateMatrixWorld(true); water.visible = false; grass.visible = embers.visible = false; for (const f of flames) f.visible = false; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h); // (nearer than the water: never in it)
+      const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
+      renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+      renderer.clippingPlanes = NONE; world.scale.y = 1; world.updateMatrixWorld(true); water.visible = grass.visible = true; embers.visible = nightU.value > 0; for (const f of flames) f.visible = nightU.value > 0;
+      renderer.shadowMap.autoUpdate = auto; renderer.shadowMap.needsUpdate = need; sun.shadow.intensity = si;
+    }
+    glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); embU.uPx.value = dustU.uPx.value = pxFor(buf.y);
+    reflecting = false;
+  };
+
+  /* --- the clock: the herd's walk, drink and walk on; the jeep's loop; the giraffes, the zebras, the vultures --- */
+  const PA = [0, 0], PB = [0, 0], P2 = new THREE.Vector3(), P3 = new THREE.Vector3();
+  const stopper = (sStop, sEnd, v, ramp, wait, gap) => { // the distance along a path, and how fast (0…1), from the clock alone: on at v, eased to a stop at sStop, a wait, eased away, on to sEnd, a gap, round again
+    const tA = (sStop - 0.5 * v * ramp) / v, tB = tA + ramp, tC = tB + wait, tD = tC + ramp, sC = sStop + 0.5 * v * ramp, tE = tD + (sEnd - sC) / v, period = tE + gap;
+    const f = (t) => {
+      const u = ((t % period) + period) % period;
+      if (u < tA) return [v * u, 1];
+      if (u < tB) { const k = (u - tA) / ramp; return [v * tA + v * ramp * (0.5 * k + Math.sin(Math.PI * k) / (2 * Math.PI)), 0.5 + 0.5 * Math.cos(Math.PI * k)]; }
+      if (u < tC) return [sStop, 0];
+      if (u < tD) { const k = (u - tC) / ramp; return [sStop + v * ramp * (0.5 * k - Math.sin(Math.PI * k) / (2 * Math.PI)), 0.5 - 0.5 * Math.cos(Math.PI * k)]; }
+      if (u < tE) return [sC + v * (u - tD), 1];
+      return [sEnd, 0];
+    };
+    return Object.assign(f, { period, tA, tB, tC });
+  };
+  const sAtX = (path, x) => { let best = 0, bd = 1e9; for (let s = 0; s < path.L; s += 0.5) { path.at(s, PA); const d = Math.abs(PA[0] - x); if (d < bd) { bd = d; best = s; } } return best; };
+  const HV = 1.15, S_DRINK = sAtX(HERD, -40); // the matriarch stops at x −40, the rest strung out behind her along the shore
+  const herdS = stopper(S_DRINK, HERD.L + 45, HV, 3.5, 110, 12), H_PERIOD = herdS.period;
+  const drinkPhase = (t) => { const u = ((t % H_PERIOD) + H_PERIOD) % H_PERIOD; return u < herdS.tB || u > herdS.tC ? 0 : smooth(herdS.tB, herdS.tB + 5, u) * (1 - smooth(herdS.tC - 5, herdS.tC, u)); }; // turned to the water while they stand
+  const T0 = herdS.tA - 16 / HV; // on load: the matriarch a few steps from the drinking place, the family behind her
+  const JV = 5, jeepS = stopper(sAtX(JEEP, -6), JEEP.L, JV, 3, 22, 0), JT0 = jeepS.tA - 30 / JV - T0; // the jeep stops a while to watch them; on load it is driving in
+  const angLerp = (a, b, k) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx); // the yaw that points a model's +x along (fx, fz)
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    // the herd
+    const [s0, spd] = herdS(t), drink = drinkPhase(t);
+    for (let k = 0; k < NE; k++) {
+      const h = HERD_M[k], sk = s0 - h.o, s = Math.min(HERD.L, Math.max(0, sk)), moving = sk > 0 && sk < HERD.L ? spd : 0;
+      HERD.at(s, PA); HERD.at(s + 0.6, PB); let fx = PB[0] - PA[0], fz = PB[1] - PA[1]; const fl = Math.hypot(fx, fz) || 1; fx /= fl; fz /= fl;
+      const lat = h.lat || 0, x = PA[0] + fz * lat, z = PA[1] - fx * lat; // (fz, −fx): to the side towards the water
+      const heading = angLerp(yawOf(fx, fz), yawOf(0, 1), drink); // standing, they turn to face the water
+      const sc = h.sc, y = groundH(x, z);
+      B.compose(V.set(x, y - 0.05 * sc, z), Q.setFromEuler(E.set(0, heading, 0)), V2.setScalar(sc));
+      elBodies.setMatrixAt(k, B);
+      const phase = s / (EL_STRIDE * sc);
+      EL_LEGS.forEach(([px, py, pz, off], j) => { const [sw, lift] = gait(phase + off), a = Math.asin(sw * EL_SWING); placePart(elLegs, k * 4 + j, B, px, py + lift * 0.12 * moving - 1.72 * (1 - Math.cos(a)), pz, a); }); // the swing follows the distance walked (so when they stop, the legs stand as they were, a lifted foot set down); the hip dips as the straight leg swings, so a planted foot stays on the ground
+      const dip = drink > 0.6 ? 0.5 + 0.5 * Math.sin(t * 0.9 + k * 1.7) : 0; // drinking: the trunk down to the water, then up to the mouth
+      placePart(elTrunks, k, B, 2.95, 2.1, 0, 0.12 * Math.sin(phase * Math.PI) * moving + drink * (0.55 - 1.15 * dip), 0, 0.05 * Math.sin(t * 0.7 + k));
+      const flap = 0.15 + 0.35 * Math.pow(Math.max(0, Math.sin(t * 0.8 + k * 2.3)), 6) + 0.05 * Math.sin(t * 2.1 + k);
+      placePart(elEars, k * 2, B, 2.0, 2.72, 0.66, 0, flap); placePart(elEars, k * 2 + 1, B, 2.0, 2.72, -0.66, 0, -flap);
+      if (k < 8) { V.set(3.5, 0.2, 0).applyMatrix4(B); dropsU.value[k].set(V.x, V.z, clock - ((t * 0.9 + k * 1.7 + Math.PI / 2) % (2 * Math.PI)) / 0.9, drink > 0.6 ? 1 : 0); } // a ring where the trunk last touched the water (in the shader's clock)
+    }
+    for (const m of [elBodies, elLegs, elTrunks, elEars]) m.instanceMatrix.needsUpdate = true;
+    // the giraffes
+    GI.forEach((g, k) => {
+      let x = g.x, z = g.z, heading, moving = 0, phase = 0;
+      if (g.walk) { const half = Math.tan(0.66) * Math.abs(g.z) + 30, walked = g.v * t, u = (((g.x0 - walked + half) % (2 * half)) + 2 * half) % (2 * half) - half; x = u; heading = yawOf(-1, 0); moving = 1; phase = walked / GI_STRIDE; } // left along the far plain, round again beyond the view
+      else heading = yawOf(-112 - x, -222 - z); // to the tree
+      const y = groundH(x, z); B.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, heading, 0)), ONE); giBodies.setMatrixAt(k, B);
+      GI_LEGS.forEach(([px, py, pz, off], j) => { const [sw, lift] = gait(phase + off), a = Math.asin(sw * GI_SWING * moving); placePart(giLegs, k * 4 + j, B, px, py + lift * 0.15 * moving - 2.1 * (1 - Math.cos(a)), pz, a); });
+      const neck = g.browse ? 0.08 * Math.sin(t * 0.4 + k * 2) - 0.05 : -0.18 + 0.06 * Math.sin(phase * Math.PI * 2); // browsing, the head among the leaves; walking, the neck bobs with the stride
+      placePart(giNecks, k, B, 0.95, 2.85, 0, neck, g.browse ? 0.12 * Math.sin(t * 0.23 + k) : 0);
+    });
+    for (const m of [giBodies, giLegs, giNecks]) m.instanceMatrix.needsUpdate = true;
+    // the zebras: heads down grazing, now and then one looks up; tails swishing
+    ZE.forEach((zb, k) => {
+      const y = groundH(zb.x, zb.z); B.compose(V.set(zb.x, y, zb.z), Q.setFromEuler(E.set(0, zb.h, 0)), ONE); zeBodies.setMatrixAt(k, B);
+      EL_LEGS.forEach(([, , pz], j) => placePart(zeLegs, k * 4 + j, B, j < 2 ? 0.6 : -0.62, 0.86, pz * 0.36, j === 0 ? 0.12 : 0));
+      const up = smooth(0.0, 0.25, Math.sin((t + zb.ph) * 0.11)) * smooth(0.6, 0.85, Math.sin((t + zb.ph) * 0.031 + k)); // most of the time grazing
+      placePart(zeNecks, k, B, 0.8, 1.22, 0, -1.45 * (1 - up) + 0.05 * Math.sin(t * 1.3 + k) * (1 - up), 0.3 * up * Math.sin(t * 0.2 + k));
+      placePart(zeTails, k, B, -1.0, 1.24, 0, 0.15, 0, 0.35 * Math.sin(t * 2.4 + k * 1.3) * Math.max(0, Math.sin(t * 0.37 + k)));
+    });
+    for (const m of [zeBodies, zeLegs, zeNecks, zeTails]) m.instanceMatrix.needsUpdate = true;
+    // the vultures, banking into their circles
+    VU.forEach((b, k) => {
+      const a = t * b.w + b.ph, a2 = a + 0.02 * Math.sign(b.w);
+      P2.set(b.cx + b.rx * Math.cos(a), b.cy + 6 * Math.sin(a * 2 + k), b.cz + b.rz * Math.sin(a)); P3.set(b.cx + b.rx * Math.cos(a2), b.cy + 6 * Math.sin(a2 * 2 + k), b.cz + b.rz * Math.sin(a2));
+      M.compose(P2, Q.setFromEuler(E.set(Math.sign(b.w) * 0.35, yawOf(P3.x - P2.x, P3.z - P2.z), Math.atan2(P3.y - P2.y, Math.hypot(P3.x - P2.x, P3.z - P2.z)), "YZX")), V2.setScalar(night ? 0 : 2.2)); vultures.setMatrixAt(k, M);
+    });
+    vultures.instanceMatrix.needsUpdate = true;
+    // the jeep on its game drive, facing the way it goes, pitched with the ground; its dust by day, its lights by night
+    const [js, jk] = jeepS(t + JT0);
+    JEEP.at(js, PA); JEEP.at(js + 1.2, PB); let jx = PB[0] - PA[0], jz = PB[1] - PA[1]; const jl = Math.hypot(jx, jz) || 1; jx /= jl; jz /= jl;
+    const yf = groundH(PA[0] + jx * 1.4, PA[1] + jz * 1.4), yb = groundH(PA[0] - jx * 1.4, PA[1] - jz * 1.4);
+    jeep.position.set(PA[0], (yf + yb) / 2 + 0.03 * Math.sin(t * 7.1) * jk, PA[1]); jeep.rotation.set(0.02 * Math.sin(t * 5.3), yawOf(jx, jz), Math.atan2(yf - yb, 2.8), "YZX"); jeep.updateMatrixWorld(true);
+    jeepPU.value.copy(jeep.position); jeepDU.value.set(jx, 0, jz); jeepOnU.value = night ? 1 : 0;
+    [[2.2, 1.18, 0.62], [2.2, 1.18, -0.62], [-2.2, 1.1, 0.75], [-2.2, 1.1, -0.75]].forEach(([x, y, z], j) => { V.set(x, y, z).applyMatrix4(jeep.matrixWorld); aGlow.setXYZW(G_JEEP + j, V.x, V.y, V.z, night ? (j < 2 ? 0.42 : 0.2) : 0); });
+    for (let i = 0; i < NDUST; i++) { const age = (i / NDUST) * 4.5, [ox, oz, os] = dustSeed[i], [se, ke] = jeepS(t + JT0 - age); JEEP.at(se - 2.2, PA); const yy = groundH(PA[0], PA[1]); dustPos.set([PA[0] + ox * (0.6 + age * 0.9), yy + 0.4 + age * 0.55 * os, PA[1] + oz * (0.6 + age * 0.9)], i * 3); dustA[i] = night ? 0 : 0.32 * ke * (1 - age / 4.5) * smooth(0, 0.3, age); dustS[i] = (1.2 + age * 1.6) * os; } // each grain where the wheels threw it up (none while the jeep stood), drifting and spreading
+    dustGeo.attributes.position.needsUpdate = dustGeo.attributes.aA.needsUpdate = dustGeo.attributes.aS.needsUpdate = true;
+    if (night) { const f = 0.8 + 0.2 * Math.sin(t * 11.0) * Math.sin(t * 7.3 + 1); aGlow.setW(G_FIRE, GL[G_FIRE][3] * f); }
+    aGlow.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { elephants: NE, giraffes: NG, zebras: NZ, trees: TREES.length, farTrees: FAR.length, grass: GRASS.length, glows: NGL, herdPeriod: Math.round(H_PERIOD), jeepPeriod: Math.round(jeepS.period), accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
