@@ -24556,7 +24556,7 @@ const SV_WATER_FS = /* glsl */ `
   }
 `;
 // the animals' coats, from each part's own position: an elephant's wrinkled hide, a giraffe's patches between cream lines (cells of a
-// jittered grid), a zebra's stripes (across the body's length, round the legs and neck); each pattern fades to its average once smaller
+// jittered grid), a zebra's stripes (upright on the body and arcs round the haunch, rings on the legs, bands across the neck and face); each pattern fades to its average once smaller
 // than a pixel; parts not painted in the coat marker keep their own colour
 const SV_COAT_PARS = /* glsl */ `
   varying vec3 vLP; varying float vPat;
@@ -24580,9 +24580,17 @@ const SV_COAT_PARS = /* glsl */ `
     return mix(vec3(0.52, 0.26, 0.1), vec3(0.9, 0.82, 0.64), line);
   #else
     if (!coat) return base;
-    float k = vPat < 0.5 ? vLP.x + 0.12 * sin(vLP.y * 4.0) : vLP.y, s = k / 0.26, fs = fwidth(s);
-    float stripe = smoothstep(0.5 - fs, 0.5 + fs, abs(fract(s) - 0.5) * 2.0);
-    stripe = mix(stripe, 0.5, smoothstep(0.3, 0.8, fs));
+    float k;
+    if (vPat < 0.5) { // the body: upright bands on the barrel leaning back towards the top, turning through the diagonal into arches over the haunch, chevrons towards the tail seen from behind
+      vec3 q = vLP - vec3(0.0, 1.08, 0.0);
+      float body = q.x - 0.22 * q.y + 0.03 * sin(q.y * 12.0 + q.x * 3.0);
+      float rump = -(q.y + 0.55 * (q.x + 0.62) * (q.x + 0.62) + 0.45 * abs(q.z) * smoothstep(-0.7, -0.95, q.x)) + 0.02 * sin(q.x * 14.0);
+      k = mix(body, rump, smoothstep(-0.2, -0.55, q.x)) / 0.2;
+    } else if (vPat < 1.5) k = vLP.y / 0.09 + 0.2 * sin(vLP.x * 31.0 + vLP.z * 23.0); // the legs: rings
+    else if (vPat < 2.5) k = vLP.x / 0.15 + 0.15 * sin(vLP.y * 12.0); // the neck and its mane: bands across them
+    else k = vLP.x / 0.07; // the face: fine bands
+    float fs = fwidth(k), stripe = smoothstep(0.45 - fs, 0.45 + fs, abs(fract(k) - 0.5) * 2.0);
+    stripe = mix(stripe, 0.47, smoothstep(0.3, 0.8, fs));
     return mix(vec3(0.07, 0.065, 0.06), vec3(0.93, 0.91, 0.86), stripe);
   #endif
   }
@@ -24713,6 +24721,13 @@ function savanna(THREE, scene, camera, pal, preview) {
     return m;
   };
   const withPat = (g, v) => { g.setAttribute("aPat", new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(v), 1)); return keep(g); };
+  const concatGeos = (list) => { // merged (non-indexed) geometries joined as one, each with constant per-vertex values of its own: [[geometry, { name: value }], …]
+    const names = Object.keys(list[0][1]), n = list.reduce((sum, [g]) => sum + g.attributes.position.count, 0), out = new THREE.BufferGeometry();
+    for (const a of ["position", "normal", "color"]) { const arr = new Float32Array(n * 3); let o = 0; for (const [g] of list) { arr.set(g.attributes[a].array, o); o += g.attributes[a].array.length; } out.setAttribute(a, new THREE.BufferAttribute(arr, 3)); }
+    for (const k of names) { const arr = new Float32Array(n); let o = 0; for (const [g, v] of list) { const c = g.attributes.position.count; arr.fill(v[k], o, o + c); o += c; } out.setAttribute(k, new THREE.BufferAttribute(arr, 1)); }
+    for (const [g] of list) g.dispose();
+    return keep(out);
+  };
   const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })), "paint");
   const world = new THREE.Group(); scene.add(world); // everything the waterhole mirrors
   const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; land.renderOrder = 1; world.add(land); // after the trees and the animals: early-z skips the ground behind them
@@ -24817,17 +24832,44 @@ function savanna(THREE, scene, camera, pal, preview) {
   }
   for (let k = 0; k < (preview ? 7 : 14); k++) { const a = r(0, 6.28), d = r(0, 28), x = KOPJE.x + Math.cos(a) * d, z = KOPJE.z + Math.sin(a) * d, s = r(3, 9) * (1 - d / 40); P(blob(s, s * r(0.6, 0.9), s * r(0.8, 1.1), 1), at(x, groundH(x, z) + s * 0.3, z, r(0, 1), r(0, 3), r(0, 1)), r() < 0.5 ? 0x8a8178 : 0x9a8e82); } // the kopje: granite boulders on their rise
 
-  /* --- the camp: two safari tents on their platforms, a fire with chairs round it, lanterns, string lights, a flag --- */
-  const GL = [], POOLS = [], WARM = [2.5, 1.7, 0.9], CANVAS = 0xc9b48c, CANVAS_D = 0xae9a74, WOOD = 0x5a4232;
-  const TENTS = [[-24, -80, 0.25], [-38, -95, 0.5]];
+  /* --- the camp: two safari tents on their decks, a fire with chairs round it, lanterns, string lights, a flag --- */
+  const GL = [], POOLS = [], WARM = [2.5, 1.7, 0.9], CANVAS = 0xdccca6, CANVAS_D = 0xc2b28a, FLY = 0x7c7856, WOOD = 0x6c4e36, WOOD_D = 0x4a3426, SEAT = 0x8a7a54;
+  const TENTS = [[-24, -80, 0.75], [-38, -95, 0.75]]; // each facing the fire, its veranda turned our way
+  const TC = [], TF = [], TD = [], CV = (geo, m, hex) => TC.push([geo, m, hex]), FL = (geo, m, hex) => TF.push([geo, m, hex]), DK_ = (geo, m, hex) => TD.push([geo, m, hex]); // the tents' canvas (lit from within at night), their fly sheets, their decks and furniture
+  const slope = (side, w, d, rise, sag, nx = 4, nz = 8) => { // one slope of a ridge roof: from its eave (x side·w, y 0) up to the ridge (x 0, y rise), d long, sagging between its poles; wound to face up
+    const pos = [], idx = [];
+    for (let i = 0; i <= nx; i++) for (let j = 0; j <= nz; j++) { const t = i / nx, u = j / nz, mid = Math.sin(Math.PI * u); pos.push(side * w * (1 - t), rise * t - sag * Math.sin(Math.PI * t) * (0.55 + 0.45 * mid) - sag * 0.6 * t * mid, -d / 2 + d * u); }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) { const a = i * (nz + 1) + j, b = a + 1, c = a + nz + 1, e = c + 1; if (side > 0) idx.push(a, c, b, b, c, e); else idx.push(a, b, c, b, e, c); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); return g;
+  };
+  const gableEnd = (w, h) => { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute([-w, 0, 0, w, 0, 0, 0, h, 0], 3)); g.computeVertexNormals(); return g; }; // the triangle under a ridge roof's end, facing +z
+  let stringAnchor = null;
   for (const [tx, tz, ry] of TENTS) {
-    const y = groundH(tx, tz), M0 = (lx, ly, lz) => { const c = Math.cos(ry), s = Math.sin(ry); return at(tx + lx * c + lz * s, y + ly, tz - lx * s + lz * c, 0, ry, 0); };
-    P(box(6, 0.4, 7.4), M0(0, 0.2, 0), WOOD); P(box(4.4, 2.3, 4.6), M0(0, 1.55, -0.6), CANVAS);
-    const roof = new THREE.CylinderGeometry(0.01, 3.4, 1.3, 4, 1).rotateY(Math.PI / 4).scale(1, 1, 1.25); P(roof, M0(0, 3.35, -0.6), CANVAS_D); // a pitched canvas roof
-    P(box(4.6, 0.08, 2.6), M0(0, 2.75, 2.4), CANVAS_D); for (const sx of [-2.1, 2.1]) P(cyl(0.05, 0.05, 2.6, 5), M0(sx, 1.65, 3.5), WOOD); // the veranda's awning on its poles
-    P(box(1.5, 1.9, 0.08), M0(0, 1.35, 1.72), LAMP); // the door, glowing from inside by night
-    for (const sx of [-1.45, 1.45]) P(box(0.8, 0.7, 0.06), M0(sx, 1.8, 1.72), LAMP);
-    POOLS.push([tx + Math.sin(ry) * 4, tz + Math.cos(ry) * 4, 6, 0.7, 0]);
+    const y0 = groundH(tx, tz), DK = 0.62, c = Math.cos(ry), s = Math.sin(ry), W = (lx, lz) => [tx + lx * c + lz * s, tz - lx * s + lz * c];
+    const M0 = (lx, ly, lz) => { const [x, z] = W(lx, lz); return at(x, y0 + ly, z, 0, ry, 0); }; // the tent's own frame: +z its front
+    // the deck: planks on a frame and posts, two steps up to the veranda
+    for (let k = 0; k < 10; k++) DK_(box(6.6, 0.07, 0.78), M0(0, DK - 0.035, -3.0 + k * 0.8), [0x6e5038, 0x664a32, 0x74563a][k % 3]);
+    for (const sz of [-1, 1]) DK_(box(6.7, 0.28, 0.08), M0(0, DK - 0.2, 0.6 + sz * 4.04), WOOD_D);
+    for (const sx of [-1, 1]) DK_(box(0.08, 0.28, 8.1), M0(sx * 3.33, DK - 0.2, 0.6), WOOD_D);
+    for (const [px, pz] of [[-3.2, -3.3], [3.2, -3.3], [-3.2, 4.5], [3.2, 4.5], [-3.2, 0.6], [3.2, 0.6]]) DK_(box(0.14, 1.1, 0.14), M0(px, DK - 0.6, pz), WOOD_D);
+    DK_(box(1.5, 0.08, 0.36), M0(0, DK * 0.62, 4.85), WOOD); DK_(box(1.5, 0.08, 0.36), M0(0, DK * 0.3, 5.15), WOOD);
+    // the tent: canvas walls, its own low ridge roof and gable ends, the door and windows of netting, their flaps rolled up above them
+    CV(box(4.0, 2.0, 4.8), M0(0, DK + 1.0, -0.4), CANVAS);
+    for (const sd of [-1, 1]) CV(slope(sd, 2.15, 5.0, 0.85, 0.05), M0(0, DK + 2.0, -0.4), CANVAS_D);
+    CV(gableEnd(2.0, 0.82), M0(0, DK + 2.0, 2.005), CANVAS); CV(gableEnd(2.0, 0.82).rotateY(Math.PI), M0(0, DK + 2.0, -2.805), CANVAS);
+    CV(box(1.2, 1.8, 0.05), M0(0, DK + 0.9, 2.03), LAMP); CV(cyl(0.11, 0.11, 1.4, 8).rotateZ(Math.PI / 2), M0(0, DK + 1.9, 2.1), CANVAS_D); // the door, its flap rolled up
+    for (const sx of [-1.3, 1.3]) { CV(box(0.75, 0.62, 0.05), M0(sx, DK + 1.2, 2.03), LAMP); CV(cyl(0.07, 0.07, 0.85, 8).rotateZ(Math.PI / 2), M0(sx, DK + 1.6, 2.08), CANVAS_D); }
+    for (const sx of [-1, 1]) for (const z of [-1.7, 0.3]) { CV(box(0.05, 0.62, 0.95), M0(sx * 2.03, DK + 1.2, z), LAMP); CV(cyl(0.07, 0.07, 1.05, 8).rotateX(Math.PI / 2), M0(sx * 2.08, DK + 1.6, z), CANVAS_D); }
+    // the fly sheet: a wider ridge roof clear above the tent, overhanging it and reaching out over the veranda on its poles
+    for (const sd of [-1, 1]) FL(slope(sd, 3.05, 8.1, 1.38, 0.09), M0(0, DK + 2.08, 0.75), FLY);
+    for (const sx of [-2.95, 2.95]) for (const z of [4.7, -3.2]) DK_(cyl(0.045, 0.05, 2.1, 6), M0(sx, DK + 1.04, z), WOOD_D);
+    for (const z of [4.75, -3.25]) DK_(cyl(0.05, 0.055, 3.5, 6), M0(0, DK + 1.73, z), WOOD_D);
+    // the veranda: two chairs and a little table, a lantern hanging under the ridge
+    for (const x of [-1.15, 1.15]) { DK_(box(0.52, 0.05, 0.46), M0(x, DK + 0.44, 3.25), SEAT); DK_(box(0.52, 0.32, 0.04), M0(x, DK + 0.72, 3.03), SEAT); for (const [ax, az] of [[-0.23, -0.2], [0.23, -0.2], [-0.23, 0.2], [0.23, 0.2]]) DK_(box(0.04, 0.44, 0.04), M0(x + ax, DK + 0.22, 3.25 + az), WOOD_D); for (const ax of [-0.27, 0.27]) DK_(box(0.05, 0.04, 0.46), M0(x + ax, DK + 0.62, 3.25), WOOD_D); }
+    DK_(box(0.55, 0.04, 0.55), M0(0, DK + 0.5, 3.4), WOOD); DK_(cyl(0.04, 0.05, 0.48, 6), M0(0, DK + 0.25, 3.4), WOOD_D);
+    CV(box(0.2, 0.28, 0.2), M0(0, DK + 2.55, 4.3), LAMP); { const [x, z] = W(0, 4.3); GL.push([x, y0 + DK + 2.55, z, 0.32, ...WARM, 1.2]); }
+    const [px, pz] = W(0, 6.8); POOLS.push([px, pz, 6.5, 0.7, 0]);
+    if (!stringAnchor) { const [ax, az] = W(2.95, 4.7); stringAnchor = [ax, az, y0 + DK + 2.05 - groundH(ax, az)]; } // the fairy lights start at the fly's front corner
   }
   const FIRE = { x: -12, z: -67 }; FIRE.y = groundH(FIRE.x, FIRE.z);
   for (let k = 0; k < 9; k++) { const a = (k / 9) * Math.PI * 2; P(blob(0.24, 0.16, 0.22, 0), at(FIRE.x + Math.cos(a) * 0.75, FIRE.y + 0.08, FIRE.z + Math.sin(a) * 0.75, 0, a, 0), 0x6a645c); }
@@ -24836,12 +24878,17 @@ function savanna(THREE, scene, camera, pal, preview) {
   POOLS.push([FIRE.x, FIRE.z, 9, 0.9, 1]);
   const LANTERNS = [[-17, -71], [-31, -84], [-6, -76], [-44, -100]];
   for (const [x, z] of LANTERNS) { const y = groundH(x, z); P(cyl(0.05, 0.06, 2.3, 5), at(x, y + 1.15, z), 0x2a2420); P(box(0.24, 0.32, 0.24), at(x, y + 2.35, z), LAMP); GL.push([x, y + 2.35, z, 0.35, ...WARM, 1.3]); POOLS.push([x, z, 5, 0.6, 0]); }
-  const STRING = [[-21.5, -77.3, 3.0], [-17, -71, 2.6], [-6, -76, 2.6]], G_STRING = GL.length; // fairy lights in the accent, sagging between the tent's veranda and the lanterns
+  const STRING = [stringAnchor, [-17, -71, 2.6], [-6, -76, 2.6]], G_STRING = GL.length; // fairy lights in the accent, sagging between the tent's veranda and the lanterns
   for (let k = 0; k < STRING.length - 1; k++) { const [x0, z0, y0] = STRING[k], [x1, z1, y1] = STRING[k + 1]; for (let u = 0.1; u < 0.95; u += 0.12) GL.push([x0 + (x1 - x0) * u, groundH(x0, z0) + y0 + (y1 - y0) * u - 0.7 * Math.sin(Math.PI * u), z0 + (z1 - z0) * u, 0.12, 1, 1, 1, 1.0]); }
   const N_STRING = GL.length - G_STRING;
   const FLAGPOLE = { x: -46, z: -90 }; FLAGPOLE.y = groundH(FLAGPOLE.x, FLAGPOLE.z); P(cyl(0.05, 0.07, 7, 5), at(FLAGPOLE.x, FLAGPOLE.y + 3.5, FLAGPOLE.z), 0x8a8a88);
   nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
   const site = new THREE.Mesh(keep(mergeColored(THREE, S)), paintMat); world.add(site);
+  const canvasMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, side: THREE.DoubleSide })), "canvas");
+  { const f = canvasMat.onBeforeCompile; canvasMat.onBeforeCompile = (sh) => { f(sh); // and by night the lamp inside showing through the canvas, a little on the fly and the deck
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aGlowK; varying float vGlowK;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vGlowK = aGlowK;");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nvarying float vGlowK;").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.66, 0.36) * vGlowK * uNight;"); }; }
+  const tents = new THREE.Mesh(concatGeos([[mergeColored(THREE, TC), { aGlowK: 0.6 }], [mergeColored(THREE, TF), { aGlowK: 0.08 }], [mergeColored(THREE, TD), { aGlowK: 0.14 }]]), canvasMat); tents.name = "tents"; world.add(tents);
   const flagMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide })), "flag", GW_FLAG_VS);
   const flag = new THREE.Mesh(keep(mergeColored(THREE, [[new THREE.PlaneGeometry(2.6, 1.6, 8, 1).translate(1.3, -0.8, 0), new THREE.Matrix4(), ACC]])), flagMat);
   flag.position.set(FLAGPOLE.x, FLAGPOLE.y + 6.9, FLAGPOLE.z); flag.rotation.y = -0.3; world.add(flag); // streaming downwind, to the right like the grass
@@ -24915,15 +24962,38 @@ function savanna(THREE, scene, camera, pal, preview) {
   const GI = [{ x: -105.5, z: -216.5, browse: true }, { x: -116.5, z: -229, browse: true }, { walk: true, z: -305, v: 0.95, x0: 40 }];
   const NG = GI.length, giBodies = partMesh(giBody, giMat, NG, "gi-body"), giLegs = partMesh(giLeg, giMat, NG * 4, "gi-leg"), giNecks = partMesh(giNeck, giMat, NG, "gi-neck");
   const GI_LEGS = [[0.7, 2.15, 0.25, 0], [0.7, 2.15, -0.25, 0.5], [-0.72, 2.12, 0.25, 0], [-0.72, 2.12, -0.25, 0.5]]; // a pace: both legs on a side together
-  // the zebras, grazing
-  const ZE_DARK = 0x1a1816;
-  const zeBody = withPat(mergeColored(THREE, [[blob(1.05, 0.38, 0.32), at(0, 1.06, 0), COAT], [blob(0.46, 0.4, 0.33), at(-0.64, 1.08, 0), COAT], [blob(0.42, 0.42, 0.32), at(0.6, 1.1, 0), COAT]]), 0);
-  const zeLeg = withPat(mergeColored(THREE, [[cyl(0.07, 0.05, 0.85, 6), at(0, -0.425, 0), COAT], [cyl(0.055, 0.06, 0.07, 6), at(0, -0.87, 0), ZE_DARK]]), 1);
-  const zeNeck = withPat(mergeColored(THREE, [taper([[0, 0, 0], [0.24, 0.36, 0], [0.42, 0.62, 0]], 0.19, 0.12, COAT), [blob(0.34, 0.13, 0.11), at(0.7, 0.45, 0, 0, 0, -0.55), COAT], [blob(0.09, 0.08, 0.09), at(0.98, 0.24, 0), ZE_DARK], [box(0.52, 0.11, 0.05), at(0.17, 0.42, 0, 0, 0, 0.95), ZE_DARK], [blob(0.06, 0.1, 0.04, 0), at(0.46, 0.74, 0.08), COAT], [blob(0.06, 0.1, 0.04, 0), at(0.46, 0.74, -0.08), COAT]]), 1); // the neck, the head reaching forward, the dark muzzle, the mane, the ears
-  const zeTail = withPat(mergeColored(THREE, [[cyl(0.03, 0.03, 0.6, 4), at(0, -0.3, 0), COAT], [blob(0.06, 0.15, 0.06, 0), at(0, -0.66, 0), ZE_DARK]]), 1);
+  // the zebras, grazing: one smooth body with its legs, the neck and its mane, the head, the tail
+  const ZE_DARK = 0x1a1816, ZE_PALE = 0xd8d2c6, NECK_L = 0.8, ZE_ROOT = [0.8, 1.3];
+  const zeTorso = (() => { // turned on a lathe along x: the round rump, the deep chest, the belly tucked up towards the flank, a straight back
+    const prof = [[-0.98, 0], [-0.95, 0.2], [-0.85, 0.31], [-0.65, 0.36], [-0.35, 0.365], [0.0, 0.385], [0.4, 0.385], [0.7, 0.355], [0.88, 0.27], [0.96, 0.14], [0.98, 0]].map(([x, rr]) => new THREE.Vector2(rr, x));
+    const g = new THREE.LatheGeometry(prof, 18).rotateZ(-Math.PI / 2), pa = g.attributes.position;
+    for (let i = 0; i < pa.count; i++) { const x = pa.getX(i), y = pa.getY(i); pa.setXYZ(i, x, y > 0 ? y * (0.8 + 0.08 * smooth(-0.4, -0.8, x)) : y * (1.06 - 0.3 * smooth(0.05, -0.62, x)), pa.getZ(i) * 0.8); } // the back straight, the croup a little rounder; the chest and belly deep, the flank tucked up
+    g.computeVertexNormals(); return g;
+  })();
+  const zeLegParts = [[0.58, 0.15, true], [0.58, -0.15, true], [-0.6, 0.15, false], [-0.6, -0.15, false]].flatMap(([x, z, fore]) => fore
+    ? [taper([[x, 1.0, z], [x + 0.01, 0.55, z], [x, 0.14, z], [x + 0.01, 0.05, z]], 0.085, 0.043, COAT, 10, 7), [cyl(0.05, 0.058, 0.07, 8), at(x + 0.01, 0.035, z), ZE_DARK]] // a foreleg, straight
+    : [taper([[x + 0.04, 1.02, z], [x + 0.09, 0.64, z], [x - 0.08, 0.42, z], [x - 0.05, 0.14, z], [x - 0.04, 0.05, z]], 0.115, 0.043, COAT, 12, 7), [cyl(0.05, 0.058, 0.07, 8), at(x - 0.04, 0.035, z), ZE_DARK]]); // a hind leg: the stifle forward, the hock back
+  const zeBodyGeo = concatGeos([[mergeColored(THREE, [[zeTorso, at(0, 1.08, 0), COAT]]), { aPat: 0 }], [mergeColored(THREE, zeLegParts), { aPat: 1 }]]);
+  const zeNeckGeo = (() => { // along +x from its root in the chest: deep where it leaves the body, slimmer at the head, the upright mane along its top
+    const tube = taper([[-0.18, 0, 0], [0.2, 0, 0], [0.5, 0, 0], [NECK_L, 0, 0]], 0.23, 0.11, COAT, 10, 10); tube[0].scale(1, 1, 0.62);
+    const rad = (x) => 0.23 - 0.12 * ((x + 0.18) / (NECK_L + 0.18));
+    const mane = new THREE.ExtrudeGeometry(new THREE.Shape([[-0.05, rad(-0.05) - 0.04], [NECK_L + 0.02, rad(NECK_L) - 0.04], [NECK_L + 0.02, rad(NECK_L) + 0.08], [0.4, rad(0.4) + 0.12], [-0.05, rad(-0.05) + 0.1]].map(([a, b]) => new THREE.Vector2(a, b))), { depth: 0.05, bevelEnabled: false }).translate(0, 0, -0.025);
+    return concatGeos([[mergeColored(THREE, [tube, [mane, new THREE.Matrix4(), COAT]]), { aPat: 2 }]]);
+  })();
+  const zeHeadGeo = (() => { // along +x from the poll: the long face, deeper at the jaw, the dark muzzle, the ears pricked
+    const prof = [[0, 0], [0.02, 0.1], [0.1, 0.13], [0.22, 0.12], [0.36, 0.095], [0.47, 0.08], [0.53, 0.06], [0.56, 0]].map(([x, rr]) => new THREE.Vector2(rr, x));
+    const g = new THREE.LatheGeometry(prof, 12).rotateZ(-Math.PI / 2), pa = g.attributes.position;
+    for (let i = 0; i < pa.count; i++) { const x = pa.getX(i), y = pa.getY(i); pa.setXYZ(i, x, y < 0 ? y * (1 + 0.35 * smooth(0.3, 0.05, x)) : y * 0.9, pa.getZ(i) * 0.72); }
+    g.computeVertexNormals();
+    const ear = new THREE.ConeGeometry(0.045, 0.17, 6).translate(0, 0.085, 0);
+    return concatGeos([[mergeColored(THREE, [[g, new THREE.Matrix4(), COAT]]), { aPat: 3 }], [mergeColored(THREE, [[blob(0.085, 0.075, 0.07, 1), at(0.5, -0.01, 0), ZE_DARK], [ear.clone(), at(0.05, 0.1, 0.06, 0.25, 0, 0.5), ZE_PALE], [ear, at(0.05, 0.1, -0.06, -0.25, 0, 0.5), ZE_PALE]]), { aPat: 4 }]]);
+  })();
+  const zeTailGeo = concatGeos([[mergeColored(THREE, [taper([[0, 0, 0], [-0.07, -0.3, 0], [-0.05, -0.58, 0]], 0.035, 0.022, ZE_PALE, 8, 5), [blob(0.05, 0.14, 0.05, 0), at(-0.05, -0.66, 0), ZE_DARK]]), { aPat: 4 }]]);
   const zeMat = coatMat("ZEBRA");
-  const ZE = []; for (let k = 0; k < (preview ? 4 : 7); k++) ZE.push({ x: 25 + r(-10, 10), z: -101 + r(-5, 5), h: (r() < 0.5 ? 0 : Math.PI) + r(-0.45, 0.45), ph: r(0, 100) }); // mostly side-on to us
-  const NZ = ZE.length, zeBodies = partMesh(zeBody, zeMat, NZ, "ze-body"), zeLegs = partMesh(zeLeg, zeMat, NZ * 4, "ze-leg"), zeNecks = partMesh(zeNeck, zeMat, NZ, "ze-neck"), zeTails = partMesh(zeTail, zeMat, NZ, "ze-tail");
+  const ZE = [];
+  for (let tries = 0; ZE.length < (preview ? 4 : 7) && tries < 400; tries++) { const x = 24 + r(-11, 11), z = -101 + r(-4.5, 4.5); if (ZE.some((o) => Math.hypot(o.x - x, (o.z - z) * 1.6) < 3.2)) continue; ZE.push({ x, z, h: (r() < 0.5 ? 0 : Math.PI) + r(-0.4, 0.4), ph: r(0, 100), sc: r(0.94, 1.04) }); } // a loose group, mostly side-on to us
+  { const m = ZE[1]; ZE.push({ x: m.x + 1.6 * Math.cos(m.h), z: m.z - 1.6 * Math.sin(m.h) + 0.6, h: m.h + 0.2, ph: m.ph + 7, sc: 0.62 }); } // a foal at its mother's shoulder
+  const NZ = ZE.length, zeBodies = partMesh(zeBodyGeo, zeMat, NZ, "ze-body"), zeNecks = partMesh(zeNeckGeo, zeMat, NZ, "ze-neck"), zeHeads = partMesh(zeHeadGeo, zeMat, NZ, "ze-head"), zeTails = partMesh(zeTailGeo, zeMat, NZ, "ze-tail");
   // vultures circling high over the plain
   const vuGeo = keep(mergeColored(THREE, [[blob(0.45, 0.16, 0.18, 0), at(0, 0, 0), 0x3a3028], [blob(0.12, 0.1, 0.1, 0), at(0.5, 0.04, 0), 0xb8a890], ...[-1, 1].flatMap((sd) => [[box(0.7, 0.04, 1.15), at(0, 0.03, sd * 0.68), 0x3a3028], [box(0.55, 0.035, 0.45), at(-0.08, 0.05, sd * 1.45), 0x1e1814]]), [box(0.4, 0.03, 0.42), at(-0.55, 0, 0), 0x3a3028]])); // broad wings, their fingered tips, a pale head
   const VU_FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.31 + instanceMatrix[3].y * 0.7;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.15, 0.0), f = sin(uTime * 3.2 + ph) * 0.45 * smoothstep(0.85, 1.0, sin(uTime * 0.21 + ph)) + 0.06;\n  transformed.y += span * sin(f); transformed.z = side * (0.15 + span * cos(f)); } // gliding, now and then a few slow beats";
@@ -24952,9 +25022,9 @@ function savanna(THREE, scene, camera, pal, preview) {
   const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
   world.add(hemi, sun, sun.target); sun.target.position.set(0, 0, -200);
   scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
-  const CASTERS = [site, jeep, elBodies, elLegs, elTrunks, elEars, giBodies, giLegs, giNecks, zeBodies, zeLegs, zeNecks, ...treeMeshes];
-  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.35; sun.shadow.intensity = 0.78; for (const m of CASTERS) m.castShadow = true; land.receiveShadow = site.receiveShadow = true; }
-  const LIT_MATS = [groundMat, paintMat, treeMat, flagMat, grass.material, jeep.material, elMat, giMat, zeMat, vultures.material];
+  const CASTERS = [site, tents, jeep, elBodies, elLegs, elTrunks, elEars, giBodies, giLegs, giNecks, zeBodies, zeNecks, zeHeads, ...treeMeshes];
+  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.35; sun.shadow.intensity = 0.78; for (const m of CASTERS) m.castShadow = true; land.receiveShadow = site.receiveShadow = tents.receiveShadow = true; }
+  const LIT_MATS = [groundMat, paintMat, canvasMat, treeMat, flagMat, grass.material, jeep.material, elMat, giMat, zeMat, vultures.material];
   const shadowFit = () => { // the light's box round the near plain: the camp, the waterhole and the animals
     sun.position.copy(sun.target.position).addScaledVector(SUN, 2000);
     const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
@@ -25087,13 +25157,14 @@ function savanna(THREE, scene, camera, pal, preview) {
     for (const m of [giBodies, giLegs, giNecks]) m.instanceMatrix.needsUpdate = true;
     // the zebras: heads down grazing, now and then one looks up; tails swishing
     ZE.forEach((zb, k) => {
-      const y = groundH(zb.x, zb.z); B.compose(V.set(zb.x, y, zb.z), Q.setFromEuler(E.set(0, zb.h, 0)), ONE); zeBodies.setMatrixAt(k, B);
-      EL_LEGS.forEach(([, , pz], j) => placePart(zeLegs, k * 4 + j, B, j < 2 ? 0.6 : -0.62, 0.86, pz * 0.36, j === 0 ? 0.12 : 0));
+      const y = groundH(zb.x, zb.z); B.compose(V.set(zb.x, y, zb.z), Q.setFromEuler(E.set(0, zb.h, 0)), V2.setScalar(zb.sc)); zeBodies.setMatrixAt(k, B);
       const up = smooth(0.0, 0.25, Math.sin((t + zb.ph) * 0.11)) * smooth(0.6, 0.85, Math.sin((t + zb.ph) * 0.031 + k)); // most of the time grazing
-      placePart(zeNecks, k, B, 0.8, 1.22, 0, -1.45 * (1 - up) + 0.05 * Math.sin(t * 1.3 + k) * (1 - up), 0.3 * up * Math.sin(t * 0.2 + k));
-      placePart(zeTails, k, B, -1.0, 1.24, 0, 0.15, 0, 0.35 * Math.sin(t * 2.4 + k * 1.3) * Math.max(0, Math.sin(t * 0.37 + k)));
+      const np = -0.95 + 1.9 * up + 0.04 * Math.sin(t * 1.3 + k) * (1 - up), hp = -1.47 + 0.86 * up, turn = 0.28 * up * Math.sin(t * 0.2 + k); // the neck's pitch, the head's, the neck's turn
+      M2.compose(V.set(ZE_ROOT[0], ZE_ROOT[1], 0), Q.setFromEuler(E.set(0, turn, np, "YZX")), ONE); M.multiplyMatrices(B, M2); zeNecks.setMatrixAt(k, M); // the neck from its root
+      M2.compose(V.set(NECK_L, 0, 0), Q.setFromEuler(E.set(0, 0, hp - np)), ONE); M.multiply(M2); zeHeads.setMatrixAt(k, M); // the head from the end of it
+      placePart(zeTails, k, B, -0.95, 1.3, 0, 0.12, 0, 0.35 * Math.sin(t * 2.4 + k * 1.3) * Math.max(0, Math.sin(t * 0.37 + k)));
     });
-    for (const m of [zeBodies, zeLegs, zeNecks, zeTails]) m.instanceMatrix.needsUpdate = true;
+    for (const m of [zeBodies, zeNecks, zeHeads, zeTails]) m.instanceMatrix.needsUpdate = true;
     // the vultures, banking into their circles
     VU.forEach((b, k) => {
       const a = t * b.w + b.ph, a2 = a + 0.02 * Math.sign(b.w);
