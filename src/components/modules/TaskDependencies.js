@@ -8,7 +8,7 @@ import { useAccess } from "@/lib/auth-context";
 import { useNav } from "@/lib/nav";
 import { TASK_STATUS } from "@/lib/constants";
 import { cn, formatDate } from "@/lib/utils";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
@@ -65,10 +65,10 @@ export default function TaskDependencies({ taskId, onChange }) {
 
   return (
     <Card className="task-deps space-y-3">
-      <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-muted">
+      <CardLabel>
         {data.open ? <Lock size={13} className="text-amber-500" /> : <LockOpen size={13} />} {tr("Dependencies")}
         {data.open ? <span className="dep-blocked rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-semibold normal-case tracking-normal text-amber-600">{tr("Waiting for {n}", { n: data.open })}</span> : null}
-      </p>
+      </CardLabel>
       <div>
         <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-fg-faint">{tr("Waits for")}</p>
         {blockedBy.length ? <ul className="space-y-1.5">{blockedBy.map((t) => item(t, true))}</ul> : <p className="text-xs text-fg-muted">{tr("Nothing. This task can start any time.")}</p>}

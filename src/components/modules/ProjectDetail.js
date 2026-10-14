@@ -1,14 +1,15 @@
 "use client";
 import { useState } from "react";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, Plus, FolderKanban, Users, CheckSquare, Calendar, Wallet, Hash, ClipboardList, BookOpen } from "lucide-react";
+import { Pencil, Trash2, Plus, FolderKanban, Users, CheckSquare, Calendar, Wallet, Hash, ClipboardList, BookOpen, AlignLeft, Gauge } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { PROJECT_STATUS, TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { formatDate, formatMoney, relativeTime } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import Tabs from "@/components/ui/Tabs";
 import { StatusBadge } from "@/components/ui/Badge";
 import { ProgressBar, Skeleton, EmptyState } from "@/components/ui/Misc";
@@ -36,6 +37,7 @@ export default function ProjectDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
+  const [arranging, setArranging] = useState(false);
   const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Project not found" description={error.message} action={<Button onClick={() => router.push("/projects")}>Back to projects</Button>} />;
@@ -84,6 +86,7 @@ export default function ProjectDetail({ id }) {
         crumbs={[{ label: tr("Projects"), href: "/projects" }]}
         actions={
           <>
+            <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
             <ReportButton module="projects" id={id} />
             <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
             <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
@@ -97,37 +100,57 @@ export default function ProjectDetail({ id }) {
         </div>
       </PageHeader>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr] anim-stagger">
-        <Card>
-          <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("About")}</p>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">{project.description || <span className="text-fg-faint">No description yet.</span>}</p>
-          <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4 text-sm sm:grid-cols-4">
-            <Info icon={Hash} label={tr("Code")} value={<span className="font-mono">{project.code}</span>} />
-            <Info icon={Calendar} label={tr("Start")} value={formatDate(project.start_date) || "—"} />
-            <Info icon={Calendar} label={tr("End")} value={formatDate(project.end_date) || "—"} />
-            <Info icon={Wallet} label={tr("Budget")} value={formatMoney(project.budget) || "—"} />
-          </dl>
-        </Card>
-        <Card className="flex flex-col justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Progress")}</p>
-            <p className="mt-2 text-3xl font-semibold tracking-tight">{pct}%</p>
-            <p className="text-xs text-fg-muted">{project.done_count} of {project.task_count} tasks done</p>
-            <ProgressBar value={pct} color={project.color} size="md" className="mt-3" />
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-            <button onClick={() => setTab("members")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
-              <Users size={15} className="text-accent" /><span><b>{project.employees.length}</b> <span className="text-fg-muted">members</span></span>
-            </button>
-            <button onClick={() => setTab("requirements")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
-              <ClipboardList size={15} className="text-accent" /><span><b>{(project.requirements ?? []).length}</b> <span className="text-fg-muted">reqs</span></span>
-            </button>
-            <button onClick={() => setTab("tasks")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
-              <CheckSquare size={15} className="text-accent" /><span><b>{project.task_count - project.done_count}</b> <span className="text-fg-muted">{tr("open")}</span></span>
-            </button>
-          </div>
-        </Card>
-      </div>
+      <DetailCards
+        page="project"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        grid="lg:grid-cols-[2fr_1fr]"
+        sideClass=""
+        className="mb-5"
+        slots={[
+          {
+            id: "about", title: tr("About"), icon: AlignLeft,
+            node: (
+              <Card>
+                <CardLabel>{tr("About")}</CardLabel>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">{project.description || <span className="text-fg-faint">No description yet.</span>}</p>
+                <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4 text-sm sm:grid-cols-4">
+                  <Info icon={Hash} label={tr("Code")} value={<span className="font-mono">{project.code}</span>} />
+                  <Info icon={Calendar} label={tr("Start")} value={formatDate(project.start_date) || "—"} />
+                  <Info icon={Calendar} label={tr("End")} value={formatDate(project.end_date) || "—"} />
+                  <Info icon={Wallet} label={tr("Budget")} value={formatMoney(project.budget) || "—"} />
+                </dl>
+              </Card>
+            ),
+          },
+          {
+            id: "progress", column: "side", title: tr("Progress"), icon: Gauge,
+            node: (
+              <Card className="flex flex-col">
+                <CardLabel>{tr("Progress")}</CardLabel>
+                <div className="flex flex-1 flex-col justify-between">
+                  <div>
+                    <p className="mt-2 text-3xl font-semibold tracking-tight">{pct}%</p>
+                    <p className="text-xs text-fg-muted">{project.done_count} of {project.task_count} tasks done</p>
+                    <ProgressBar value={pct} color={project.color} size="md" className="mt-3" />
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                    <button onClick={() => setTab("members")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
+                      <Users size={15} className="text-accent" /><span><b>{project.employees.length}</b> <span className="text-fg-muted">members</span></span>
+                    </button>
+                    <button onClick={() => setTab("requirements")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
+                      <ClipboardList size={15} className="text-accent" /><span><b>{(project.requirements ?? []).length}</b> <span className="text-fg-muted">reqs</span></span>
+                    </button>
+                    <button onClick={() => setTab("tasks")} className="flex items-center gap-2 rounded-app-sm border border-line px-3 py-2 text-left hover:bg-surface-2">
+                      <CheckSquare size={15} className="text-accent" /><span><b>{project.task_count - project.done_count}</b> <span className="text-fg-muted">{tr("open")}</span></span>
+                    </button>
+                  </div>
+                </div>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <Tabs
         className="mb-4"

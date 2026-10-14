@@ -7,7 +7,7 @@ import { useAccess } from "@/lib/auth-context";
 import { todayIso } from "@/lib/dates";
 import { parseDuration, formatMinutes, formatClock } from "@/lib/duration";
 import { cn, formatDate } from "@/lib/utils";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { ProgressBar } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
@@ -83,7 +83,7 @@ export default function TaskTime({ taskId, estimateHours, onTotal }) {
 
   return (
     <Card className="task-time space-y-3">
-      <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-muted"><Timer size={13} /> {tr("Time")}</p>
+      <CardLabel icon={Timer}>{tr("Time")}</CardLabel>
       <div>
         <p className="flex items-baseline gap-2">
           <span className={cn("time-total text-2xl font-semibold tabular-nums tracking-tight", over && "text-rose-500")}>{formatMinutes(total)}</span>

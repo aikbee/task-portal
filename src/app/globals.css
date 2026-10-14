@@ -110,6 +110,63 @@
   animation: sortable-flash 1.4s ease-out;
 }
 
+/*
+ * A page header sits straight on the page background, which can be a picture that is dark exactly where the theme's
+ * text is dark (or the other way round). Its quiet buttons get a surface of their own, so their text reads on any
+ * background. Unlayered on purpose: it beats `bg-transparent`, which is also why the hover colours are restated. The
+ * modern theme styles its outline/secondary buttons later in this file.
+ */
+.ph-actions .btn-outline,
+.ph-actions .btn-secondary,
+.ph-actions .btn-ghost,
+.ph-actions .btn-dangerGhost {
+  background-color: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(12px) saturate(1.3);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+}
+.ph-actions .btn-ghost {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 90%, transparent);
+}
+.ph-actions .btn-dangerGhost {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f43f5e 35%, transparent);
+}
+/* A collapsed card on a detail page keeps only its header row (DetailCards: CardHeader / CardLabel carry `dc-head`). */
+.dc-slot.is-collapsed:not(.dc-bare) > .ui-card > :not(.dc-head) {
+  display: none;
+}
+.dc-slot.is-collapsed > .ui-card {
+  padding-top: 0.8rem;
+  padding-bottom: 0.8rem;
+}
+.dc-slot.is-collapsed > .ui-card > .dc-head {
+  margin-bottom: 0;
+}
+.dc-slot.is-collapsed .dc-actions > :not(.dc-toggle) {
+  display: none;
+}
+/* a card alone in its column fills the row, as the two cards of a project's or a person's header did */
+.dc-col > .dc-slot:only-child:not(.is-collapsed),
+.dc-col > .dc-slot:only-child:not(.is-collapsed) > .ui-card {
+  height: 100%;
+}
+.dc-row[draggable="true"] {
+  cursor: grab;
+}
+.dc-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+@media (hover: hover) {
+  .ph-actions .btn-outline:hover,
+  .ph-actions .btn-secondary:hover,
+  .ph-actions .btn-ghost:hover {
+    background-color: color-mix(in oklab, var(--surface) 88%, var(--fg) 12%);
+  }
+  .ph-actions .btn-dangerGhost:hover {
+    background-color: color-mix(in oklab, var(--surface) 86%, #f43f5e 14%);
+  }
+}
+
 @layer base {
   * {
     border-color: var(--line);

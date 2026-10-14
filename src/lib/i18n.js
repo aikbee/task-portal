@@ -202,6 +202,10 @@ const zhCN = {
   "{project} lets tokens only suggest, so Bitara PMS refuses closing from Task Portal. Close it in Bitara PMS, or ask the project owner to set the project to Full there, then press Check again on Integrations.": "{project} 只允许令牌提出建议，因此 Bitara PMS 会拒绝从 Task Portal 关闭工单。请在 Bitara PMS 中关闭，或请项目负责人在那里把项目设为“完全”，然后在“集成”页面点击“重新检查”。",
   "{key} is closed already": "{key} 已关闭", "Close {key} in Bitara PMS": "在 Bitara PMS 中关闭 {key}", "Close the new ticket in Bitara PMS": "在 Bitara PMS 中关闭新工单", "Reason: {reason}": "原因：{reason}", "closed the ticket": "关闭了工单", "Give a reason for closing the ticket: Bitara PMS asks for one.": "请填写关闭工单的原因：Bitara PMS 需要原因。",
   "The Bitara PMS address cannot be changed on this server.": "此服务器上不能更改 Bitara PMS 地址。", "Connection not found.": "未找到连接。", "Unknown Bitara PMS project.": "未知的 Bitara PMS 项目。",
+  // arranging the cards of detail pages
+  "Arrange cards": "排列卡片", "Drag the cards or use the arrows, and hide the ones you do not need. Every page of this kind opens like this.": "拖动卡片或使用箭头调整顺序，并隐藏不需要的卡片。同类页面都会按此打开。", "Back to the default": "恢复默认", "Done arranging": "完成排列",
+  "Main column": "主栏", "Side column": "侧栏", "Hidden": "已隐藏", "Move up": "上移", "Move down": "下移", "Move to the side column": "移到侧栏", "Move to the main column": "移到主栏", "Show this card": "显示此卡片",
+  "Drop a card here, or use the arrow on a card in the other column.": "把卡片拖到这里，或在另一栏的卡片上使用箭头。", "Linked tasks": "关联任务", "Workload": "工作量",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

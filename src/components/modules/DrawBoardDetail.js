@@ -11,6 +11,7 @@ import { formatDateTime, relativeTime, cn } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card, { CardHeader } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
@@ -32,6 +33,7 @@ export default function DrawBoardDetail({ id }) {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [arranging, setArranging] = useState(false);
   const mod = MODULE_MAP.drawboards;
 
   if (error) return <EmptyState title={tr("Board not found")} description={error.message} action={<Button onClick={() => router.push("/drawboards")}>{tr("Draw Board")}</Button>} />;
@@ -60,6 +62,7 @@ export default function DrawBoardDetail({ id }) {
         crumbs={[{ label: tr("Draw Board"), href: "/drawboards" }]}
         actions={
           <>
+            <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
             <ReportButton module="drawboards" id={id} />
             <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
             <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
@@ -76,19 +79,32 @@ export default function DrawBoardDetail({ id }) {
 
       <DrawBoardEditor key={board.id} board={board} onSaved={merge} />
 
-      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_320px]">
-        <Notes board={board} onSaved={merge} />
-        <Card className="space-y-3 xl:self-start">
-          <CardHeader icon={ImageIcon} title={tr("About")} />
-          <dl className="grid grid-cols-2 gap-3 text-sm">
-            <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Size")}</dt><dd className="font-medium tabular-nums">{board.width} × {board.height}</dd></div>
-            <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Images")}</dt><dd className="font-medium tabular-nums">{board.image_count ?? 0}</dd></div>
-            <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Created")}</dt><dd className="font-medium">{formatDateTime(board.created_at)}</dd></div>
-            <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Updated")}</dt><dd className="font-medium">{formatDateTime(board.updated_at)}</dd></div>
-          </dl>
-          <p className="text-[11px] text-fg-muted">{tr("Paste a screenshot with ⌘V, or drop an image onto the canvas. Type @ in the notes to tag a person, project, task, requirement or info item.")}</p>
-        </Card>
-      </div>
+      <DetailCards
+        page="drawboard"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        grid="xl:grid-cols-[1fr_320px]"
+        sideClass="xl:self-start"
+        className="mt-4"
+        slots={[
+          { id: "notes", title: tr("Notes"), icon: FileText, node: <Notes board={board} onSaved={merge} /> },
+          {
+            id: "about", column: "side", title: tr("About"), icon: ImageIcon,
+            node: (
+              <Card className="space-y-3">
+                <CardHeader icon={ImageIcon} title={tr("About")} />
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Size")}</dt><dd className="font-medium tabular-nums">{board.width} × {board.height}</dd></div>
+                  <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Images")}</dt><dd className="font-medium tabular-nums">{board.image_count ?? 0}</dd></div>
+                  <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Created")}</dt><dd className="font-medium">{formatDateTime(board.created_at)}</dd></div>
+                  <div><dt className="text-[11px] uppercase tracking-wider text-fg-muted">{tr("Updated")}</dt><dd className="font-medium">{formatDateTime(board.updated_at)}</dd></div>
+                </dl>
+                <p className="text-[11px] text-fg-muted">{tr("Paste a screenshot with ⌘V, or drop an image onto the canvas. Type @ in the notes to tag a person, project, task, requirement or info item.")}</p>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <DrawBoardForm open={editOpen} onClose={() => setEditOpen(false)} initial={board} onSaved={() => refetch()} />
       <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this board?")} description={tr("The drawing goes with its images.")} bin />

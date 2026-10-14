@@ -2,14 +2,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock, Repeat, X, ArrowUp } from "lucide-react";
+import { Pencil, Trash2, CheckSquare, FolderKanban, Calendar, Clock, Paperclip, FileText, Flag, ClipboardList, UserRoundPen, MessageSquare, Lock, Repeat, X, ArrowUp, ListChecks, Timer, Ticket, SlidersHorizontal, Info, AlignLeft, FileStack } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { formatDate, formatDateTime, relativeTime, isOverdue, fullName } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import Avatar from "@/components/ui/Avatar";
 import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/Misc";
@@ -29,7 +30,7 @@ import { TagChips, putTask, deletedToast } from "./shared";
 import { DetailSkeleton } from "./ProjectDetail";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { CanEdit, CanDelete, useAccess } from "@/lib/auth-context";
+import { CanEdit, CanDelete, useAccess, useFeature } from "@/lib/auth-context";
 import ReportButton from "@/components/report/ReportButton";
 
 export default function TaskDetail({ id }) {
@@ -42,6 +43,8 @@ export default function TaskDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pmsTick, setPmsTick] = useState(0); // a send to Bitara PMS adds a history row
+  const [arranging, setArranging] = useState(false);
+  const pmsOn = useFeature("pms");
   const { data: employees } = useFetch("/api/employees");
 
   if (error) return <EmptyState title="Task not found" description={error.message} action={<Button onClick={() => router.push("/tasks")}>Back to tasks</Button>} />;
@@ -81,6 +84,7 @@ export default function TaskDetail({ id }) {
         crumbs={[{ label: tr("Tasks"), href: "/tasks" }]}
         actions={
           <>
+            <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
             <ReportButton module="tasks" id={id} />
             <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
             <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
@@ -102,121 +106,136 @@ export default function TaskDetail({ id }) {
         </div>
       </PageHeader>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
-        <div className="min-w-0 space-y-4 anim-stagger">
-          <Card>
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Description")}</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{task.description || <span className="text-fg-faint">No description. Click Edit to add one.</span>}</p>
-          </Card>
-          <TaskChecklist taskId={task.id} items={task.checklist ?? []} onChange={(checklist) => setData((t) => ({ ...t, checklist, checklist_total: checklist.length, checklist_done: checklist.filter((i) => i.done).length }))} />
-          <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} />
-          <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} />
-          <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.dependency_count}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}:${pmsTick}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} />
-        </div>
-
-        <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
-          <Card className="space-y-4">
-            <fieldset disabled={!canEdit} className="contents">
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Details")}</p>
-            <Row label={tr("Status")}>
-              <Select value={task.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
-                {Object.entries(TASK_STATUS).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-            </Row>
-            <Row label={tr("Priority")}>
-              <Select value={task.priority} onChange={(e) => patch({ priority: e.target.value })} className="h-8 text-xs">
-                {Object.entries(TASK_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-            </Row>
-            <Row label={tr("Start date")}>
-              <Input type="date" value={task.start_date || ""} max={task.due_date || undefined} onChange={(e) => patch({ start_date: e.target.value || null })} className="h-8 text-xs" />
-            </Row>
-            <Row label={tr("Due date")}>
-              <Input type="date" value={task.due_date || ""} onChange={(e) => patch({ due_date: e.target.value || null })} className={cn("h-8 text-xs", overdue && "border-rose-500 text-rose-500")} />
-            </Row>
-            <Row label={tr("Estimate (hours)")}>
-              <Input type="number" min="0" max="9999" step="0.25" inputMode="decimal" key={`est-${task.estimate_hours}`} defaultValue={task.estimate_hours ?? ""} placeholder="—" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== (task.estimate_hours ?? null)) patch({ estimate_hours: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="h-8 text-xs" />
-            </Row>
-            <Row label={tr("Tags")}>
-              <TagChips tags={task.tags} className="mb-1.5" max={20} />
-              <Input key={`tags-${task.tags}`} defaultValue={String(task.tags ?? "").split(",").filter(Boolean).join(", ")} placeholder={tr("bug, client-x")} onBlur={(e) => { const next = e.target.value; if (next.split(",").map((x) => x.trim().toLowerCase().replace(/\s+/g, "-")).filter(Boolean).join(",") !== (task.tags ?? "")) patch({ tags: next }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="task-tags-inline h-8 text-xs" />
-            </Row>
-            <Row label={tr("Repeats")}>
-              <Select value={task.repeat_rule ?? ""} onChange={(e) => patch({ repeat_rule: e.target.value || null })} className="task-repeat-inline h-8 text-xs">
-                <option value="">{tr("Does not repeat")}</option>
-                {Object.entries(REPEAT_RULES).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-              {task.repeat_rule ? <Input type="date" value={task.repeat_until || ""} onChange={(e) => patch({ repeat_until: e.target.value || null })} className="mt-1.5 h-8 text-xs" aria-label={tr("Repeat until")} title={tr("Repeat until")} /> : null}
-            </Row>
-            <Row label={tr("Assignees")}>
-              {(task.assignees ?? []).length ? (
-                <ul className="task-assignees mb-1.5 space-y-1">
-                  {task.assignees.map((p, i) => (
-                    <li key={p.id} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5">
-                      <Avatar name={p.name} color={p.avatar_color} size="xs" />
-                      <Link href={`/employees/${p.id}`} className="min-w-0 flex-1 leading-tight hover:text-accent">
-                        <span className="block truncate text-sm font-medium">{p.name}</span>
-                        <span className="block truncate text-[11px] text-fg-muted">{[i === 0 && task.assignees.length > 1 ? tr("Lead") : null, p.job_title].filter(Boolean).join(" · ")}</span>
+      <DetailCards
+        page="task"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        slots={[
+          {
+            id: "description", title: tr("Description"), icon: AlignLeft,
+            node: (
+              <Card>
+                <CardLabel>{tr("Description")}</CardLabel>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{task.description || <span className="text-fg-faint">No description. Click Edit to add one.</span>}</p>
+              </Card>
+            ),
+          },
+          { id: "checklist", title: tr("Checklist"), icon: ListChecks, node: <TaskChecklist taskId={task.id} items={task.checklist ?? []} onChange={(checklist) => setData((t) => ({ ...t, checklist, checklist_total: checklist.length, checklist_done: checklist.filter((i) => i.done).length }))} /> },
+          { id: "attachments", title: tr("Attachments"), icon: Paperclip, node: <AttachmentsPanel kind="task" parentId={task.id} attachments={task.attachments} onChange={(attachments) => setData((t) => ({ ...t, attachments, attachment_count: attachments.length }))} /> },
+          { id: "outputs", title: tr("Outputs"), icon: FileStack, node: <TaskOutputs taskId={task.id} outputs={task.outputs} onChange={(outputs) => setData((t) => ({ ...t, outputs, output_count: outputs.length }))} /> },
+          { id: "activity", title: tr("Activity"), icon: MessageSquare, node: <TaskActivity taskId={task.id} version={`${task.updated_at}:${task.dependency_count}:${task.attachments.length}:${task.outputs.length}:${(task.checklist ?? []).map((i) => `${i.id}${i.done}`).join()}:${pmsTick}`} onCount={(n) => setData((t) => ({ ...t, comment_count: n }))} /> },
+          {
+            id: "details", column: "side", title: tr("Details"), icon: SlidersHorizontal,
+            node: (
+              <Card className="space-y-4">
+                <CardLabel>{tr("Details")}</CardLabel>
+                <fieldset disabled={!canEdit} className="contents">
+                  <Row label={tr("Status")}>
+                    <Select value={task.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
+                      {Object.entries(TASK_STATUS).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                  </Row>
+                  <Row label={tr("Priority")}>
+                    <Select value={task.priority} onChange={(e) => patch({ priority: e.target.value })} className="h-8 text-xs">
+                      {Object.entries(TASK_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                  </Row>
+                  <Row label={tr("Start date")}>
+                    <Input type="date" value={task.start_date || ""} max={task.due_date || undefined} onChange={(e) => patch({ start_date: e.target.value || null })} className="h-8 text-xs" />
+                  </Row>
+                  <Row label={tr("Due date")}>
+                    <Input type="date" value={task.due_date || ""} onChange={(e) => patch({ due_date: e.target.value || null })} className={cn("h-8 text-xs", overdue && "border-rose-500 text-rose-500")} />
+                  </Row>
+                  <Row label={tr("Estimate (hours)")}>
+                    <Input type="number" min="0" max="9999" step="0.25" inputMode="decimal" key={`est-${task.estimate_hours}`} defaultValue={task.estimate_hours ?? ""} placeholder="—" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== (task.estimate_hours ?? null)) patch({ estimate_hours: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="h-8 text-xs" />
+                  </Row>
+                  <Row label={tr("Tags")}>
+                    <TagChips tags={task.tags} className="mb-1.5" max={20} />
+                    <Input key={`tags-${task.tags}`} defaultValue={String(task.tags ?? "").split(",").filter(Boolean).join(", ")} placeholder={tr("bug, client-x")} onBlur={(e) => { const next = e.target.value; if (next.split(",").map((x) => x.trim().toLowerCase().replace(/\s+/g, "-")).filter(Boolean).join(",") !== (task.tags ?? "")) patch({ tags: next }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} className="task-tags-inline h-8 text-xs" />
+                  </Row>
+                  <Row label={tr("Repeats")}>
+                    <Select value={task.repeat_rule ?? ""} onChange={(e) => patch({ repeat_rule: e.target.value || null })} className="task-repeat-inline h-8 text-xs">
+                      <option value="">{tr("Does not repeat")}</option>
+                      {Object.entries(REPEAT_RULES).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                    {task.repeat_rule ? <Input type="date" value={task.repeat_until || ""} onChange={(e) => patch({ repeat_until: e.target.value || null })} className="mt-1.5 h-8 text-xs" aria-label={tr("Repeat until")} title={tr("Repeat until")} /> : null}
+                  </Row>
+                  <Row label={tr("Assignees")}>
+                    {(task.assignees ?? []).length ? (
+                      <ul className="task-assignees mb-1.5 space-y-1">
+                        {task.assignees.map((p, i) => (
+                          <li key={p.id} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5">
+                            <Avatar name={p.name} color={p.avatar_color} size="xs" />
+                            <Link href={`/employees/${p.id}`} className="min-w-0 flex-1 leading-tight hover:text-accent">
+                              <span className="block truncate text-sm font-medium">{p.name}</span>
+                              <span className="block truncate text-[11px] text-fg-muted">{[i === 0 && task.assignees.length > 1 ? tr("Lead") : null, p.job_title].filter(Boolean).join(" · ")}</span>
+                            </Link>
+                            {i > 0 ? <Button variant="ghost" size="iconXs" icon={ArrowUp} onClick={() => setPeople([p.id, ...task.assignees.filter((x) => x.id !== p.id).map((x) => x.id)])} aria-label={tr("Make lead")} data-tip={tr("Make lead")} /> : null}
+                            <Button variant="ghost" size="iconXs" icon={X} onClick={() => setPeople(task.assignees.filter((x) => x.id !== p.id).map((x) => x.id))} aria-label={tr("Remove assignee")} data-tip={tr("Remove")} />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    <div className="relative">
+                      <UserRoundPen size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-faint" />
+                      <Select value="" onChange={(e) => e.target.value && setPeople([...(task.assignees ?? []).map((x) => x.id), Number(e.target.value)])} className="task-add-assignee h-8 pl-8 text-xs" aria-label={tr("Add assignee")}>
+                        <option value="">{(task.assignees ?? []).length ? tr("Add another person…") : tr("Unassigned: pick someone…")}</option>
+                        {people.filter((e) => !(task.assignees ?? []).some((x) => x.id === e.id)).map((e) => (
+                          <option key={e.id} value={e.id}>{fullName(e)}{e.status !== "active" ? ` (${tr(e.status === "on_leave" ? "On leave" : "Inactive").toLowerCase()})` : ""}</option>
+                        ))}
+                      </Select>
+                    </div>
+                  </Row>
+                  <Row label={tr("Requirement")}>
+                    {task.requirement_id ? (
+                      <Link href={`/requirements/${task.requirement_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
+                        <span className="grid h-6 w-6 place-items-center rounded-md bg-pink-500/15 text-pink-500"><ClipboardList size={12} /></span>
+                        <span className="min-w-0 leading-tight">
+                          <span className="block truncate text-sm font-medium">{task.requirement_title}</span>
+                          <span className="block font-mono text-[11px] text-fg-muted">{task.requirement_code}</span>
+                        </span>
                       </Link>
-                      {i > 0 ? <Button variant="ghost" size="iconXs" icon={ArrowUp} onClick={() => setPeople([p.id, ...task.assignees.filter((x) => x.id !== p.id).map((x) => x.id)])} aria-label={tr("Make lead")} data-tip={tr("Make lead")} /> : null}
-                      <Button variant="ghost" size="iconXs" icon={X} onClick={() => setPeople(task.assignees.filter((x) => x.id !== p.id).map((x) => x.id))} aria-label={tr("Remove assignee")} data-tip={tr("Remove")} />
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <div className="relative">
-                <UserRoundPen size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-faint" />
-                <Select value="" onChange={(e) => e.target.value && setPeople([...(task.assignees ?? []).map((x) => x.id), Number(e.target.value)])} className="task-add-assignee h-8 pl-8 text-xs" aria-label={tr("Add assignee")}>
-                  <option value="">{(task.assignees ?? []).length ? tr("Add another person…") : tr("Unassigned: pick someone…")}</option>
-                  {people.filter((e) => !(task.assignees ?? []).some((x) => x.id === e.id)).map((e) => (
-                    <option key={e.id} value={e.id}>{fullName(e)}{e.status !== "active" ? ` (${tr(e.status === "on_leave" ? "On leave" : "Inactive").toLowerCase()})` : ""}</option>
-                  ))}
-                </Select>
-              </div>
-            </Row>
-            <Row label={tr("Requirement")}>
-              {task.requirement_id ? (
-                <Link href={`/requirements/${task.requirement_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
-                  <span className="grid h-6 w-6 place-items-center rounded-md bg-pink-500/15 text-pink-500"><ClipboardList size={12} /></span>
-                  <span className="min-w-0 leading-tight">
-                    <span className="block truncate text-sm font-medium">{task.requirement_title}</span>
-                    <span className="block font-mono text-[11px] text-fg-muted">{task.requirement_code}</span>
-                  </span>
-                </Link>
-              ) : (
-                <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">Not linked — link a requirement</button>
-              )}
-            </Row>
-            <Row label={tr("Project")}>
-              {task.project_name ? (
-                <Link href={`/projects/${task.project_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
-                  <span className="grid h-6 w-6 place-items-center rounded-md text-white" style={{ background: task.project_color }}><FolderKanban size={12} /></span>
-                  <span className="min-w-0 leading-tight">
-                    <span className="block truncate text-sm font-medium">{task.project_name}</span>
-                    <span className="block font-mono text-[11px] text-fg-muted">{task.project_code}</span>
-                  </span>
-                </Link>
-              ) : (
-                <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">No project — link one</button>
-              )}
-            </Row>
-            </fieldset>
-          </Card>
-          <TaskTime taskId={task.id} estimateHours={task.estimate_hours} onTotal={(m) => setData((t) => ({ ...t, minutes_logged: m }))} />
-          <PmsTaskCard taskId={task.id} onChanged={() => setPmsTick((n) => n + 1)} />
-          <TaskDependencies taskId={task.id} onChange={(d) => setData((t) => ({ ...t, blocked_by_open: d.open, dependency_count: d.blocked_by.length }))} />
-          <Card className="space-y-2 text-xs text-fg-muted">
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>
-            <p className="flex items-center gap-2"><Paperclip size={13} /> {task.attachments.length} attachment{task.attachments.length === 1 ? "" : "s"}</p>
-            <p className="flex items-center gap-2"><FileText size={13} /> {task.outputs.length} output{task.outputs.length === 1 ? "" : "s"}</p>
-            <p className="flex items-center gap-2"><MessageSquare size={13} /> {task.comment_count ?? 0} comment{task.comment_count === 1 ? "" : "s"}</p>
-            <p className="flex items-center gap-2"><Flag size={13} /> Sort order #{task.sort_order}</p>
-            <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(task.created_at)}</p>
-            <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(task.updated_at)}</p>
-            {task.due_date ? <p className={cn("flex items-center gap-2", overdue && "font-medium text-rose-500")}><Calendar size={13} /> Due {formatDate(task.due_date)}{overdue ? " (overdue)" : ""}</p> : null}
-          </Card>
-        </div>
-      </div>
+                    ) : (
+                      <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">Not linked — link a requirement</button>
+                    )}
+                  </Row>
+                  <Row label={tr("Project")}>
+                    {task.project_name ? (
+                      <Link href={`/projects/${task.project_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
+                        <span className="grid h-6 w-6 place-items-center rounded-md text-white" style={{ background: task.project_color }}><FolderKanban size={12} /></span>
+                        <span className="min-w-0 leading-tight">
+                          <span className="block truncate text-sm font-medium">{task.project_name}</span>
+                          <span className="block font-mono text-[11px] text-fg-muted">{task.project_code}</span>
+                        </span>
+                      </Link>
+                    ) : (
+                      <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">No project — link one</button>
+                    )}
+                  </Row>
+                </fieldset>
+              </Card>
+            ),
+          },
+          { id: "time", column: "side", title: tr("Time"), icon: Timer, node: <TaskTime taskId={task.id} estimateHours={task.estimate_hours} onTotal={(m) => setData((t) => ({ ...t, minutes_logged: m }))} /> },
+          ...(pmsOn ? [{ id: "pms", column: "side", title: tr("Bitara PMS"), icon: Ticket, node: <PmsTaskCard taskId={task.id} onChanged={() => setPmsTick((n) => n + 1)} /> }] : []),
+          { id: "dependencies", column: "side", title: tr("Dependencies"), icon: Lock, node: <TaskDependencies taskId={task.id} onChange={(d) => setData((t) => ({ ...t, blocked_by_open: d.open, dependency_count: d.blocked_by.length }))} /> },
+          {
+            id: "meta", column: "side", title: tr("Meta"), icon: Info,
+            node: (
+              <Card className="space-y-2 text-xs text-fg-muted">
+                <CardLabel>{tr("Meta")}</CardLabel>
+                <p className="flex items-center gap-2"><Paperclip size={13} /> {task.attachments.length} attachment{task.attachments.length === 1 ? "" : "s"}</p>
+                <p className="flex items-center gap-2"><FileText size={13} /> {task.outputs.length} output{task.outputs.length === 1 ? "" : "s"}</p>
+                <p className="flex items-center gap-2"><MessageSquare size={13} /> {task.comment_count ?? 0} comment{task.comment_count === 1 ? "" : "s"}</p>
+                <p className="flex items-center gap-2"><Flag size={13} /> Sort order #{task.sort_order}</p>
+                <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(task.created_at)}</p>
+                <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(task.updated_at)}</p>
+                {task.due_date ? <p className={cn("flex items-center gap-2", overdue && "font-medium text-rose-500")}><Calendar size={13} /> Due {formatDate(task.due_date)}{overdue ? " (overdue)" : ""}</p> : null}
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <TaskForm open={editOpen} onClose={() => setEditOpen(false)} initial={task} onSaved={refetch} />
       <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title="Delete this task?" description="Its files, outputs, checklist, comments and logged time go with it." bin />

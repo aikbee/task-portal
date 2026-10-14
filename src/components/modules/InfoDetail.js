@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Pencil, Trash2, Pin, PinOff, KeyRound, Eye, EyeOff, Copy, Check, Link2, User, Calendar, Clock, Tag, FolderKanban } from "lucide-react";
+import { Pencil, Trash2, Pin, PinOff, KeyRound, Eye, EyeOff, Copy, Check, Link2, User, Calendar, Clock, Tag, FolderKanban, AlignLeft, FileStack, Paperclip, Info } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useUI, usePrefs } from "@/lib/store";
 import { hashPin } from "@/lib/pin";
@@ -13,7 +13,8 @@ import { INFO_CATEGORY, MODULE_MAP } from "@/lib/modules";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/Misc";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -36,6 +37,7 @@ export default function InfoDetail({ id }) {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [arranging, setArranging] = useState(false);
 
   if (error) return <EmptyState title="Info item not found" description={error.message} action={<Button onClick={() => router.push("/info")}>Back to info</Button>} />;
   if (loading && !item) return <DetailSkeleton />;
@@ -72,6 +74,7 @@ export default function InfoDetail({ id }) {
         crumbs={[{ label: tr("Info"), href: "/info" }]}
         actions={
           <>
+            <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
             <ReportButton module="info" id={id} />
             <Button variant="outline" icon={item.pinned ? PinOff : Pin} onClick={togglePin}>{item.pinned ? "Unpin" : "Pin"}</Button>
             <Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button>
@@ -91,28 +94,38 @@ export default function InfoDetail({ id }) {
         </div>
       </PageHeader>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
-        <div className="min-w-0 space-y-4 anim-stagger">
-          {item.summary ? <p className="text-sm text-fg-muted">{item.summary}</p> : null}
-          <Card>
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Content")}</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{item.content || <span className="text-fg-faint">Nothing written yet. Click Edit to add the main body.</span>}</p>
-          </Card>
-          <TaskOutputs taskId={item.id} outputs={item.notes ?? []} baseUrl={`/api/info/${item.id}/notes`} itemUrl="/api/info-notes" labels={NOTE_LABELS} onChange={(notes) => setData((i) => ({ ...i, notes, note_count: notes.length }))} />
-          <AttachmentsPanel kind="info" parentId={item.id} attachments={item.attachments ?? []} onChange={(attachments) => setData((i) => ({ ...i, attachments, attachment_count: attachments.length }))} />
-        </div>
-
-        <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
-          {hasCredential ? <CredentialCard item={item} /> : null}
-          <Card className="space-y-2 text-xs text-fg-muted">
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>
-            <p className="flex items-center gap-2"><FolderKanban size={13} /> {item.project_name ? <Link href={`/projects/${item.project_id}`} className="hover:text-fg">{item.project_name} · {item.project_code}</Link> : "Not linked to a project"}</p>
-            <p className="flex items-center gap-2"><Tag size={13} /> {tags.length ? tags.map((t) => `#${t}`).join(" ") : "No tags"}</p>
-            <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(item.created_at)}</p>
-            <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(item.updated_at)}</p>
-          </Card>
-        </div>
-      </div>
+      {item.summary ? <p className="mb-4 text-sm text-fg-muted">{item.summary}</p> : null}
+      <DetailCards
+        page="info"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        slots={[
+          {
+            id: "content", title: tr("Content"), icon: AlignLeft,
+            node: (
+              <Card>
+                <CardLabel>{tr("Content")}</CardLabel>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{item.content || <span className="text-fg-faint">Nothing written yet. Click Edit to add the main body.</span>}</p>
+              </Card>
+            ),
+          },
+          { id: "notes", title: tr("Notes"), icon: FileStack, node: <TaskOutputs taskId={item.id} outputs={item.notes ?? []} baseUrl={`/api/info/${item.id}/notes`} itemUrl="/api/info-notes" labels={NOTE_LABELS} onChange={(notes) => setData((i) => ({ ...i, notes, note_count: notes.length }))} /> },
+          { id: "attachments", title: tr("Attachments"), icon: Paperclip, node: <AttachmentsPanel kind="info" parentId={item.id} attachments={item.attachments ?? []} onChange={(attachments) => setData((i) => ({ ...i, attachments, attachment_count: attachments.length }))} /> },
+          ...(hasCredential ? [{ id: "credential", column: "side", title: tr("Credential"), icon: KeyRound, node: <CredentialCard item={item} /> }] : []),
+          {
+            id: "meta", column: "side", title: tr("Meta"), icon: Info,
+            node: (
+              <Card className="space-y-2 text-xs text-fg-muted">
+                <CardLabel>{tr("Meta")}</CardLabel>
+                <p className="flex items-center gap-2"><FolderKanban size={13} /> {item.project_name ? <Link href={`/projects/${item.project_id}`} className="hover:text-fg">{item.project_name} · {item.project_code}</Link> : "Not linked to a project"}</p>
+                <p className="flex items-center gap-2"><Tag size={13} /> {tags.length ? tags.map((t) => `#${t}`).join(" ") : "No tags"}</p>
+                <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(item.created_at)}</p>
+                <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(item.updated_at)}</p>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <InfoForm open={editOpen} onClose={() => setEditOpen(false)} initial={item} onSaved={refetch} />
       <ConfirmDialog open={delOpen} onClose={() => setDelOpen(false)} onConfirm={remove} loading={deleting} title={tr("Delete this info item?")} description="Its notes, attachments and any stored secret go with it." bin />
@@ -197,7 +210,7 @@ function CredentialCard({ item }) {
 
   return (
     <Card className="space-y-3">
-      <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-muted"><KeyRound size={13} />{tr("Credential")}</p>
+      <CardLabel icon={KeyRound}>{tr("Credential")}</CardLabel>
       {item.url ? (
         <Row label="URL">
           <a href={item.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 text-sm hover:bg-surface-2">

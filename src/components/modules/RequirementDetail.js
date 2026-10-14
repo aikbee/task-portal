@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { Pencil, Trash2, Plus, ClipboardList, FolderKanban, Calendar, Clock, Hash, ListChecks } from "lucide-react";
+import { Pencil, Trash2, Plus, ClipboardList, FolderKanban, Calendar, Clock, Hash, ListChecks, AlignLeft, Paperclip, CheckSquare, SlidersHorizontal, Gauge, Info } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useNav } from "@/lib/nav";
@@ -9,7 +9,8 @@ import { REQ_TYPE, REQ_PRIORITY, REQ_STATUS, TASK_STATUS, TASK_PRIORITY } from "
 import { formatDateTime, relativeTime } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import Avatar from "@/components/ui/Avatar";
 import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState, ProgressBar } from "@/components/ui/Misc";
@@ -36,6 +37,7 @@ export default function RequirementDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
+  const [arranging, setArranging] = useState(false);
   const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Requirement not found" description={error.message} action={<Button onClick={() => router.push("/requirements")}>Back to requirements</Button>} />;
@@ -90,6 +92,7 @@ export default function RequirementDetail({ id }) {
         crumbs={[{ label: tr("Requirements"), href: "/requirements" }]}
         actions={
           <>
+            <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
             <ReportButton module="requirements" id={id} />
             <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
             <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
@@ -107,100 +110,130 @@ export default function RequirementDetail({ id }) {
         </div>
       </PageHeader>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
-        <div className="min-w-0 space-y-4 anim-stagger">
-          <Card>
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Description")}</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{req.description || <span className="text-fg-faint">No description. Click Edit to add one.</span>}</p>
-          </Card>
-          <Card>
-            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-muted"><ListChecks size={13} />{tr("Acceptance criteria")}</p>
-            {criteria.length ? (
-              <ul className="mt-3 space-y-1.5">
-                {criteria.map((c, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm">
-                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                    <span className="leading-relaxed">{c.replace(/^[-*•]\s*/, "")}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-2 text-sm text-fg-faint">No acceptance criteria yet — add one per line in Edit.</p>
-            )}
-          </Card>
-          <AttachmentsPanel kind="requirement" parentId={req.id} attachments={req.attachments ?? []} onChange={(attachments) => setData((r) => ({ ...r, attachments }))} />
-          <DataTable
-            id="requirement-tasks"
-            columns={taskColumns}
-            rows={req.tasks}
-            defaultSort={{ key: "status", dir: "asc" }}
-            searchPlaceholder="Search linked tasks…"
-            onRowClick={(r) => router.push(`/tasks/${r.id}`)}
-            toolbar={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button></CanEdit>}
-            rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => setTaskForm({ open: true, initial: r })} onDelete={() => taskDel.setTarget(r)} />}
-            emptyTitle="No tasks implement this yet"
-            emptyDescription="Create a task here, or link an existing one from its edit form."
-            emptyAction={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button></CanEdit>}
-          />
-        </div>
-
-        <div className="min-w-0 space-y-4 anim-stagger xl:sticky xl:top-0 xl:self-start">
-          <Card className="space-y-4">
-            <fieldset disabled={!canEdit} className="contents">
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Details")}</p>
-            <Row label={tr("Status")}>
-              <Select value={req.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
-                {Object.entries(REQ_STATUS).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-            </Row>
-            <Row label={tr("Priority")}>
-              <Select value={req.priority} onChange={(e) => patch({ priority: e.target.value })} className="h-8 text-xs">
-                {Object.entries(REQ_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-            </Row>
-            <Row label={tr("Type")}>
-              <Select value={req.type} onChange={(e) => patch({ type: e.target.value })} className="h-8 text-xs">
-                {Object.entries(REQ_TYPE).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
-              </Select>
-            </Row>
-            <Row label={tr("Stakeholder")}>
-              {req.stakeholder_name ? (
-                <Link href={`/employees/${req.employee_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
-                  <Avatar name={req.stakeholder_name} color={req.stakeholder_color} size="xs" />
-                  <span className="min-w-0 leading-tight">
-                    <span className="block truncate text-sm font-medium">{req.stakeholder_name}</span>
-                    <span className="block truncate text-[11px] text-fg-muted">{req.stakeholder_title}</span>
-                  </span>
-                </Link>
-              ) : (
-                <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">Unassigned — assign</button>
-              )}
-            </Row>
-            <Row label={tr("Project")}>
-              <Link href={`/projects/${req.project_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
-                <span className="grid h-6 w-6 place-items-center rounded-md text-white" style={{ background: req.project_color }}><FolderKanban size={12} /></span>
-                <span className="min-w-0 leading-tight">
-                  <span className="block truncate text-sm font-medium">{req.project_name}</span>
-                  <span className="block font-mono text-[11px] text-fg-muted">{req.project_code}</span>
-                </span>
-              </Link>
-            </Row>
-            </fieldset>
-          </Card>
-          <Card>
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Delivery")}</p>
-            <p className="mt-2 text-3xl font-semibold tracking-tight">{pct}%</p>
-            <p className="text-xs text-fg-muted">{done} of {req.tasks.length} linked task{req.tasks.length === 1 ? "" : "s"} done</p>
-            <ProgressBar value={pct} color={req.project_color} size="md" className="mt-3" />
-          </Card>
-          <Card className="space-y-2 text-xs text-fg-muted">
-            <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">{tr("Meta")}</p>
-            <p className="flex items-center gap-2"><Hash size={13} /> {req.code} · position #{req.sort_order} in project</p>
-            <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(req.created_at)}</p>
-            <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(req.updated_at)}</p>
-          </Card>
-        </div>
-      </div>
+      <DetailCards
+        page="requirement"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        slots={[
+          {
+            id: "description", title: tr("Description"), icon: AlignLeft,
+            node: (
+              <Card>
+                <CardLabel>{tr("Description")}</CardLabel>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{req.description || <span className="text-fg-faint">No description. Click Edit to add one.</span>}</p>
+              </Card>
+            ),
+          },
+          {
+            id: "criteria", title: tr("Acceptance criteria"), icon: ListChecks,
+            node: (
+              <Card>
+                <CardLabel icon={ListChecks}>{tr("Acceptance criteria")}</CardLabel>
+                {criteria.length ? (
+                  <ul className="mt-3 space-y-1.5">
+                    {criteria.map((c, i) => (
+                      <li key={i} className="flex items-start gap-2.5 text-sm">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                        <span className="leading-relaxed">{c.replace(/^[-*•]\s*/, "")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-sm text-fg-faint">No acceptance criteria yet — add one per line in Edit.</p>
+                )}
+              </Card>
+            ),
+          },
+          { id: "attachments", title: tr("Attachments"), icon: Paperclip, node: <AttachmentsPanel kind="requirement" parentId={req.id} attachments={req.attachments ?? []} onChange={(attachments) => setData((r) => ({ ...r, attachments }))} /> },
+          {
+            id: "tasks", title: tr("Linked tasks"), icon: CheckSquare, bare: true,
+            node: (
+              <DataTable
+                id="requirement-tasks"
+                columns={taskColumns}
+                rows={req.tasks}
+                defaultSort={{ key: "status", dir: "asc" }}
+                searchPlaceholder="Search linked tasks…"
+                onRowClick={(r) => router.push(`/tasks/${r.id}`)}
+                toolbar={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>{tr("New task")}</Button></CanEdit>}
+                rowActions={(r) => <RowActions href={`/tasks/${r.id}`} onEdit={() => setTaskForm({ open: true, initial: r })} onDelete={() => taskDel.setTarget(r)} />}
+                emptyTitle="No tasks implement this yet"
+                emptyDescription="Create a task here, or link an existing one from its edit form."
+                emptyAction={<CanEdit><Button size="sm" icon={Plus} onClick={() => setTaskForm({ open: true, initial: null })}>Create task</Button></CanEdit>}
+              />
+            ),
+          },
+          {
+            id: "details", column: "side", title: tr("Details"), icon: SlidersHorizontal,
+            node: (
+              <Card className="space-y-4">
+                <CardLabel>{tr("Details")}</CardLabel>
+                <fieldset disabled={!canEdit} className="contents">
+                  <Row label={tr("Status")}>
+                    <Select value={req.status} onChange={(e) => patch({ status: e.target.value })} className="h-8 text-xs">
+                      {Object.entries(REQ_STATUS).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                  </Row>
+                  <Row label={tr("Priority")}>
+                    <Select value={req.priority} onChange={(e) => patch({ priority: e.target.value })} className="h-8 text-xs">
+                      {Object.entries(REQ_PRIORITY).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                  </Row>
+                  <Row label={tr("Type")}>
+                    <Select value={req.type} onChange={(e) => patch({ type: e.target.value })} className="h-8 text-xs">
+                      {Object.entries(REQ_TYPE).map(([k, v]) => <option key={k} value={k}>{tr(v.label)}</option>)}
+                    </Select>
+                  </Row>
+                  <Row label={tr("Stakeholder")}>
+                    {req.stakeholder_name ? (
+                      <Link href={`/employees/${req.employee_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
+                        <Avatar name={req.stakeholder_name} color={req.stakeholder_color} size="xs" />
+                        <span className="min-w-0 leading-tight">
+                          <span className="block truncate text-sm font-medium">{req.stakeholder_name}</span>
+                          <span className="block truncate text-[11px] text-fg-muted">{req.stakeholder_title}</span>
+                        </span>
+                      </Link>
+                    ) : (
+                      <button onClick={() => setEditOpen(true)} className="w-full rounded-app-sm border border-dashed border-line px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-surface-2">Unassigned — assign</button>
+                    )}
+                  </Row>
+                  <Row label={tr("Project")}>
+                    <Link href={`/projects/${req.project_id}`} className="flex items-center gap-2 rounded-app-sm border border-line px-2 py-1.5 hover:bg-surface-2">
+                      <span className="grid h-6 w-6 place-items-center rounded-md text-white" style={{ background: req.project_color }}><FolderKanban size={12} /></span>
+                      <span className="min-w-0 leading-tight">
+                        <span className="block truncate text-sm font-medium">{req.project_name}</span>
+                        <span className="block font-mono text-[11px] text-fg-muted">{req.project_code}</span>
+                      </span>
+                    </Link>
+                  </Row>
+                </fieldset>
+              </Card>
+            ),
+          },
+          {
+            id: "delivery", column: "side", title: tr("Delivery"), icon: Gauge,
+            node: (
+              <Card>
+                <CardLabel>{tr("Delivery")}</CardLabel>
+                <p className="mt-2 text-3xl font-semibold tracking-tight">{pct}%</p>
+                <p className="text-xs text-fg-muted">{done} of {req.tasks.length} linked task{req.tasks.length === 1 ? "" : "s"} done</p>
+                <ProgressBar value={pct} color={req.project_color} size="md" className="mt-3" />
+              </Card>
+            ),
+          },
+          {
+            id: "meta", column: "side", title: tr("Meta"), icon: Info,
+            node: (
+              <Card className="space-y-2 text-xs text-fg-muted">
+                <CardLabel>{tr("Meta")}</CardLabel>
+                <p className="flex items-center gap-2"><Hash size={13} /> {req.code} · position #{req.sort_order} in project</p>
+                <p className="flex items-center gap-2"><Calendar size={13} /> Created {formatDateTime(req.created_at)}</p>
+                <p className="flex items-center gap-2"><Clock size={13} /> Updated {formatDateTime(req.updated_at)}</p>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <RequirementForm open={editOpen} onClose={() => setEditOpen(false)} initial={req} onSaved={refetch} />
       <TaskForm open={taskForm.open} onClose={() => setTaskForm({ open: false, initial: null })} initial={taskForm.initial} defaults={{ project_id: req.project_id, requirement_id: req.id }} onSaved={refetch} />

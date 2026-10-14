@@ -2,14 +2,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useNav } from "@/lib/nav";
-import { Pencil, Trash2, Plus, Mail, Phone, Building2, Calendar, FolderKanban, CheckSquare, BriefcaseBusiness, UserCheck } from "lucide-react";
+import { Pencil, Trash2, Plus, Mail, Phone, Building2, Calendar, FolderKanban, CheckSquare, BriefcaseBusiness, UserCheck, User, Gauge } from "lucide-react";
 import { useFetch } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { EMPLOYEE_STATUS, PROJECT_STATUS, TASK_STATUS, TASK_PRIORITY } from "@/lib/modules";
 import { fullName, formatDate, relativeTime } from "@/lib/utils";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
+import DetailCards, { ArrangeButton } from "@/components/ui/DetailCards";
 import Tabs from "@/components/ui/Tabs";
 import Avatar from "@/components/ui/Avatar";
 import { StatusBadge } from "@/components/ui/Badge";
@@ -35,6 +36,7 @@ export default function EmployeeDetail({ id }) {
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [taskForm, setTaskForm] = useState({ open: false, initial: null });
+  const [arranging, setArranging] = useState(false);
   const taskDel = useDeleteFlow("/api/tasks", { toast, label: "task", onDeleted: () => refetch(), onRestored: refetch });
 
   if (error) return <EmptyState title="Employee not found" description={error.message} action={<Button onClick={() => router.push("/employees")}>Back to employees</Button>} />;
@@ -81,38 +83,57 @@ export default function EmployeeDetail({ id }) {
         crumbs={[{ label: tr("Employees"), href: "/employees" }]}
         hideTitle
       />
-      <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px] anim-stagger">
-        <Card className="flex flex-wrap items-center gap-5">
-          <Avatar name={name} color={emp.avatar_color} size="xl" className="!h-20 !w-20 !text-2xl" />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
-              <StatusBadge map={EMPLOYEE_STATUS} value={emp.status} />
-            </div>
-            <p className="text-sm text-fg-muted">{emp.job_title || "No title"}{emp.department ? ` · ${emp.department}` : ""}</p>
-            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
-              {emp.email ? <a href={`mailto:${emp.email}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Mail size={14} /> {emp.email}</a> : null}
-              {emp.phone ? <a href={`tel:${emp.phone}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Phone size={14} /> {emp.phone}</a> : null}
-              {emp.department ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Building2 size={14} /> {emp.department}</span> : null}
-              {emp.hired_at ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Calendar size={14} /> Since {formatDate(emp.hired_at)}</span> : null}
-              {emp.linked_user_id ? <span className="employee-linked inline-flex items-center gap-1.5 text-accent"><UserCheck size={14} /> {tr("Signs in as {name}", { name: emp.linked_user_name })}</span> : null}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <ReportButton module="employees" id={id} />
-            <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
-            <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
-          </div>
-        </Card>
-        <Card>
-          <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Workload</p>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <Stat label={tr("Open")} value={open} tone="text-accent" />
-            <Stat label={tr("Done")} value={emp.tasks.length - open} tone="text-emerald-500" />
-            <Stat label={tr("Projects")} value={emp.projects.length} />
-          </div>
-        </Card>
-      </div>
+      <DetailCards
+        page="employee"
+        arranging={arranging}
+        onDone={() => setArranging(false)}
+        grid="lg:grid-cols-[1fr_320px]"
+        sideClass=""
+        className="mb-5"
+        slots={[
+          {
+            id: "profile", title: tr("Employee"), icon: User, fixed: true,
+            node: (
+              <Card className="flex flex-wrap items-center gap-5">
+                <Avatar name={name} color={emp.avatar_color} size="xl" className="!h-20 !w-20 !text-2xl" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
+                    <StatusBadge map={EMPLOYEE_STATUS} value={emp.status} />
+                  </div>
+                  <p className="text-sm text-fg-muted">{emp.job_title || "No title"}{emp.department ? ` · ${emp.department}` : ""}</p>
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
+                    {emp.email ? <a href={`mailto:${emp.email}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Mail size={14} /> {emp.email}</a> : null}
+                    {emp.phone ? <a href={`tel:${emp.phone}`} className="inline-flex items-center gap-1.5 text-fg-muted hover:text-accent"><Phone size={14} /> {emp.phone}</a> : null}
+                    {emp.department ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Building2 size={14} /> {emp.department}</span> : null}
+                    {emp.hired_at ? <span className="inline-flex items-center gap-1.5 text-fg-muted"><Calendar size={14} /> Since {formatDate(emp.hired_at)}</span> : null}
+                    {emp.linked_user_id ? <span className="employee-linked inline-flex items-center gap-1.5 text-accent"><UserCheck size={14} /> {tr("Signs in as {name}", { name: emp.linked_user_name })}</span> : null}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <ArrangeButton active={arranging} onClick={() => setArranging((v) => !v)} />
+                  <ReportButton module="employees" id={id} />
+                  <CanEdit><Button variant="outline" icon={Pencil} onClick={() => setEditOpen(true)}>{tr("Edit")}</Button></CanEdit>
+                  <CanDelete><Button variant="dangerGhost" icon={Trash2} onClick={() => setDelOpen(true)}>{tr("Delete")}</Button></CanDelete>
+                </div>
+              </Card>
+            ),
+          },
+          {
+            id: "workload", column: "side", title: tr("Workload"), icon: Gauge,
+            node: (
+              <Card>
+                <CardLabel>{tr("Workload")}</CardLabel>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                  <Stat label={tr("Open")} value={open} tone="text-accent" />
+                  <Stat label={tr("Done")} value={emp.tasks.length - open} tone="text-emerald-500" />
+                  <Stat label={tr("Projects")} value={emp.projects.length} />
+                </div>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <Tabs
         className="mb-4"

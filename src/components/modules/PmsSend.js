@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Send, Ticket, Search, RefreshCw, Unlink, ExternalLink, FileText, MessageSquare, Paperclip, ListChecks, Clock, CircleCheck, CircleAlert, ArrowLeft, ArrowRight, Plug, TriangleAlert, X, UserCheck, TicketCheck, Lock } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import Card from "@/components/ui/Card";
+import Card, { CardLabel } from "@/components/ui/Card";
 import Badge, { StatusBadge } from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input, Select, Checkbox, Segmented } from "@/components/ui/Controls";
@@ -632,7 +632,7 @@ export function PmsTaskCard({ taskId, onChanged }) {
   };
   return (
     <Card className="pms-card space-y-2">
-      <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-fg-muted"><Ticket size={13} /> {tr("Bitara PMS")}</p>
+      <CardLabel icon={Ticket}>{tr("Bitara PMS")}</CardLabel>
       {link ? (
         <div className="space-y-1">
           <div className="flex items-center gap-1.5">

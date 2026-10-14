@@ -53,6 +53,7 @@ export const DEFAULT_PREFS = {
   calendarShowDeadlines: true, // project end dates on the calendar
   notifySound: true, // chime on new notifications
   notifyDesktop: false, // browser notifications (asks permission)
+  cardLayouts: {}, // { [page]: { main: [ids], side: [ids], hidden: [ids], collapsed: [ids] } } — cards on detail pages
 };
 
 export const MAX_SPLIT = 3;
@@ -96,6 +97,13 @@ export const usePrefs = create(
         set({ tableSorts: next });
       },
       reset: () => set({ ...DEFAULT_PREFS }),
+      /** How a kind of detail page arranges its cards (null = back to the default). */
+      setCardLayout: (page, layout) => {
+        const next = { ...get().cardLayouts };
+        if (layout) next[page] = layout;
+        else delete next[page];
+        set({ cardLayouts: next });
+      },
 
       isPinned: (href) => get().pins.some((p) => p.href === href),
       togglePin: (pin) => {
