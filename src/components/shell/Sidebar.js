@@ -72,7 +72,8 @@ export default function Sidebar() {
         {!collapsed ? <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-faint">{tr("Modules")}</p> : null}
         <ul className="sb-nav space-y-1">
           {modules.map((m) => {
-            const active = m.href === "/" ? pathname === "/" : pathname.startsWith(m.href);
+            // its own page or a page under it: "/timeline" must not light up "/time"
+            const active = m.href === "/" ? pathname === "/" : pathname === m.href || pathname.startsWith(`${m.href}/`);
             const Icon = m.icon;
             const count = m.key === "notifications" ? unread || null : counts?.[m.key];
             return (
