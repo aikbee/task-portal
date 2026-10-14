@@ -458,9 +458,12 @@ any of `tasks:read`, `tasks:write`, `tasks:delete`, `comments:write`, `time:writ
 `projects:read`, `people:read` (`src/lib/api-scopes.js`; a custom token is refused everything outside its list,
 on `/api/v1` and on the app's own routes alike). *Allowed addresses* limit a token to IP addresses or CIDR ranges
 (IPv4/IPv6, up to 20), checked against the address our reverse proxy saw: the last `X-Forwarded-For` hop, which
-nginx appends. Earlier hops and `X-Real-IP` are whatever the caller sent and never count (production's nginx passes
-a caller's `X-Real-IP` through); behind another proxy (a CDN) the last hop would be that proxy. Login history and the
-wrong-token lockout use the same address. No token can use account,
+nginx appends (earlier hops are whatever the caller sent). Login history, the password-reset limit and the
+wrong-token lockout use the same address. This is only as good as nginx's idea of the client: on the production
+server (checked 2026-10-14) nginx adopts a caller's own `X-Real-IP` header as the client address (its `realip`
+settings trust it from anywhere), so until that is changed on the server, allowed addresses can be faked by anyone
+who knows one. `GET /api/v1` answers `your_ip`, the address the app sees, to check it:
+`curl -H "X-Real-IP: 203.0.113.9" https://…/api/v1` must not answer 203.0.113.9. No token can use account,
 user, mail, backup, chat, PMS or profile-management routes, and the Info vault stays locked. Tokens can expire, are
 listed with their last use and requests, can be renamed or re-fenced, show their last requests (method, path,
 answer, time, address; kept 14 days) and are revoked with one click.
