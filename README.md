@@ -457,8 +457,10 @@ Its permissions are *Read* (tasks, projects, people), *Read & write* (everything
 any of `tasks:read`, `tasks:write`, `tasks:delete`, `comments:write`, `time:write`, `files:write`,
 `projects:read`, `people:read` (`src/lib/api-scopes.js`; a custom token is refused everything outside its list,
 on `/api/v1` and on the app's own routes alike). *Allowed addresses* limit a token to IP addresses or CIDR ranges
-(IPv4/IPv6, up to 20), checked against the address the reverse proxy reports (`X-Real-IP`, else the last
-`X-Forwarded-For` hop; a value the caller sends itself does not count behind the proxy). No token can use account,
+(IPv4/IPv6, up to 20), checked against the address our reverse proxy saw: the last `X-Forwarded-For` hop, which
+nginx appends. Earlier hops and `X-Real-IP` are whatever the caller sent and never count (production's nginx passes
+a caller's `X-Real-IP` through); behind another proxy (a CDN) the last hop would be that proxy. Login history and the
+wrong-token lockout use the same address. No token can use account,
 user, mail, backup, chat, PMS or profile-management routes, and the Info vault stays locked. Tokens can expire, are
 listed with their last use and requests, can be renamed or re-fenced, show their last requests (method, path,
 answer, time, address; kept 14 days) and are revoked with one click.

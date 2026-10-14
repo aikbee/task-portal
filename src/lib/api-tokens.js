@@ -162,14 +162,13 @@ export function noteBadToken(ip) {
   badByIp.set(ip, hits);
 }
 /**
- * The address a request came from as our own reverse proxy saw it, for checks a caller must not be able to fake (a
- * token's allowed addresses): the proxy's X-Real-IP, else the last X-Forwarded-For hop (the one the proxy appended).
+ * The caller's address as our own reverse proxy saw it: the last X-Forwarded-For hop, which nginx appends
+ * ($proxy_add_x_forwarded_for). Earlier hops and X-Real-IP are whatever the caller sent (production's proxy passes a
+ * caller's X-Real-IP through untouched), so they never count. Without a proxy (development) Next.js fills the header in.
  */
 export function trustedIp(request) {
-  const real = request.headers.get("x-real-ip")?.trim();
-  if (real) return real.slice(0, 45);
   const hops = (request.headers.get("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return (hops.at(-1) ?? "local").slice(0, 45);
+  return (hops.at(-1) ?? "local").replace(/^::ffff:(?=\d+\.)/i, "").slice(0, 45);
 }
-/** The caller's address as the reverse proxy reports it (first X-Forwarded-For hop), else "local". */
-export const requestIp = (request) => (request.headers.get("x-forwarded-for")?.split(",")[0].trim() || request.headers.get("x-real-ip")?.trim() || "local").slice(0, 45);
+/** The address wrong tokens are counted against: the same trusted one. */
+export const requestIp = trustedIp;

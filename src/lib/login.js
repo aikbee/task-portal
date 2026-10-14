@@ -2,6 +2,7 @@ import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
 import { createSession, pruneSessions } from "./auth";
 import { notify } from "./notifications";
+import { trustedIp } from "./api-tokens";
 
 const METHOD_LABEL = { password: "", passkey: " with a passkey", google: " with Google", totp: " with a two-factor code" };
 
@@ -14,11 +15,10 @@ export function describeUserAgent(ua = "") {
   return { browser, os, device, label: `${browser}${os ? ` on ${os}` : ""}` };
 }
 
-/** The caller's IP as seen through the reverse proxy (first X-Forwarded-For hop), or null. */
+/** The caller's IP as our reverse proxy saw it (the last X-Forwarded-For hop, see trustedIp), or null. */
 export function clientIp(request) {
-  const h = request.headers;
-  const raw = (h.get("x-forwarded-for")?.split(",")[0].trim() || h.get("x-real-ip")?.trim() || "").replace(/^::ffff:/i, "");
-  return raw ? raw.slice(0, 45) : null;
+  const ip = trustedIp(request);
+  return ip === "local" ? null : ip;
 }
 
 /** Append a row to the user's login history (never throws). */
