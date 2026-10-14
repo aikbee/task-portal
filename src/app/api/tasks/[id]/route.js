@@ -62,7 +62,13 @@ export async function updateTask(user, id, body, { quiet = false } = {}) {
   const after = await getTask(id, owner);
   await logTask(user, id, diffTask(before, after));
   emit(user, "task.updated", { ...after, changed: Object.keys(data) });
+  if (after.status !== before.status) emit(user, "task.status_changed", { ...after, from: before.status, to: after.status });
   if (after.status === "done" && before.status !== "done") emit(user, "task.completed", after);
+  const had = new Set(before.assignees.map((p) => p.id));
+  const now = new Set(after.assignees.map((p) => p.id));
+  const added = after.assignees.filter((p) => !had.has(p.id));
+  const removed = before.assignees.filter((p) => !now.has(p.id));
+  if (added.length || removed.length) emit(user, "task.assigned", { ...after, added: added.map(({ id: pid, name }) => ({ id: pid, name })), removed: removed.map(({ id: pid, name }) => ({ id: pid, name })) });
   if (!quiet && data.status && data.status !== before.status) {
     notifyInvolved(user, {
       type: after.status === "done" ? "task_done" : "task_status",
@@ -84,8 +90,6 @@ export async function updateTask(user, id, body, { quiet = false } = {}) {
     }
   }
   // only the people who were just added hear "assigned you"; the owner hears who is on it now
-  const had = new Set(before.assignees.map((p) => p.id));
-  const added = after.assignees.filter((p) => !had.has(p.id));
   if (added.length && !quiet) {
     notifyInvolved(user, { type: "task_assigned", title: `${after.title} assigned to ${added.map((p) => p.name).join(", ")}`, body: after.project_name || null, href: `/tasks/${id}`, entityType: "task", entityId: id }, { employeeIds: added.map((p) => p.id), forAssignee: { title: `${user.name} assigned you: ${after.title}` } });
   }

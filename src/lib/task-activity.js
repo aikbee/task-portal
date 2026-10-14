@@ -11,8 +11,10 @@ export async function logTask(user, taskId, entries) {
   const rows = (Array.isArray(entries) ? entries : [entries]).filter(Boolean);
   if (!rows.length) return;
   try {
-    await query("INSERT INTO task_activity (task_id, user_id, actor_name, action, field, old_value, new_value) VALUES ?", [
-      rows.map((e) => [taskId, user?.id ?? null, user?.name ?? null, e.action, e.field ?? null, clip(e.old), clip(e.next)]),
+    // `via`: the API token the change came through, so the history tells an integration from the person
+    const via = user?.token?.name ? String(user.token.name).slice(0, 80) : null;
+    await query("INSERT INTO task_activity (task_id, user_id, actor_name, via, action, field, old_value, new_value) VALUES ?", [
+      rows.map((e) => [taskId, user?.id ?? null, user?.name ?? null, via, e.action, e.field ?? null, clip(e.old), clip(e.next)]),
     ]);
   } catch (err) {
     console.error("[task-activity]", err.message);
@@ -42,14 +44,14 @@ export function diffTask(before, after) {
 
 export const listHistory = (taskId) =>
   query(
-    `SELECT a.id, a.user_id, COALESCE(u.name, a.actor_name) AS actor_name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, a.action, a.field, a.old_value, a.new_value, a.created_at
+    `SELECT a.id, a.user_id, COALESCE(u.name, a.actor_name) AS actor_name, a.via, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, a.action, a.field, a.old_value, a.new_value, a.created_at
      FROM task_activity a LEFT JOIN users u ON u.id = a.user_id WHERE a.task_id = ? ORDER BY a.id`,
     [taskId]
   );
 
 export const listComments = (taskId) =>
   query(
-    `SELECT c.id, c.task_id, c.user_id, COALESCE(u.name, c.author_name) AS author_name, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, c.body, c.edited_at, c.created_at
+    `SELECT c.id, c.task_id, c.user_id, COALESCE(u.name, c.author_name) AS author_name, c.via, u.avatar_color, COALESCE(u.avatar, 'preset:pro') AS avatar, c.body, c.edited_at, c.created_at
      FROM task_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.task_id = ? ORDER BY c.id`,
     [taskId]
   );

@@ -13,7 +13,7 @@ import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import ApiTokens from "./ApiTokens";
+import { useFeature } from "@/lib/auth-context";
 
 const DEVICE_ICON = { phone: Smartphone, tablet: Tablet, desktop: Monitor };
 const METHOD = {
@@ -104,7 +104,7 @@ export default function SecurityPage() {
           </p>
         </section>
 
-        <ApiTokens />
+        <ApiTokensMoved />
 
         <section className="ui-card card p-5">
           <h2 className="text-base font-semibold">{tr("Login history")}</h2>
@@ -198,5 +198,21 @@ export default function SecurityPage() {
         description={target === "others" ? tr("Every other device and browser is signed out immediately. This one stays signed in.") : target ? `${target.label}${target.ip ? ` · ${target.ip}` : ""} — ${tr("that device is signed out immediately.")}` : ""}
       />
     </>
+  );
+}
+
+/** API tokens live under Integrations now, next to the guide for other systems; this card says where. */
+function ApiTokensMoved() {
+  const tr = useT();
+  if (!useFeature("api_tokens")) return null;
+  return (
+    <section className="ui-card card api-tokens-moved flex flex-wrap items-center gap-3 p-5">
+      <KeyRound size={18} className="shrink-0 text-fg-muted" />
+      <div className="min-w-0 flex-1">
+        <h2 className="text-base font-semibold">{tr("API tokens")}</h2>
+        <p className="text-xs text-fg-muted">{tr("Tokens for other systems are made and revoked under Integrations → Task Portal API, next to the API guide.")}</p>
+      </div>
+      <Link href="/integrations?tab=api" className="inline-flex h-8 items-center rounded-app-sm border border-line bg-surface-2 px-3 text-xs font-medium hover:bg-surface-3">{tr("Open")}</Link>
+    </section>
   );
 }

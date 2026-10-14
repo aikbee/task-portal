@@ -170,7 +170,7 @@ async function tokenUser(bearer) {
     shared = { owner: lent.owner, role: lent.role };
   }
   profile ??= profiles.find((p) => p.is_default) ?? profiles[0];
-  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: false, owner_id, home_id, workspace: null, profile_id: profile.id, profile, profiles, shared_profiles, access, shared, token: { id: t.id, scope: t.scope, usage: t.usage } };
+  return { ...row, has_pin: Boolean(row.has_pin), has_google: Boolean(row.has_google), has_totp: Boolean(row.has_totp), secrets_unlocked: false, owner_id, home_id, workspace: null, profile_id: profile.id, profile, profiles, shared_profiles, access, shared, token: { id: t.id, name: t.name, scope: t.scope, scopes: t.scopes, ip_allow: t.ip_allow, usage: t.usage } };
 }
 
 export async function requireUser(request) {

@@ -318,6 +318,13 @@ async function migrate(db, adminId) {
     log("migrating: time_entries.began_at");
     await db.query("ALTER TABLE time_entries ADD COLUMN began_at DATETIME NULL AFTER started_at");
   }
+  if (!(await hasColumn(db, "tasks", "external_id"))) {
+    log("migrating: tasks.external_id, api_tokens.scopes/ip_allow, who-came-through-the-API columns");
+    await db.query("ALTER TABLE tasks ADD COLUMN external_id VARCHAR(120) NULL AFTER repeat_next_id, ADD UNIQUE KEY uq_tasks_external (profile_id, external_id)");
+    await db.query("ALTER TABLE api_tokens ADD COLUMN scopes JSON NULL AFTER scope, ADD COLUMN ip_allow VARCHAR(500) NULL AFTER profile_id");
+    await db.query("ALTER TABLE task_activity ADD COLUMN via VARCHAR(80) NULL AFTER actor_name");
+    await db.query("ALTER TABLE task_comments ADD COLUMN via VARCHAR(80) NULL AFTER author_name");
+  }
   if (!(await hasColumn(db, "pms_connections", "acting_uid"))) {
     log("migrating: pms_connections.acting_uid, pms_links.claimed_as");
     await db.query("ALTER TABLE pms_connections ADD COLUMN acting_uid VARCHAR(64) NULL AFTER acting_as");

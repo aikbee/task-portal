@@ -10,6 +10,7 @@ import { notify } from "./notifications";
  */
 export const WEBHOOK_EVENTS = {
   "task.created": "A task is created", "task.updated": "A task changes", "task.completed": "A task is marked done", "task.deleted": "A task is deleted", "task.comment": "Somebody comments on a task",
+  "task.assigned": "People are added to or taken off a task", "task.status_changed": "A task moves to another status",
   "project.created": "A project is created", "project.updated": "A project changes", "project.deleted": "A project is deleted",
   "requirement.created": "A requirement is created", "requirement.updated": "A requirement changes", "requirement.deleted": "A requirement is deleted",
 };
@@ -73,7 +74,7 @@ export async function emit(user, event, data) {
     const hooks = await query("SELECT id, events FROM webhooks WHERE profile_id = ? AND active = 1", [user.profile_id]);
     const wanted = hooks.filter((h) => h.events === "*" || h.events.split(",").includes(event));
     if (!wanted.length) return;
-    const payload = { event, at: new Date().toISOString(), profile: { id: user.profile_id, name: user.profile?.name ?? null }, actor: { id: user.id, name: user.name }, data };
+    const payload = { event, at: new Date().toISOString(), profile: { id: user.profile_id, name: user.profile?.name ?? null }, actor: { id: user.id, name: user.name, via: user.token?.name ?? null }, data };
     for (const h of wanted) {
       const res = await execute("INSERT INTO webhook_deliveries (webhook_id, event, payload, status, next_attempt_at) VALUES (?, ?, ?, 'pending', NOW())", [h.id, event, JSON.stringify(payload)]);
       deliver(res.insertId).catch(() => {});

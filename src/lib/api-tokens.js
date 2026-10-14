@@ -1,11 +1,30 @@
 import crypto from "node:crypto";
 import { query, queryOne, execute } from "./db";
 import { HttpError } from "./http-error";
+import { normaliseScopes, parseIpAllow } from "./api-scopes";
 
 /** Personal API tokens: "tp_" + 40 url-safe characters, shown once, stored as a SHA-256 hash. */
 const sha = (t) => crypto.createHash("sha256").update(t).digest("hex");
 export const TOKEN_SCOPES = ["read", "write"];
-const SELECT = "SELECT id, name, prefix, scope, profile_id, last_used_at, expires_at, day_start, day_count, total_count, created_at FROM api_tokens";
+const SELECT = "SELECT id, name, prefix, scope, scopes, profile_id, ip_allow, last_used_at, expires_at, day_start, day_count, total_count, created_at FROM api_tokens";
+const parseJson = (v) => {
+  if (v == null) return null;
+  if (typeof v !== "string") return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
+};
+/** The allowed addresses as typed, checked: "203.0.113.4, 10.0.0.0/8" → stored text or null. */
+function cleanIpAllow(raw) {
+  if (raw == null || String(raw).trim() === "") return null;
+  try {
+    return parseIpAllow(raw).join(", ").slice(0, 500);
+  } catch (e) {
+    throw new HttpError(e.message, 400);
+  }
+}
 
 /** Requests a token may make: per minute and per UTC day (overridable with API_RATE_PER_MINUTE / API_RATE_PER_DAY). */
 export const RATE = {
@@ -15,14 +34,20 @@ export const RATE = {
 const BAD_TOKEN_LIMIT = 30; // wrong tokens from one address in ten minutes before it is told to wait
 const BAD_TOKEN_WINDOW_MS = 10 * 60000;
 
-const withUsage = (r) => ({ ...r, requests_today: r.day_start && String(r.day_start) === new Date().toISOString().slice(0, 10) ? Number(r.day_count) : 0, requests_total: Number(r.total_count), limits: RATE, day_start: undefined, day_count: undefined, total_count: undefined });
+const withUsage = (r) => ({ ...r, scopes: parseJson(r.scopes), requests_today: r.day_start && String(r.day_start) === new Date().toISOString().slice(0, 10) ? Number(r.day_count) : 0, requests_total: Number(r.total_count), limits: RATE, day_start: undefined, day_count: undefined, total_count: undefined });
 export const listTokens = async (userId) => (await query(`${SELECT} WHERE user_id = ? ORDER BY id DESC`, [userId])).map(withUsage);
 
-/** { name, scope, profile_id?, days? } → { token (once), row }. At most 20 per person. */
+/**
+ * { name, scope, scopes?, profile_id?, days?, ip_allow? } → { token (once), row }. At most 20 per person. `scopes`
+ * (a list from API_SCOPES) makes a custom token that may only do those things; `scope` then follows from them.
+ */
 export async function createToken(user, body) {
   const name = String(body.name ?? "").trim().slice(0, 80);
   if (!name) throw new HttpError("Give the token a name, like the tool that will use it.", 400);
-  const scope = TOKEN_SCOPES.includes(body.scope) ? body.scope : "read";
+  const custom = Array.isArray(body.scopes) ? normaliseScopes(body.scopes) : null;
+  if (custom && !custom.length) throw new HttpError("Pick at least one permission for the token.", 400);
+  const scope = custom ? (custom.some((s) => !s.endsWith(":read")) ? "write" : "read") : TOKEN_SCOPES.includes(body.scope) ? body.scope : "read";
+  const ipAllow = cleanIpAllow(body.ip_allow);
   const wanted = body.profile_id ? Number(body.profile_id) : null;
   if (wanted && !user.profiles.some((p) => p.id === wanted) && !user.shared_profiles.some((p) => p.id === wanted)) throw new HttpError("That profile is not yours to use.", 400);
   const days = body.days == null || body.days === "" ? null : Number(body.days);
@@ -30,13 +55,43 @@ export async function createToken(user, body) {
   const n = await queryOne("SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?", [user.id]);
   if (Number(n?.n) >= 20) throw new HttpError("That is enough tokens: revoke one first.", 400);
   const token = `tp_${crypto.randomBytes(30).toString("base64url")}`;
-  const res = await execute("INSERT INTO api_tokens (user_id, name, token_hash, prefix, scope, profile_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [user.id, name, sha(token), token.slice(0, 10), scope, wanted, days ? new Date(Date.now() + days * 86400000) : null]);
+  const res = await execute("INSERT INTO api_tokens (user_id, name, token_hash, prefix, scope, scopes, profile_id, ip_allow, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [user.id, name, sha(token), token.slice(0, 10), scope, custom ? JSON.stringify(custom) : null, wanted, ipAllow, days ? new Date(Date.now() + days * 86400000) : null]);
   return { token, row: withUsage(await queryOne(`${SELECT} WHERE id = ?`, [res.insertId])) };
+}
+
+/** Rename a token or change where it may be used from: { name?, ip_allow? }. */
+export async function updateToken(userId, id, body) {
+  const row = await queryOne("SELECT id FROM api_tokens WHERE id = ? AND user_id = ?", [id, userId]);
+  if (!row) throw new HttpError("Token not found.", 404);
+  if (body.name !== undefined) {
+    const name = String(body.name ?? "").trim().slice(0, 80);
+    if (!name) throw new HttpError("Give the token a name, like the tool that will use it.", 400);
+    await execute("UPDATE api_tokens SET name = ? WHERE id = ?", [name, id]);
+  }
+  if (body.ip_allow !== undefined) await execute("UPDATE api_tokens SET ip_allow = ? WHERE id = ?", [cleanIpAllow(body.ip_allow), id]);
+}
+
+/** What a token asked for lately (newest first). */
+export async function requestLog(userId, id, limit = 50) {
+  const row = await queryOne("SELECT id FROM api_tokens WHERE id = ? AND user_id = ?", [id, userId]);
+  if (!row) throw new HttpError("Token not found.", 404);
+  return query("SELECT method, path, status, ms, ip, created_at FROM api_request_log WHERE token_id = ? ORDER BY id DESC LIMIT ?", [id, Math.max(1, Math.min(200, Number(limit) || 50))]);
+}
+/** One request a token made (fire and forget; a log must never fail the request). */
+export function logRequest(tokenId, { method, path, status, ms, ip }) {
+  execute("INSERT INTO api_request_log (token_id, method, path, status, ms, ip) VALUES (?, ?, ?, ?, ?, ?)", [tokenId, String(method).slice(0, 8), String(path).slice(0, 200), status, Math.max(0, Math.round(ms)), ip ? String(ip).slice(0, 45) : null]).catch(() => {});
+}
+/** Scheduler: request logs older than 14 days, idempotency records older than a day. */
+export async function pruneApiLogs() {
+  await execute("DELETE FROM api_request_log WHERE created_at < NOW() - INTERVAL 14 DAY");
+  await execute("DELETE FROM api_idempotency WHERE created_at < NOW() - INTERVAL 1 DAY");
 }
 
 export async function revokeToken(userId, id) {
   const res = await execute("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", [id, userId]);
   if (!res.affectedRows) throw new HttpError("Token not found.", 404);
+  await execute("DELETE FROM api_request_log WHERE token_id = ?", [id]);
+  await execute("DELETE FROM api_idempotency WHERE scope = ?", [`t:${id}`]);
 }
 
 /** The bearer token of a request, or null. */
@@ -65,7 +120,7 @@ export async function resolveToken(token) {
     [hash]
   );
   if (!bumped.affectedRows) return null;
-  const row = await queryOne("SELECT id, user_id, scope, profile_id, expires_at, minute_count, day_count FROM api_tokens WHERE token_hash = ?", [hash]);
+  const row = await queryOne("SELECT id, user_id, name, scope, scopes, profile_id, ip_allow, expires_at, minute_count, day_count FROM api_tokens WHERE token_hash = ?", [hash]);
   if (!row) return null;
   const now = new Date();
   const minuteReset = Math.ceil((60000 - (now.getTime() % 60000)) / 1000);
@@ -80,7 +135,7 @@ export async function resolveToken(token) {
     retry_after: overDay ? dayReset : overMinute ? minuteReset : 0,
     scope: overDay ? "day" : "minute",
   };
-  return { ...row, usage };
+  return { ...row, scopes: parseJson(row.scopes), ip_allow: row.ip_allow ? row.ip_allow.split(/,\s*/).filter(Boolean) : null, usage };
 }
 
 /* ---------- wrong tokens: an address that keeps guessing is told to wait ---------- */
@@ -105,6 +160,16 @@ export function noteBadToken(ip) {
   const hits = (badByIp.get(ip) ?? []).filter((t) => t > Date.now() - BAD_TOKEN_WINDOW_MS);
   hits.push(Date.now());
   badByIp.set(ip, hits);
+}
+/**
+ * The address a request came from as our own reverse proxy saw it, for checks a caller must not be able to fake (a
+ * token's allowed addresses): the proxy's X-Real-IP, else the last X-Forwarded-For hop (the one the proxy appended).
+ */
+export function trustedIp(request) {
+  const real = request.headers.get("x-real-ip")?.trim();
+  if (real) return real.slice(0, 45);
+  const hops = (request.headers.get("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return (hops.at(-1) ?? "local").slice(0, 45);
 }
 /** The caller's address as the reverse proxy reports it (first X-Forwarded-For hop), else "local". */
 export const requestIp = (request) => (request.headers.get("x-forwarded-for")?.split(",")[0].trim() || request.headers.get("x-real-ip")?.trim() || "local").slice(0, 45);

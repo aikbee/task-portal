@@ -22,6 +22,8 @@ const WHOLE_RECORD = /^\/api\/(projects|tasks|requirements|employees|drawboards|
 
 /** The access a request needs inside the active profile, or null for routes that are not workspace data. */
 export function requiredAccess(method, pathname) {
+  // the stable API (/api/v1/…) is the same workspace data; its people are the employees
+  pathname = String(pathname).replace(/^\/api\/v1(?=\/|$)/, "/api").replace(/^\/api\/people(?=\/|$)/, "/api/employees");
   const m = WORKSPACE_ROUTE.exec(pathname);
   if (!m) return null;
   if (m[1] === "trash") return "manager"; // looking into the bin, restoring and purging go with the right to delete

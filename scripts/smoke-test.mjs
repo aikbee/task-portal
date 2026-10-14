@@ -2480,7 +2480,7 @@ console.log("API tokens + webhooks");
   const dead = list.data.find((d) => d.event === "task.deleted");
   check("a failed event waits for a retry", dead && dead.status === "pending" && dead.attempts === 1 && dead.next_attempt_at);
   const hooks = await call("GET", `/api/profiles/${pid}/webhooks`);
-  check("the hook shows failures and the last status", hooks.data.webhooks[0].failures >= 2 && hooks.data.webhooks[0].last_status === 503 && Object.keys(hooks.data.events).length === 11);
+  check("the hook shows failures and the last status", hooks.data.webhooks[0].failures >= 2 && hooks.data.webhooks[0].last_status === 503 && Object.keys(hooks.data.events).length === 13);
   check("PUT active=false pauses, active=true clears failures", (await call("PUT", `/api/profiles/${pid}/webhooks/${hid}`, { body: { active: false } })).data.webhook.active === false && (await call("PUT", `/api/profiles/${pid}/webhooks/${hid}`, { body: { active: true } })).data.webhook.failures === 0);
   const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
   jar = {};
@@ -2494,6 +2494,183 @@ console.log("API tokens + webhooks");
   await call("DELETE", `/api/tasks/${made.data.id}`);
   await call("DELETE", "/api/trash");
   for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /API token|webhook/i.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+}
+
+console.log("API v1 (the stable API for other systems)");
+{
+  const crypto = await import("node:crypto");
+  const http = await import("node:http");
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  // one client per token: (method, path under /api/v1, body?, headers?)
+  const client = (tok) => async (method, path, body, headers = {}) => {
+    const init = { method, headers: { Authorization: `Bearer ${tok}`, ...headers } };
+    if (body instanceof FormData) init.body = body;
+    else if (body !== undefined) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
+    const r = await fetch(BASE + (path.startsWith("/api/") ? path : `/api/v1${path}`), init);
+    const ct = r.headers.get("content-type") || "";
+    const payload = ct.includes("application/json") ? await r.json() : Buffer.from(await r.arrayBuffer());
+    return { status: r.status, data: payload?.data, error: payload?.error, details: payload?.details, next: payload?.next_cursor, raw: payload, headers: r.headers };
+  };
+  const mk = async (body) => (await call("POST", "/api/tokens", { body: { ...body, name: `v1 ${body.name} ${suffix}` } })).data;
+
+  // public: the index, the OpenAPI file and the guide need no token
+  const idx = await fetch(BASE + "/api/v1").then((r) => r.json());
+  check("GET /api/v1 is public: endpoints, docs, your address", idx.data?.endpoints?.includes("POST /api/v1/tasks") && idx.data.docs.endsWith("/developers") && typeof idx.data.your_ip === "string", JSON.stringify(idx).slice(0, 300));
+  const spec = await fetch(BASE + "/api/v1/openapi.json").then((r) => r.json());
+  check("GET /api/v1/openapi.json: OpenAPI 3 with every endpoint", spec.openapi === "3.0.3" && spec.paths["/tasks"]?.post?.requestBody && spec.paths["/tasks/{id}/status"]?.put && spec.paths["/tasks/{id}/files/{fileId}"]?.delete && spec.components.securitySchemes.bearer.scheme === "bearer");
+  const guide = await fetch(BASE + "/developers", { redirect: "manual" });
+  check("GET /developers is public", guide.status === 200 && (await guide.text()).includes("Task Portal API"));
+  check("the rest needs a token -> 401", (await fetch(BASE + "/api/v1/tasks")).status === 401 && (await fetch(BASE + "/api/v1/me")).status === 401);
+
+  const full = await mk({ name: "full", scope: "write" });
+  const api = client(full.token);
+  const me = await api("GET", "/me");
+  check("GET /me: the person, the workspace, the token", me.status === 200 && me.data.user.email === "admin@example.com" && me.data.workspace.access === "owner" && me.data.token.name === `v1 full ${suffix}` && me.data.token.rate_limit.per_minute > 0);
+  const people = await api("GET", "/people");
+  const smokeMail = `smoke.${suffix.toLowerCase()}@example.com`;
+  const other = people.data?.find((p) => p.id !== employeeId && p.email);
+  check("GET /people lists who tasks can go to", people.status === 200 && people.data.some((p) => p.id === employeeId && p.email === smokeMail) && Boolean(other));
+  check("GET /projects lists where tasks can go", (await api("GET", "/projects")).data?.some((p) => p.id === projectId && p.code === `SMK-${suffix}`));
+
+  // webhooks for the new events, with the token named as "via"
+  const got = [];
+  const server = http.createServer((req, res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { got.push(JSON.parse(b)); res.end(); }); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const pid = (await call("GET", "/api/profiles")).data.items.find((p) => p.is_default).id;
+  const hook = await call("POST", `/api/profiles/${pid}/webhooks`, { body: { url: `http://127.0.0.1:${server.address().port}/hook`, events: ["task.assigned", "task.status_changed", "task.comment"] } });
+  const waitFor = async (pred, ms = 8000) => { const t0 = Date.now(); while (!got.some(pred) && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 100)); return got.find(pred); };
+
+  // create: assignee by email, project by code, an external id, a retry-safe key
+  const ext = `SMOKE-${suffix}`;
+  const idem = crypto.randomUUID();
+  const body = { title: `V1 task ${suffix}`, priority: "high", project: `SMK-${suffix}`, assignees: [smokeMail.toUpperCase()], due_date: "2026-12-30", tags: ["API", "smoke"], external_id: ext };
+  const c1 = await api("POST", "/tasks", body, { "Idempotency-Key": idem });
+  const tid = c1.data?.id;
+  check("POST /tasks 201: assignee by email, project by code, external_id", c1.status === 201 && c1.data.project?.id === projectId && c1.data.assignees[0]?.id === employeeId && c1.data.assignees[0].email === smokeMail && c1.data.assignees[0].lead === true && c1.data.external_id === ext && c1.data.tags.join() === "api,smoke" && c1.data.status === "todo" && c1.data.due_date === "2026-12-30", JSON.stringify(c1.raw));
+  check("…the v1 shape: counts, url, ISO times", ["checklist", "comment_count", "file_count", "minutes_logged", "blocked", "url", "created_at", "updated_at"].every((k) => k in c1.data) && c1.data.url.endsWith(`/tasks/${tid}`) && /Z$/.test(c1.data.updated_at));
+  const c2 = await api("POST", "/tasks", body, { "Idempotency-Key": idem });
+  check("the same request with the same Idempotency-Key gets the first answer back", c2.status === 201 && c2.data.id === tid && c2.headers.get("idempotent-replayed") === "true");
+  check("…another body with that key -> 422", (await api("POST", "/tasks", { ...body, title: "other" }, { "Idempotency-Key": idem })).status === 422);
+  check("…another address with that key -> 422", (await api("POST", `/tasks/${tid}/comments`, { body: "x" }, { "Idempotency-Key": idem })).status === 422);
+  check("only one task was made", (await api("GET", `/tasks?external_id=${ext}`)).data?.length === 1);
+  const assigned = await waitFor((e) => e.event === "task.assigned" && e.data.id === tid);
+  check("task.assigned is sent on create, with the token as via", assigned && assigned.data.added?.[0]?.id === employeeId && assigned.actor.via === `v1 full ${suffix}`);
+  const dupe = await api("POST", "/tasks", { title: "dupe", external_id: ext });
+  check("an external_id in use -> 409 with the id that has it", dupe.status === 409 && dupe.details?.id === tid);
+  const typo = await api("POST", "/tasks", { title: "x", assignee: "a@b.c" });
+  check("unknown fields are refused, not ignored", typo.status === 400 && typo.details?.unknown?.includes("assignee"));
+  check("an email nobody has -> 400 naming it", /Nobody in this workspace matches: nobody-/.test((await api("POST", "/tasks", { title: "x", assignees: [`nobody-${suffix}@example.com`] })).error ?? ""));
+  check("a title is required, statuses are checked", (await api("POST", "/tasks", { priority: "low" })).status === 400 && (await api("POST", "/tasks", { title: "x", status: "doing" })).status === 400);
+
+  // read, update, assign, status
+  check("GET /tasks/:id", (await api("GET", `/tasks/${tid}`)).data?.id === tid && (await api("GET", "/tasks/999999999")).status === 404);
+  const up = await api("PATCH", `/tasks/${tid}`, { add_assignees: [other.id], status: "in_progress" });
+  check("PATCH: add_assignees by id, status", up.status === 200 && up.data.assignees.length === 2 && up.data.assignees.some((p) => p.id === other.id) && up.data.status === "in_progress", JSON.stringify(up.raw));
+  const changed = await waitFor((e) => e.event === "task.status_changed" && e.data.id === tid);
+  check("task.status_changed says from and to", changed && changed.data.from === "todo" && changed.data.to === "in_progress");
+  check("task.assigned says who was added", Boolean(await waitFor((e) => e.event === "task.assigned" && e.data.id === tid && e.data.added?.some((p) => p.id === other.id))));
+  const down = await api("PATCH", `/tasks/${tid}`, { remove_assignees: [other.email] });
+  check("PATCH: remove_assignees by email", down.status === 200 && down.data.assignees.length === 1 && down.data.assignees[0].id === employeeId);
+  check("PATCH: project null takes it out, dates are checked", (await api("PATCH", `/tasks/${tid}`, { project: null })).data?.project === null && (await api("PATCH", `/tasks/${tid}`, { start_date: "2027-01-05" })).status === 400);
+  const st = await api("PUT", `/tasks/${tid}/status`, { status: "review" });
+  check("PUT /tasks/:id/status", st.status === 200 && st.data.status === "review" && st.data.done === false && st.data.label === "In review");
+  check("GET /tasks/:id/status", (await api("GET", `/tasks/${tid}/status`)).data?.status === "review" && (await api("PUT", `/tasks/${tid}/status`, { status: "finished" })).status === 400);
+
+  // comments, time, files
+  const cm = await api("POST", `/tasks/${tid}/comments`, { body: `From the CRM ${suffix}` }, { "Idempotency-Key": crypto.randomUUID() });
+  check("POST /tasks/:id/comments 201, via the token", cm.status === 201 && cm.data.body === `From the CRM ${suffix}` && cm.data.via === `v1 full ${suffix}` && cm.data.author === "Admin User", JSON.stringify(cm.raw));
+  check("GET /tasks/:id/comments", (await api("GET", `/tasks/${tid}/comments`)).data?.some((c) => c.id === cm.data.id));
+  const commented = await waitFor((e) => e.event === "task.comment" && e.data.task_id === tid);
+  check("task.comment names the token", commented?.data.author.via === `v1 full ${suffix}`);
+  const hist = await call("GET", `/api/tasks/${tid}/history`);
+  check("the task's history says via which token", hist.data.some((h) => h.action === "created" && h.via === `v1 full ${suffix}`) && hist.data.some((h) => h.field === "status" && h.via === `v1 full ${suffix}`));
+  const tm = await api("POST", `/tasks/${tid}/time`, { duration: "1h 30m", note: "Call", spent_on: "2026-10-01" });
+  check("POST /tasks/:id/time 201", tm.status === 201 && tm.data.entry.minutes === 90 && tm.data.entry.spent_on === "2026-10-01" && tm.data.total_minutes === 90, JSON.stringify(tm.raw));
+  check("GET /tasks/:id/time; nonsense durations -> 400", (await api("GET", `/tasks/${tid}/time`)).data?.total_minutes === 90 && (await api("POST", `/tasks/${tid}/time`, { duration: "lots" })).status === 400);
+  const form = new FormData();
+  form.append("files", new Blob([`hello ${suffix}`], { type: "text/plain" }), "hello.txt");
+  const fu = await api("POST", `/tasks/${tid}/files`, form);
+  const file = fu.data?.[0];
+  check("POST /tasks/:id/files (multipart) 201", fu.status === 201 && file?.name === "hello.txt" && file.size === `hello ${suffix}`.length && file.download_url.endsWith(`/api/v1/tasks/${tid}/files/${file.id}`), JSON.stringify(fu.raw));
+  const dl = await api("GET", `/tasks/${tid}/files/${file.id}`);
+  check("GET /tasks/:id/files/:fileId downloads it", dl.status === 200 && Buffer.isBuffer(dl.raw) && dl.raw.toString() === `hello ${suffix}`);
+  check("GET /tasks/:id/files; a file of another task -> 404", (await api("GET", `/tasks/${tid}/files`)).data?.length === 1 && (await api("GET", `/tasks/${taskId}/files/${file.id}`)).status === 404);
+  check("DELETE /tasks/:id/files/:fileId", (await api("DELETE", `/tasks/${tid}/files/${file.id}`)).data?.length === 0 && (await api("GET", `/tasks/${tid}`)).data.file_count === 0);
+
+  // lists: filters, pages, keeping in step
+  const tag = `pg${suffix.toLowerCase()}`;
+  const before = new Date(Date.now() - 2000).toISOString();
+  const made = [];
+  for (let i = 0; i < 3; i++) made.push((await api("POST", "/tasks", { title: `Page ${i} ${suffix}`, tags: [tag], priority: "low" })).data.id);
+  const p1 = await api("GET", `/tasks?tag=${tag}&limit=2`);
+  const p2 = await api("GET", `/tasks?tag=${tag}&limit=2&cursor=${p1.next}`);
+  check("pages: limit and next_cursor", p1.data?.length === 2 && p1.next && p2.data?.length === 1 && p2.next === null && new Set([...p1.data, ...p2.data].map((t) => t.id)).size === 3);
+  const since = await api("GET", `/tasks?tag=${tag}&updated_since=${encodeURIComponent(before)}`);
+  check("updated_since: oldest change first", since.data?.map((t) => t.id).join() === made.join());
+  check("filters: status, priority, assignee by email, q", (await api("GET", `/tasks?status=review&assignee=${smokeMail}`)).data?.some((t) => t.id === tid) && (await api("GET", `/tasks?priority=low&q=${encodeURIComponent(`Page 1 ${suffix}`)}`)).data?.length === 1);
+  check("bad paging and filters -> 400", (await api("GET", "/tasks?limit=0")).status === 400 && (await api("GET", "/tasks?cursor=nope")).status === 400 && (await api("GET", "/tasks?updated_since=yesterday")).status === 400 && (await api("GET", "/tasks?status=doing")).status === 400);
+
+  // permissions picked one by one, read tokens, allowed addresses
+  check("a custom token needs at least one permission", (await call("POST", "/api/tokens", { body: { name: `none ${suffix}`, scopes: [] } })).status === 400);
+  const picked = await mk({ name: "picked", scopes: ["tasks:read", "people:read", "bogus"] });
+  const pk = client(picked.token);
+  check("custom token: only the permissions picked", picked.row.scopes?.join() === "tasks:read,people:read" && picked.row.scope === "read");
+  check("…reads tasks and people", (await pk("GET", "/tasks?limit=1")).status === 200 && (await pk("GET", "/people")).status === 200 && (await pk("GET", "/me")).status === 200);
+  const noWrite = await pk("POST", "/tasks", { title: "x" });
+  check("…but not what it lacks", noWrite.status === 403 && /tasks:write/.test(noWrite.error) && (await pk("GET", "/projects")).status === 403 && (await pk("DELETE", `/tasks/${tid}`)).status === 403);
+  check("…the same on the app's own routes, and nothing outside its permissions", (await pk("GET", "/api/tasks")).status === 200 && (await pk("POST", "/api/tasks", { title: "x" })).status === 403 && (await pk("GET", "/api/events")).status === 403);
+  const writer = await mk({ name: "writer", scopes: ["tasks:read", "tasks:write"] });
+  check("tasks:write without tasks:delete cannot delete", (await client(writer.token)("DELETE", `/tasks/${tid}`)).status === 403 && (await client(writer.token)("POST", `/tasks/${tid}/comments`, { body: "x" })).status === 403);
+  const reader = await mk({ name: "reader", scope: "read" });
+  check("a read token cannot write through v1 either", (await client(reader.token)("POST", "/tasks", { title: "x" })).status === 403 && (await client(reader.token)("GET", "/tasks?limit=1")).status === 200);
+  check("allowed addresses are checked when the token is made", (await call("POST", "/api/tokens", { body: { name: `bad ip ${suffix}`, ip_allow: "300.1.1.1" } })).status === 400);
+  const fenced = await mk({ name: "fenced", scope: "write", ip_allow: "203.0.113.0/24, 2001:db8::/32" });
+  const fc = client(fenced.token);
+  const inside = await fc("GET", "/me", undefined, { "X-Real-IP": "203.0.113.50" });
+  check("allowed addresses: a request from inside the range works", inside.status === 200 && inside.data.your_ip === "203.0.113.50" && inside.data.token.ip_allow?.length === 2);
+  const outside = await fc("GET", "/me", undefined, { "X-Real-IP": "198.51.100.7" });
+  check("…from anywhere else -> 403 naming the address", outside.status === 403 && /198\.51\.100\.7/.test(outside.error) && (await fc("GET", "/me", undefined, { "X-Real-IP": "2001:db8::1" })).status === 200);
+  check("PATCH /api/tokens/:id checks the addresses", (await call("PATCH", `/api/tokens/${fenced.row.id}`, { body: { ip_allow: "not-an-ip" } })).status === 400);
+  const opened = await call("PATCH", `/api/tokens/${fenced.row.id}`, { body: { ip_allow: "", name: `v1 fenced renamed ${suffix}` } });
+  check("PATCH /api/tokens/:id renames and opens it up", opened.status === 200 && opened.data.tokens.find((t) => t.id === fenced.row.id)?.ip_allow === null && opened.data.tokens.find((t) => t.id === fenced.row.id).name === `v1 fenced renamed ${suffix}` && (await fc("GET", "/me", undefined, { "X-Real-IP": "198.51.100.7" })).status === 200);
+  const log = await call("GET", `/api/tokens/${fenced.row.id}/log`);
+  check("GET /api/tokens/:id/log: what the token asked and what it got", log.status === 200 && log.data.some((r) => r.path === "/api/v1/me" && r.status === 403 && r.ip === "198.51.100.7") && log.data.some((r) => r.status === 200 && r.method === "GET"));
+  const smokeUserMail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeUserMail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+  check("somebody else's token log -> 404", (await as(userJar, () => call("GET", `/api/tokens/${fenced.row.id}/log`))).status === 404 && (await as(userJar, () => call("PATCH", `/api/tokens/${fenced.row.id}`, { body: { name: "mine" } }))).status === 404);
+
+  // a token inside a profile shared as view-only
+  const shared = await call("POST", "/api/profiles", { body: { name: `V1 shared ${suffix}`, color: "#0ea5e9" } });
+  await call("POST", `/api/profiles/${shared.data.id}/members`, { body: { user_id: userId, role: "viewer" } });
+  await as(userJar, () => call("PUT", `/api/profiles/${shared.data.id}/membership`, { body: { accept: true } }));
+  const viewerTok = (await as(userJar, () => call("POST", "/api/tokens", { body: { name: `v1 viewer ${suffix}`, scope: "write", profile_id: shared.data.id } }))).data;
+  const vw = client(viewerTok.token);
+  const vme = await vw("GET", "/me");
+  check("a token in a profile shared view-only reads there, as a viewer", vme.data?.workspace.id === shared.data.id && vme.data.workspace.access === "viewer" && (await vw("GET", "/tasks")).status === 200);
+  check("…and cannot write, whatever its permissions", (await vw("POST", "/tasks", { title: "x" })).status === 403 && (await vw("GET", `/tasks/${tid}`)).status === 404);
+  await as(userJar, () => call("DELETE", `/api/tokens/${viewerTok.row.id}`));
+  await call("DELETE", `/api/profiles/${shared.data.id}`);
+
+  // delete, restore, and an external id that was given away meanwhile
+  const gone = await api("DELETE", `/tasks/${tid}`);
+  check("DELETE /tasks/:id: to the recycle bin", gone.status === 200 && gone.data.deleted === true && gone.data.trash_id && (await api("GET", `/tasks/${tid}`)).status === 404);
+  const heir = await api("POST", "/tasks", { title: `Heir ${suffix}`, external_id: ext });
+  check("its external_id is free again", heir.status === 201 && heir.data.external_id === ext);
+  const back = await call("POST", `/api/trash/${gone.data.trash_id}/restore`);
+  const restored = await api("GET", `/tasks/${tid}`);
+  check("restored, it comes back without the external_id somebody else has now", back.status === 200 && restored.data?.id === tid && restored.data.external_id === null && (await api("GET", `/tasks?external_id=${ext}`)).data?.[0]?.id === heir.data.id);
+
+  server.close();
+  await call("DELETE", `/api/profiles/${pid}/webhooks/${hook.data.webhook.id}`);
+  for (const id of [tid, heir.data.id, ...made]) await api("DELETE", `/tasks/${id}`);
+  for (const t of [full, picked, writer, reader, fenced]) await call("DELETE", `/api/tokens/${t.row.id}`);
+  check("a revoked token's log cannot be read", (await call("GET", `/api/tokens/${fenced.row.id}/log`)).status === 404);
+  await call("DELETE", "/api/trash");
+  for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /API token/i.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+  for (const n of (await as(userJar, () => call("GET", "/api/notifications?limit=50"))).data.items.filter((x) => /API token|V1 shared/i.test(`${x.title} ${x.body ?? ""}`))) await as(userJar, () => call("DELETE", `/api/notifications/${n.id}`));
 }
 
 console.log("time report");

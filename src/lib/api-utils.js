@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { HttpError } from "./http-error";
 import { requireUser, requireRole } from "./auth";
 import { assertAccess } from "./sharing";
-import { bearerOf, badTokenWait, noteBadToken, requestIp } from "./api-tokens";
+import { bearerOf, badTokenWait, noteBadToken, requestIp, trustedIp, logRequest } from "./api-tokens";
+import { scopesAllow, ipAllowed } from "./api-scopes";
 import { refusalFor, FEATURES } from "./access-control";
 
 export { HttpError };
@@ -23,54 +24,76 @@ const rateHeaders = (usage) => ({ "X-RateLimit-Limit": String(usage.limit), "X-R
  * { auth: false }) and an optional role, and maps errors to HTTP statuses.
  * The handler receives (request, params, user).
  */
-export function handler(fn, { auth = true, role } = {}) {
+export function handler(fn, opts = {}) {
+  // every request made with an API token is logged on the token, whatever it answered
   return async (request, context) => {
-    try {
-      const params = context?.params ? await context.params : {};
-      rememberOrigin(request);
-      let user = null;
-      const bearer = auth ? bearerOf(request) : null;
-      if (bearer) {
-        // an address that keeps sending wrong tokens waits before the database is asked again
-        const wait = badTokenWait(requestIp(request));
-        if (wait) throw new HttpError(`Too many wrong tokens from this address. Try again in ${wait} seconds.`, 429, { retry_after: wait }, { "Retry-After": String(wait) });
-      }
-      if (auth) {
-        try {
-          user = await requireUser(request);
-        } catch (e) {
-          if (bearer && e?.status === 401) noteBadToken(requestIp(request));
-          throw e;
-        }
-        if (user.token) assertTokenMay(user, request.method, new URL(request.url).pathname);
-        // modules and features an administrator turned off for this account
-        const refused = refusalFor(user, request.method, new URL(request.url).pathname);
-        if (refused) throw new HttpError(refused.kind === "module" ? "This module is turned off for your account." : `${FEATURES[refused.key]?.label ?? "This feature"} is turned off for your account.`, 403, { off: refused });
-        if (role) requireRole(user, role);
-        // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
-        if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);
-      }
-      const res = await fn(request, params, user);
-      if (user?.token?.usage) for (const [k, v] of Object.entries(rateHeaders(user.token.usage))) res.headers.set(k, v);
-      return res;
-    } catch (err) {
-      if (err instanceof HttpError) return fail(err.message, err.status, err.details, err.headers);
-      if (err?.code === "ER_DUP_ENTRY") return fail("A record with that unique value already exists.", 409);
-      if (err?.code === "ER_NO_REFERENCED_ROW_2") return fail("Referenced record does not exist.", 400);
-      if (err?.code === "ECONNREFUSED" || err?.code === "ER_BAD_DB_ERROR") {
-        return fail("Database is not reachable. Run `npm run db:setup` and make sure MySQL is running.", 503);
-      }
-      console.error("[api]", err);
-      return fail(err?.message || "Internal server error", 500);
-    }
+    const started = Date.now();
+    const seen = { user: null };
+    const res = await run(fn, opts, request, context, seen);
+    if (seen.user?.token) logRequest(seen.user.token.id, { method: request.method, path: new URL(request.url).pathname, status: res.status, ms: Date.now() - started, ip: trustedIp(request) });
+    return res;
   };
+}
+
+async function run(fn, { auth = true, role } = {}, request, context, seen) {
+  try {
+    const params = context?.params ? await context.params : {};
+    rememberOrigin(request);
+    let user = null;
+    const bearer = auth ? bearerOf(request) : null;
+    if (bearer) {
+      // an address that keeps sending wrong tokens waits before the database is asked again
+      const wait = badTokenWait(requestIp(request));
+      if (wait) throw new HttpError(`Too many wrong tokens from this address. Try again in ${wait} seconds.`, 429, { retry_after: wait }, { "Retry-After": String(wait) });
+    }
+    if (auth) {
+      try {
+        user = await requireUser(request);
+        seen.user = user;
+      } catch (e) {
+        if (bearer && e?.status === 401) noteBadToken(requestIp(request));
+        throw e;
+      }
+      if (user.token) assertTokenMay(user, request, new URL(request.url).pathname);
+      // modules and features an administrator turned off for this account
+      const refused = refusalFor(user, request.method, new URL(request.url).pathname);
+      if (refused) throw new HttpError(refused.kind === "module" ? "This module is turned off for your account." : `${FEATURES[refused.key]?.label ?? "This feature"} is turned off for your account.`, 403, { off: refused });
+      if (role) requireRole(user, role);
+      // inside a profile somebody shared with this user, the member's role decides what a workspace route allows
+      if (user.access !== "owner") assertAccess(user, request.method, new URL(request.url).pathname);
+    }
+    const res = await fn(request, params, user);
+    if (user?.token?.usage) for (const [k, v] of Object.entries(rateHeaders(user.token.usage))) res.headers.set(k, v);
+    return res;
+  } catch (err) {
+    if (err instanceof HttpError) return fail(err.message, err.status, err.details, err.headers);
+    if (err?.code === "ER_DUP_ENTRY") return fail("A record with that unique value already exists.", 409);
+    if (err?.code === "ER_NO_REFERENCED_ROW_2") return fail("Referenced record does not exist.", 400);
+    if (err?.code === "ECONNREFUSED" || err?.code === "ER_BAD_DB_ERROR") {
+      return fail("Database is not reachable. Run `npm run db:setup` and make sure MySQL is running.", 503);
+    }
+    console.error("[api]", err);
+    return fail(err?.message || "Internal server error", 500);
+  }
 }
 
 // What an API token may not do, whatever the account behind it: account and administration routes, and
 // writes on a read token. Everything else is the same API a browser session uses.
 const TOKEN_DENIED = /^\/api\/(auth|tokens|users|mail|backups|settings|chat|push|pms|profiles\/\d+\/(members|membership|transfer|webhooks|invites))(\/|$)/;
-function assertTokenMay(user, method, pathname) {
+function assertTokenMay(user, request, pathname) {
+  const method = request.method;
   if (TOKEN_DENIED.test(pathname)) throw new HttpError("API tokens cannot use this route.", 403);
+  // the addresses its owner allowed, as our own proxy saw the caller (a header the caller sets does not count)
+  if (user.token.ip_allow?.length) {
+    const ip = trustedIp(request);
+    if (!ipAllowed(ip, user.token.ip_allow)) throw new HttpError(`This token may not be used from ${ip}.`, 403, { ip });
+  }
+  // a custom token may only do what it lists
+  if (Array.isArray(user.token.scopes)) {
+    const { ok, need } = scopesAllow(user.token.scopes, method, pathname);
+    if (!ok) throw new HttpError(need ? `This token does not have the ${need} permission.` : "This token cannot use this route.", 403, { need });
+    return;
+  }
   if (user.token.scope === "read" && !["GET", "HEAD", "OPTIONS"].includes(method)) throw new HttpError("This token can only read.", 403);
 }
 

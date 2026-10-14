@@ -10,7 +10,7 @@ import { notifyInvolved } from "@/lib/notifications";
 import { logTask } from "@/lib/task-activity";
 import { attachAssignees, setAssignees, nextAssignees } from "@/lib/task-assignees";
 
-export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags", "repeat_rule", "repeat_until"];
+export const TASK_FIELDS = ["title", "description", "project_id", "employee_id", "requirement_id", "status", "priority", "start_date", "due_date", "estimate_hours", "tags", "repeat_rule", "repeat_until", "external_id"];
 
 export const TASK_SELECT = `
   SELECT t.*, p.name AS project_name, p.color AS project_color, p.code AS project_code,
@@ -43,6 +43,11 @@ export function normaliseTask(data) {
   }
   if ("repeat_rule" in data && data.repeat_rule != null && !REPEAT_RULES[data.repeat_rule]) throw new HttpError(`Unknown repeat rule: ${data.repeat_rule}.`, 400);
   for (const f of ["start_date", "due_date", "repeat_until"]) if (data[f] != null && !/^\d{4}-\d{2}-\d{2}$/.test(data[f])) throw new HttpError(`${f} must be a date (YYYY-MM-DD).`, 400);
+  if ("external_id" in data && data.external_id != null) {
+    data.external_id = String(data.external_id).trim();
+    if (!data.external_id) data.external_id = null;
+    else if (data.external_id.length > 120) throw new HttpError("external_id holds up to 120 characters.", 400);
+  }
   return data;
 }
 /** A task cannot start after it is due. `current` is the stored row when only one of the two dates is being changed. */
@@ -73,9 +78,14 @@ export const GET = handler(async (request, _params, user) => {
   return ok(await attachAssignees(await query(`${TASK_SELECT} WHERE ${where.join(" AND ")} ORDER BY t.updated_at DESC`, args)));
 });
 
-export const POST = handler(async (request, _params, user) => {
+export const POST = handler(async (request, _params, user) => ok(await createTask(user, await readJson(request)), { status: 201 }));
+
+/**
+ * Create a task in the profile in use: validation, assignees (`assignee_ids`, or `employee_id` as the lead), history,
+ * webhooks (task.created, and task.assigned when people are on it), notifications. Answers the TASK_SELECT row.
+ */
+export async function createTask(user, body) {
   const owner = user.profile_id;
-  const body = await readJson(request);
   const data = normaliseTask(pick(body, TASK_FIELDS));
   requireFields(data, ["title"]);
   assertDateOrder(data);
@@ -92,6 +102,7 @@ export const POST = handler(async (request, _params, user) => {
   const [row] = await attachAssignees(await query(`${TASK_SELECT} WHERE t.id = ?`, [res.insertId]));
   await logTask(user, row.id, { action: "created" });
   emit(user, "task.created", row);
+  if (row.assignees?.length) emit(user, "task.assigned", { ...row, added: row.assignees.map(({ id, name }) => ({ id, name })), removed: [] });
   notifyInvolved(user, { type: "task_created", title: `New task: ${row.title}`, body: [row.project_name, row.assignee_names].filter(Boolean).join(" · ") || null, href: `/tasks/${row.id}`, entityType: "task", entityId: row.id }, { taskIds: [row.id], forAssignee: { type: "task_assigned", title: `${user.name} assigned you: ${row.title}` } });
-  return ok(row, { status: 201 });
-});
+  return row;
+}

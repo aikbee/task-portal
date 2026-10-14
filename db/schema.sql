@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   repeat_until DATE NULL,
   repeat_series_id INT UNSIGNED NULL, -- id of the first task of the series (plain column, no self-referencing key)
   repeat_next_id INT UNSIGNED NULL, -- the task that was created when this one was completed: it is made only once
+  external_id VARCHAR(120) NULL, -- the id another system knows this task by (API v1); unique within the profile
   sort_order INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -257,6 +258,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   KEY idx_tasks_profile (profile_id),
   KEY idx_tasks_requirement (requirement_id),
   KEY idx_tasks_series (repeat_series_id),
+  UNIQUE KEY uq_tasks_external (profile_id, external_id),
   CONSTRAINT fk_tasks_owner FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_tasks_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
   CONSTRAINT fk_tasks_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
@@ -387,6 +389,7 @@ CREATE TABLE IF NOT EXISTS task_comments (
   task_id INT UNSIGNED NOT NULL,
   user_id INT UNSIGNED NOT NULL,
   author_name VARCHAR(120) NOT NULL,
+  via VARCHAR(80) NULL, -- the API token it came through, by name
   body TEXT NOT NULL,
   edited_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -467,7 +470,9 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   token_hash CHAR(64) NOT NULL,
   prefix VARCHAR(12) NOT NULL, -- the first characters, so a person can tell tokens apart
   scope ENUM('read','write') NOT NULL DEFAULT 'read',
+  scopes JSON NULL, -- fine-grained permissions (tasks:read, tasks:write, …); null = everything `scope` allows
   profile_id INT UNSIGNED NULL, -- the profile the token works in (null = the person's default profile)
+  ip_allow VARCHAR(500) NULL, -- addresses or CIDR ranges the token may be used from, comma separated; null = anywhere
   last_used_at DATETIME NULL,
   expires_at DATETIME NULL,
   -- rate limiting: requests in the current minute and day (UTC), and all time
@@ -479,6 +484,34 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_api_tokens_hash (token_hash),
   KEY idx_api_tokens_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- What each API token asked for, kept 14 days (shown on the token so its owner can see what an integration does).
+CREATE TABLE IF NOT EXISTS api_request_log (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  token_id INT UNSIGNED NOT NULL,
+  method VARCHAR(8) NOT NULL,
+  path VARCHAR(200) NOT NULL,
+  status SMALLINT UNSIGNED NOT NULL,
+  ms INT UNSIGNED NOT NULL DEFAULT 0,
+  ip VARCHAR(45) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_api_log_token (token_id, id),
+  KEY idx_api_log_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Idempotency-Key of API v1 writes: a retried request gets the first answer back instead of doing the work twice (24 h).
+CREATE TABLE IF NOT EXISTS api_idempotency (
+  scope VARCHAR(24) NOT NULL, -- t:<token id> or u:<user id>
+  idem_key VARCHAR(100) NOT NULL,
+  method VARCHAR(8) NOT NULL,
+  path VARCHAR(200) NOT NULL,
+  body_hash CHAR(64) NULL, -- SHA-256 of the JSON body: the same key with another body is refused
+  status SMALLINT UNSIGNED NOT NULL DEFAULT 0, -- 0 while the first request is still running
+  response LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (scope, idem_key),
+  KEY idx_api_idem_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Outgoing webhooks of a profile: a URL that is told about events (task.created, ...) with an HMAC signature.
@@ -628,6 +661,7 @@ CREATE TABLE IF NOT EXISTS task_activity (
   task_id INT UNSIGNED NOT NULL,
   user_id INT UNSIGNED NULL,
   actor_name VARCHAR(120) NULL,
+  via VARCHAR(80) NULL, -- the API token the change came through, by name
   action VARCHAR(32) NOT NULL,
   field VARCHAR(32) NULL,
   old_value VARCHAR(255) NULL,

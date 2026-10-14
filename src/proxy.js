@@ -6,6 +6,7 @@ const PUBLIC = new Set([
   "/forgot", "/reset", "/join", "/api/auth/forgot", "/api/auth/reset", "/api/auth/join",
   "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds",
   "/bg", // the animated background on its own, shown behind the native apps' screens: no data, only the animation
+  "/developers", "/api/v1", "/api/v1/openapi.json", // the API's documentation: no data
 ]);
 
 /**

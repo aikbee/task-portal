@@ -48,6 +48,7 @@ export default function TopBar() {
   const togglePrefs = useUI((s) => s.togglePrefs);
   const { user, logout, isAdmin } = useAuth();
   const pmsOn = useFeature("pms");
+  const apiOn = useFeature("api_tokens");
   const visibleModules = useVisibleModules();
   const { data: allUsers } = useFetch(isAdmin ? "/api/users" : null);
   const switchWorkspace = async (id) => {
@@ -267,7 +268,7 @@ export default function TopBar() {
           { label: tr("Profile & password"), icon: User, onClick: () => setProfileOpen(true) },
           { label: tr("Preferences"), icon: SlidersHorizontal, onClick: togglePrefs, hint: "⌘," },
           { label: tr("Security & sessions"), icon: ShieldCheck, onClick: () => router.push("/security") },
-          ...(pmsOn ? [{ label: tr("Integrations"), icon: Plug, onClick: () => router.push("/integrations") }] : []),
+          ...(pmsOn || apiOn ? [{ label: tr("Integrations"), icon: Plug, onClick: () => router.push("/integrations") }] : []),
           { label: tr("Show background only"), icon: Wallpaper, onClick: () => setBgOnly(true), hint: "⌘⇧." },
           ...(installPrompt ? [{ label: tr("Install app"), icon: Download, onClick: promptInstall }] : []),
           mounted && canLock ? { label: tr("Lock screen"), icon: Lock, onClick: lock, hint: "⌘⇧L" } : { label: tr("Set up lock screen"), icon: Lock, onClick: togglePrefs },

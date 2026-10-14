@@ -1,11 +1,14 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Plug, Ticket, Plus, RefreshCw, Trash2, Pencil, Check, X, KeyRound, FolderKanban, ArrowRight, Send, TicketCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useFeature } from "@/lib/auth-context";
 import PageHeader from "@/components/ui/PageHeader";
+import Tabs from "@/components/ui/Tabs";
+import ApiTokens from "./ApiTokens";
 import Card, { CardHeader } from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -17,15 +20,21 @@ import { relativeTime, cn } from "@/lib/utils";
 import { useT, useLocale } from "@/lib/i18n";
 import { pmsStatusText, PMS_MODE_NOTE } from "@/lib/pms-shared";
 
-/** Integrations page: connections to other tools. Today: Bitara PMS. */
+/** Integrations page: Bitara PMS (send tasks there) and the Task Portal API (other systems work here), as tabs (?tab=). */
 export default function IntegrationsPage() {
   const tr = useT();
-  const allowed = useFeature("pms");
+  const router = useRouter();
+  const wanted = useSearchParams().get("tab");
+  const pmsOn = useFeature("pms");
+  const apiOn = useFeature("api_tokens");
+  const tabs = [pmsOn && { key: "pms", label: "Bitara PMS", icon: Ticket }, apiOn && { key: "api", label: "Task Portal API", icon: KeyRound }].filter(Boolean);
+  const tab = tabs.find((t) => t.key === wanted)?.key ?? tabs[0]?.key;
   return (
     <>
       <PageHeader title={tr("Integrations")} description={tr("Connect Task Portal to the other tools you work in.")} icon={Plug} color="#0ea5e9" crumbs={[]} />
       <div className="mx-auto w-full max-w-5xl space-y-6 p-4 sm:p-6">
-        {allowed ? <BitaraPms /> : <Card><EmptyState icon={Plug} title="Bitara PMS is turned off for your account" description="An administrator decides which modules each person uses. Ask them if you need this one." compact /></Card>}
+        {tabs.length > 1 ? <Tabs tabs={tabs} value={tab} onChange={(key) => router.replace(`/integrations?tab=${key}`, { scroll: false })} className="integrations-tabs" /> : null}
+        {tab === "pms" ? <BitaraPms /> : tab === "api" ? <ApiTokens /> : <Card><EmptyState icon={Plug} title="Integrations are turned off for your account" description="An administrator decides which modules each person uses. Ask them if you need this one." compact /></Card>}
       </div>
     </>
   );

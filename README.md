@@ -250,8 +250,10 @@ All endpoints return `{ data }` or `{ error }`.
 | GET | `/api/chat/calls/incoming` | the call that is ringing me right now (direct, or a group call started within the ringing time that I neither joined nor dismissed): `{ call, from, conversation_title, ms_left }` or `{ call: null }` |
 | GET / PUT | `/api/users/access-defaults` | admin: the access set new accounts start with (same shape, `user: null`); empty lists remove the setting. `POST /api/users` takes `apply_defaults: false` to skip it |
 | GET / PUT | `/api/users/:id/access` | admin: what is turned off for an account `{ access: { modules_off, features_off }, effective, modules, features, needs }` / `{ modules_off: [...], features_off: [...] }` (unknown keys are dropped; empty = everything on) |
-| GET / POST | `/api/tokens` | my API tokens (prefix, scope, profile, last used, expiry, `requests_today`, `requests_total`, `limits`) / `{ name, scope: read\|write, profile_id?, days? }` → the token, shown once |
-| DELETE | `/api/tokens/:id` | revoke |
+| GET / POST | `/api/tokens` | my API tokens (prefix, scope, `scopes`, profile, `ip_allow`, last used, expiry, `requests_today`, `requests_total`, `limits`) / `{ name, scope: read\|write \| scopes: [...], profile_id?, days?, ip_allow? }` → the token, shown once |
+| PATCH / DELETE | `/api/tokens/:id` | `{ name?, ip_allow? }` (permissions and profile stay as made) / revoke (its request log goes with it) |
+| GET | `/api/tokens/:id/log` | the token's latest requests (`?limit=` up to 200): method, path, status, ms, ip; kept 14 days |
+| GET | `/api/v1`, `/api/v1/openapi.json` | public: what the stable API offers (and the caller's address as the API sees it) / its OpenAPI 3 description. The endpoints themselves are under **The stable API** below |
 | GET / POST | `/api/profiles/:id/webhooks` | owner / managers: the profile's webhooks and the event list / `{ url, events?: [...]\|"*" }` → the hook with its secret, shown once |
 | PUT / DELETE | `/api/profiles/:id/webhooks/:hid` | `{ url?, events?, active? }` (turning a paused hook on clears its failures) / remove |
 | POST | `/api/profiles/:id/webhooks/:hid/test` | send a `ping` now and answer with the delivery result |
@@ -447,22 +449,42 @@ address from the page, else `APP_URL`, else the address the portal was last open
 
 ## API tokens and webhooks
 
-**API tokens** (Security → API tokens) let scripts and other tools use the same JSON API as the app. A token is
-`tp_…`, shown once, stored as a hash, and works inside one profile (the default one unless chosen) as the person
-who made it: `curl -H "Authorization: Bearer tp_…" https://your-portal/api/tasks`. A *read* token only reads;
-a *read & write* token creates and changes records like the person could (sharing roles still apply). No token
-can use account, user, mail, backup, chat or profile-management routes, and the Info vault stays locked.
-Tokens can expire, are listed with their last use, and are revoked with one click.
+**API tokens** (Integrations → Task Portal API; the Security page points there) let other systems, scripts and
+tools use Task Portal. A token is `tp_…`, shown once, stored as a hash, and works inside one profile (the default
+one unless chosen) as the person who made it: sharing roles still apply, and what it changes is recorded as that
+person *via* the token (a task's history and comments say "via Acme CRM"; webhook payloads carry `actor.via`).
+Its permissions are *Read* (tasks, projects, people), *Read & write* (everything a token may do) or *Custom*:
+any of `tasks:read`, `tasks:write`, `tasks:delete`, `comments:write`, `time:write`, `files:write`,
+`projects:read`, `people:read` (`src/lib/api-scopes.js`; a custom token is refused everything outside its list,
+on `/api/v1` and on the app's own routes alike). *Allowed addresses* limit a token to IP addresses or CIDR ranges
+(IPv4/IPv6, up to 20), checked against the address the reverse proxy reports (`X-Real-IP`, else the last
+`X-Forwarded-For` hop; a value the caller sends itself does not count behind the proxy). No token can use account,
+user, mail, backup, chat, PMS or profile-management routes, and the Info vault stays locked. Tokens can expire, are
+listed with their last use and requests, can be renamed or re-fenced, show their last requests (method, path,
+answer, time, address; kept 14 days) and are revoked with one click.
 
 Every token is rate limited: 60 requests a minute and 5000 a day (UTC), counted per token in the database, so
 several server processes agree. Each answer carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
 `X-RateLimit-Reset` (unix seconds); over the limit the API answers `429` with `Retry-After`. Requests over the
 limit still count. An address that sends 30 wrong tokens within ten minutes waits ten minutes before any bearer
 request from it is looked at again (browser sessions are not affected). `API_RATE_PER_MINUTE` and
-`API_RATE_PER_DAY` change the limits. The Security page shows each token's requests today and in all.
+`API_RATE_PER_DAY` change the limits.
+
+**The stable API** (`/api/v1`, guide at `/developers`, OpenAPI at `/api/v1/openapi.json`, both public) is what
+other systems should build on: its names and shapes stay put while the app's own routes follow the screens.
+`GET/POST /tasks` (filters `status`, `priority`, `project`, `assignee`, `tag`, `q`, `external_id`, `due_from`,
+`due_to`, `updated_since`; pages of `limit` 1–200 with `next_cursor`), `GET/PATCH/DELETE /tasks/:id` (PATCH takes
+`assignees`, `add_assignees`, `remove_assignees`), `GET/PUT /tasks/:id/status`, `GET/POST /tasks/:id/comments`,
+`GET/POST /tasks/:id/time`, `GET/POST /tasks/:id/files` (multipart), `GET/DELETE /tasks/:id/files/:fileId`,
+`GET /projects`, `GET /people`, `GET /me`. People are named by email (the employee's, or the linked account's) or
+employee id, projects by code or id; unknown fields are refused. `external_id` (unique per profile) lets another
+system find its task again, and an `Idempotency-Key` header on a POST makes retries safe for 24 hours (the same
+key on another request → 422). Endpoints are described once in `src/lib/api-docs.js`, which feeds both the guide
+and the OpenAPI file; helpers live in `src/lib/api-v1.js`, routes under `src/app/api/v1/`.
 
 **Webhooks** (Profiles → the webhook button on a profile; owner and managers) tell another system what happens
-in a profile: `task.created`, `task.updated`, `task.completed`, `task.deleted`, `task.comment`,
+in a profile: `task.created`, `task.updated`, `task.status_changed` (`data.from`, `data.to`), `task.assigned`
+(`data.added`, `data.removed`), `task.completed`, `task.deleted`, `task.comment`,
 `project.created|updated|deleted`, `requirement.created|updated|deleted`. Each event is one JSON `POST`
 `{ event, at, profile, actor, data }` with headers `X-TaskPortal-Event`, `X-TaskPortal-Delivery` and
 `X-TaskPortal-Signature: sha256=<HMAC-SHA256 of the raw body with the hook's secret>` (the secret is shown once).

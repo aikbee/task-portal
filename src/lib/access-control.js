@@ -61,7 +61,8 @@ const ATTACHMENT_MODULE = { task: "tasks", requirement: "requirements", info: "i
  * its assignees); their detail, everything inside them and every change are refused.
  */
 export function apiRule(method, pathname) {
-  const p = pathname.replace(/\/+$/, "");
+  // the stable API (/api/v1/…) follows the routes it mirrors; /api/v1/people and /me are lookups like the lists
+  const p = pathname.replace(/\/+$/, "").replace(/^\/api\/v1(?=\/|$)/, "/api");
   const read = method === "GET" || method === "HEAD";
   let m;
   if (/^\/api\/import(\/|$)/.test(p)) return { feature: "import" };

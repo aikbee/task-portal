@@ -163,7 +163,7 @@ export default function TaskActivity({ taskId, version, onCount }) {
           it.kind === "history" ? (
             <li key={it.key} className="activity-history flex items-start gap-2.5 pl-1 text-xs text-fg-muted">
               <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-2 text-fg-faint">{(() => { const Icon = ACTION_ICON[it.action] ?? ArrowRight; return <Icon size={11} />; })()}</span>
-              <p className="min-w-0 flex-1 leading-5">{sentence(it, tr)} <span className="whitespace-nowrap text-fg-faint" title={formatDateTime(it.at)}>· {relativeTime(it.at)}</span></p>
+              <p className="min-w-0 flex-1 leading-5">{sentence(it, tr)} {it.via ? <span className="activity-via whitespace-nowrap text-fg-faint" title={tr("Through the API token “{name}”", { name: it.via })}>· {tr("via {name}", { name: it.via })}</span> : null} <span className="whitespace-nowrap text-fg-faint" title={formatDateTime(it.at)}>· {relativeTime(it.at)}</span></p>
             </li>
           ) : (
             <li key={it.key} className="activity-comment flex items-start gap-2.5">
@@ -171,6 +171,7 @@ export default function TaskActivity({ taskId, version, onCount }) {
               <div className="min-w-0 flex-1 rounded-app border border-line bg-surface-2/40 px-3 py-2">
                 <div className="flex flex-wrap items-center gap-x-2 text-xs">
                   <span className="font-semibold text-fg">{it.author_name}</span>
+                  {it.via ? <span className="activity-via rounded bg-surface-3 px-1.5 text-[10px] font-medium text-fg-muted" title={tr("Through the API token “{name}”", { name: it.via })}>{tr("via {name}", { name: it.via })}</span> : null}
                   <span className="text-fg-faint" title={formatDateTime(it.at)}>{relativeTime(it.at)}</span>
                   {it.edited_at ? <span className="text-fg-faint">· {tr("edited")}</span> : null}
                   <span className="flex-1" />

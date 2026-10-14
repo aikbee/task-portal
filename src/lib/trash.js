@@ -164,6 +164,8 @@ export async function restoreFromTrash(user, trashId) {
         }
       }
       for (const [col, table] of Object.entries(spec.nullableRefs ?? {})) if (row[col] != null && !(await exists(conn, table, row[col]))) row[col] = null;
+      // another task may carry its external id (API v1) by now: this one comes back without it
+      if (spec.table === "tasks" && row.external_id && (await conn.query("SELECT 1 FROM tasks WHERE profile_id = ? AND external_id = ? LIMIT 1", [row.profile_id, row.external_id]))[0].length) row.external_id = null;
       await insertRow(conn, spec.table, row);
       await restoreChildren(conn, spec.children, snap.children, item.profile_id);
       await relink(conn, snap.links, row.id, item.profile_id);

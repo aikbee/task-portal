@@ -33,9 +33,15 @@ export const GET = handler(async (_request, params, user) => {
  * the linked assignee and everybody who commented before get "commented on".
  */
 export const POST = handler(async (request, params, user) => {
-  const task = await taskOf(requireId(params.id), user.profile_id);
-  const body = cleanBody((await readJson(request)).body);
-  const res = await execute("INSERT INTO task_comments (task_id, user_id, author_name, body) VALUES (?, ?, ?, ?)", [task.id, user.id, user.name, body]);
+  const { task } = await addComment(user, requireId(params.id), (await readJson(request)).body);
+  return ok({ created_id: task.comment_id, items: shapeComments(await listComments(task.id), user) }, { status: 201 });
+});
+
+/** Add a comment as `user` (through an API token: `via` its name), tell the people involved, fire the webhook. */
+export async function addComment(user, taskId, raw) {
+  const task = await taskOf(taskId, user.profile_id);
+  const body = cleanBody(raw);
+  const res = await execute("INSERT INTO task_comments (task_id, user_id, author_name, via, body) VALUES (?, ?, ?, ?, ?)", [task.id, user.id, user.name, user.token?.name ? String(user.token.name).slice(0, 80) : null, body]);
 
   // only people who can still open the profile hear about it
   const allowed = new Set([task.owner_id, ...(await query("SELECT user_id FROM profile_members WHERE profile_id = ? AND status = 'active'", [task.profile_id])).map((r) => r.user_id)]);
@@ -50,6 +56,6 @@ export const POST = handler(async (request, params, user) => {
     ...[...mentioned].map((userId) => notify({ ...base, userId, type: "task_mention", title: `${user.name} mentioned you on ${task.title}` }).catch(() => false)),
     ...[...followers].map((userId) => notify({ ...base, userId, type: "task_comment", title: `${user.name} commented on ${task.title}` }).catch(() => false)),
   ]);
-  emit(user, "task.comment", { task_id: task.id, task_title: task.title, comment_id: res.insertId, body, author: { id: user.id, name: user.name } });
-  return ok({ created_id: res.insertId, items: shapeComments(await listComments(task.id), user) }, { status: 201 });
-});
+  emit(user, "task.comment", { task_id: task.id, task_title: task.title, comment_id: res.insertId, body, author: { id: user.id, name: user.name, via: user.token?.name ?? null } });
+  return { task: { ...task, comment_id: res.insertId }, id: res.insertId };
+}

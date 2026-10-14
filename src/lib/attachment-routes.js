@@ -15,27 +15,7 @@ export function attachmentCollectionRoutes(kind) {
     const parentId = requireId(params.id);
     await ownedParent(kind, user.profile_id, parentId);
     const form = await request.formData();
-    const files = form.getAll("files").filter((f) => typeof f === "object" && f.size > 0);
-    if (!files.length) throw new HttpError("No files received.", 400);
-    let order = await nextSortOrder(meta.table, parentId);
-    for (const file of files) {
-      if (file.size > MAX_BYTES) throw new HttpError(`${file.name} exceeds the 50 MB limit.`, 413);
-      const { storedName, size } = await saveFile(file);
-      await execute(
-        `INSERT INTO ${meta.table} (${meta.parentCol}, stored_name, original_name, mime_type, size_bytes, sort_order) VALUES (?, ?, ?, ?, ?, ?)`,
-        [parentId, storedName, file.name, file.type || null, size, order++]
-      );
-    }
-    if (kind === "task") await logTask(user, parentId, files.map((f) => ({ action: "attachment_added", next: f.name })));
-    notifyInvolved(user, {
-      type: "attachment_added",
-      title: `${files.length} file${files.length > 1 ? "s" : ""} attached to a ${kind}`,
-      body: files.map((f) => f.name).join(", "),
-      href: `/${meta.apiBase}/${parentId}`,
-      entityType: kind,
-      entityId: parentId,
-    }, { taskIds: kind === "task" ? [parentId] : [] });
-    return ok(await listAttachments(kind, parentId), { status: 201 });
+    return ok(await uploadAttachments(user, kind, parentId, form.getAll("files")), { status: 201 });
   });
 
   const PUT = handler(async (request, params, user) => {
@@ -48,4 +28,30 @@ export function attachmentCollectionRoutes(kind) {
   });
 
   return { POST, PUT };
+}
+
+/** Store uploaded files on a parent the caller may use (checked by the caller), note them in its history, tell the people involved. */
+export async function uploadAttachments(user, kind, parentId, rawFiles) {
+  const meta = kindOf(kind);
+  const files = rawFiles.filter((f) => typeof f === "object" && f.size > 0);
+  if (!files.length) throw new HttpError("No files received.", 400);
+  let order = await nextSortOrder(meta.table, parentId);
+  for (const file of files) {
+    if (file.size > MAX_BYTES) throw new HttpError(`${file.name} exceeds the 50 MB limit.`, 413);
+    const { storedName, size } = await saveFile(file);
+    await execute(
+      `INSERT INTO ${meta.table} (${meta.parentCol}, stored_name, original_name, mime_type, size_bytes, sort_order) VALUES (?, ?, ?, ?, ?, ?)`,
+      [parentId, storedName, file.name, file.type || null, size, order++]
+    );
+  }
+  if (kind === "task") await logTask(user, parentId, files.map((f) => ({ action: "attachment_added", next: f.name })));
+  notifyInvolved(user, {
+    type: "attachment_added",
+    title: `${files.length} file${files.length > 1 ? "s" : ""} attached to a ${kind}`,
+    body: files.map((f) => f.name).join(", "),
+    href: `/${meta.apiBase}/${parentId}`,
+    entityType: kind,
+    entityId: parentId,
+  }, { taskIds: kind === "task" ? [parentId] : [] });
+  return listAttachments(kind, parentId);
 }
