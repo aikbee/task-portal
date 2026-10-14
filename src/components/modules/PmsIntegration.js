@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Plug, Ticket, Plus, RefreshCw, Trash2, Pencil, Check, X, KeyRound, FolderKanban, ArrowRight, Send, TicketCheck } from "lucide-react";
+import { Plug, Ticket, Plus, RefreshCw, Trash2, Pencil, Check, X, KeyRound, FolderKanban, ArrowRight, Send, TicketCheck, PenLine } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch } from "@/lib/hooks";
 import { useFeature } from "@/lib/auth-context";
@@ -18,7 +18,7 @@ import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
 import { relativeTime, cn } from "@/lib/utils";
 import { useT, useLocale } from "@/lib/i18n";
-import { pmsStatusText, PMS_MODE_NOTE } from "@/lib/pms-shared";
+import { pmsStatusText, PMS_MODE_NOTE, PMS_FOOTER_MAX, footerLine } from "@/lib/pms-shared";
 
 /** Integrations page: Bitara PMS (send tasks there) and the Task Portal API (other systems work here), as tabs (?tab=). */
 export default function IntegrationsPage() {
@@ -53,6 +53,7 @@ function BitaraPms() {
   const [removing, setRemoving] = useState(null);
   const [adding, setAdding] = useState(false); // the form for another token, once there is one
   const [reason, setReason] = useState(null); // the default close reason being edited (null = as saved)
+  const [footer, setFooter] = useState(null); // the line ending tickets, being edited (null = as saved)
   const connections = data?.connections ?? [];
   const maps = data?.maps ?? [];
 
@@ -110,6 +111,21 @@ function BitaraPms() {
       toast.error(tr("Could not remove"), tr(e.message));
     }
   };
+  const saveFooter = async () => {
+    setBusy("footer");
+    try {
+      const prefs = await api.put("/api/pms/prefs", { ticket_footer: footer ?? "" });
+      setData((d) => ({ ...d, prefs }));
+      setFooter(null);
+      toast.success(tr("Saved"));
+    } catch (e) {
+      toast.error(tr("Could not save"), tr(e.message));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const footerNow = footer ?? data?.prefs?.ticket_footer ?? "";
+  const footerSample = footerLine(footerNow, { id: 128, title: tr("Fix the login page"), url: `${typeof window !== "undefined" ? window.location.origin : ""}/tasks/128` });
   const saveReason = async () => {
     setBusy("prefs");
     try {
@@ -252,6 +268,18 @@ function BitaraPms() {
             <Send size={13} className="mt-0.5 shrink-0" />
             <span>{tr("Then open Tasks and press Bitara PMS to pick the tasks to send, or use the button on a task.")} <Link href="/tasks" className="text-accent hover:underline">{tr("Open Tasks")}</Link></span>
           </p>
+        </Card>
+      ) : null}
+
+      {connections.length ? (
+        <Card className="pms-footer-card">
+          <CardHeader icon={PenLine} title={tr("A line at the end of each ticket")} description={tr("Added under the description of the tickets you raise or update from Task Portal. Leave it empty to add nothing.")} />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={footerNow} onChange={(e) => setFooter(e.target.value)} onKeyDown={(e) => e.key === "Enter" && footer != null && saveFooter()} maxLength={PMS_FOOTER_MAX} placeholder={tr("For example: From Task Portal #{id}: {url}")} className="pms-footer min-w-0 flex-1" aria-label={tr("A line at the end of each ticket")} />
+            <Button icon={Check} onClick={saveFooter} loading={busy === "footer"} disabled={footer == null || footer.trim() === (data?.prefs?.ticket_footer ?? "")} className="pms-footer-save">{tr("Save")}</Button>
+          </div>
+          <p className="mt-2 text-xs text-fg-muted">{tr("{id} becomes the task's number, {title} its title and {url} its address in Task Portal.")}</p>
+          <p className="pms-footer-preview mt-1 break-all text-xs text-fg-faint">{footerSample ? <>{tr("In a ticket:")} <span className="text-fg-muted">{footerSample}</span></> : tr("Nothing is added.")}</p>
         </Card>
       ) : null}
 

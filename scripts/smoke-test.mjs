@@ -3101,13 +3101,15 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   jar = { ...adminJar };
   const { startFakePms, FAKE_TOKEN } = await import(new URL("./fake-pms.mjs", import.meta.url));
   const compose = await import(new URL("../src/lib/pms-compose.js", import.meta.url));
+  const shared = await import(new URL("../src/lib/pms-shared.js", import.meta.url));
   const pms = await startFakePms({ maxFileBytes: 1024 });
   const posts = () => pms.requests.filter((r) => r.method !== "GET").length;
 
   // what a task becomes (pure functions)
   check("Chinese text -> zh-CN, else en", compose.guessLang("Fix login", "检查一下") === "zh-CN" && compose.guessLang("Fix login") === "en");
-  const tf = compose.ticketFields({ id: 7, title: " Ship\nit ", description: "See @[Ann Lee](employee:3)", priority: "urgent", due_date: "2026-10-20", estimate_hours: "1.5", tags: "release,qa" }, { checklist: [{ title: "A", done: 1 }, { title: "B", done: 0 }], includeChecklist: true, lang: "zh-CN", link: "https://x/tasks/7", withEstimate: true });
-  check("ticket fields: one-line title, P1, mention as @name, checklist and facts in the ticket's language, link back", tf.title === "Ship it" && tf.priority === "P1" && tf.dueAt === "2026-10-20" && tf.estimateMinutes === 90 && tf.description.includes("@Ann Lee") && tf.description.includes("**检查清单** (1/2)") && tf.description.includes("- [x] A") && tf.description.includes("截止: 2026-10-20") && tf.description.includes("#release #qa") && tf.description.includes("(https://x/tasks/7)"), JSON.stringify(tf));
+  const tf = compose.ticketFields({ id: 7, title: " Ship\nit ", description: "See @[Ann Lee](employee:3)", priority: "urgent", due_date: "2026-10-20", estimate_hours: "1.5", tags: "release,qa" }, { checklist: [{ title: "A", done: 1 }, { title: "B", done: 0 }], includeChecklist: true, lang: "zh-CN", footer: shared.footerLine("From Task Portal #{id}: {url}", { id: 7, url: "https://x/tasks/7" }), withEstimate: true });
+  check("ticket fields: one-line title, P1, mention as @name, checklist and facts in the ticket's language, the chosen line at the end", tf.title === "Ship it" && tf.priority === "P1" && tf.dueAt === "2026-10-20" && tf.estimateMinutes === 90 && tf.description.includes("@Ann Lee") && tf.description.includes("**检查清单** (1/2)") && tf.description.includes("- [x] A") && tf.description.includes("截止: 2026-10-20") && tf.description.includes("#release #qa") && tf.description.endsWith("\n\nFrom Task Portal #7: https://x/tasks/7"), JSON.stringify(tf));
+  check("footerLine fills {id}, {title} and {url} as plain text; empty means no line", shared.footerLine("  Raised from #{id} “{title}”   {url} {who} ", { id: 9, title: "A\nB", url: "https://x/tasks/9" }) === "Raised from #9 “A B” https://x/tasks/9 {who}" && shared.footerLine("", { id: 1 }) === "" && shared.footerLine(null) === "" && !compose.ticketFields({ id: 7, title: "x", description: "Body", priority: "low" }).description.includes("Task Portal"));
   check("a legacy table output becomes a Markdown table", compose.outputComment({ title: "T", format: "table", content: JSON.stringify({ columns: ["a", "b"], rows: [["1", "2"]] }) }).includes("| a   | b   |"));
 
   // connections
@@ -3158,7 +3160,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   const dry = await call("POST", `/api/pms/tasks/${tid}/send`, { body: { ...choice, dry_run: true } });
   const ops = dry.data?.results ?? [];
   check("dry run: exactly what would go, in order, and nothing sent", dry.status === 200 && dry.data.dry_run && ops.map((o) => o.op).join() === "ticket.create,comment,comment,file,file,worklogs" && posts() === before, JSON.stringify(dry.raw).slice(0, 300));
-  check("…the ticket: P2, the category, due date, estimate, checklist, mention as a name, link back", ops[0].fields.priority === "P2" && ops[0].fields.category === "BUG" && ops[0].fields.dueAt === "2026-10-20" && ops[0].fields.estimateMinutes === 180 && ops[0].text.includes("@Smoke Person") && ops[0].text.includes("- [x] Write") && ops[0].text.includes(`/tasks/${tid}`));
+  check("…the ticket: P2, the category, due date, estimate, checklist, mention as a name, and no line back by default", ops[0].fields.priority === "P2" && ops[0].fields.category === "BUG" && ops[0].fields.dueAt === "2026-10-20" && ops[0].fields.estimateMinutes === 180 && ops[0].text.includes("@Smoke Person") && ops[0].text.includes("- [x] Write") && !ops[0].text.includes(`/tasks/${tid}`) && !ops[0].text.includes("Task Portal #"));
   check("…comments: the output with its table, the comment under its author", ops[1].text.startsWith("### Results") && ops[1].text.includes("| build | 1200 |") && ops[2].text.startsWith("**Admin User**") && ops[2].internal === true);
   check("…worklogs carry a stable externalRef", ops[5].entries.length === 2 && ops[5].entries.every((e) => /^taskportal-[0-9a-f]+-time-\d+$/.test(e.externalRef)) && ops[5].entries[0].startedAt === "2026-10-01T09:00:00+08:00");
 
@@ -3224,6 +3226,15 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   check("no default close reason at first", (await call("GET", "/api/pms/prefs")).data.close_reason === null && (await call("GET", `/api/pms/tasks/${t4.id}`)).data.close_reason === null);
   const pref = await call("PUT", "/api/pms/prefs", { body: { close_reason: "  Finished,   see the report  " } });
   check("PUT /api/pms/prefs keeps a tidied default close reason, and the dialog gets it", pref.data.close_reason === "Finished, see the report" && (await call("GET", `/api/pms/tasks/${t4.id}`)).data.close_reason === "Finished, see the report" && (await call("GET", "/api/pms/connections")).data.prefs.close_reason === "Finished, see the report");
+  check("no line at the end of tickets at first", (await call("GET", "/api/pms/prefs")).data.ticket_footer === null);
+  const foot = await call("PUT", "/api/pms/prefs", { body: { ticket_footer: "  Raised from   Task Portal #{id}: {url}  " } });
+  check("PUT /api/pms/prefs keeps a tidied line for the end of tickets, and the close reason stays", foot.data.ticket_footer === "Raised from Task Portal #{id}: {url}" && foot.data.close_reason === "Finished, see the report");
+  const t5 = (await call("POST", "/api/tasks", { body: { title: `PMS footer ${suffix}`, description: "Body", project_id: projectId } })).data;
+  const footDry = await call("POST", `/api/pms/tasks/${t5.id}/send`, { body: { ticket: { mode: "create" }, dry_run: true } });
+  check("…a new ticket ends with it, filled in", footDry.data?.results?.[0]?.text?.endsWith(`\n\nRaised from Task Portal #${t5.id}: ${BASE}/tasks/${t5.id}`), JSON.stringify(footDry.raw).slice(0, 300));
+  check("…up to 300 characters", (await call("PUT", "/api/pms/prefs", { body: { ticket_footer: "x".repeat(301) } })).status === 400);
+  const unfoot = await call("PUT", "/api/pms/prefs", { body: { ticket_footer: "  " } });
+  check("…emptied, no line, and the close reason still stays", unfoot.data.ticket_footer === null && unfoot.data.close_reason === "Finished, see the report" && !(await call("POST", `/api/pms/tasks/${t5.id}/send`, { body: { ticket: { mode: "create" }, dry_run: true } })).data.results[0].text.includes("Raised from"));
   check("…closing again is skipped, and the history says it was closed", (await call("POST", `/api/pms/tasks/${t4.id}/send`, { body: { close: { reason: "again" }, dry_run: true } })).data.results[0].skip === true && (await call("GET", `/api/tasks/${t4.id}/history`)).data.some((h) => h.action === "pms_sent" && /closed/.test(h.new_value)));
 
   // PMS's answers that go wrong
@@ -3250,7 +3261,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
   const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
   jar = {};
   await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
-  check("connections and defaults are personal", (await call("GET", "/api/pms/connections")).data.connections.length === 0 && (await call("GET", "/api/pms/prefs")).data.close_reason === null && (await call("GET", `/api/pms/tasks/${tid}`)).status === 404);
+  check("connections and defaults are personal", (await call("GET", "/api/pms/connections")).data.connections.length === 0 && (await call("GET", "/api/pms/prefs")).data.close_reason === null && (await call("GET", "/api/pms/prefs")).data.ticket_footer === null && (await call("GET", `/api/pms/tasks/${tid}`)).status === 404);
   jar = { ...adminJar };
   await call("PUT", `/api/users/${userId}/access`, { body: { modules_off: [], features_off: ["pms"] } });
   jar = {};
@@ -3264,7 +3275,7 @@ console.log("Bitara PMS (connections, project pairing, sending a task)");
 
   // cleanup
   check("an empty default close reason goes back to the built-in one", (await call("PUT", "/api/pms/prefs", { body: { close_reason: "   " } })).data.close_reason === null);
-  for (const id of [tid, t2.id, t3.id, t4.id]) await call("DELETE", `/api/tasks/${id}`);
+  for (const id of [tid, t2.id, t3.id, t4.id, t5.id]) await call("DELETE", `/api/tasks/${id}`);
   const gone = await call("DELETE", `/api/pms/connections/${conn.id}`);
   check("removing the connection removes its pairings", gone.status === 200 && gone.data.connections.length === 0 && gone.data.maps.every((m) => m.pms_project === null));
   await call("DELETE", "/api/trash");

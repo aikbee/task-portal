@@ -10,7 +10,7 @@ import { lastOrigin } from "./origin";
 import { displayMentions } from "./mentions";
 import { pmsFetch, PmsError, checkBaseUrl, probeToken, findTicketKey, ticketOf, ticketsIn, projectOfKey, TICKET_KEY_RE, worklogUids, uploadLimitsIn } from "./pms";
 import { ticketFields, outputComment, commentComment, checklistComment, worklogEntry, itemHash, remoteHash, guessLang, ISO_WITH_OFFSET } from "./pms-compose";
-import { PMS_CATEGORIES, PMS_WORK_KINDS, PMS_LANGS } from "./pms-shared";
+import { PMS_CATEGORIES, PMS_WORK_KINDS, PMS_LANGS, PMS_FOOTER_MAX, footerLine } from "./pms-shared";
 
 /**
  * Bitara PMS, the Task Portal side: a person's connections (their own tokens), which PMS project each of their
@@ -110,13 +110,22 @@ export async function removeConnection(user, id) {
 /* ---------- a person's own defaults ---------- */
 
 export async function prefsOf(userId) {
-  const row = await queryOne("SELECT close_reason FROM pms_prefs WHERE user_id = ?", [userId]);
-  return { close_reason: row?.close_reason ?? null };
+  const row = await queryOne("SELECT close_reason, ticket_footer FROM pms_prefs WHERE user_id = ?", [userId]);
+  return { close_reason: row?.close_reason ?? null, ticket_footer: row?.ticket_footer ?? null };
 }
-/** { close_reason }: empty means the built-in "Done in Task Portal." (or its Chinese for tasks written in Chinese). */
-export async function setPrefs(user, body) {
-  const reason = String(body?.close_reason ?? "").replace(/\s+/g, " ").trim().slice(0, 500) || null;
-  await execute("INSERT INTO pms_prefs (user_id, close_reason) VALUES (?, ?) AS new ON DUPLICATE KEY UPDATE close_reason = new.close_reason", [user.id, reason]);
+/**
+ * { close_reason?, ticket_footer? }, each changed only when sent. An empty close reason means the built-in "Done in
+ * Task Portal." (or its Chinese for tasks written in Chinese); an empty ticket footer means no line at all.
+ */
+export async function setPrefs(user, body = {}) {
+  const next = await prefsOf(user.id);
+  if ("close_reason" in body) next.close_reason = String(body.close_reason ?? "").replace(/\s+/g, " ").trim().slice(0, 500) || null;
+  if ("ticket_footer" in body) {
+    const footer = String(body.ticket_footer ?? "").replace(/\s+/g, " ").trim();
+    if (footer.length > PMS_FOOTER_MAX) throw new HttpError(`The line at the end of tickets holds up to ${PMS_FOOTER_MAX} characters.`, 400);
+    next.ticket_footer = footer || null;
+  }
+  await execute("INSERT INTO pms_prefs (user_id, close_reason, ticket_footer) VALUES (?, ?, ?) AS new ON DUPLICATE KEY UPDATE close_reason = new.close_reason, ticket_footer = new.ticket_footer", [user.id, next.close_reason, next.ticket_footer]);
   return prefsOf(user.id);
 }
 
@@ -383,14 +392,15 @@ export async function sendTask(user, taskId, body = {}) {
   }
 
   const origin = lastOrigin();
-  const taskLink = origin ? `${origin}/tasks/${task.id}` : null;
+  // the line the sender ends their tickets with, if they chose one (Integrations → Bitara PMS)
+  const footer = footerLine((await prefsOf(user.id)).ticket_footer, { id: task.id, title: task.title, url: origin ? `${origin}/tasks/${task.id}` : "" });
   const steps = []; // { op, label, preview fields…, run: async () => extra }
   const ticketDone = { key };
 
   if (mode === "create") {
     const category = PMS_CATEGORIES.includes(t.category) ? t.category : "FEATURE";
     const includeChecklist = t.include_checklist !== false && parts.checklist.length > 0;
-    const fields = ticketFields(task, { checklist: parts.checklist, includeChecklist, lang, link: taskLink, withEstimate: t.estimate !== false });
+    const fields = ticketFields(task, { checklist: parts.checklist, includeChecklist, lang, footer, withEstimate: t.estimate !== false });
     const payload = { ...fields, category, lang };
     steps.push({
       op: "ticket.create", label: `Raise a ticket in ${project}`, project, title: fields.title, text: fields.description, fields: { priority: fields.priority, category, lang, dueAt: fields.dueAt ?? null, estimateMinutes: fields.estimateMinutes ?? null },
@@ -430,7 +440,7 @@ export async function sendTask(user, taskId, body = {}) {
   } else if (mode === "update") {
     const prev = sent.get(`ticket:${taskId}`)?.meta ?? {};
     const includeChecklist = t.include_checklist ?? Boolean(prev.checklist);
-    const fields = ticketFields(task, { checklist: parts.checklist, includeChecklist: includeChecklist && parts.checklist.length > 0, lang, link: taskLink });
+    const fields = ticketFields(task, { checklist: parts.checklist, includeChecklist: includeChecklist && parts.checklist.length > 0, lang, footer });
     const patch = {};
     if (remoteHash(fields.title) !== prev.title) patch.title = fields.title;
     if (remoteHash(fields.description) !== prev.description) patch.description = fields.description;

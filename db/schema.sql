@@ -971,6 +971,7 @@ CREATE TABLE IF NOT EXISTS pms_links (
 CREATE TABLE IF NOT EXISTS pms_prefs (
   user_id INT UNSIGNED NOT NULL PRIMARY KEY,
   close_reason VARCHAR(500) NULL,
+  ticket_footer VARCHAR(300) NULL, -- the line ending tickets raised or updated from here ({id}, {title}, {url}); null = none
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

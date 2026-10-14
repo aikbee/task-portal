@@ -330,6 +330,10 @@ async function migrate(db, adminId) {
     await db.query("ALTER TABLE pms_connections ADD COLUMN acting_uid VARCHAR(64) NULL AFTER acting_as");
     await db.query("ALTER TABLE pms_links ADD COLUMN claimed_as VARCHAR(10) NULL AFTER status_at");
   }
+  if (!(await hasColumn(db, "pms_prefs", "ticket_footer"))) {
+    log("migrating: pms_prefs.ticket_footer");
+    await db.query("ALTER TABLE pms_prefs ADD COLUMN ticket_footer VARCHAR(300) NULL AFTER close_reason");
+  }
 }
 
 /** Every user gets a default profile (also covers users created before profiles existed). */

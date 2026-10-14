@@ -13,5 +13,16 @@ export const pmsStatusLabel = (s) => String(s ?? "").replace(/_/g, " ").toLowerC
 /** PMS's own words (ticket statuses, token autonomy) in Chinese. Kept apart from the dictionary: "Open" there means the verb. */
 const PMS_WORDS_ZH = { OPEN: "待处理", NEEDS_DETAIL: "待补充信息", AWAITING_APPROVAL: "待审批", IN_DEV: "开发中", IN_TESTING: "测试中", TEST_FAILED: "测试未通过", RELEASE_STAGING: "预发布", RELEASE_PRODUCTION: "已上线", ON_HOLD: "暂停", CLOSED: "已关闭", SUGGEST_ONLY: "仅建议", OFF: "关闭", FULL: "完全" };
 export const pmsStatusText = (s, locale) => (locale === "zh-CN" && PMS_WORDS_ZH[s]) || pmsStatusLabel(s);
+/**
+ * The line a person ends their tickets with (Integrations → Bitara PMS), placeholders filled in: {id} the task's number,
+ * {title} its title, {url} its address in Task Portal. Plain text, because PMS shows Markdown as typed. Empty: no line.
+ */
+export const PMS_FOOTER_MAX = 300;
+export function footerLine(template, { id = "", title = "", url = "" } = {}) {
+  const text = String(template ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const values = { id, title: String(title ?? "").replace(/\s+/g, " ").trim(), url: url ?? "" };
+  return text.replace(/\{(id|title|url)\}/g, (_, k) => String(values[k])).trim();
+}
 /** What a project's token autonomy means for sending, in words. */
 export const PMS_MODE_NOTE = { SUGGEST_ONLY: "Comments, files and time go through; status changes are refused.", OFF: "Read only: nothing can be sent.", FULL: "Everything can be sent." };

@@ -10,8 +10,8 @@ import { PRIORITY_TO_PMS } from "./pms-shared.js";
 
 /** The fixed words inside what we write, in the ticket's language (PMS asks for comments in the ticket's language). */
 const WORDS = {
-  en: { checklist: "Checklist", start: "Start", due: "Due", estimate: "Estimate", tags: "Tags", from: "From", updated: "updated", output: "Output", empty: "(empty)", cut: "Cut here: the full text is in Task Portal.", comment: "comment in Task Portal" },
-  "zh-CN": { checklist: "检查清单", start: "开始", due: "截止", estimate: "预估", tags: "标签", from: "来自", updated: "已更新", output: "产出", empty: "（空）", cut: "内容过长已截断：完整内容在 Task Portal 中。", comment: "Task Portal 中的评论" },
+  en: { checklist: "Checklist", start: "Start", due: "Due", estimate: "Estimate", tags: "Tags", updated: "updated", output: "Output", empty: "(empty)", cut: "Cut here: the full text is in Task Portal.", comment: "comment in Task Portal" },
+  "zh-CN": { checklist: "检查清单", start: "开始", due: "截止", estimate: "预估", tags: "标签", updated: "已更新", output: "产出", empty: "（空）", cut: "内容过长已截断：完整内容在 Task Portal 中。", comment: "Task Portal 中的评论" },
 };
 const words = (lang) => WORDS[lang] ?? WORDS.en;
 /** A comment body PMS should still be happy with; longer outputs are cut with a note. */
@@ -39,10 +39,10 @@ export function checklistMarkdown(items, lang) {
 }
 
 /**
- * The ticket for a task: { title, description, priority, dueAt? } (+ estimateMinutes when asked). `link` is the
- * task's address in Task Portal, written at the bottom so the person can find their way back.
+ * The ticket for a task: { title, description, priority, dueAt? } (+ estimateMinutes when asked). `footer` is the line
+ * the sender chose to end their tickets with (footerLine, already filled in); none when they chose none.
  */
-export function ticketFields(task, { checklist = [], includeChecklist = false, lang = "en", link = null, withEstimate = false } = {}) {
+export function ticketFields(task, { checklist = [], includeChecklist = false, lang = "en", footer = "", withEstimate = false } = {}) {
   const w = words(lang);
   const parts = [];
   const desc = clean(task.description);
@@ -56,7 +56,7 @@ export function ticketFields(task, { checklist = [], includeChecklist = false, l
     tags.length ? `${w.tags}: ${tags.map((t) => `#${t}`).join(" ")}` : null,
   ].filter(Boolean);
   if (facts.length) parts.push(facts.join(" · "));
-  if (link) parts.push(`_${w.from} [Task Portal #${task.id}](${link})_`);
+  if (footer) parts.push(footer);
   const out = { title: oneLine(task.title).slice(0, 200) || `Task #${task.id}`, description: capped(parts.join("\n\n"), w), priority: PRIORITY_TO_PMS[task.priority] ?? "P3" };
   if (task.due_date) out.dueAt = day(task.due_date);
   if (withEstimate && task.estimate_hours != null && Number(task.estimate_hours) > 0) out.estimateMinutes = Math.round(Number(task.estimate_hours) * 60);

@@ -518,7 +518,10 @@ another slot (developer, tester) or none; a linked ticket can be claimed from th
 (with the reason PMS asks for) runs the `close` transition after everything else was sent; PMS accepts it only
 in projects whose token autonomy is `FULL`, and the dialog says so for `SUGGEST_ONLY` projects. The reason it
 starts with is each person's own (**When you close a ticket** on Integrations, `pms_prefs`), else "Done in Task
-Portal." in the task's language. Every part is marked *not sent*, *changed* or *sent*,
+Portal." in the task's language. Nothing points back to Task Portal unless the person writes **A line at the end
+of each ticket** there (`pms_prefs.ticket_footer`, plain text up to 300 characters, `{id}`, `{title}` and `{url}`
+filled in, e.g. "From Task Portal #{id}: {url}"); it ends the description of tickets raised or updated from then
+on, and changing it does not mark tickets *changed*. Every part is marked *not sent*, *changed* or *sent*,
 so nothing goes twice: worklogs carry `externalRef` `taskportal-<install>-time-<id>` and changed entries are
 corrected (`PATCH`), changed outputs go as a new comment, a ticket raised from here can be updated, but never
 when somebody edited it in PMS since. Everything goes out as the token's owner with `X-PMS-Client: task-portal`.
