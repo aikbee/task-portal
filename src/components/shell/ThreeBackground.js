@@ -27559,7 +27559,647 @@ function autumn(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn };
+/* ---------- Tornado supercell: a supercell over the prairie, its tornado wandering across the wheat, lightning, rain curtains and a rainbow; a storm chasers' truck in your colour ---------- */
+// The storm is meshes and shaders: the rotating base and its wall cloud as lathes, the tornado a lathe bent and spun in its shader with a debris
+// cloud round its foot, rain curtains to the right (the rainbow on them by day), lightning from a canvas atlas on quads facing us. One strike at a
+// time, at most two flashes of the clouds each and over a second apart, so it never strobes. The land is a ring mesh painted as a patchwork of
+// fields with the wind running through the wheat; the wheat by us is instanced cards bending in the gusts.
+const TN_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uSlot; uniform vec3 uRfd; uniform vec3 uCore; uniform float uNight; uniform float uTime;
+  uniform sampler2D uNoise; uniform vec4 uFlash; uniform vec3 uFlashCol;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir); float h = d.y, az = atan(d.x, -d.z);
+    vec3 col = mix(uHorizon, uZenith, smoothstep(0.0, 0.45, h));
+    float slot = smoothstep(-0.3, -0.48, az), core = smoothstep(0.02, 0.3, az); // the clear slot far left; behind the tornado the rain wrapping round; the core to the right
+    vec3 band = mix(mix(uRfd, uSlot, slot), uCore, core);
+    float n = texture2D(uNoise, vec2(az * 2.6 + uTime * 0.002, h * 7.0)).r;
+    band *= 0.86 + 0.28 * n;
+    col = mix(band, col, smoothstep(0.03, 0.12 + 0.05 * slot, h + (n - 0.5) * 0.04));
+    if (uNight > 0.0) { // stars where the sky is clear
+      vec2 sp = d.xz / (h + 0.25) * 160.0, c = floor(sp); float rnd = fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453);
+      col += vec3(0.8, 0.85, 1.0) * step(0.993, rnd) * smoothstep(0.4, 0.0, length(fract(sp) - 0.5)) * slot * smoothstep(0.03, 0.12, h) * uNight * 0.9;
+    }
+    vec3 fdir = normalize(uFlash.xyz - cameraPosition);
+    col += uFlashCol * uFlash.w * 0.3 * exp(-pow(acos(clamp(dot(d, fdir), -1.0, 1.0)) * 3.2, 2.0)); // a flash lighting the rain and the haze toward it
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the plains: fields 640 m square each with its own crop (the ones by us all wheat), grass strips between them, the gravel road toward the
+// tornado; the wind running through the wheat in bands; the land under the storm in its gloom; by night the farm's yard light on the ground
+const TN_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec2 uWind; uniform vec4 uRoad; uniform float uNight; uniform vec2 uCam; uniform float uGloom;
+  uniform sampler2D uNightMap; uniform vec4 uNightRect; uniform vec3 uLampCol;
+  varying vec3 vPW;
+  float tnHash(vec2 c) { return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453); }
+  vec3 tnGround(out float bump) {
+    vec2 p = vPW.xz;
+    float fw = fwidth(vPW.x) + fwidth(vPW.z);
+    float n1 = texture2D(uNoise, p * 0.0011).r, n2 = texture2D(uNoise, p * 0.013 + 0.3).g, n3 = texture2D(uNoise, p * 0.11 + 0.6).r, n4 = texture2D(uNoise, p * 0.61 + 0.15).g * 0.55 + texture2D(uNoise, p * 0.237 + 0.71).r * 0.45; // two scales, so the fine grain never repeats in a lattice
+    vec2 g = p / 640.0 + vec2(0.5, 0.42), cell = floor(g), f = g - cell;
+    float kind = tnHash(cell); if (abs(cell.x) + abs(cell.y) < 1.5) kind = 0.1;
+    vec2 W = normalize(uWind); float along = dot(p, W), across = dot(p, vec2(-W.y, W.x));
+    float sheen = texture2D(uNoise, vec2(along * 0.009 - uTime * 0.11, across * 0.0025)).g * mix(1.0, 0.5, smoothstep(6.0, 30.0, fw)) + texture2D(uNoise, vec2(along * 0.03 - uTime * 0.36, across * 0.009) + 0.4).r * 0.5 * (1.0 - smoothstep(2.0, 10.0, fw));
+    vec3 wheat = mix(vec3(0.7, 0.53, 0.22), vec3(0.86, 0.68, 0.32), n2) * (0.86 + 0.28 * n3) * (0.78 + 0.42 * smoothstep(0.3, 0.8, sheen)); // gusts running through the wheat
+    wheat *= 1.0 - 0.18 * (1.0 - smoothstep(0.02, 0.12, fw)) * smoothstep(0.55, 0.75, n4); // close by, its stalks
+    vec3 stubble = mix(vec3(0.68, 0.6, 0.4), vec3(0.8, 0.71, 0.5), n2) * (0.88 + 0.24 * n3);
+    float furrow = 0.5 + 0.5 * sin(f.x * 640.0 * 1.6);
+    vec3 plowed = mix(vec3(0.33, 0.24, 0.16), vec3(0.42, 0.31, 0.21), n2) * (0.78 + 0.32 * mix(furrow, 0.5, smoothstep(0.4, 1.6, fw)));
+    vec3 pasture = mix(vec3(0.32, 0.4, 0.17), vec3(0.42, 0.49, 0.22), n2) * (0.86 + 0.28 * n3) * (0.9 + 0.2 * sheen);
+    vec3 alfalfa = vec3(0.24, 0.4, 0.15) * (0.86 + 0.28 * n2);
+    vec3 col = kind < 0.48 ? wheat : kind < 0.66 ? stubble : kind < 0.79 ? plowed : kind < 0.93 ? pasture : alfalfa;
+    float edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * 640.0;
+    col = mix(vec3(0.36, 0.38, 0.2) * (0.9 + 0.2 * n3), col, smoothstep(2.5, 5.0 + fw, edge)); // the grass strips between the fields
+    vec2 rp = p - uRoad.xy; float s = dot(rp, uRoad.zw), lat = abs(dot(rp, vec2(-uRoad.w, uRoad.z)));
+    float road = step(-40.0, s), shoulder = (1.0 - smoothstep(4.4, 5.6 + fw, lat)) * road, gravel = (1.0 - smoothstep(2.4, 2.9 + fw, lat)) * road;
+    col = mix(col, mix(vec3(0.38, 0.4, 0.2), vec3(0.5, 0.47, 0.26), n3) * (0.9 + 0.2 * n4), shoulder); // grass on the shoulders
+    vec3 grit = mix(vec3(0.55, 0.49, 0.41), vec3(0.64, 0.58, 0.49), n3) * (0.88 + 0.24 * n4);
+    grit *= 1.0 - 0.2 * (1.0 - smoothstep(0.16, 0.38, abs(lat - 0.9))) * (1.0 - smoothstep(0.5, 3.0, fw)); // the tyre tracks
+    col = mix(col, grit, gravel);
+    col *= mix(1.0, uGloom, smoothstep(1600.0, 5200.0, length(p - uCam))); // the land under the storm, in its shade
+    bump = (n4 * 0.08 + n3 * 0.12) * (1.0 - smoothstep(0.04, 0.4, fw)); // slight: the sun so low makes any bump a shadow
+    return col;
+  }
+  vec3 tnBump(vec3 pos, vec3 n, float h) { vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(h), dhy = dFdy(h); vec3 r1 = cross(dpy, n), r2 = cross(n, dpx); float det = dot(dpx, r1); return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2)); }
+  vec3 tnLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    return albedo * uLampCol * texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside * uNight;
+  }
+`;
+// the storm's base and its wall cloud: lathes turning in their shader, striations stacked up the side walls, rings round the underside, lit by the
+// low sun on the side toward it, lightning lighting them from inside; soft at the silhouette, the wall cloud ragged at its foot
+const TN_CLOUD_VS = /* glsl */ `
+  uniform float uLumpy; uniform float uRot;
+  varying vec3 vW; varying vec3 vN; varying vec3 vL;
+  void main() {
+    vL = position;
+    vec3 p = position; float a = atan(p.z, p.x) + uRot * 0.5, side = smoothstep(0.55, 0.95, length(p.xz) / max(length(p.xz) + abs(p.y) * 0.0, 1.0)) * step(0.0, p.y + 60.0);
+    float bulge = sin(a * 5.0 + 1.3) * 0.028 + sin(a * 11.0 + 0.4) * 0.014 + sin(a * 17.0 + 2.1) * 0.005; // the outline lumpy, never a clean circle
+    p.xz *= 1.0 + bulge * uLumpy * side;
+    p.y += (sin(a * 2.0 + 0.7) * 70.0 + sin(a * 5.0 + 2.2) * 25.0) * uLumpy * smoothstep(150.0, 450.0, p.y) * smoothstep(2600.0, 1400.0, p.y); // the striations tilted and waving round it
+    vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const TN_CLOUD_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uRot; uniform float uR; uniform float uBand; uniform vec3 uSunDir; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uBelow; uniform vec3 uUnder;
+  uniform vec4 uFlash; uniform vec3 uFlashCol; uniform vec3 uFogCol; uniform float uFogD; uniform float uRag;
+  varying vec3 vW; varying vec3 vN; varying vec3 vL;
+  void main() {
+    vec3 V = normalize(cameraPosition - vW), N = normalize(vN);
+    float rr = length(vL.xz), a = atan(vL.z, vL.x) + uRot;
+    vec2 pu = vec2(cos(a), sin(a)) * rr, ps = vec2(a * uR, vL.y);
+    float under = smoothstep(0.5, 0.85, -N.y);
+    float n1 = mix(texture2D(uNoise, ps * vec2(0.0003, 0.0012)).r, texture2D(uNoise, pu * 0.00021).r, under);
+    float n2 = mix(texture2D(uNoise, ps * vec2(0.0011, 0.0043) + 0.3).g, texture2D(uNoise, pu * 0.0009 + 0.3).g, under);
+    float n3 = texture2D(uNoise, (under > 0.5 ? pu : ps) * 0.0031 + 0.61).r;
+    float bands = 0.5 + 0.5 * sin(vL.y * uBand + n1 * 4.0), rings = 0.5 + 0.5 * sin(rr * 0.0042 + n1 * 16.0 + n3 * 4.0);
+    float lam = clamp(dot(N, uSunDir) * 0.65 + 0.35, 0.0, 1.0);
+    float lumps = n2 * 0.6 + n3 * 0.4;
+    vec3 col = mix(uShade, uLit, lam * (0.55 + 0.45 * bands) * (0.6 + 0.65 * lumps));
+    vec3 below = uBelow * (0.82 + 0.22 * rings) * (0.62 + 0.7 * lumps) + uUnder * smoothstep(4500.0, 10000.0, length(vW.xz - cameraPosition.xz)) * (0.7 + 0.6 * lumps); // by night the far base lit from below by the towns
+    col = mix(col, below, under);
+    float fd = distance(vW, uFlash.xyz);
+    col += uFlashCol * uFlash.w * (0.06 + 1.5 * exp(-fd * fd / 5.0e6)) * (0.6 + 0.6 * n2); // lightning inside the cloud
+    float edge = smoothstep(0.0, 0.4, abs(dot(N, V)) * (0.7 + 0.6 * lumps)) * mix(smoothstep(0.25, 0.6, lumps + abs(dot(N, V)) * 1.4), 1.0, under); // its outline torn by the lumps, never a clean rim
+    float rag = mix(1.0, smoothstep(0.3, 0.6, lumps + (vL.y + 300.0) / 480.0), uRag); // the wall cloud's ragged foot
+    float dist = length(cameraPosition - vW), fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uFogCol, fog), edge * rag);
+    #include <colorspace_fragment>
+  }
+`;
+// the tornado (and the debris cloud round its foot): a lathe stretched to the wall cloud and bent along its height, streaks spinning round it
+// faster where it is narrow, dust up its foot, soft at the edges
+const TN_FUNNEL_VS = /* glsl */ `
+  uniform float uTime; uniform vec4 uTop; uniform vec2 uWave; uniform float uH;
+  varying vec3 vW; varying vec3 vN; varying vec3 vL; varying float vK;
+  void main() {
+    float k = clamp(position.y / uH, 0.0, 1.0);
+    vec3 p = position;
+    p.xz += uTop.xz * smoothstep(0.0, 1.0, k) + uWave * sin(3.14159 * k) * vec2(sin(uTime * 0.07 + k * 2.0), cos(uTime * 0.05 + k * 1.7));
+    p.y = position.y * (uTop.y / uH);
+    vL = position; vK = k;
+    vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const TN_FUNNEL_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uSpin; uniform float uErode; uniform vec3 uSunDir; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uDust; uniform float uDustTo; uniform float uOpacity;
+  uniform vec4 uFlash; uniform vec3 uFlashCol; uniform vec3 uFogCol; uniform float uFogD;
+  varying vec3 vW; varying vec3 vN; varying vec3 vL; varying float vK;
+  void main() {
+    vec3 V = normalize(cameraPosition - vW), N = normalize(vN);
+    float a = atan(vL.z, vL.x), spin = uTime * uSpin / (0.25 + vK);
+    float s1 = texture2D(uNoise, vec2(a * 0.3183 + spin * 0.05 + vL.y * 0.0009, vL.y * 0.0021)).r;
+    float s2 = texture2D(uNoise, vec2(a * 0.6366 + spin * 0.09, vL.y * 0.006 - uTime * 0.02) + 0.37).g;
+    float streak = s1 * 0.6 + s2 * 0.4;
+    float lam = clamp(dot(N, uSunDir) * 0.55 + 0.45, 0.0, 1.0);
+    vec3 col = mix(uShade, uLit, lam) * (0.72 + 0.56 * streak);
+    col = mix(uDust * (0.7 + 0.5 * streak), col, smoothstep(uDustTo * 0.3, uDustTo, vK)); // dust up its foot
+    float fd = distance(vW, uFlash.xyz); col += uFlashCol * uFlash.w * (0.05 + 1.2 * exp(-fd * fd / 4.0e6));
+    float alpha = smoothstep(0.0, 0.5, abs(dot(N, V))) * (0.55 + 0.45 * smoothstep(0.3, 0.62, streak)) * uOpacity;
+    alpha *= smoothstep(0.0, 0.05, vK) * (1.0 - smoothstep(0.9, 1.0, vK)) * mix(1.0, smoothstep(0.3, 0.72, streak) * (1.0 - vK * 0.5), uErode); // out of the ground, into the wall cloud; the dust in rags
+    float dist = length(cameraPosition - vW), fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uFogCol, fog), alpha);
+    #include <colorspace_fragment>
+  }
+`;
+// rain and hail curtains: shafts across each, streaks falling and slanting with the wind; by day the rainbow on them opposite the sun (violet
+// inside at 40.6 degrees, red outside at 42.3) and the fainter second bow outside it with its colours the other way round
+const TN_RAIN_VS = /* glsl */ `
+  attribute vec2 aInfo; varying vec2 vUv; varying vec2 vInfo; varying vec3 vW;
+  void main() { vUv = uv; vInfo = aInfo; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const TN_RAIN_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uLit; uniform vec3 uDark; uniform vec3 uAnti; uniform float uBow; uniform vec4 uFlash; uniform vec3 uFlashCol; uniform vec3 uFogCol; uniform float uFogD;
+  varying vec2 vUv; varying vec2 vInfo; varying vec3 vW;
+  vec3 tnHue(float h) { return clamp(abs(fract(h + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); }
+  void main() {
+    float x = vUv.x, y = vUv.y, seed = vInfo.x;
+    float shafts = texture2D(uNoise, vec2(x * 1.7 + seed + uTime * 0.003, seed * 0.37)).g;
+    float streak = texture2D(uNoise, vec2(x * 9.0 + seed + y * 0.5, y * 0.3 + uTime * 0.2)).r * 0.6 + texture2D(uNoise, vec2(x * 3.1 + seed * 2.0 + y * 0.2, y * 0.12 + uTime * 0.07) + 0.5).g * 0.4;
+    float a = vInfo.y * smoothstep(0.0, 0.25, x) * smoothstep(1.0, 0.75, x) * smoothstep(1.0, 0.8, y) * (0.3 + 0.7 * smoothstep(0.3, 0.72, shafts)) * (0.78 + 0.3 * streak);
+    vec3 col = mix(uDark, uLit, 0.35 + 0.4 * y + 0.25 * streak);
+    vec3 V = normalize(vW - cameraPosition); float ang = acos(clamp(dot(V, uAnti), -1.0, 1.0));
+    float b1 = (ang - 0.7086) / 0.0297, b2 = (ang - 0.8761) / 0.0524;
+    vec3 bow = tnHue((1.0 - clamp(b1, 0.0, 1.0)) * 0.75) * smoothstep(0.0, 0.15, b1) * smoothstep(1.0, 0.85, b1) + tnHue(clamp(b2, 0.0, 1.0) * 0.75) * smoothstep(0.0, 0.15, b2) * smoothstep(1.0, 0.85, b2) * 0.12;
+    col += bow * uBow * 0.42 * smoothstep(0.0, 0.3, y) * (0.6 + 0.5 * shafts);
+    float fd = distance(vW, uFlash.xyz); col += uFlashCol * uFlash.w * (0.1 + 1.2 * exp(-fd * fd / 5.0e6));
+    float dist = length(cameraPosition - vW), fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uFogCol, fog * 0.6), clamp(a, 0.0, 0.92));
+    #include <colorspace_fragment>
+  }
+`;
+// lightning: quads from the atlas; a bolt stands from the ground to the base facing us, a crawler lies flat under the base
+const TN_BOLT_VS = /* glsl */ `
+  attribute vec4 aB0; attribute vec4 aB1; attribute vec4 aUV; // the foot (x, y, z) and width; the height (a crawler: its turn), brightness, flipped, flat
+  varying vec2 vUv; varying float vI; varying vec4 vRect;
+  void main() {
+    vI = aB1.y; vRect = aUV;
+    if (vI <= 0.001) { vUv = vec2(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec2 q = position.xy + 0.5;
+    vUv = vec2(aB1.z > 0.5 ? 1.0 - q.x : q.x, q.y);
+    vec3 p;
+    if (aB1.w < 0.5) { vec3 toCam = cameraPosition - aB0.xyz; vec3 side = normalize(vec3(toCam.z, 0.0, -toCam.x)); p = aB0.xyz + side * (q.x - 0.5) * aB0.w + vec3(0.0, q.y * aB1.x, 0.0); }
+    else { float c = cos(aB1.x), s = sin(aB1.x); p = aB0.xyz + vec3(c, 0.0, s) * (q.x - 0.5) * aB0.w + vec3(-s, 0.0, c) * (q.y - 0.5) * aB0.w * 0.5; }
+    gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  }
+`;
+const TN_BOLT_FS = /* glsl */ `
+  uniform sampler2D uAtlas; uniform vec3 uCol; varying vec2 vUv; varying float vI; varying vec4 vRect;
+  void main() {
+    vec3 v = texture2D(uAtlas, vRect.xy + vUv * vRect.zw).rgb;
+    gl_FragColor = vec4(v * uCol * vI, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// power lines and barbed wire: each span sways in the wind, most in its middle
+const TN_WIRE_VS = /* glsl */ `
+  uniform float uTime; uniform vec2 uWind; uniform float uFogD; attribute float aS; attribute float aPh; varying float vFog;
+  void main() {
+    vec3 p = position; float sw = sin(3.14159 * aS);
+    p.xz += uWind * sw * (0.6 + 0.4 * sin(uTime * 1.3 + aPh)); p.y += sw * 0.12 * sin(uTime * 1.9 + aPh * 1.3);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0); float d = -mv.z; vFog = 1.0 - exp(-uFogD * uFogD * d * d);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const TN_WIRE_FS = /* glsl */ `
+  uniform vec3 uCol; uniform vec3 uFogCol; varying float vFog;
+  void main() {
+    gl_FragColor = vec4(mix(uCol, uFogCol, vFog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// wheat and trees bending away from us into the storm: gusts running across them with the wind, a flutter on top
+const TN_SWAY = "{ vec3 tnW = vec3(uWindDir.x, 0.0, uWindDir.y); vec2 tnB = vec2(0.0); float tnPh = 0.0;\n#ifdef USE_INSTANCING\n  tnW = normalize(transpose(mat3(instanceMatrix)) * tnW); tnB = instanceMatrix[3].xz; tnPh = tnB.x * 0.11 + tnB.y * 0.07;\n#endif\n  float tnG = 0.6 + 0.4 * sin(dot(tnB, uWindDir) * 0.05 - uTime * 0.6) * sin(dot(tnB, vec2(-uWindDir.y, uWindDir.x)) * 0.017 + uTime * 0.2);\n  float tnH = max(position.y, 0.0) / uSwayH, tnBend = (tnG * uSway + sin(uTime * 6.0 + tnPh + position.y * 2.0) * uFlutter) * tnH * tnH * uSwayH;\n  transformed += tnW * tnBend; transformed.y -= tnBend * tnBend * 0.4 / uSwayH; }";
+/** Lightning for the storm, on black for additive drawing: eight bolts down from the cloud (each 128 × 512, the cloud at the top) over two
+ * crawlers spreading under the base (each 512 × 256). Each stroke is drawn glow first (wide faint strokes, no blur: a blur on a canvas this
+ * size costs a fifth of a second when it is uploaded), then its bright core; branches thinner and fainter. */
+function tnBolts(THREE) {
+  const W = 1024, H = 768, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"), r = koiRng(4242);
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter"; g.lineCap = g.lineJoin = "round";
+  const jag = (x0, y0, x1, y1, rough) => { // midpoint displacement: a crooked channel from one point to the other
+    let p = [[x0, y0], [x1, y1]];
+    for (let it = 0; it < 6; it++) { const o = [p[0]]; for (let i = 0; i < p.length - 1; i++) { const [ax, ay] = p[i], [bx, by] = p[i + 1], L = Math.hypot(bx - ax, by - ay) || 1, k = (r() - 0.5) * L * rough; o.push([(ax + bx) / 2 - ((by - ay) / L) * k, (ay + by) / 2 + ((bx - ax) / L) * k], [bx, by]); } p = o; }
+    return p;
+  };
+  const draw = (p, w, a) => { for (const [lw, al] of [[w * 9, 0.04], [w * 5, 0.08], [w * 2.6, 0.2], [w, 1]]) { g.strokeStyle = al === 1 ? `rgba(255,255,255,${a})` : `rgba(190,198,255,${al * a})`; g.lineWidth = lw; g.beginPath(); p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke(); } };
+  const tree = (p, w, a, depth, spread, len) => { // a channel and the branches forking off it
+    draw(p, w, a);
+    if (depth > 2) return;
+    const n = depth === 0 ? 3 + Math.floor(r() * 4) : Math.floor(r() * 3);
+    for (let i = 0; i < n; i++) { const j = Math.floor(r(0.08, 0.8) * (p.length - 1)), [x, y] = p[j], l = r(0.15, 0.4) * len, ang = r(0.3, 1.1) * (r() < 0.5 ? -1 : 1) + spread; tree(jag(x, y, x + Math.sin(ang) * l, y + Math.cos(ang) * l * (spread ? 0.5 : 0.85), 0.5), w * 0.55, a * 0.62, depth + 1, spread, l); }
+  };
+  for (let k = 0; k < 8; k++) { const ox = k * 128; g.save(); g.beginPath(); g.rect(ox, 0, 128, 512); g.clip(); tree(jag(ox + 64 + r(-15, 15), 0, ox + 64 + r(-30, 30), 506, 0.42), r(1.2, 1.7), 1, 0, 0, 380); g.restore(); }
+  for (let k = 0; k < 2; k++) { // crawlers: long branching runs out from a centre, all in the one plane under the base
+    const ox = k * 512, oy = 512, cx = ox + 256, cy = oy + 128; g.save(); g.beginPath(); g.rect(ox, oy, 512, 256); g.clip();
+    for (let i = 0, n = 5 + k * 2; i < n; i++) { const ang = (i / n) * Math.PI * 2 + r(-0.3, 0.3), l = r(150, 235); const p = jag(cx, cy, cx + Math.cos(ang) * l, cy + Math.sin(ang) * l * 0.5, 0.35); draw(p, 1.0, 0.9); for (let b = 0; b < 3; b++) { const j = Math.floor(r(0.2, 0.9) * (p.length - 1)), [x, y] = p[j], a2 = ang + r(-0.9, 0.9), l2 = r(30, 80); draw(jag(x, y, x + Math.cos(a2) * l2, y + Math.sin(a2) * l2 * 0.5, 0.5), 0.6, 0.55); } }
+    g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+/** Wheat for the cards by the road: ripe stalks with their heads and awns on a clear ground, the field at the bottom edge. */
+function tnWheat(THREE) {
+  const S = 256, c = document.createElement("canvas"); c.width = S; c.height = S;
+  const g = c.getContext("2d"), r = koiRng(77);
+  g.clearRect(0, 0, S, S); g.lineCap = "round";
+  for (let i = 0; i < 20; i++) {
+    const x0 = r(14, S - 14), lean = r(-22, 22), top = r(6, 46), x1 = x0 + lean;
+    g.strokeStyle = `rgb(${Math.round(196 + r(-20, 20))},${Math.round(160 + r(-20, 14))},${Math.round(82 + r(-14, 14))})`; g.lineWidth = r(2.4, 3.6);
+    g.beginPath(); g.moveTo(x0, S); g.quadraticCurveTo(x0 + lean * 0.25, S * 0.55, x1, top + 46); g.stroke();
+    g.fillStyle = `rgb(${Math.round(214 + r(-14, 14))},${Math.round(176 + r(-14, 14))},${Math.round(92 + r(-12, 12))})`;
+    for (let k = 0; k < 7; k++) { const yy = top + k * 7, side = k % 2 ? 1 : -1, hx = x1 + lean * 0.015 * (7 - k); g.beginPath(); g.ellipse(hx + side * 3.2, yy + 6, 3.4, 5.6, side * 0.4, 0, Math.PI * 2); g.fill(); g.strokeStyle = "rgba(226,196,122,0.9)"; g.lineWidth = 0.9; g.beginPath(); g.moveTo(hx + side * 3.5, yy + 3); g.lineTo(hx + side * 12, yy - 13); g.stroke(); } // grains up the head, an awn off each
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+
+function tornado(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(2027);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 36; camera.near = 0.5; camera.far = 100000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), M = new THREE.Matrix4(), M2 = new THREE.Matrix4(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const tube = (r0, r1, h, seg = 6) => new THREE.CylinderGeometry(r0, r1, h, seg, 1, true); // never seen from its ends
+  const cone = (rad, h, seg = 12) => new THREE.ConeGeometry(rad, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const roof = (w, h, d) => roofPrism(THREE).scale(w, h, d); // its ridge along x
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)); // az from straight ahead (−z), positive to the right
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx); // the yaw that points a model's +x along (fx, fz)
+  const wrap = (x, lo, hi) => { const L = hi - lo; return ((((x - lo) % L) + L) % L) + lo; };
+  const place = (ox, oy, oz, yaw) => (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().makeRotationY(yaw).setPosition(ox, oy, oz).multiply(at(x, y, z, rx, ry, rz)); // parts in a frame turned by yaw, at (ox, oy, oz)
+  const pt = (F, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(F(0, 0, 0)).toArray(); // a point of such a frame, in the world
+  const SUN = sph(2.55, 0.12), ANTI = SUN.clone().negate(); // the low sun behind us to the right, shining in under the storm's edge; the rainbow's centre opposite it
+  const WIND = new THREE.Vector2(-0.45, -0.89).normalize(); // the inflow: from behind us on the right, into the storm ahead on the left
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; windows lit at night
+
+  /* --- the plains: flat by us, long low swells far off; the gravel road from our feet toward the tornado --- */
+  const curve = (x, z) => (x * x + z * z) / 12742000;
+  const groundH = (x, z) => 1.0 * (fbm(x * 0.004, z * 0.004, 2) - 0.5) + 16 * (fbm(x * 0.00022 + 3, z * 0.00022, 3) - 0.5) * smooth(700, 6000, Math.hypot(x, z)) - curve(x, z);
+  const C0 = new THREE.Vector3(-1.2, groundH(-1.2, 0) + 1.8, 0); // standing in the road, looking up it to the storm
+  const RINGS = [];
+  for (let rr = 3; rr < 60000; rr *= 1 + (preview ? 2 : 1) * (rr < 60 ? 0.025 : 0.04)) RINGS.push(rr);
+  RINGS.push(60000);
+  const NA = preview ? 90 : 170, AW = 1.0, NR = RINGS.length, N1 = NA + 1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  { const pos = new Float32Array(NR * N1 * 3), li = [];
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) { const a = -AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i; pos[k * 3] = x; pos[k * 3 + 1] = groundH(x, z); pos[k * 3 + 2] = z; }
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; li.push(a, b, c, b, d, c); }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(li); landGeo.computeVertexNormals(); }
+  const RD = { x: 2, z: 10, dx: -0.1908, dz: -0.9816 }, RN = [-RD.dz, RD.dx]; // the road, and its right-hand side
+  const roadAt = (s, off = 0) => [RD.x + RD.dx * s + RN[0] * off, RD.z + RD.dz * s + RN[1] * off];
+  const latOf = (x, z) => (x - RD.x) * RN[0] + (z - RD.z) * RN[1];
+  const ROAD_YAW = yawOf(RD.dx, RD.dz);
+  const BASE_Y = 1300, MESO = new THREE.Vector3(600, BASE_Y, -6500), TOR = { x: -700, z: -3600 }; // the storm's base, its centre; where the tornado wanders
+  const footAt = (t, out) => { out[0] = TOR.x + 230 * Math.sin(0.011 * t) + 80 * Math.sin(0.037 * t + 1); out[1] = TOR.z + 160 * Math.sin(0.008 * t + 1); return out; };
+
+  /* --- by the road: the storm chasers' truck in your colour and a chaser filming; the windmill over its stock tank; the farm across the wheat --- */
+  const S = [], Pp = (geo, m, hex) => S.push([geo, m, hex]);
+  const Pb = (a, b, w, hex) => { V.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]); const L = V.length(); Pp(box(w, L, w), new THREE.Matrix4().compose(V2.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), Q.setFromUnitVectors(UP, V.normalize()), ONE), hex); }; // a strut from a to b
+  const GL = [], POOLS = [];
+  const WARM = [2.4, 1.5, 0.7], RED = [2.6, 0.22, 0.14], YARD = [1.6, 1.9, 2.2], SODIUM = [2.6, 1.4, 0.45];
+  let CUPS = null, WHEEL = null;
+  const TK = (() => { const [x, z] = roadAt(40, 3.0); return { x, z, y: groundH(x, z) }; })();
+  { const L = place(TK.x, TK.y, TK.z, ROAD_YAW); // its +x up the road
+    Pp(box(5.5, 0.26, 1.86), L(0, 0.62, 0), 0x262626); // the chassis
+    Pp(box(2.3, 0.62, 2.0), L(-1.75, 1.0, 0), ACC); Pp(box(2.1, 0.06, 1.78), L(-1.75, 1.32, 0), 0x2a2a2c); // the bed
+    Pp(box(1.9, 1.05, 2.0), L(0.15, 1.42, 0), ACC); Pp(box(1.72, 0.48, 2.02), L(0.2, 1.66, 0), 0x18202a); Pp(box(0.03, 0.42, 1.6), L(-0.81, 1.64, 0), 0x18202a); // the cab, its windows
+    Pp(box(1.5, 0.6, 2.0), L(1.85, 1.0, 0), ACC); Pp(box(0.06, 0.34, 1.5), L(2.62, 0.95, 0), 0x202020); // the hood, the grille
+    Pp(box(0.14, 0.2, 2.02), L(-2.94, 0.7, 0), 0x8a8a8a); Pp(box(0.14, 0.2, 2.02), L(2.66, 0.66, 0), 0x8a8a8a); // the bumpers
+    for (const sz of [-0.86, 0.86]) { Pp(box(0.05, 0.26, 0.22), L(-2.91, 1.06, sz), 0xa01414); GL.push([...pt(L, -3.0, 1.06, sz), 0.28, ...RED, 2.2]); } // the tail lights
+    for (const sx of [-1.75, 1.75]) for (const sz of [-0.93, 0.93]) Pp(cyl(0.42, 0.42, 0.32, 14), L(sx, 0.42, sz, Math.PI / 2, 0, 0), 0x141414); // the wheels
+    Pp(box(0.34, 0.13, 1.7), L(0.3, 2.01, 0), 0x2a2a2a); for (const sz of [-0.48, 0.48]) { Pp(box(0.36, 0.1, 0.62), L(0.3, 2.03, sz), ACC); GL.push([...pt(L, 0.3, 2.12, sz), 0.42, 1, 1, 1, 3.2]); } // the light bar, its lenses in your colour
+    Pp(cyl(0.035, 0.035, 2.2, 6), L(-2.45, 2.4, -0.62), 0x8a8a8a); Pp(box(0.04, 0.04, 0.9), L(-2.45, 3.48, -0.62), 0x8a8a8a); // the weather mast
+    for (const sz of [-0.66, 0.66]) Pp(cyl(0.008, 0.014, 1.5, 4), L(0.85, 2.7, sz), 0x1a1a1a); // the whips
+    CUPS = L(-2.45, 3.56, -1.0);
+    const [cx, , cz] = pt(L, -4.0, 0, 1.4), cy = groundH(cx, cz), P = place(cx, cy, cz, yawOf(TOR.x - cx, TOR.z - cz)); // the chaser, facing the tornado
+    for (const sz of [-0.11, 0.11]) Pp(box(0.15, 0.86, 0.14), P(0, 0.43, sz), 0x2a3444);
+    Pp(box(0.3, 0.66, 0.44), P(0, 1.19, 0), 0x3a4a34); Pp(box(0.2, 0.18, 0.3), P(0.02, 1.56, 0), 0x3a4a34);
+    for (const sz of [-0.15, 0.15]) Pp(box(0.46, 0.1, 0.1), P(0.24, 1.4, sz), 0x3a4a34); // arms out to the camera
+    Pp(blob(0.11, 0.13, 0.11, 1), P(0, 1.7, 0), 0xc89a78); Pp(cyl(0.12, 0.12, 0.06, 10), P(0, 1.8, 0), 0x1a1a1a); Pp(box(0.12, 0.02, 0.18), P(0.12, 1.78, 0), 0x1a1a1a); // head, cap, its peak
+    for (const a of [0, 2.1, 4.2]) Pb(pt(P, 0.62, 1.32, 0), pt(P, 0.62 + Math.cos(a) * 0.36, 0, Math.sin(a) * 0.36), 0.025, 0x2a2a2a); // the tripod
+    Pp(box(0.2, 0.13, 0.12), P(0.62, 1.4, 0), 0x111111); Pp(cyl(0.04, 0.05, 0.14, 8), P(0.78, 1.4, 0, 0, 0, Math.PI / 2), 0x111111); // the camera on it
+  }
+  const WM = { x: -62, z: -142 }; WM.y = groundH(WM.x, WM.z);
+  { const H = 11.5, legs = [[-1.3, -1.3], [1.3, -1.3], [1.3, 1.3], [-1.3, 1.3]], top = 0.28 / 1.3; // the windmill: four legs, girts between them
+    legs.forEach(([lx, lz], i) => { Pb([WM.x + lx, WM.y, WM.z + lz], [WM.x + lx * top, WM.y + H, WM.z + lz * top], 0.09, 0x8a8a86); const [mx, mz] = legs[(i + 1) % 4]; for (const f of [0.25, 0.55, 0.82]) { const s0 = 1 - f * (1 - top); Pb([WM.x + lx * s0, WM.y + H * f, WM.z + lz * s0], [WM.x + mx * s0, WM.y + H * f, WM.z + mz * s0], 0.05, 0x8a8a86); } });
+    Pp(box(0.6, 0.5, 0.6), at(WM.x, WM.y + H + 0.2, WM.z), 0x6a6a68);
+    const Lw = place(WM.x, WM.y + H + 0.45, WM.z, yawOf(-WIND.x, -WIND.y)); // its +x into the wind
+    Pp(box(2.4, 0.06, 0.05), Lw(-1.3, 0, 0), 0x6a6a68); Pp(box(1.3, 0.9, 0.04), Lw(-2.4, 0.15, 0), 0xb8b2a8); // the tail and its vane, downwind
+    WHEEL = Lw(0.35, 0, 0);
+    const tx = WM.x + 3.6, tz = WM.z + 2.2; Pp(cyl(2.4, 2.4, 0.7, 20), at(tx, groundH(tx, tz) + 0.3, tz), 0x8a9094); // the stock tank
+  }
+  const F = { x: 175, z: -520 };
+  { const hx = F.x + 14, hz = F.z + 16, hy = groundH(hx, hz) - 0.4; // the farmhouse
+    Pp(box(11, 6.2, 8), at(hx, hy + 3.1, hz), 0xe8e4da); Pp(roof(11.8, 3.4, 9), at(hx, hy + 6.2, hz), 0x4a4440); Pp(box(0.9, 2.4, 0.9), at(hx + 3, hy + 8, hz), 0x7a3a2a);
+    for (const u of [-3.6, -1.2, 1.2, 3.6]) for (const yy of [1.8, 4.4]) Pp(box(0.9, 1.2, 0.1), at(hx + u, hy + yy, hz + 4.02), LAMP);
+    Pp(box(6.4, 0.25, 2.4), at(hx, hy + 0.45, hz + 5.2), 0x8a7a68); Pp(box(6.8, 0.18, 2.8), at(hx, hy + 3.0, hz + 5.3), 0x4a4440); for (const u of [-3, 3]) Pp(cyl(0.09, 0.09, 2.6, 6), at(hx + u, hy + 1.7, hz + 6.4), 0xe8e4da); // the porch
+    POOLS.push([hx, hz + 8, 10, 0.25, 0]); }
+  { const bx = F.x - 10, bz = F.z - 14, by = groundH(bx, bz) - 0.4; // the red barn under its gambrel roof
+    Pp(box(14, 6.2, 22), at(bx, by + 3.1, bz), 0x8a2a20);
+    const gam = new THREE.Shape([[-7.4, 0], [7.4, 0], [5.5, 3.3], [0, 5.3], [-5.5, 3.3]].map(([a, b]) => new THREE.Vector2(a, b)));
+    Pp(new THREE.ExtrudeGeometry(gam, { depth: 22.6, bevelEnabled: false }).translate(0, 0, -11.3), at(bx, by + 6.1, bz), 0x4a4644);
+    Pp(box(4.4, 4.6, 0.12), at(bx, by + 2.3, bz + 11.02), 0xe8e4da); Pp(box(3.8, 4.1, 0.14), at(bx, by + 2.1, bz + 11.05), 0x6a1c16); Pp(box(1.8, 1.5, 0.14), at(bx, by + 7.6, bz + 11.4), 0xe8e4da); // its doors, the loft
+  }
+  for (const [ox, oz] of [[16, -22], [26, -19]]) { const x = F.x + ox, z = F.z + oz, y = groundH(x, z) - 0.3; Pp(cyl(4, 4, 7.6, 20), at(x, y + 3.8, z), 0xa4a8ac); Pp(cone(4.3, 2.6, 20), at(x, y + 8.9, z), 0xb4b8bc); } // the grain bins
+  { const x = F.x + 2, z = F.z + 4, y = groundH(x, z); Pp(cyl(0.12, 0.16, 8.4, 6), at(x, y + 4.2, z), 0x6a5a48); Pp(box(0.8, 0.18, 0.3), at(x + 0.3, y + 8.3, z), 0x4a4a4a); GL.push([x + 0.6, y + 8.1, z, 1.2, ...YARD, 2.6]); POOLS.push([x, z, 26, 0.5, 0]); } // the yard light
+  for (const [cx, cz, n] of [[-3400, -9200, 14], [2300, -11500, 12], [-6200, -12500, 8], [5200, -9800, 6]]) for (let i = 0; i < n; i++) { const x = cx + r(-260, 260), z = cz + r(-120, 120); GL.push([x, groundH(x, z) + 6, z, 6, ...SODIUM, 1.2]); } // towns on the horizon by night
+  const NIGHT_GL = GL.length; // the glows before this are night lights (or your colour's light bar); the two after, the strike's
+  GL.push([0, 0, 0, 0, 1.4, 1.5, 2.2, 3], [0, 0, 0, 0, 1.2, 1.3, 2.0, 3]);
+
+  /* --- the power line along the road and the fences either side of it --- */
+  const POLES = [[...(() => { const [x, z] = roadAt(-14, -8); return [x, groundH(x, z) - 0.2, z]; })()]]; // one behind us, out of sight, so the wires come in over our heads
+  for (let s = 48; s < (preview ? 1800 : 3400); s += 62) { const [x, z] = roadAt(s, -8); POLES.push([x, groundH(x, z) - 0.2, z]); }
+  const POSTS = [];
+  for (const side of [-5.6, 5.6]) for (let s = 3; s < (preview ? 160 : 330); s += 4.5) { const [x, z] = roadAt(s + r(-0.3, 0.3), side + r(-0.1, 0.1)); POSTS.push([x, groundH(x, z) - 0.1, z, r(-0.06, 0.06), r(-0.06, 0.06), side]); }
+  const wirePos = [], wireS = [], wirePh = [];
+  const span = (a, b, sag, segs, ph) => { for (let i = 0; i < segs; i++) for (const s of [i / segs, (i + 1) / segs]) { wirePos.push(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s - 4 * sag * s * (1 - s), a[2] + (b[2] - a[2]) * s); wireS.push(sag > 0.2 ? s : 0); wirePh.push(ph); } };
+  for (let i = 0; i < POLES.length - 1; i++) for (const u of [-1.1, 0, 1.1]) { const [ax, ay, az] = POLES[i], [bx, by, bz] = POLES[i + 1]; span([ax + RN[0] * u, ay + 10.62, az + RN[1] * u], [bx + RN[0] * u, by + 10.62, bz + RN[1] * u], 0.9, preview ? 6 : 12, i * 0.7 + u); }
+  for (const side of [-5.6, 5.6]) { const row = POSTS.filter((p) => p[5] === side); for (let i = 0; i < row.length - 1; i++) for (const hgt of [0.55, 0.85, 1.15]) span([row[i][0], row[i][1] + hgt, row[i][2]], [row[i + 1][0], row[i + 1][1] + hgt, row[i + 1][2]], 0.03, 1, 0); }
+
+  /* --- the wheat by us, the shelterbelt behind the farm, trees along a creek far off, tumbleweeds --- */
+  const WHEAT = [];
+  for (let tries = 0; WHEAT.length < (preview ? 350 : 1700) && tries < 20000; tries++) { const d = 2.5 + Math.pow(r(), 1.6) * 75, a = r(-1, 1) * 0.72, x = C0.x + Math.sin(a) * d, z = C0.z - Math.cos(a) * d; if (Math.abs(latOf(x, z)) < 6.2) continue; WHEAT.push([x, groundH(x, z) - 0.05, z, r(0.85, 1.25), r(0, 6.28), ["#e8d0a0", "#f2daa8", "#dcc090", "#f6e2b6"][Math.floor(r() * 4)]]); }
+  const TREES = [];
+  for (let i = 0; i < 15; i++) { const x = F.x - 52 + i * 8 + r(-2, 2), z = F.z - 44 + r(-3, 3); TREES.push([x, groundH(x, z) - 0.3, z, r(0.9, 1.25), r(0, 6.28), ["#3e5a24", "#4a6a2a", "#36521f", "#567430"][i % 4]]); }
+  for (let i = 0; i < (preview ? 12 : 26); i++) { const x = -2600 + i * 110 + r(-40, 40), z = -2200 + Math.sin(i * 0.7) * 60 + r(-30, 30); TREES.push([x, groundH(x, z) - 0.3, z, r(1.1, 1.6), r(0, 6.28), ["#2e4220", "#3a5226"][i % 2]]); }
+  const TW = [{ z: -13, v: 5.2, ph: 0, rad: 0.42 }, { z: -21, v: 6.1, ph: 0.55, rad: 0.36 }];
+  TW.forEach((w) => { w.W = Math.abs(w.z) * 0.8 + 3; w.L = 2 * w.W + 50; }); // across the widest view, then a while out of sight
+
+  /* --- materials --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const NIGHT_RECT = [80, -620, 260, -470];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, nightMapU = { value: null }, gloomU = { value: 0.55 }, lampColU = { value: new THREE.Color(1.0, 0.8, 0.5).multiplyScalar(1.3) };
+  const windU = { value: WIND.clone() };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uTime: time, uWind: windU, uRoad: { value: new THREE.Vector4(RD.x, RD.z, RD.dx, RD.dz) }, uNight: nightU, uCam: { value: new THREE.Vector2(C0.x, C0.z) }, uGloom: gloomU, uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uLampCol: lampColU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPW = position;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + TN_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float tnB; diffuseColor.rgb = tnGround(tnB);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = tnBump(-vViewPosition, normal, tnB);")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += tnLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "tn-ground";
+  const lit = (mat, key, extraVS = "", accNight = 0.1, fx = {}) => { // markers: the accent; windows dark by day, lit by night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time }, fx.uniforms || {});
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime;" + (fx.vdecl || "")).replace("#include <begin_vertex>", "#include <begin_vertex>\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;" + (fx.decl || ""))
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float tnLamp = 0.0, tnAcc = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.05, 0.06), isLamp); tnLamp = isLamp; tnAcc = isAcc; }
+  #endif`)
+        .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n" + (fx.nfs || ""))
+        .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.74, 0.42) * tnLamp * (0.03 + 1.4 * uNight) + uAccent * tnAcc * ${accNight.toFixed(2)} * uNight;`);
+    };
+    mat.customProgramCacheKey = () => "tn-" + key;
+    return mat;
+  };
+  const SWAY_DECL = "\nuniform vec2 uWindDir; uniform float uSway; uniform float uFlutter; uniform float uSwayH;";
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 })), "paint", "", 0.25);
+  const wheatTex = keep(tnWheat(THREE));
+  const wheatN = { value: new THREE.Vector3(0.5, 0.62, 0.6) };
+  const wheatMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, map: wheatTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.9 })), "wheat", TN_SWAY, 0, { uniforms: { uWindDir: windU, uSway: { value: 0.3 }, uFlutter: { value: 0.035 }, uSwayH: { value: 1.05 }, uWheatN: wheatN }, vdecl: SWAY_DECL, decl: " uniform vec3 uWheatN;", nfs: "  normal = normalize((viewMatrix * vec4(uWheatN, 0.0)).xyz); /* lit as stalks are: from the sun's side by day, from above by night (the sky, the flashes) */" });
+  const treeMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 })), "tree", TN_SWAY, 0, { uniforms: { uWindDir: windU, uSway: { value: 0.05 }, uFlutter: { value: 0.004 }, uSwayH: { value: 12 } }, vdecl: SWAY_DECL });
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; scene.add(land);
+  const partMesh = (geo, mat, count, name) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, count)); m.name = name; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); keep(m); return m; };
+  const site = partMesh(keep(mergeColored(THREE, S)), paintMat, 1, "tn-site"); site.setMatrixAt(0, new THREE.Matrix4()); // one instance: it shares the windmill's and the poles' program
+  const wheelGeo = keep(mergeColored(THREE, [...Array.from({ length: 18 }, (_, k) => { const a = (k / 18) * Math.PI * 2; return [box(0.04, 1.05, 0.3), at(0, Math.cos(a) * 1.0, Math.sin(a) * 1.0, a, 0, 0), 0xc8c4bc]; }), [new THREE.TorusGeometry(1.5, 0.03, 4, 28).rotateY(Math.PI / 2), new THREE.Matrix4(), 0x8a8a86], [new THREE.TorusGeometry(0.5, 0.03, 4, 18).rotateY(Math.PI / 2), new THREE.Matrix4(), 0x8a8a86], [cyl(0.12, 0.12, 0.3, 8), at(0, 0, 0, 0, 0, Math.PI / 2), 0x5a5a58]])); // eighteen sails between two rings, the hub
+  const cupGeo = keep(mergeColored(THREE, [0, 1, 2].flatMap((k) => { const a = (k / 3) * Math.PI * 2; return [[box(0.28, 0.012, 0.012), at(Math.cos(a) * 0.14, 0, -Math.sin(a) * 0.14, 0, a, 0), 0x6a6a6a], [blob(0.035, 0.035, 0.035, 0), at(Math.cos(a) * 0.28, 0, -Math.sin(a) * 0.28), 0x6a6a6a]]; }))); // the anemometer's cups
+  const wheel = partMesh(wheelGeo, paintMat, 1, "tn-wheel"), cups = partMesh(cupGeo, paintMat, 1, "tn-cups");
+  const poleGeo = keep(mergeColored(THREE, [[tube(0.13, 0.18, 11, 6), at(0, 5.5, 0), 0x5a4a3a], [box(2.6, 0.14, 0.14), at(0, 10.3, 0), 0x5a4a3a], ...[-1.1, 0, 1.1].map((u) => [cyl(0.06, 0.07, 0.25, 6), at(u, 10.5, 0), 0x8a8e94])]));
+  const poles = partMesh(poleGeo, paintMat, POLES.length, "tn-poles"), poleYaw = yawOf(RN[0], RN[1]);
+  POLES.forEach(([x, y, z], i) => poles.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, poleYaw, 0)), ONE)));
+  const posts = partMesh(keep(mergeColored(THREE, [[box(0.1, 1.35, 0.1), at(0, 0.62, 0), 0x6a5844]])), paintMat, POSTS.length, "tn-posts");
+  POSTS.forEach(([x, y, z, ax, az], i) => posts.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(ax, r(0, 3), az)), ONE)));
+  const wheatGeo = keep(new THREE.BufferGeometry()); // two cards crossed
+  { const pos = [], uv = [], idx = []; for (const ang of [0.4, 0.4 + Math.PI / 2]) { const c = Math.cos(ang) * 0.575, s = Math.sin(ang) * 0.575, o = pos.length / 3; pos.push(-c, 0, -s, c, 0, s, c, 1.05, s, -c, 1.05, -s); uv.push(0, 0, 1, 0, 1, 1, 0, 1); idx.push(o, o + 1, o + 2, o, o + 2, o + 3); }
+    wheatGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); wheatGeo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); wheatGeo.setAttribute("normal", new THREE.Float32BufferAttribute(new Array(pos.length).fill(0).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3)); wheatGeo.setAttribute("color", new THREE.Float32BufferAttribute(new Array(pos.length).fill(1), 3)); wheatGeo.setIndex(idx); }
+  const wheat = partMesh(wheatGeo, wheatMat, WHEAT.length, "tn-wheat");
+  { const col = new THREE.Color(); WHEAT.forEach(([x, y, z, s, a, hex], i) => { wheat.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, a, 0)), V2.set(s * (i % 2 ? -1 : 1), s * r(0.9, 1.1), s))); wheat.setColorAt(i, col.set(hex)); }); }
+  const lump = (sx, sy, sz, det) => { const g = new THREE.IcosahedronGeometry(1, det), p = g.attributes.position, n = g.attributes.normal; for (let i = 0; i < p.count; i++) { V.fromBufferAttribute(p, i).normalize(); n.setXYZ(i, V.x, V.y, V.z); } return g.scale(sx, sy, sz); };
+  const treeGeo = keep(mergeColored(THREE, [[tube(0.3, 0.45, 6, 6), at(0, 3, 0), 0x5a4a3c], [lump(3.6, 3.2, 3.6, 1), at(0, 8.2, 0), 0xffffff], [lump(2.8, 2.6, 2.8, 1), at(1.8, 10, 0.6), 0xffffff], [lump(2.6, 2.4, 2.6, 1), at(-1.6, 9.6, -0.9), 0xffffff], [lump(2.2, 2.1, 2.2, 1), at(0.2, 11.6, -0.3), 0xffffff]]));
+  const trees = partMesh(treeGeo, treeMat, TREES.length, "tn-trees");
+  { const col = new THREE.Color(); TREES.forEach(([x, y, z, s, a, hex], i) => { trees.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, a, 0)), V2.set(s, s * r(0.95, 1.15), s))); trees.setColorAt(i, col.set(hex)); }); }
+  const twGeo = keep(mergeColored(THREE, Array.from({ length: preview ? 30 : 70 }, () => { const a = r(0, 6.283), b = Math.acos(r(-1, 1)), rad = r(0.25, 0.42); return [tube(0.012, 0.012, r(0.25, 0.5), 4), at(Math.sin(b) * Math.cos(a) * rad, Math.cos(b) * rad, Math.sin(b) * Math.sin(a) * rad, r(0, 3), r(0, 3), r(0, 3)), [0x9a8058, 0x7a6444, 0xa89068][Math.floor(r() * 3)]]; }))); // a tangle of dry twigs
+  const weeds = partMesh(twGeo, paintMat, TW.length, "tn-tumbleweeds");
+  const wireU = { uTime: time, uWind: { value: WIND.clone().multiplyScalar(0.5) }, uFogD: { value: 1 / 16000 }, uCol: { value: new THREE.Color() }, uFogCol: { value: new THREE.Color() } };
+  const wireGeo = keep(new THREE.BufferGeometry()); wireGeo.setAttribute("position", new THREE.Float32BufferAttribute(wirePos, 3)); wireGeo.setAttribute("aS", new THREE.Float32BufferAttribute(wireS, 1)); wireGeo.setAttribute("aPh", new THREE.Float32BufferAttribute(wirePh, 1));
+  const wires = new THREE.LineSegments(wireGeo, shader(TN_WIRE_VS, TN_WIRE_FS, wireU)); wires.frustumCulled = false; scene.add(wires);
+
+  /* --- the storm: its base turning overhead with the wall cloud under it, the tornado, the debris round its foot, rain curtains, lightning --- */
+  const fogD = { value: 1 / 16000 }, fogCol = { value: new THREE.Color() }, flashU = { value: new THREE.Vector4(0, BASE_Y, -6000, 0) }, flashCol = { value: new THREE.Color("#d0d6ff") }, sunDirU = { value: SUN.clone() };
+  const cloudU = (R, band, rag) => ({ uNoise: { value: noise }, uRot: { value: 0 }, uLumpy: { value: rag ? 1.6 : 1 }, uR: { value: R }, uBand: { value: band }, uSunDir: sunDirU, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uBelow: { value: new THREE.Color() }, uUnder: { value: new THREE.Color() }, uFlash: flashU, uFlashCol: flashCol, uFogCol: fogCol, uFogD: fogD, uRag: { value: rag } });
+  const mesoPts = [[0, -30], [900, -26], [1900, -14], [2800, 6], [3450, 34], [3760, 80]];
+  for (let i = 0; i < 6; i++) { const y = 150 + i * 250, rr = 3800 - i * 140; mesoPts.push([rr + 40, y - 40], [rr + 12, y + 70], [rr - 34, y + 140]); } // the striations: stacked plates, each with its lip
+  mesoPts.push([3000, 1750], [2650, 2400], [2350, 3600], [1950, 5600], [1500, 8200], [700, 9400], [0, 9600]); // the updraft rising out of it
+  const mesoU = cloudU(3700, (2 * Math.PI) / 250, 0), wallU = cloudU(950, (2 * Math.PI) / 120, 1);
+  const meso = new THREE.Mesh(keep(new THREE.LatheGeometry(mesoPts.map(([x, y]) => new THREE.Vector2(x, y)), preview ? 64 : 140)), shader(TN_CLOUD_VS, TN_CLOUD_FS, mesoU, { transparent: true }));
+  meso.position.copy(MESO); meso.renderOrder = 1; meso.frustumCulled = false; scene.add(meso);
+  const wallPts = [[0, -430], [380, -436], [640, -412], [780, -330], [870, -210], [960, -100], [1080, -20], [1180, 30], [1200, 60]];
+  const wall = new THREE.Mesh(keep(new THREE.LatheGeometry(wallPts.map(([x, y]) => new THREE.Vector2(x, y)), preview ? 40 : 72)), shader(TN_CLOUD_VS, TN_CLOUD_FS, wallU, { transparent: true }));
+  wall.renderOrder = 2; wall.frustumCulled = false; scene.add(wall);
+  const funnelU = (spin, dustTo, opacity, erode = 0) => ({ uNoise: { value: noise }, uTime: time, uSpin: { value: spin }, uErode: { value: erode }, uTop: { value: new THREE.Vector4(0, 860, 0, 0) }, uWave: { value: new THREE.Vector2(60, 40) }, uH: { value: 1000 }, uSunDir: sunDirU, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uDust: { value: new THREE.Color() }, uDustTo: { value: dustTo }, uOpacity: { value: opacity }, uFlash: flashU, uFlashCol: flashCol, uFogCol: fogCol, uFogD: fogD });
+  const fnU = funnelU(0.9, 0.22, 0.95), dbU = funnelU(2.2, 1.6, 0.5, 1);
+  const funnelPts = Array.from({ length: 31 }, (_, i) => { const y = -20 + (i / 30) * 1040; const k = Math.max(0, y) / 1000; return new THREE.Vector2(72 + 120 * k + 250 * Math.pow(k, 6), y); });
+  const funnel = new THREE.Mesh(keep(new THREE.LatheGeometry(funnelPts, preview ? 28 : 48)), shader(TN_FUNNEL_VS, TN_FUNNEL_FS, fnU, { transparent: true, depthWrite: false }));
+  funnel.renderOrder = 4; funnel.frustumCulled = false; scene.add(funnel);
+  dbU.uH.value = 340; dbU.uTop.value.set(0, 340, 0, 0); dbU.uWave.value.set(0, 0);
+  const dome = new THREE.Mesh(keep(new THREE.LatheGeometry([[330, -10], [320, 40], [280, 120], [210, 200], [130, 270], [50, 320], [0, 340]].map(([x, y]) => new THREE.Vector2(x, y)), preview ? 24 : 40)), shader(TN_FUNNEL_VS, TN_FUNNEL_FS, dbU, { transparent: true, depthWrite: false }));
+  dome.renderOrder = 5; dome.frustumCulled = false; scene.add(dome);
+  const NDB = preview ? 60 : 150, DB = Array.from({ length: NDB }, () => ({ r: r(70, 300), a: r(0, 6.283), v: r(0.7, 1.3), ph: r(), h: r(160, 520), s: r(4, 9) })); // debris whirled up round its foot
+  const dbPos = new Float32Array(NDB * 3), dbA = new Float32Array(NDB), dbS = new Float32Array(NDB);
+  const dbGeo = keep(new THREE.BufferGeometry()); dbGeo.setAttribute("position", new THREE.BufferAttribute(dbPos, 3)); dbGeo.setAttribute("aA", new THREE.BufferAttribute(dbA, 1)); dbGeo.setAttribute("aS", new THREE.BufferAttribute(dbS, 1));
+  const dustU = { uPx: { value: 700 }, uCol: { value: new THREE.Color() } };
+  const debris = new THREE.Points(dbGeo, shader(MC_DUST_VS, MC_DUST_FS, dustU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+  debris.frustumCulled = false; debris.renderOrder = 6; scene.add(debris);
+  const CURTAINS = [[1600, -6400, 1500, 0.1, 0.75], [2600, -7300, 2200, 0.4, 0.85], [3600, -6900, 1800, 0.7, 0.7], [4700, -8200, 2400, 0.2, 0.6], [1000, -7700, 1600, 0.9, 0.5], [-1150, -5700, 2300, 0.55, 0.42], [-2400, -6300, 1900, 0.3, 0.32]].sort((a, b) => Math.hypot(b[0], b[1]) - Math.hypot(a[0], a[1])); // the core to the right, the rain wrapping round behind the tornado; far ones first
+  const rainGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], uv = [], info = [], idx = [];
+    CURTAINS.forEach(([x, z, w, seed, dens]) => { const L = Math.hypot(x, z), ax = -z / L, az = x / L, y0 = groundH(x, z) - 30, y1 = BASE_Y + 10, o = pos.length / 3; pos.push(x - (ax * w) / 2, y0, z - (az * w) / 2, x + (ax * w) / 2, y0, z + (az * w) / 2, x + (ax * w) / 2, y1, z + (az * w) / 2, x - (ax * w) / 2, y1, z - (az * w) / 2); uv.push(0, 0, 1, 0, 1, 1, 0, 1); for (let i = 0; i < 4; i++) info.push(seed, dens); idx.push(o, o + 1, o + 2, o, o + 2, o + 3); }); // each square on to us
+    rainGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); rainGeo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2)); rainGeo.setAttribute("aInfo", new THREE.Float32BufferAttribute(info, 2)); rainGeo.setIndex(idx); }
+  const rainU = { uNoise: { value: noise }, uTime: time, uLit: { value: new THREE.Color() }, uDark: { value: new THREE.Color() }, uAnti: { value: ANTI.clone() }, uBow: { value: 1 }, uFlash: flashU, uFlashCol: flashCol, uFogCol: fogCol, uFogD: fogD };
+  const rain = new THREE.Mesh(rainGeo, shader(TN_RAIN_VS, TN_RAIN_FS, rainU, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  rain.renderOrder = 3; rain.frustumCulled = false; scene.add(rain);
+  const quad = keep(new THREE.PlaneGeometry(1, 1)), boltGeo = keep(new THREE.InstancedBufferGeometry());
+  boltGeo.setIndex(quad.index); boltGeo.setAttribute("position", quad.attributes.position);
+  const aB0 = new THREE.InstancedBufferAttribute(new Float32Array(8), 4), aB1 = new THREE.InstancedBufferAttribute(new Float32Array(8), 4), aUV = new THREE.InstancedBufferAttribute(new Float32Array(8), 4);
+  for (const a of [aB0, aB1, aUV]) a.setUsage(THREE.DynamicDrawUsage);
+  boltGeo.setAttribute("aB0", aB0); boltGeo.setAttribute("aB1", aB1); boltGeo.setAttribute("aUV", aUV); boltGeo.instanceCount = 2;
+  const boltU = { uAtlas: { value: keep(tnBolts(THREE)) }, uCol: { value: new THREE.Color(1, 1, 1) } };
+  const bolts = new THREE.Mesh(boltGeo, shader(TN_BOLT_VS, TN_BOLT_FS, boltU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  bolts.renderOrder = 8; bolts.frustumCulled = false; scene.add(bolts);
+
+  /* --- the sky under and round the storm --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSlot: { value: new THREE.Color() }, uRfd: { value: new THREE.Color() }, uCore: { value: new THREE.Color() }, uNight: nightU, uTime: time, uNoise: { value: noise }, uFlash: flashU, uFlashCol: flashCol };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(80000, 48, 24)), shader(LANTERN_SKY_VS, TN_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+
+  /* --- glows: the truck's lights, the yard light, towns far off by night; the strike's, by day too --- */
+  const NGL = GL.length, glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 9; scene.add(glows);
+  nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
+  const BAR = [2, 3]; // the light bar's two lenses among the glows
+
+  /* --- light: the low sun under the storm's edge, the sky, the lightning --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1), flashL = new THREE.DirectionalLight(0xc8d0ff, 0);
+  scene.add(hemi, sun, sun.target, flashL, flashL.target);
+  sun.target.position.set(0, 0, -60); flashL.target.position.set(0, 0, -40);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+  const SBOX = [-70, -160, 70, 14];
+  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; sun.shadow.intensity = 0.7; for (const m of [site, posts, poles, weeds]) m.castShadow = true; land.receiveShadow = site.receiveShadow = true; }
+  const LIT_MATS = [groundMat, paintMat, wheatMat, treeMat];
+  const shadowFit = () => {
+    sun.position.copy(sun.target.position).addScaledVector(SUN, 800);
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [SBOX[0], SBOX[2]]) for (const y of [-3, 16]) for (const z of [SBOX[1], SBOX[3]]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x - 2; cam.right = hi.x + 2; cam.bottom = lo.y - 2; cam.top = hi.y + 2; cam.near = Math.max(1, -hi.z - 60); cam.far = -lo.z + 60; cam.updateProjectionMatrix();
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark, C = (hex) => new THREE.Color(hex);
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#070a12" : "#5a6478"); skyU.uHorizon.value.set(d ? "#141a26" : "#b8b4a8"); skyU.uSlot.value.set(d ? "#1c2742" : "#f4e6c4"); skyU.uRfd.value.set(d ? "#0e121c" : "#4a5262"); skyU.uCore.value.set(d ? "#12161c" : "#5c6862");
+    mesoU.uLit.value.set(d ? "#2a3040" : "#e2c8a4"); mesoU.uShade.value.set(d ? "#161a24" : "#4c5466"); mesoU.uBelow.value.set(d ? "#151924" : "#3a404c"); mesoU.uUnder.value.set(d ? "#4a2c14" : "#000000").multiplyScalar(d ? 0.5 : 0);
+    wallU.uLit.value.set(d ? "#1e222c" : "#6e6a64"); wallU.uShade.value.set(d ? "#10131a" : "#3a3e48"); wallU.uBelow.value.set(d ? "#0e1016" : "#2c3038"); wallU.uUnder.value.set("#000000");
+    fnU.uLit.value.set(d ? "#2c3038" : "#d8cab2"); fnU.uShade.value.set(d ? "#16181e" : "#5a5850"); fnU.uDust.value.set(d ? "#1e1a16" : "#8a7458");
+    dbU.uLit.value.set(d ? "#18150f" : "#a08868"); dbU.uShade.value.set(d ? "#0e0c0a" : "#5a4a3a"); dbU.uDust.value.set(d ? "#16130f" : "#7a6448");
+    dustU.uCol.value.set(d ? "#14110e" : "#6a5a46");
+    rainU.uLit.value.set(d ? "#222a36" : "#b4bcc0"); rainU.uDark.value.set(d ? "#10141c" : "#5a6470"); rainU.uBow.value = d ? 0 : 1;
+    fogCol.value.set(d ? "#080a10" : "#9ca2aa"); fogD.value = d ? 1 / 14000 : 1 / 16000; scene.fog.color.copy(fogCol.value); scene.fog.density = fogD.value; wireU.uFogD.value = fogD.value; wireU.uFogCol.value.copy(fogCol.value);
+    wireU.uCol.value.set(d ? "#06070a" : "#2a2622");
+    flashCol.value.set(d ? "#c4ccff" : "#d8dcff");
+    if (d) sun.castShadow = false; else { sun.castShadow = !preview; shadowFit(); }
+    sun.color.set("#ffc28a"); sun.intensity = d ? 0 : 2.7;
+    hemi.color.set(d ? "#202a3e" : "#8a96a8"); hemi.groundColor.set(d ? "#0c0b0a" : "#6a5434"); hemi.intensity = d ? 0.75 : 0.9;
+    gloomU.value = d ? 0.8 : 0.55; nightU.value = d ? 1 : 0; wheatN.value.set(d ? 0.1 : 0.5, d ? 1 : 0.62, d ? -0.25 : 0.6).normalize(); /* by night toward the storm, so the flashes light it */
+    const acc = C(p.accent);
+    for (let i = 0; i < NIGHT_GL; i++) aGlow.setW(i, d || BAR.includes(i) ? GL[i][3] : 0);
+    for (const i of BAR) aTint.setXYZ(i, acc.r * 2.4, acc.g * 2.4, acc.b * 2.4);
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 36 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = 0.006 * Math.sin(clock * 0.03) - 0.17 * k, pitch = 0.12 + 0.04 * k; // a phone turns to the tornado
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  let primed = false, priming = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (priming) return;
+    if (!preview && !primed) { // before the first frame: compiled once with shadows and the shadow map drawn by a throwaway render into the same target, so it compiles the very programs the frames use (a still frame is that first frame; the frame's own clear wipes it)
+      primed = priming = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true;
+      renderer.render(scene, camera); priming = false;
+    }
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); dustU.uPx.value = pxFor(buf.y);
+  };
+
+  /* --- the clock: the tornado wandering, the storm turning, one strike at a time --- */
+  const T0 = 781.6, foot = [0, 0]; // the first frame (a still one too) catches a bolt to the ground, by day and by night
+  const EV = { key: null, on: false, t0: 0, type: "core", x: 0, z: 0, cell: 0, flip: false, n: 2, g1: 0.12, g2: 0.3, ang: 0, two: false, x2: 0, z2: 0 }, ST = { bolt: 0, cloud: 0 };
+  function strike(t, night) { // the strike in progress at t: its stroke brightness and the cloud's flash (two at most, the first and the last stroke)
+    const P = night ? 3.1 : 4.7, k = Math.floor(t / P), key = k * 2 + (night ? 1 : 0);
+    if (EV.key !== key) {
+      EV.key = key; const h = (n) => hash(k * 13 + n, night ? 7 : 3);
+      EV.on = h(1) > (night ? 0.12 : 0.3); EV.t0 = k * P + h(2) * (night ? 1.6 : 2.4);
+      const ty = h(3); EV.type = night && ty < 0.14 ? "crawl" : ty < 0.3 ? "ic" : ty < 0.44 ? "near" : "core";
+      const a = EV.type === "near" ? -0.44 + h(4) * 0.3 : 0.1 + h(4) * 0.38, d = EV.type === "near" ? 4300 + h(5) * 2400 : 5600 + h(5) * 3000;
+      EV.x = Math.sin(a) * d; EV.z = -Math.cos(a) * d;
+      if (EV.type === "ic" || EV.type === "crawl") { const ia = h(4) * 6.283, id = Math.sqrt(h(5)) * 3000; EV.x = MESO.x + Math.cos(ia) * id; EV.z = MESO.z + Math.sin(ia) * id * 0.8; }
+      EV.cell = Math.floor(h(6) * 8); EV.flip = h(7) > 0.5; EV.n = h(8) > 0.4 ? 3 : 2; EV.g1 = 0.1 + h(9) * 0.06; EV.g2 = 0.26 + h(10) * 0.1; EV.ang = h(11) * Math.PI;
+      EV.two = EV.type === "core" && h(12) > 0.7; EV.x2 = EV.x + (h(13) - 0.5) * 1400; EV.z2 = EV.z - h(14) * 900;
+    }
+    const tau = t - EV.t0;
+    ST.bolt = ST.cloud = 0;
+    if (!EV.on || tau < 0 || tau > 1) return ST;
+    const strokes = [0, EV.g1, EV.g2].slice(0, EV.n), last = strokes[strokes.length - 1];
+    for (const s of strokes) if (tau >= s) ST.bolt += Math.exp(-(tau - s) * 15);
+    ST.bolt = Math.min(1.6, ST.bolt + 0.2 * Math.exp(-tau * 3.5));
+    ST.cloud = Math.exp(-tau * 9) + (tau >= last ? 0.75 * Math.exp(-(tau - last) * 9) : 0);
+    return ST;
+  }
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    // the tornado: its foot wandering over the fields, its top under the wall cloud, both turning
+    footAt(t, foot); const gy = groundH(foot[0], foot[1]), topX = -110 + 70 * Math.sin(0.017 * t + 2), topZ = 40 + 40 * Math.sin(0.013 * t);
+    funnel.position.set(foot[0], gy, foot[1]); fnU.uTop.value.set(topX, BASE_Y - 440 - gy, topZ, 0);
+    dome.position.set(foot[0], gy - 5, foot[1]);
+    wall.position.set(foot[0] + topX, BASE_Y, foot[1] + topZ); wallU.uRot.value = t * 0.05; mesoU.uRot.value = t * 0.012;
+    for (let i = 0; i < NDB; i++) { const q = DB[i], life = 9, age = (((t * q.v + q.ph * life) % life) + life) % life, k = age / life, rad = q.r * (0.6 + 0.9 * k), ang = q.a - t * (1.6 / (0.4 + rad / 180)); dbPos[i * 3] = foot[0] + Math.cos(ang) * rad; dbPos[i * 3 + 1] = gy + 15 + k * q.h; dbPos[i * 3 + 2] = foot[1] + Math.sin(ang) * rad; dbA[i] = smooth(0, 0.1, k) * (1 - smooth(0.55, 1, k)) * 0.38; dbS[i] = q.s; }
+    dbGeo.attributes.position.needsUpdate = dbGeo.attributes.aA.needsUpdate = dbGeo.attributes.aS.needsUpdate = true;
+    // lightning
+    const st = strike(t, night), cg = EV.type === "core" || EV.type === "near";
+    if (cg) { aB0.setXYZW(0, EV.x, groundH(EV.x, EV.z) - 5, EV.z, 0.33 * BASE_Y); aB1.setXYZW(0, BASE_Y + 20, st.bolt * (night ? 1.4 : 1.0), EV.flip ? 1 : 0, 0); aUV.setXYZW(0, EV.cell / 8, 1 / 3, 1 / 8, 2 / 3); }
+    else if (EV.type === "crawl") { aB0.setXYZW(0, EV.x, BASE_Y - 40, EV.z, 4200); aB1.setXYZW(0, EV.ang, st.bolt * 0.9, EV.flip ? 1 : 0, 1); aUV.setXYZW(0, (EV.cell % 2) / 2, 0, 1 / 2, 1 / 3); }
+    else aB1.setY(0, 0);
+    if (cg && EV.two) { aB0.setXYZW(1, EV.x2, groundH(EV.x2, EV.z2) - 5, EV.z2, 0.3 * BASE_Y); aB1.setXYZW(1, BASE_Y + 20, st.bolt * 0.75 * (night ? 1.4 : 1.0), EV.flip ? 0 : 1, 0); aUV.setXYZW(1, ((EV.cell + 3) % 8) / 8, 1 / 3, 1 / 8, 2 / 3); } else aB1.setY(1, 0);
+    aB0.needsUpdate = aB1.needsUpdate = aUV.needsUpdate = true;
+    flashU.value.set(EV.x, BASE_Y - 100, EV.z, st.cloud * (night ? 0.72 : 0.16)); // by day a flash hardly shows on the clouds, by night it lights the whole storm
+    flashL.position.set(EV.x, BASE_Y, EV.z); flashL.intensity = st.cloud * (night ? 1.1 : 0.25);
+    aGlow.setXYZW(NIGHT_GL, EV.x, groundH(EV.x, EV.z) + 15, EV.z, cg ? 90 * Math.min(1, st.bolt) : 0); aGlow.setXYZW(NIGHT_GL + 1, EV.x, BASE_Y - 80, EV.z, cg ? st.cloud * 300 * (night ? 1 : 0.45) : 0); /* where a bolt leaves the cloud; a flash inside it has no point to glow from */
+    // the light bar flashing, one lens then the other
+    const on = Math.floor(t * 2.8) % 2;
+    aGlow.setW(BAR[0], on ? GL[BAR[0]][3] * (night ? 1 : 0.7) : 0); aGlow.setW(BAR[1], on ? 0 : GL[BAR[1]][3] * (night ? 1 : 0.7));
+    aGlow.needsUpdate = true;
+    // the windmill and the anemometer spinning in the wind; tumbleweeds bowling across the road
+    wheel.setMatrixAt(0, M.copy(WHEEL).multiply(M2.makeRotationX(t * 5.5))); wheel.instanceMatrix.needsUpdate = true;
+    cups.setMatrixAt(0, M.copy(CUPS).multiply(M2.makeRotationY(t * 9))); cups.instanceMatrix.needsUpdate = true;
+    TW.forEach((w, i) => { const s = wrap(t * w.v + w.ph * w.L, 0, w.L), x = w.W - s, hop = Math.abs(Math.sin((Math.PI * s) / 3.2)); weeds.setMatrixAt(i, M.compose(V.set(x, groundH(x, w.z) + w.rad + 0.55 * hop, w.z), Q.setFromEuler(E.set(0, 0, s / w.rad)), V2.setScalar(w.rad / 0.42))); });
+    weeds.instanceMatrix.needsUpdate = true;
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { tornado: [Math.round(foot[0]), Math.round(foot[1])], strike: EV.type + (EV.on ? "" : "-"), bolt: +ST.bolt.toFixed(2), flash: +ST.cloud.toFixed(2), wheat: WHEAT.length, poles: POLES.length, posts: POSTS.length, trees: TREES.length, glows: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
