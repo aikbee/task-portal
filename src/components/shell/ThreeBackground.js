@@ -14934,7 +14934,7 @@ function rocketlaunch(THREE, scene, camera, pal, preview) {
   sun.target.position.set(0, 30, 0);
   if (!preview) { sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05; }
   const floods = [0, 1].map((i) => { const [x, y, z] = lampPts[i], l = new THREE.SpotLight(0xe8f0ff, 0, 0, 0.32, 0.55, 1); l.position.set(x, y, z); l.target.position.set(0, 50, 0); scene.add(l, l.target); return l; });
-  const fire = new THREE.PointLight(0xffa860, 0, 0, 1.6); // bright on the pad, faint by the time it reaches us fire.position.set(0, BASE - 4, 0);
+  const fire = new THREE.PointLight(0xffa860, 0, 0, 1.6); /* bright on the pad, faint by the time it reaches us */ fire.position.set(0, BASE - 4, 0);
   scene.add(hemi, sun, sun.target, fire);
   scene.fog = new THREE.Fog(0xffffff, 500, 9000);
   const shadowFit = () => { const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true); const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity); for (const x of [-110, 110]) for (const y of [0, 120]) for (const z of [-95, 90]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); } Object.assign(cam, { left: lo.x, right: hi.x, bottom: lo.y, top: hi.y, near: Math.max(1, -hi.z - 20), far: -lo.z + 20 }); cam.updateProjectionMatrix(); };
@@ -25774,7 +25774,7 @@ function penguins(THREE, scene, camera, pal, preview) {
       reflectRT.scissor.set(0, y0, w, y1 - y0); reflectRT.scissorTest = true;
       const auto = renderer.shadowMap.autoUpdate, need = renderer.shadowMap.needsUpdate, si = sun.shadow.intensity;
       renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false; sun.shadow.intensity = 0; // the mirrored world must not draw the shadow map, nor read it
-      world.scale.y = -1; world.updateMatrixWorld(true); sea.visible = flags.visible = chicks.visible = false; // the flags and the chicks stand too far in on the floe ever to show in the bay glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
+      world.scale.y = -1; world.updateMatrixWorld(true); sea.visible = flags.visible = chicks.visible = false; /* the flags and the chicks stand too far in on the floe ever to show in the bay */ glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h);
       const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
       renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
       renderer.clippingPlanes = NONE; world.scale.y = 1; world.updateMatrixWorld(true); sea.visible = flags.visible = chicks.visible = true;
