@@ -27020,7 +27020,546 @@ function castle(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle };
+/* ---------- New England autumn: a village round its mill pond in peak colour, a covered bridge in your colour; a harvest moon by night ---------- */
+// One height field holds our bank, the pond's basin, the far shore with the village and its stream, and the hills behind; the hills' woods are
+// painted in a patchwork of reds, oranges, golds and pines, with trees as instances on the shores, in the village and along the near ridges.
+// The pond mirrors everything above it. Leaves fall from the big maples by us, geese pass over in a V, a canoe goes round the pond, the
+// mill's wheel turns.
+const AU_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uSunDir; uniform vec3 uSunGlow; uniform float uDay;
+  uniform float uNight; uniform sampler2D uNoise; uniform vec3 uGalN; uniform vec3 uGalC; uniform float uTime; uniform vec3 uMoonDir;
+  uniform vec3 uCloudLit; uniform vec3 uCloudShade; uniform float uCloudAmt;
+  varying vec3 vDir;
+  void main() {
+    vec3 dir = normalize(vec3(vDir.x, abs(vDir.y), vDir.z)); // symmetric: the mirrored pass sees the same sky
+    float h = dir.y;
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.25, h));
+    col = mix(col, uZenith, smoothstep(0.2, 0.95, h));
+    float toSun = dot(normalize(dir.xz + 1e-6), normalize(uSunDir.xz)) * 0.5 + 0.5;
+    col += uSunGlow * exp(-h * 3.5) * pow(toSun, 5.0) * uDay;
+    vec2 cp = dir.xz / (h + 0.06) * 0.95 + vec2(uTime * 0.0016, uTime * 0.0004);
+    float c = texture2D(uNoise, cp * 0.45).r * 0.62 + texture2D(uNoise, cp * 1.3 + 0.37).g * 0.28 + texture2D(uNoise, cp * 3.7 + 0.71).r * 0.12;
+    float field = smoothstep(0.3, 0.6, texture2D(uNoise, cp * 0.11 + 0.61).g);
+    float cov = smoothstep(0.5, 0.63, c) * field * smoothstep(0.04, 0.16, h) * (1.0 - smoothstep(0.55, 0.9, h)) * uCloudAmt;
+    float lit = clamp(0.25 + (c - 0.6) * 3.4, 0.0, 1.0) * (0.55 + 0.45 * toSun);
+    col = mix(col, mix(uCloudShade, uCloudLit, lit), cov * 0.9); // fair-weather cumulus, lit on the side toward the sun
+    if (uNight > 0.0) {
+      float b = dot(dir, uGalN); vec3 inPlane = normalize(dir - uGalN * b);
+      float l = atan(dot(inPlane, cross(uGalN, uGalC)), dot(inPlane, uGalC)); vec2 p = vec2(l * 2.0, b * 8.0);
+      float n1 = texture2D(uNoise, p * vec2(0.35, 0.45) + 0.13).r, n3 = texture2D(uNoise, p * vec2(3.3, 3.9) + 0.37).r;
+      float band = exp(-pow(b / (0.06 + 0.05 * exp(-l * l * 1.6)), 2.0)) * pow(0.25 + 0.75 * n1, 1.6) * (0.55 + 0.65 * n3);
+      col += vec3(0.55, 0.62, 0.92) * band * 0.05 * smoothstep(-0.02, 0.15, h) * uNight; // the Milky Way
+      // the harvest moon, big and warm low over the hills, its halo
+      float md = dot(dir, uMoonDir), disc = smoothstep(0.99975, 0.99979, md), mare = texture2D(uNoise, (dir.xy - uMoonDir.xy) * 45.0 + 0.3).r;
+      vec3 moon = mix(vec3(1.0, 0.72, 0.42), vec3(0.98, 0.94, 0.84), smoothstep(0.05, 0.3, uMoonDir.y)) * (0.86 + 0.18 * mare);
+      col = mix(col, moon * 1.15, disc * uNight);
+      col += (vec3(0.55, 0.42, 0.3) * pow(max(md, 0.0), 700.0) * 0.6 + vec3(0.07, 0.062, 0.05) * pow(max(md, 0.0), 40.0)) * uNight;
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the land: autumn grass, drifts of fallen leaves under the trees, the roads and the village green from their map; the hills' woods a patchwork
+// of maple reds and oranges, birch and beech gold, pines and hemlocks dark among them, with a canopy's bump that fades once smaller than a pixel;
+// by night the village's windows lighting the ground round them
+const AU_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform sampler2D uRoads; uniform vec4 uRoadRect; uniform float uNight; uniform sampler2D uNightMap; uniform vec4 uNightRect; uniform vec3 uLampCol;
+  varying vec3 vPW; varying float vSlope;
+  vec3 auCanopy(vec2 p, float fw, out float shade) {
+    float a = texture2D(uNoise, p * 0.0031).r * 0.6 + texture2D(uNoise, p * 0.00137 + 0.5).g * 0.4, b = texture2D(uNoise, p * 0.011 + 0.31).g * 0.7 + texture2D(uNoise, p * 0.0047 + 0.7).r * 0.3; // the stands: which trees a stretch of hillside favours (two scales, so they never repeat)
+    float t1 = texture2D(uNoise, p * 0.043 + 0.13).r, t2 = texture2D(uNoise, p * 0.047 + 0.57).g, t3 = texture2D(uNoise, p * 0.039 + 0.81).r, t4 = texture2D(uNoise, p * 0.041 + 0.37).g, cr = texture2D(uNoise, p * 0.07 + 0.29).g; // crown by crown
+    float far = smoothstep(0.35, 2.2, fw), w = clamp(fwidth(t1) * 1.5 + far * 0.6, 0.02, 0.6); // a crown's edge: once the crowns shrink to a pixel or two they blur into their stand's colour
+    vec3 col = vec3(0.8, 0.32, 0.05); // sugar maples, orange
+    col = mix(col, vec3(0.62, 0.09, 0.05), smoothstep(0.55 - w, 0.55 + w, t1 + (b - 0.5) * 0.35)); // red maples
+    col = mix(col, vec3(0.86, 0.62, 0.1), smoothstep(0.55 - w, 0.55 + w, t2 + (0.5 - b) * 0.3)); // birches and beeches, gold
+    col = mix(col, vec3(0.46, 0.26, 0.09), smoothstep(0.6 - w, 0.6 + w, t3) * 0.8); // oaks, russet
+    col = mix(col, vec3(0.1, 0.18, 0.08), smoothstep(0.6 - w, 0.6 + w, t4 + (a - 0.5) * 0.5)); // pines and hemlocks, in stands
+    float lit = mix(0.55 + 0.6 * smoothstep(0.3, 0.7, cr), 0.85, max(far, smoothstep(0.1, 0.5, fwidth(cr) * 3.0))); // each crown lit on top, shadowed between them
+    vec3 stand = mix(vec3(0.84, 0.58, 0.1), vec3(0.8, 0.34, 0.05), smoothstep(0.38, 0.5, b)); // far off, a stand's own colour: gold, orange,
+    stand = mix(stand, vec3(0.66, 0.13, 0.05), smoothstep(0.52, 0.64, b)); // red
+    stand = mix(stand, vec3(0.14, 0.2, 0.08), smoothstep(0.6, 0.72, a) * 0.75); // or dark with pines
+    shade = cr * (1.0 - far);
+    return mix(col, stand * 0.9, far) * lit;
+  }
+  vec3 auGround(out float bump) {
+    vec2 ruv = (vPW.xz - uRoadRect.xy) * uRoadRect.zw;
+    float inR = step(0.0, ruv.x) * step(ruv.x, 1.0) * step(0.0, ruv.y) * step(ruv.y, 1.0);
+    vec4 rd = texture2D(uRoads, clamp(ruv, 0.0, 1.0)) * inR; // r: roads, g: the village green, b: fallen leaves under the trees
+    float n1 = texture2D(uNoise, vPW.xz * 0.004).r, n2 = texture2D(uNoise, vPW.xz * 0.03 + 0.3).g, n3 = texture2D(uNoise, vPW.xz * 0.19 + 0.6).r;
+    float fw = fwidth(vPW.x) + fwidth(vPW.z) + fwidth(vPW.y);
+    vec3 grass = mix(vec3(0.36, 0.36, 0.13), vec3(0.52, 0.46, 0.2), n1) * (0.88 + 0.24 * n2); // autumn grass going tawny
+    grass = mix(grass, vec3(0.26, 0.36, 0.11) * (0.9 + 0.2 * n2), rd.g); // the green, kept mown
+    vec3 litter = mix(mix(vec3(0.6, 0.16, 0.05), vec3(0.78, 0.4, 0.07), smoothstep(0.35, 0.6, n3)), vec3(0.8, 0.6, 0.14), smoothstep(0.55, 0.75, n2)); // the leaves fallen: reds, oranges, golds
+    vec3 col = mix(grass, litter * (0.85 + 0.3 * n2), clamp(rd.b * 0.75 + smoothstep(0.62, 0.78, n2) * 0.2, 0.0, 1.0));
+    float sp = texture2D(uNoise, vPW.xz * 1.6 + 0.2).g, sk = texture2D(uNoise, vPW.xz * 1.9 + 0.55).r;
+    col = mix(col, mix(vec3(0.66, 0.14, 0.05), vec3(0.85, 0.58, 0.12), sk), smoothstep(0.6, 0.66, sp) * (1.0 - smoothstep(0.03, 0.12, fw)) * 0.85); // close by, single leaves in the grass
+    col = mix(col, vec3(0.5, 0.42, 0.32) * (0.9 + 0.2 * n3), rd.r); // the roads
+    float sh; vec3 woods = auCanopy(vPW.xz, fw, sh);
+    float forest = max(smoothstep(18.0, 34.0, vPW.y + (n1 - 0.5) * 30.0), smoothstep(-470.0, -560.0, vPW.z + (n2 - 0.5) * 90.0) * smoothstep(4.0, 12.0, vPW.y)) * (1.0 - smoothstep(0.42, 0.5, n2 * 0.3 + n1 * 0.5) * 0.4); // the hills wooded past the village's fields, the odd clearing
+    col = mix(col, woods, forest);
+    col = mix(col, vec3(0.38, 0.36, 0.33) * (0.85 + 0.3 * n3), smoothstep(0.5, 0.7, vSlope) * (1.0 - forest * 0.6)); // ledges of granite where it steepens
+    col = mix(col, vec3(0.28, 0.26, 0.2), 1.0 - smoothstep(-0.4, 0.7, vPW.y)); // the pond's muddy rim
+    bump = mix(n3 * 0.35 * (1.0 - smoothstep(0.06, 0.5, fw)), sh * 2.2 * (1.0 - smoothstep(0.8, 4.0, fw)), forest);
+    return col;
+  }
+  vec3 auBump(vec3 pos, vec3 n, float h) { vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(h), dhy = dFdy(h); vec3 r1 = cross(dpy, n), r2 = cross(n, dpx); float det = dot(dpx, r1); return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2)); }
+  vec3 auLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    return albedo * uLampCol * texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside * uNight;
+  }
+`;
+// the mill pond: dark and still, a breath of wind now and then, rings where leaves land, the canoe's wake, the mirrored world, the moon's path
+const AU_WATER_FS = /* glsl */ `
+  uniform sampler2D tReflect; uniform vec2 uRes; uniform sampler2D uNoise; uniform float uTime; uniform vec3 uDeep; uniform vec3 uHaze; uniform float uFogD;
+  uniform vec4 uDrops[10]; uniform vec4 uBoats[2]; uniform vec3 uGlintDir; uniform vec3 uGlintCol; uniform float uGlint; uniform vec3 uFoam;
+  varying vec3 vWorld;
+  void main() {
+    vec3 toEye = cameraPosition - vWorld; float dist = length(toEye); vec3 V = toEye / dist;
+    vec2 p = vWorld.xz;
+    vec2 s = (texture2D(uNoise, p * vec2(0.012, 0.03) + vec2(uTime * 0.003, 0.0)).rg - 0.5) * 0.16 + (texture2D(uNoise, p * 0.06 - vec2(0.0, uTime * 0.006)).rg - 0.5) * 0.09;
+    s *= 0.35 + 0.65 * smoothstep(0.5, 0.75, texture2D(uNoise, p * 0.003 + vec2(uTime * 0.0012, 0.3)).r); // mostly glassy, catspaws here and there
+    for (int i = 0; i < 10; i++) {
+      vec4 d = uDrops[i];
+      if (d.w <= 0.0) continue;
+      vec2 q = p - d.xy; float rr = length(q), age = uTime - d.z, front = age * 0.8;
+      if (age < 0.0 || age > 6.0) continue;
+      float ring = sin((rr - front) * 11.0) * exp(-abs(rr - front) * 2.2) * exp(-age * 0.6) * step(rr, front + 0.5);
+      s += q / max(rr, 0.05) * ring * 0.35 * d.w;
+    }
+    float wake = 0.0;
+    for (int i = 0; i < 2; i++) {
+      vec4 b = uBoats[i];
+      if (b.w <= 0.0) continue;
+      vec2 q = p - b.xy; float c = cos(b.z), sn = sin(b.z), behind = -(c * q.x + sn * q.y), across = -sn * q.x + c * q.y, L = 60.0 * b.w;
+      if (behind > -2.0 && behind < L) {
+        float fade = 1.0 - clamp(behind / L, 0.0, 1.0), bb = max(behind, 0.0);
+        float arms = exp(-abs(abs(across) - bb * 0.34) * (1.2 / b.w)) * fade * fade * smoothstep(0.0, 2.0, bb), trail = exp(-abs(across) * 0.9 / b.w) * exp(-bb * 0.08 / b.w);
+        wake += arms * 0.25 + trail * 0.2; s += vec2(-sn, c) * sign(across) * arms * 0.2;
+      }
+    }
+    vec3 N = normalize(vec3(s.x * 0.3, 1.0, s.y * 0.3)), Nf = normalize(vec3(s.x * 0.05, 1.0, s.y * 0.05));
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(Nf, V), 0.0), 5.0);
+    vec2 uv = gl_FragCoord.xy / uRes + vec2(s.x * 0.01, s.y * 0.035), dv = vec2(0.0, 0.0025);
+    vec3 refl = (texture2D(tReflect, clamp(uv, 0.001, 0.999)).rgb * 2.0 + texture2D(tReflect, clamp(uv + dv, 0.001, 0.999)).rgb + texture2D(tReflect, clamp(uv - dv, 0.001, 0.999)).rgb) * 0.25;
+    vec3 col = mix(uDeep, refl, clamp(0.12 + 0.86 * fres, 0.0, 0.92));
+    vec3 R = reflect(-V, N); R.y = abs(R.y);
+    vec2 gq = (texture2D(uNoise, p * vec2(0.9, 1.7) + vec2(uTime * 0.03, 0.0)).rg - 0.5) + (texture2D(uNoise, p * vec2(2.3, 3.9) - vec2(0.0, uTime * 0.05)).rg - 0.5) * 0.7 + (texture2D(uNoise, p * 0.21 + vec2(0.3, uTime * 0.01)).rg - 0.5) * 0.8;
+    float calm = 0.45 + 0.55 * smoothstep(0.5, 0.75, texture2D(uNoise, p * 0.003 + vec2(uTime * 0.0012, 0.3)).r); // where the breath of wind is, the path breaks up wider
+    vec3 Rg = reflect(-V, normalize(vec3(gq.x * 0.085 * calm, 1.0, gq.y * 0.085 * calm)));
+    col += uGlintCol * uGlint * (pow(max(dot(Rg, uGlintDir), 0.0), 1600.0) * 2.6 + pow(max(dot(R, uGlintDir), 0.0), 260.0) * 0.12); // the moon's path: a narrow column of glints on the still pond
+    col = mix(col, uFoam, clamp(wake, 0.0, 0.5) * 0.35);
+    float fog = 1.0 - exp(-uFogD * uFogD * dist * dist);
+    gl_FragColor = vec4(mix(col, uHaze, fog), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// the trees' crowns stirring in the breeze, each its own way
+const AU_SWAY = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.07 + instanceMatrix[3].z * 0.05;\n#endif\n  float k = max(position.y - 4.0, 0.0) * 0.014; transformed.x += sin(uTime * 1.3 + ph) * k; transformed.z += cos(uTime * 1.1 + ph * 1.3) * k * 0.7; }";
+// geese: steady beats, wings bending from the shoulder
+const AU_FLAP = "{ float ph = 0.0;\n#ifdef USE_INSTANCING\n  ph = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.37;\n#endif\n  float side = sign(position.z), span = max(abs(position.z) - 0.14, 0.0), f = sin(uTime * 5.2 + ph) * 0.5 + 0.08;\n  transformed.y += span * sin(f); transformed.z = side * (0.14 + span * cos(f)); } /* a goose's steady beat */";
+/** The village's ground from above over rect [x0, z0, x1, z1], one thing a channel: red the roads and lanes, green the mown village green,
+ * blue the leaves fallen under each tree (soft-edged, adding up where crowns overlap). */
+function auGroundMap(THREE, { roads, greens, leaves }, [x0, z0, x1, z1]) {
+  const W = 1024, H = 1024, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H); g.globalCompositeOperation = "lighter";
+  const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (z) => ((z1 - z) / (z1 - z0)) * H, S = W / (x1 - x0); // the canvas's top row is the rect's z1 edge (v = 1 once flipped)
+  g.lineCap = g.lineJoin = "round";
+  for (const [pts, w] of roads) { g.strokeStyle = "rgb(255,0,0)"; g.lineWidth = Math.max(1, w * S); g.beginPath(); pts.forEach(([x, z], i) => (i ? g.lineTo(X(x), Y(z)) : g.moveTo(X(x), Y(z)))); g.stroke(); }
+  for (const [x, z, rx, rz] of greens) { const gr = g.createRadialGradient(X(x), Y(z), 0, X(x), Y(z), rx * S); gr.addColorStop(0, "rgba(0,255,0,1)"); gr.addColorStop(0.8, "rgba(0,255,0,0.9)"); gr.addColorStop(1, "rgba(0,255,0,0)"); g.save(); g.translate(X(x), Y(z)); g.scale(1, rz / rx); g.translate(-X(x), -Y(z)); g.fillStyle = gr; g.beginPath(); g.arc(X(x), Y(z), rx * S, 0, Math.PI * 2); g.fill(); g.restore(); }
+  for (const [x, z, rad, a] of leaves) { const gr = g.createRadialGradient(X(x), Y(z), 0, X(x), Y(z), rad * S); gr.addColorStop(0, `rgba(0,0,255,${a})`); gr.addColorStop(0.6, `rgba(0,0,255,${a * 0.6})`); gr.addColorStop(1, "rgba(0,0,255,0)"); g.fillStyle = gr; g.beginPath(); g.arc(X(x), Y(z), rad * S, 0, Math.PI * 2); g.fill(); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; tex.anisotropy = 4;
+  return tex;
+}
+
+function autumn(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1031);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 32; camera.near = 0.3; camera.far = 90000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  noise.anisotropy = 1;
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), M = new THREE.Matrix4(), M2 = new THREE.Matrix4();
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const cone = (rad, h, seg = 12) => new THREE.ConeGeometry(rad, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const roof = (w, h, d) => roofPrism(THREE).scale(w, h, d); // its ridge along x
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)); // az from straight ahead (−z), positive to the right
+  const SUN = sph(1.95, 0.2), MOON = sph(-2.3, 0.5), MOON_SKY = sph(0.3, 0.1); // the afternoon sun off to the right and a little behind us, warm on the far shore's colours; by night the moonlight from behind us (the harvest moon we see just risen over the hills ahead)
+  const GAL_C = sph(-0.5, 0.5), GAL_N = new THREE.Vector3().crossVectors(GAL_C, new THREE.Vector3(0.4, 0.85, 0.2).normalize()).normalize();
+  GAL_C.addScaledVector(GAL_N, -GAL_C.dot(GAL_N)).normalize();
+  const ACC = 0xff00ff, LAMP = 0xffff00; // vertex-colour markers: the accent; windows lit at night
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx); // the yaw that points a model's +x along (fx, fz)
+  const wrap = (x, lo, hi) => { const L = hi - lo; return ((((x - lo) % L) + L) % L) + lo; };
+  const loopOf = (raw, n = 4) => { // a smoothed closed path, walked by arc length
+    let p = raw.map((q) => q.slice());
+    for (let k = 0; k < n; k++) { const o = []; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; o.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]); } p = o; }
+    const m = p.length, cum = [0]; for (let i = 0; i < m; i++) { const a = p[i], b = p[(i + 1) % m]; cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+    const L = cum[m];
+    const at = (s, out) => { s = ((s % L) + L) % L; let lo = 0, hi = m; while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; } const a = p[lo], b = p[(lo + 1) % m], d = Math.max(1e-6, cum[lo + 1] - cum[lo]), t = (s - cum[lo]) / d; out[0] = a[0] + (b[0] - a[0]) * t; out[1] = a[1] + (b[1] - a[1]) * t; out[2] = (b[0] - a[0]) / d; out[3] = (b[1] - a[1]) / d; return out; };
+    return { pts: p, L, at };
+  };
+  const polyline = (raw, n = 3) => { let p = raw.map((q) => q.slice()); for (let k = 0; k < n; k++) { const o = [p[0]]; for (let i = 0; i < p.length - 1; i++) { const a = p[i], b = p[i + 1]; o.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]); } o.push(p[p.length - 1]); p = o; } return p; };
+  const distTo = (x, z, pts) => { let best = Infinity; for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1, t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2)); best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t)); } return best; };
+  const concatGeos = (list) => { // non-indexed geometries with position, normal and colour joined as one
+    const n = list.reduce((sum, g) => sum + g.attributes.position.count, 0), out = new THREE.BufferGeometry();
+    for (const a of ["position", "normal", "color"]) { const arr = new Float32Array(n * 3); let o = 0; for (const g of list) { arr.set(g.attributes[a].array, o); o += g.attributes[a].array.length; } out.setAttribute(a, new THREE.BufferAttribute(arr, 3)); }
+    for (const g of list) g.dispose();
+    return keep(out);
+  };
+
+  /* --- the land: our bank, the pond, the far shore and its stream, the hills behind and either side --- */
+  const POND = { x: 0, z: -135, rx: 240, rz: 150 };
+  const pondD = (x, z) => { const dx = (x - POND.x) / POND.rx, dz = (z - POND.z) / POND.rz, a = Math.atan2(dz, dx); return Math.hypot(dx, dz) / (1 + 0.06 * Math.sin(3 * a + 1) + 0.04 * Math.sin(5 * a + 2) + 0.025 * Math.sin(9 * a)); };
+  const roadZ = (x) => -302 + 5 * Math.sin(x / 90 + 0.5);
+  const STREAM = polyline([[72, -270], [74, -300], [84, -324], [108, -334], [132, -340], [146, -372], [140, -430], [128, -500], [118, -600], [98, -700], [80, -820]], 3); // down from the hills, east of the village, then west past the mill to the bridge
+  const boxOf = (pts, pad) => pts.reduce((b, [x, z]) => [Math.min(b[0], x - pad), Math.min(b[1], z - pad), Math.max(b[2], x + pad), Math.max(b[3], z + pad)], [Infinity, Infinity, -Infinity, -Infinity]), inB = (b, x, z) => x > b[0] && x < b[2] && z > b[1] && z < b[3];
+  const SBB = boxOf(STREAM, 16); // the stream's bounds: most of the land is nowhere near it
+  const curve = (x, z) => (x * x + Math.pow(z - 40, 2)) / 12742000;
+  function groundH(x, z) {
+    let h = 1.8 + 1.6 * (fbm(x * 0.006, z * 0.006, 3) - 0.5) + 2.0 * smooth(10, 70, z); // the banks low by the water, our bank rising a little behind us
+    const back = Math.min(Math.max(0, -z - 330), 7000);
+    h += back * 0.035 + back * 0.05 * (fbm(x * 0.0012 + 7, z * 0.0012, 4) - 0.25) + 170 * smooth(1500, 5000, back) * fbm(x * 0.0005, z * 0.0005 + 3, 3); // the village's slope, the hills, the far ridges
+    h += 330 * Math.exp(-(((x + 900) / 1500) ** 2 + ((z + 6200) / 1200) ** 2)) + 280 * Math.exp(-(((x - 1900) / 1800) ** 2 + ((z + 7600) / 1300) ** 2)); // two old mountains far behind, blue with distance
+    h += 70 * smooth(260, 900, Math.abs(x)) * (0.55 + 0.6 * fbm(x * 0.002, z * 0.002 + 5, 3)) * smooth(-120, -320, z) + 40 * smooth(300, 700, Math.abs(x)) * smooth(60, -100, z) * (0.5 + 0.5 * fbm(x * 0.003, z * 0.003, 2)); // hills either side
+    const pd = pondD(x, z);
+    if (pd < 1.15) { const k = smooth(1.12, 0.94, pd); h = h * (1 - k) + (-2.6 * (1 - Math.min(1, pd) * Math.min(1, pd)) - 0.5) * k; } // the pond's basin
+    const ds = inB(SBB, x, z) ? distTo(x, z, STREAM) : 99;
+    if (ds < 12) h -= 2.4 * (1 - smooth(0, 12, ds)); // the stream in its channel, its banks meeting the water 4.5 m out
+    return h - curve(x, z);
+  }
+  const C0 = new THREE.Vector3(0, groundH(0, 33) + 3.2, 33); // standing on the bank at the pond's south end, looking north across it to the village
+  const RINGS = [];
+  for (let rr = 6; rr < 60000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 25 ? 0.014 : rr < 250 ? 0.04 : rr < 700 ? 0.014 : rr < 3000 ? 0.02 : 0.035)) RINGS.push(rr); // fine on our bank, coarse over the pond (its basin is under water), fine again round the far shore
+  RINGS.push(60000);
+  const NA = preview ? 100 : 210, AW = 0.85, NR = RINGS.length, N1 = NA + 1, nv = NR * N1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  { const pos = new Float32Array(nv * 3), li = [];
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) { const a = -AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i; pos[k * 3] = x; pos[k * 3 + 1] = groundH(x, z); pos[k * 3 + 2] = z; }
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; li.push(a, b, c, b, d, c); }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(li); landGeo.computeVertexNormals(); }
+
+  /* --- the village: houses along the shore road and up the slope, the church on the green, red barns, the mill by the stream, the covered bridge in your colour --- */
+  const S = [], Pp = (geo, m, hex) => S.push([geo, m, hex]), TREES = [], SMOKE = [], POOLS = [], GL = [], LEAFY = [];
+  let MILL = null, BRIDGE = null;
+  const streamY = (x, z) => { let best = Infinity, y = 0.03; for (const [px, pz] of STREAM) { const d = Math.hypot(px - x, pz - z); if (d < best) { best = d; y = Math.max(0.03, groundH(px, pz) + 0.74); } } return y; }; // the stream's water level nearest a point
+  const WARM = [2.5, 1.6, 0.7], PUMP = [2.8, 1.25, 0.3];
+  const ROAD = polyline(Array.from({ length: 29 }, (_, k) => { const x = -350 + k * 25; return [x, roadZ(x)]; }), 1);
+  const LANES = [polyline([[-60, roadZ(-60)], [-55, -340], [-48, -380], [-60, -430]], 3), polyline([[180, roadZ(180)], [176, -350], [190, -400]], 3)];
+  const CLAP = [0xf2f0ea, 0xf0ece0, 0xe8dca0, 0x8fa0ae, 0xf2f0ea, 0xd8c8a8], ROOFS = [0x4a4a4e, 0x55524e, 0x3e4044, 0x5a4a40], BARN = 0x8a2a20, TRIM = 0xf0eee8, DARKW = 0x2a2420;
+  const HOUSES = [];
+  const house = (x, z, ang, w, d, h, wall, rf, opts = {}) => { // a clapboard house: two storeys of windows, a door, its chimneys; a porch with pumpkins on some
+    const y0 = Math.min(groundH(x - w / 2, z), groundH(x + w / 2, z), groundH(x, z - d / 2), groundH(x, z + d / 2)) - 0.6, c = Math.cos(ang), sn = Math.sin(ang), off = (u, v) => [x + c * u + sn * v, z - sn * u + c * v], top = y0 + h;
+    Pp(box(w, h, d), at(x, y0 + h / 2, z, 0, ang, 0), wall); Pp(roof(w + 0.8, d * 0.55, d + 1.0), at(x, top, z, 0, ang, 0), rf);
+    for (const u of [-w * 0.32, w * 0.32]) { const [cx, cz] = off(u, 0); Pp(box(0.9, 2.6, 0.9), at(cx, top + d * 0.42, cz, 0, ang, 0), 0x8a3a2a); }
+    if (opts.smoke) { const [cx, cz] = off(w * 0.32, 0); SMOKE.push([cx, top + d * 0.42 + 1.4, cz]); }
+    const vs = d / 2 + 0.05; for (const u of [-w * 0.34, -w * 0.12, w * 0.12, w * 0.34]) for (const yy of [y0 + h * 0.3, y0 + h * 0.72]) { if (Math.abs(u) < w * 0.15 && yy < y0 + h * 0.5) continue; const [wx, wz] = off(u, vs); Pp(box(0.85, 1.3, 0.1), at(wx, yy, wz, 0, ang, 0), LAMP); }
+    { const [dx, dz] = off(0, vs); Pp(box(1.1, 2.1, 0.12), at(dx, y0 + 1.65, dz, 0, ang, 0), opts.door ?? 0x7a2a22); }
+    if (opts.porch) { const [px, pz] = off(0, vs + 1.4); Pp(box(w * 0.6, 0.3, 2.6), at(px, y0 + 0.75, pz, 0, ang, 0), 0x8a7a68); for (const u of [-w * 0.28, w * 0.28]) { const [qx, qz] = off(u, vs + 2.5); Pp(cyl(0.1, 0.1, 2.6, 6), at(qx, y0 + 2.2, qz), TRIM); } { const [qx, qz] = off(0, vs + 1.4); Pp(box(w * 0.64, 0.2, 2.9), at(qx, y0 + 3.5, qz, 0, ang, 0), rf); }
+      for (const u of [-1.4, 1.5]) { const [qx, qz] = off(u, vs + 2.2); Pp(blob(0.38, 0.32, 0.38, 1), at(qx, y0 + 1.2, qz), 0xe07818); Pp(cyl(0.04, 0.05, 0.16, 4), at(qx, y0 + 1.55, qz), 0x4a5a20); GL.push([qx, y0 + 1.25, qz, 0.6, ...PUMP, 2.4]); } } // jack-o'-lanterns by the door
+    POOLS.push([...off(0, vs + 3), 8, 0.22, 0]);
+    HOUSES.push({ x, z, w, d });
+  };
+  { let k = 0; for (const x0 of [-285, -238, -192, -150, -20, 30, 152, 196, 240, 286]) { const x = x0 + r(-5, 5), z = roadZ(x) - 15 - r(0, 5); house(x, z, r(-0.06, 0.06), r(9, 12), r(7.5, 9), r(6.6, 7.6), CLAP[k % CLAP.length], ROOFS[k % ROOFS.length], { smoke: k % 2 === 0, porch: k % 3 !== 1 }); k++; }
+    for (const x0 of [-215, -128, 0, 62, 168, 228]) { const x = x0 + r(-6, 6), z = roadZ(x) - 52 - r(0, 14); house(x, z, r(-0.1, 0.1), r(8.5, 11), r(7, 8.5), r(6.2, 7.2), CLAP[(k + 2) % CLAP.length], ROOFS[k % ROOFS.length], { smoke: k % 2 === 1 }); k++; } }
+  for (const [x, z, a] of [[-318, -372, 0.2], [262, -392, -0.15]]) { const y0 = groundH(x, z) - 0.6; Pp(box(16, 8, 11), at(x, y0 + 4, z, 0, a, 0), BARN); Pp(roof(17, 6, 12.4), at(x, y0 + 8, z, 0, a, 0), 0x4a4a48); Pp(box(4, 5, 0.2), at(x, y0 + 2.5, z + 5.6, 0, a, 0), TRIM); Pp(box(3.4, 4.4, 0.24), at(x, y0 + 2.5, z + 5.62, 0, a, 0), 0x6a2018); Pp(cyl(1.8, 1.8, 10, 12), at(x + 10, y0 + 5, z - 2), 0xb8b0a0); Pp(new THREE.SphereGeometry(1.8, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), at(x + 10, y0 + 10, z - 2), 0x6a6a6a); HOUSES.push({ x, z, w: 16, d: 11 }); } // red barns, a silo each
+  { // the church on the green: white clapboard, its tower, the belfry, the spire
+    const x = -85, z = roadZ(-85) - 32, y0 = groundH(x, z) - 0.6;
+    Pp(box(13, 10, 22), at(x, y0 + 5, z), 0xf4f2ec); Pp(roof(23, 6.5, 14).rotateY(Math.PI / 2), at(x, y0 + 10, z), 0x4a4c50);
+    Pp(box(6, 15, 6), at(x, y0 + 7.5, z + 12.5), 0xf4f2ec); Pp(box(6.6, 0.6, 6.6), at(x, y0 + 15.3, z + 12.5), TRIM); Pp(box(4.6, 5.5, 4.6), at(x, y0 + 18.3, z + 12.5), 0xf4f2ec); for (const [ox, oz] of [[0, 2.32], [0, -2.32], [2.32, 0], [-2.32, 0]]) Pp(box(oz ? 1.8 : 0.12, 3, oz ? 0.12 : 1.8), at(x + ox, y0 + 18.4, z + 12.5 + oz), 0x2a2a2c); // the belfry's louvres
+    Pp(box(5.2, 0.5, 5.2), at(x, y0 + 21.3, z + 12.5), TRIM); Pp(cone(3.2, 17, 8), at(x, y0 + 30, z + 12.5, 0, Math.PI / 8, 0), 0xf4f2ec); Pp(cyl(0.05, 0.05, 2.4, 4), at(x, y0 + 39.6, z + 12.5), 0x8a8a8a);
+    for (const s of [-7, -2.5, 2, 6.5]) for (const sd of [-1, 1]) Pp(box(0.12, 4, 1.4), at(x + sd * 6.55, y0 + 5.5, z + s), LAMP);
+    Pp(box(2, 3, 0.15), at(x, y0 + 1.5, z + 15.55), 0x3a2a20); Pp(new THREE.CircleGeometry(1.1, 16), at(x, y0 + 12.4, z + 15.55), 0xf8f6f0); // its door, the clock
+    POOLS.push([x, z + 18, 12, 0.2, 0]); HOUSES.push({ x, z, w: 13, d: 26 });
+  }
+  { // the grist mill on the stream above the bridge: a stone lower storey, red clapboard over it, its wheel in the water facing us, fed by a flume from upstream
+    const x = 118, z = -345, y0 = groundH(x, z - 3) - 0.8, wx = x - 3.5, wz = z + 6.3, sy = streamY(wx, wz - 2);
+    Pp(box(15.4, 6, 11.4), at(x, y0 + 1.5, z), 0x8a8478); Pp(box(15, 5, 11), at(x, y0 + 7, z), 0x7a2a20); Pp(roof(16, 5, 12.4), at(x, y0 + 9.5, z), 0x4a4644);
+    for (const u of [-5, 1.5, 5]) Pp(box(1, 1.4, 0.1), at(x + u, y0 + 7.2, z + 5.55), LAMP); Pp(box(1.6, 2.4, 0.12), at(x + 3.3, y0 + 1.2, z + 5.75), 0x3a2a20); // its windows, the door
+    Pp(box(14, 0.8, 1.3), at(wx + 7, sy + 8.6, wz), 0x5a4030); for (const u of [4.5, 9, 13.5]) Pp(box(0.4, 8.6, 0.4), at(wx + u, sy + 4.3, wz), 0x4a3424); // the flume along from upstream onto the top of the wheel, on its trestle
+    MILL = { x: wx, y: sy + 3.9, z: wz }; POOLS.push([x + 3, z + 9, 9, 0.2, 0]); GL.push([x + 3.3, y0 + 3.0, z + 6.2, 0.5, ...WARM, 2.6]); HOUSES.push({ x, z, w: 15.4, d: 11.4 });
+  }
+  { // the covered bridge where the shore road crosses the stream: its walls in your colour, white portals, the roof
+    let cx = 0; for (let i = 0; i < STREAM.length - 1; i++) { const [ax, az] = STREAM[i], [bx, bz] = STREAM[i + 1]; if ((az - roadZ(ax)) * (bz - roadZ(bx)) <= 0) { const t = (roadZ(ax) - az) / (bz - az || 1); cx = ax + (bx - ax) * Math.min(1, Math.max(0, t)); break; } }
+    const cz = roadZ(cx), L = 40, y = Math.max(groundH(cx - L / 2, cz), groundH(cx + L / 2, cz)) + 0.2; // its deck level with the higher bank
+    for (const sd of [-1, 1]) Pp(box(L, 4.4, 0.35), at(cx, y + 2.6, cz + sd * 3.1), ACC); Pp(box(L, 0.5, 6.6), at(cx, y + 0.2, cz), 0x5a4030); Pp(roof(L + 1.2, 2.4, 7.6), at(cx, y + 4.8, cz), 0x4a4a4e);
+    for (let s = -L / 2 + 3; s < L / 2 - 2; s += 4.2) Pp(box(1.0, 0.7, 0.4), at(cx + s, y + 3.4, cz + 3.18), 0x241c18); // its little windows down the side
+    for (const s of [-1, 1]) { const ex = cx + s * (L / 2); Pp(box(0.4, 5.6, 7.4), at(ex, y + 2.8, cz), TRIM); Pp(box(0.45, 3.6, 4.2), at(ex + s * 0.05, y + 1.9, cz), 0x1c1612); Pp(box(4, y + 2.5, 7.5), at(ex + s * 2.4, (y - 2.5) / 2, cz), 0x8a8478); GL.push([ex + s * 0.6, y + 4.2, cz + 2.6, 0.55, ...WARM, 2.6], [ex + s * 0.6, y + 4.2, cz - 2.6, 0.55, ...WARM, 2.6]); POOLS.push([ex + s * 2, cz + 4, 7, 0.25, 0]); } // portals, abutments, lanterns either side of each
+    BRIDGE = { x: cx, z: cz };
+  }
+  // the pumpkin patch between the road and the water, corn shocks by it
+  for (let k = 0; k < (preview ? 14 : 34); k++) { const x = r(-235, -165), z = r(-292, -284) + (x + 200) * 0.02, y = groundH(x, z); Pp(blob(0.42, 0.34, 0.42, 1), at(x, y + 0.28, z), [0xe07818, 0xd86a14, 0xe88a20][k % 3]); }
+  for (let k = 0; k < 8; k++) { const x = -240 + k * 10 + r(-2, 2), z = -298 + r(-1, 1), y = groundH(x, z); Pp(cone(0.9, 2.6, 7), at(x, y + 1.25, z, 0, r(0, 3), 0), 0xc8a868); }
+  for (let k = 0; k < 3; k++) { const x = -225 + k * 22, z = -289; GL.push([x, groundH(x, z) + 0.4, z, 0.6, ...PUMP, 2.4]); } // jack-o'-lanterns in the patch
+  // a dry-stone wall along the road's far side, and one down our bank
+  for (const pts of [ROAD.filter(([x]) => x > -300 && x < -110).map(([x, z]) => [x, z - 5]), polyline([[-11, 34], [-17, 27], [-29, 23], [-44, 21]], 2)]) for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], L = Math.hypot(bx - ax, bz - az); for (let s = 0; s < L; s += 0.9) { const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L; Pp(blob(0.55, 0.42, 0.5, 0), at(x, groundH(x, z) + 0.3, z, r(0, 3), r(0, 3), 0), [0x8a8a84, 0x7a7a74, 0x9a968c][Math.floor(r() * 3)]); } }
+
+  const rock = (sx, sy, sz, seed) => { const g = new THREE.IcosahedronGeometry(1, 2), p = g.attributes.position; for (let i = 0; i < p.count; i++) { V.fromBufferAttribute(p, i); const k = 0.84 + 0.32 * fbm(V.x * 1.3 + seed, V.y * 1.3 + V.z * 0.9 - seed, 3); p.setXYZ(i, V.x * k * sx, Math.max(V.y * k, -0.35) * sy, V.z * k * sz); } g.computeVertexNormals(); return g; }; // a glacial boulder, faceted
+  const EDGE = (x) => { for (let z = 6; z < 30; z += 0.2) if (pondD(x, z) > 1) return z; return 15; }; // where our bank meets the water
+  for (const [x, dz, sx, sy, sz, a] of [[-3.4, 0.4, 0.9, 0.5, 0.75, 0.3], [-2.3, 1.1, 0.55, 0.36, 0.5, 1.2], [5.6, 0.2, 1.0, 0.6, 0.8, 2.2], [6.8, 0.9, 0.5, 0.32, 0.45, 0.7], [1.2, -0.9, 0.45, 0.28, 0.4, 1.9]]) { const z = EDGE(x) + dz; Pp(rock(sx, sy, sz, a * 7), at(x, Math.max(-0.2, groundH(x, z)) + sy * 0.2, z, 0, a, 0.08), [0x8a8780, 0x7e7a72, 0x96928a][Math.floor(r() * 3)]); } // granite boulders at the water's edge
+
+  /* --- the roads, the green, the fallen leaves: painted onto the land --- */
+  const MAP = [-400, -480, 400, 60];
+
+  /* --- materials --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const NIGHT_RECT = [-360, -460, 360, -270];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, nightMapU = { value: null }, roadsU = { value: null }, lampColU = { value: new THREE.Color(1.0, 0.76, 0.46).multiplyScalar(1.4) };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uRoads: roadsU, uRoadRect: rectU(MAP), uNight: nightU, uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uLampCol: lampColU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW; varying float vSlope;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPW = position; vSlope = 1.0 - normalize(objectNormal).y; /* the local position: the mirrored pass keeps the colours */");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + AU_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float auH; diffuseColor.rgb = auGround(auH);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = auBump(-vViewPosition, normal, auH);")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += auLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "au-ground";
+  const lit = (mat, key, extraVS = "", accNight = 0.1, fx = null) => { // markers: the accent; windows dark by day, lit by night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU, uTime: time }, fx ? fx.uniforms : {});
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uTime;").replace("#include <begin_vertex>", "#include <begin_vertex>\n" + extraVS);
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;" + (fx ? fx.decl : ""))
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float auLamp = 0.0, auAcc = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.05, 0.06), isLamp); auLamp = isLamp; auAcc = isAcc; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.74, 0.42) * auLamp * (0.02 + 1.5 * uNight) + uAccent * auAcc * ${accNight.toFixed(2)} * uNight;${fx ? fx.fs : ""}`);
+    };
+    mat.customProgramCacheKey = () => "au-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 })), "paint", "", 0.1);
+  const treeMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88 })), "tree", AU_SWAY);
+  const world = new THREE.Group(); scene.add(world); // everything the pond mirrors
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; world.add(land);
+  const partMesh = (geo, mat, count, name) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, count)); m.name = name; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); world.add(m); keep(m); return m; };
+  const site = partMesh(keep(mergeColored(THREE, S)), paintMat, 1, "au-site"); site.setMatrixAt(0, new THREE.Matrix4()); // one instance: it shares the canoe's and the wheel's program
+  const wheelGeo = keep(mergeColored(THREE, [...[-0.75, 0.75].map((zz) => [new THREE.TorusGeometry(4.2, 0.12, 6, 32), at(0, 0, zz), 0x4a3424]), ...Array.from({ length: 8 }, (_, k) => [box(8.2, 0.16, 0.16), at(0, 0, 0, 0, 0, (k * Math.PI) / 8), 0x4a3424]), ...Array.from({ length: 24 }, (_, k) => { const a = (k / 24) * Math.PI * 2; return [box(0.1, 0.9, 1.6), at(Math.cos(a) * 4.2, Math.sin(a) * 4.2, 0, 0, 0, a), 0x5a4030]; }), [cyl(0.35, 0.35, 2.2, 10), at(0, 0, 0, Math.PI / 2, 0, 0), 0x3a2a1e]])); // two rims, the spokes, the paddles, the axle
+  const wheel = partMesh(wheelGeo, paintMat, 1, "au-wheel");
+
+  /* --- the trees: maples, birches, beeches and oaks in their colours, pines and hemlocks among them; two big maples framing our view --- */
+  const lump = (sx, sy, sz, det) => { const g = new THREE.IcosahedronGeometry(1, det), p = g.attributes.position, n = g.attributes.normal; for (let i = 0; i < p.count; i++) { V.fromBufferAttribute(p, i).normalize(); n.setXYZ(i, V.x, V.y, V.z); } return g.scale(sx, sy, sz); }; // smooth-shaded even when coarse
+  const trunk = (r0, r1, h, seg) => new THREE.CylinderGeometry(r0, r1, h, seg, 1, true); // never seen from its ends
+  const decidOf = (det) => keep(mergeColored(THREE, [[trunk(0.28, 0.45, 5.0, 6), at(0, 2.5, 0), 0x5a4a3c], [lump(3.7, 3.0, 3.6, det), at(0, 6.4, 0), 0xffffff], [lump(2.8, 2.4, 2.7, det), at(1.9, 8.0, 0.7), 0xffffff], [lump(2.6, 2.3, 2.5, det), at(-1.7, 7.8, -1.0), 0xffffff], [lump(2.3, 2.0, 2.3, det), at(0.2, 9.6, -0.3), 0xffffff], [lump(2.2, 1.8, 2.2, det), at(-2.0, 5.4, 1.3), 0xffffff]])); // its crown low and lumpy
+  const decid = decidOf(1), decidLo = decidOf(0), decidHill = keep(mergeColored(THREE, [[trunk(0.3, 0.45, 5.0, 5), at(0, 2.5, 0), 0x5a4a3c], [lump(3.9, 3.7, 3.8, 0), at(0, 7.4, 0), 0xffffff]])); // rounded crowns near us, plainer ones far off, one crown apiece on the hills
+  const conif = keep(mergeColored(THREE, [[trunk(0.25, 0.35, 4, 6), at(0, 2, 0), 0x5a4a3a], [cone(2.9, 6, 8), at(0, 6, 0), 0xffffff], [cone(2.3, 5.4, 8), at(0, 9.2, 0), 0xffffff], [cone(1.6, 4.4, 8), at(0, 12.4, 0), 0xffffff]])), conifHill = keep(mergeColored(THREE, [[trunk(0.25, 0.35, 4, 5), at(0, 2, 0), 0x5a4a3a], [new THREE.ConeGeometry(2.8, 11.5, 6, 1, true), at(0, 8.6, 0), 0xffffff]])); // and a plain spire for the hills
+  const FALL = ["#b0261a", "#c8381c", "#d84e18", "#e0701c", "#e09a20", "#e8b828", "#d8c040", "#a0501c", "#c86020", "#8a3a1a", "#6a8a2c", "#e0a830"], PINES = ["#22381c", "#2a4220", "#1d3018"];
+  const RBB = boxOf(ROAD, 16), clearOf = (x, z, pad) => pondD(x, z) > 1.02 && (!inB(SBB, x, z) || distTo(x, z, STREAM) > 9) && (!inB(RBB, x, z) || distTo(x, z, ROAD) > pad) && !HOUSES.some((h) => Math.abs(h.x - x) < h.w / 2 + 5 && Math.abs(h.z - z) < h.d / 2 + 5) && !(x > -245 && x < -160 && z > -300 && z < -280) && Math.hypot(x - C0.x, z - C0.z) > 9;
+  const addTree = (x, z, s, fir, hex) => { const y = groundH(x, z) - 0.4; TREES.push([x, y, z, s, r(0, 6.28), fir, hex ?? (fir ? PINES[Math.floor(r() * 3)] : FALL[Math.floor(r() * FALL.length)])]); if (!fir && Math.abs(x) < 380 && z > -470 && z < 55) LEAFY.push([x, z, 6 * s, 0.75]); };
+  for (let k = 0; k < (preview ? 400 : 1300); k++) { const a = r(0, 6.283), d = r(1.03, 1.5), x = POND.x + Math.cos(a) * POND.rx * d, z = POND.z + Math.sin(a) * POND.rz * d; if (z > 20 && Math.abs(x) < 70) continue; if (fbm(x * 0.012 + 3, z * 0.012, 2) < 0.4) continue; if (HOUSES.some((h) => Math.abs(h.x - x) < h.w / 2 + 3 && z > h.z && z < h.z + 62) && r() < 0.85) continue; const fir = r() < 0.17; if (clearOf(x, z, 8) && TREES.every((t) => Math.hypot(t[0] - x, t[2] - z) > 6.5)) addTree(x, z, fir ? r(1.0, 1.6) : r() < 0.12 ? r(1.35, 1.7) : r(0.7, 1.3), fir); } // round the shores, in stands, the houses showing between them
+  for (let k = 0; k < (preview ? 200 : 600); k++) { const x = r(-340, 340), z = r(-460, -300); if (HOUSES.some((h) => Math.abs(h.x - x) < h.w / 2 + 2 && z > h.z && z < h.z + 40) && r() < 0.6) continue; if (clearOf(x, z, 9) && TREES.every((t) => Math.hypot(t[0] - x, t[2] - z) > 9)) addTree(x, z, r(0.85, 1.3), r() < 0.18); } // through the village and up its slope
+  for (let k = 0; k < (preview ? 500 : 1800); k++) { const x = r(-900, 900), z = r(-1100, -460); if (clearOf(x, z, 6) && groundH(x, z) > 20) addTree(x, z, r(0.9, 1.4), r() < 0.25); } // the near hills' woods, their crowns on the skyline
+  const reedGeo = keep(mergeColored(THREE, [...[[1.7, 0.1, 0], [1.5, 0.22, 1.3], [1.25, 0.34, 2.4], [1.6, 0.16, 3.4], [1.1, 0.42, 4.3], [1.4, 0.28, 5.2], [0.9, 0.5, 0.7], [1.2, 0.36, 3.0]].map(([h, lean, turn]) => [cone(0.035, h, 3).translate(0, h / 2, 0), at(0, 0, 0, 0, turn, lean), 0xffffff]), ...[[0.12, 1.85], [-0.1, 1.55]].flatMap(([x, h]) => [[cyl(0.012, 0.016, h, 4).translate(0, h / 2, 0), at(x, 0, 0.04), 0xd0d0c0], [cyl(0.05, 0.05, 0.28, 6), at(x, h - 0.2, 0.04), 0x5a3a22], [cyl(0.006, 0.006, 0.16, 3), at(x, h, 0.04), 0x8a7a60]])])); // a tuft of arching blades, two cattails standing out of it
+  const REEDS = []; for (const [cx, n] of [[-7.4, 15], [-4.8, 5], [4.6, 6], [8.4, 16]]) { const z0 = EDGE(cx); for (let i = 0; i < (preview ? Math.ceil(n / 2) : n); i++) { const x = cx + r(-1.5, 1.5), z = z0 + r(-1.8, 0.5); REEDS.push([x, Math.max(-0.6, groundH(x, z)) - 0.1, z, r(0.65, 1.1), r(0, 6.28), false, ["#8a8a3a", "#a09a48", "#7a6a30", "#b0a058"][Math.floor(r() * 4)]]); } } // cattails in clumps either side of us
+  const SBOX = [-330, -470, 330, 60], inBox = (q) => q[0] > SBOX[0] - 10 && q[0] < SBOX[2] + 10 && q[2] > SBOX[1] - 10 && q[2] < SBOX[3] + 10; // the shadows' box (shadowFit)
+  const placeTrees = (geo, list, name) => { const m = partMesh(geo, treeMat, list.length, name), col = new THREE.Color(); list.forEach(([x, y, z, s, a, fir, hex], i) => { const tall = fir ? r(0.95, 1.2) : r(0.82, 1.32), wide = fir ? r(0.9, 1.1) : 1.6 - 0.62 * tall; m.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, a, 0)), V2.set(s * wide, s * tall, s * wide))); m.setColorAt(i, col.set(hex)); }); /* tall and narrow to low and broad */ m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; return m; };
+  const near = (q) => Math.hypot(q[0] - C0.x, q[2] - C0.z) < 260;
+  const hill = (q) => Math.hypot(q[0] - C0.x, q[2] - C0.z) > 520;
+  const DN = TREES.filter((q) => !q[5] && near(q)), DFB = TREES.filter((q) => !q[5] && !near(q) && inBox(q)), DFO = TREES.filter((q) => !q[5] && !near(q) && !inBox(q) && !hill(q)), DH = TREES.filter((q) => !q[5] && !inBox(q) && hill(q)), CN = TREES.filter((q) => q[5] && inBox(q)), CO = TREES.filter((q) => q[5] && !inBox(q) && !hill(q)), CH = TREES.filter((q) => q[5] && !inBox(q) && hill(q));
+  const decids = placeTrees(decid, DN, "au-trees"), decidsB = placeTrees(decidLo, DFB, "au-trees-far"), decidsO = placeTrees(decidLo, DFO, "au-trees-out"), decidsH = placeTrees(decidHill, DH, "au-trees-hill"), firs = placeTrees(conif, CN, "au-firs"), firsO = placeTrees(conif, CO, "au-firs-out"), firsH = placeTrees(conifHill, CH, "au-firs-hill"), reeds = placeTrees(reedGeo, REEDS, "au-reeds"); // the ones beyond the shadows' box cast none
+
+  /* --- leaves falling from the two big maples, more floating on the pond; the canoe; the geese --- */
+  const leafShape = new THREE.Shape([[0, -0.11], [0.05, -0.04], [0.11, -0.05], [0.08, 0.02], [0.13, 0.07], [0.05, 0.07], [0, 0.15], [-0.05, 0.07], [-0.13, 0.07], [-0.08, 0.02], [-0.11, -0.05], [-0.05, -0.04]].map(([a, b]) => new THREE.Vector2(a * 0.85, b * 0.85)));
+  const leafGeo = (() => { const front = new THREE.ShapeGeometry(leafShape), back = front.clone(); const idx = back.index.array; for (let i = 0; i < idx.length; i += 3) { const t = idx[i]; idx[i] = idx[i + 2]; idx[i + 2] = t; } back.computeVertexNormals(); for (const g of [front, back]) { const c = new Float32Array(g.attributes.position.count * 3).fill(1); g.setAttribute("color", new THREE.BufferAttribute(c, 3)); g.deleteAttribute("uv"); } const out = concatGeos([front.toNonIndexed(), back.toNonIndexed()]); front.dispose(); back.dispose(); return out; })(); // a maple leaf, seen from either side
+  const NFALL = preview ? 40 : 110, NFLOAT = preview ? 60 : 170, NDOWN = preview ? 90 : 260, FALLING = [], FLOATING = [], DOWN = [];
+  for (let k = 0; k < 90; k++) LEAFY.push([r(-60, 60), r(18, 58), r(2, 5), r(0.35, 0.8)]); // leaves already down on our bank
+  for (let k = 0; k < NFALL; k++) FALLING.push({ x: r(-22, 22), z: r(2, 24), y: r(7, 15), ph: r(0, 1), sp: r(0.75, 1.15), hex: FALL[Math.floor(r() * 10)] }); // from the maples over our heads, out of sight above us
+  for (let tries = 0; FLOATING.length < NFLOAT && tries < 2000; tries++) { const x = r(-70, 70), z = r(-120, 12); if (pondD(x, z) < 0.94) FLOATING.push({ x, z, a: r(0, 6.28), ph: r(0, 6.28), hex: FALL[Math.floor(r() * 11)] }); }
+  for (let tries = 0; DOWN.length < NDOWN && tries < 4000; tries++) { const z = r(EDGE(0) + 0.6, C0.z - 5), x = r(-1, 1) * (C0.z - z) * 0.62; if (fbm(x * 0.3, z * 0.3, 2) > 0.47 + 0.1 * r()) DOWN.push([x, groundH(x, z) + 0.03, z, r(0, 6.28), FALL[Math.floor(r() * 10)], r(-0.35, 0.35), r(-0.35, 0.35), r(0.75, 1.15)]); } // the leaves lying on our bank, drifted together here and there
+  const leafGlowU = { value: 0.3 }, leafMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "leaf", "", 0, { uniforms: { uLeafGlow: leafGlowU }, decl: " uniform float uLeafGlow;", fs: "\n  totalEmissiveRadiance += diffuseColor.rgb * uLeafGlow; /* the sun shining through */" });
+  const leaves = partMesh(leafGeo, leafMat, NFALL + NFLOAT + NDOWN, "au-leaves");
+  { const col = new THREE.Color(); FALLING.forEach((l, k) => leaves.setColorAt(k, col.set(l.hex))); FLOATING.forEach((l, k) => leaves.setColorAt(NFALL + k, col.set(l.hex))); DOWN.forEach(([x, y, z, a, hex, tx, ty, sc], k) => { leaves.setColorAt(NFALL + NFLOAT + k, col.set(hex)); leaves.setMatrixAt(NFALL + NFLOAT + k, M.compose(V.set(x, y + 0.03, z), Q.setFromEuler(E.set(-Math.PI / 2 + tx, ty, a)), V2.setScalar(sc))); }); }
+  const canoeGeo = keep(mergeColored(THREE, [[blob(2.6, 0.24, 0.42, 1), at(0, 0.1, 0), ACC], [blob(2.2, 0.06, 0.32, 1), at(0, 0.3, 0), 0x2a2420], ...[[1.4, 0x8a2a20], [-1.5, 0x2a4a6a]].flatMap(([x, c]) => [[box(0.34, 0.55, 0.4), at(x, 0.6, 0), c], [blob(0.11, 0.13, 0.11, 0), at(x + 0.02, 1.0, 0), 0xc89a78], [cyl(0.16, 0.13, 0.12, 8), at(x + 0.02, 1.12, 0), 0x3a3a30]])])); // in your colour; two paddlers in plaid
+  const paddleGeo = keep(mergeColored(THREE, [[cyl(0.022, 0.022, 1.5, 5), at(0, -0.55, 0), 0x8a6a40], [box(0.04, 0.5, 0.18), at(0, -1.3, 0), 0x7a5a30]])); // from the hands down to its blade
+  const canoe = partMesh(canoeGeo, paintMat, 1, "au-canoe"), paddles = partMesh(paddleGeo, paintMat, 2, "au-paddles");
+  const ROUND = loopOf([[-95, -62], [0, -44], [88, -58], [118, -110], [64, -162], [-40, -168], [-112, -122]]), CQ = [0, 0, 0, 0], CANOE_V = 1.25, STROKE = 2.2;
+  const gooseGeo = keep(mergeColored(THREE, [[blob(0.5, 0.15, 0.16, 1), at(0, 0, 0), 0x6a6258], [cyl(0.04, 0.05, 0.42, 5), at(0.62, 0.04, 0, 0, 0, -1.35), 0x161616], [blob(0.09, 0.07, 0.07, 0), at(0.86, 0.08, 0), 0x161616], [blob(0.05, 0.04, 0.05, 0), at(0.86, 0.06, 0.04), 0xe8e6e0], [blob(0.05, 0.04, 0.05, 0), at(0.86, 0.06, -0.04), 0xe8e6e0], ...[-1, 1].flatMap((sd) => [[blob(0.26, 0.025, 0.5, 1), at(0, 0.02, sd * 0.56), 0x5a5248], [blob(0.17, 0.02, 0.32, 1), at(-0.06, 0.03, sd * 1.12, 0, sd * 0.25, 0), 0x3a3630]]), [blob(0.14, 0.03, 0.1, 0), at(-0.52, 0.02, 0), 0x2a2622]])); // grey-brown body, the black neck, its white chin, long wings
+  const NGOOSE = 11, geese = partMesh(gooseGeo, lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })), "goose", AU_FLAP), NGOOSE, "au-geese");
+  const NSM = SMOKE.length * (preview ? 6 : 12), smPos = new Float32Array(NSM * 3), smA = new Float32Array(NSM), smS = new Float32Array(NSM);
+  const smGeo = keep(new THREE.BufferGeometry()); smGeo.setAttribute("position", new THREE.BufferAttribute(smPos, 3)); smGeo.setAttribute("aA", new THREE.BufferAttribute(smA, 1)); smGeo.setAttribute("aS", new THREE.BufferAttribute(smS, 1));
+  const smU = { uPx: { value: 700 }, uCol: { value: new THREE.Color() } };
+  const smoke = new THREE.Points(smGeo, shader(MC_DUST_VS, MC_DUST_FS, smU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+  smoke.frustumCulled = false; smoke.renderOrder = 15; world.add(smoke);
+  roadsU.value = keep(auGroundMap(THREE, { roads: [[ROAD, 6], ...LANES.map((l) => [l, 4])], greens: [[-55, -330, 34, 20]], leaves: LEAFY }, MAP));
+
+  /* --- the sky, the stars --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSunDir: { value: SUN.clone() }, uSunGlow: { value: new THREE.Color() }, uDay: { value: 1 },
+    uNight: nightU, uNoise: { value: noise }, uGalN: { value: GAL_N }, uGalC: { value: GAL_C }, uTime: time, uMoonDir: { value: MOON_SKY.clone() }, uCloudLit: { value: new THREE.Color() }, uCloudShade: { value: new THREE.Color() }, uCloudAmt: { value: 1 } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(80000, 48, 24)), shader(LANTERN_SKY_VS, AU_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; world.add(sky);
+  const NSTAR = preview ? 500 : 1500, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.03, 1)), b = r(); starPos.set([C0.x + Math.cos(a) * Math.cos(e) * 60000, C0.y + Math.sin(e) * 60000, C0.z + Math.sin(a) * Math.cos(e) * 60000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (b < 0.92 ? r(1, 1.8) : r(2, 3)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); }
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; world.add(stars);
+
+  /* --- glows by night: the bridge's lanterns, jack-o'-lanterns, the mill's lamp --- */
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, NGL) * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, NGL) * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, NGL)), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; world.add(glows);
+  nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
+
+  /* --- the pond: drawn last, mirroring the world above it --- */
+  const reflectRT = keep(new THREE.WebGLRenderTarget(4, 4, { samples: preview ? 0 : 4 })); reflectRT.texture.colorSpace = THREE.SRGBColorSpace;
+  const fogD = { value: 1 / 6500 }, dropsU = { value: Array.from({ length: 10 }, () => new THREE.Vector4()) }, boatsU = { value: [new THREE.Vector4(), new THREE.Vector4()] };
+  const waterU = { tReflect: { value: reflectRT.texture }, uRes: { value: new THREE.Vector2(1, 1) }, uNoise: { value: noise }, uTime: time, uDeep: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uFogD: fogD,
+    uDrops: dropsU, uBoats: boatsU, uGlintDir: { value: MOON_SKY.clone() }, uGlintCol: { value: new THREE.Color() }, uGlint: { value: 0 }, uFoam: { value: new THREE.Color() } };
+  const seaGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], idx = [], NX = 120, NZ = 70; for (let j = 0; j <= NZ; j++) for (let i = 0; i <= NX; i++) pos.push(POND.x - POND.rx * 1.2 + (2.4 * POND.rx * i) / NX, 0, POND.z - POND.rz * 1.2 + (2.4 * POND.rz * j) / NZ); for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) { const a = j * (NX + 1) + i, b = a + 1, c = a + NX + 1, d = c + 1; idx.push(a, c, b, b, c, d); } seaGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); seaGeo.setIndex(idx); } // over the pond and its shores: the land hides it where it is dry
+  const sea = new THREE.Mesh(seaGeo, shader(LANTERN_LAKE_VS, AU_WATER_FS, waterU)); sea.frustumCulled = false; sea.renderOrder = 2; scene.add(sea);
+  const streamGeo = keep(new THREE.BufferGeometry());
+  { const pos = [], idx = []; let n = 0; for (let i = 0; i < STREAM.length; i++) { const [x, z] = STREAM[i], [bx, bz] = STREAM[Math.min(STREAM.length - 1, i + 1)], [ax, az] = STREAM[Math.max(0, i - 1)], dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l; const y = Math.max(0.03, groundH(x, z) + 0.74); if (n === 0 && y < 0.06) continue; /* below the pond's level the pond's own water fills the channel */ pos.push(x + nx * 4.6, y, z + nz * 4.6, x - nx * 4.6, y, z - nz * 4.6); if (n) idx.push(n * 2 - 2, n * 2, n * 2 - 1, n * 2 - 1, n * 2, n * 2 + 1); n++; } streamGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); streamGeo.setIndex(idx); streamGeo.computeVertexNormals(); }
+  const streamMat = keep(new THREE.MeshBasicMaterial({ color: 0x9fb2c8, side: THREE.DoubleSide })); // unlit: the sky's colour off the water
+  const stream = new THREE.Mesh(streamGeo, streamMat); stream.frustumCulled = false; world.add(stream);
+
+  /* --- light: the afternoon sun with long shadows over the village, both shores and our bank --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1);
+  world.add(hemi, sun, sun.target); sun.target.position.set(0, 10, -200);
+  scene.fog = new THREE.FogExp2(0xffffff, fogD.value);
+  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.06; sun.shadow.intensity = 0.62; for (const m of [site, decids, decidsB, firs, canoe, wheel]) m.castShadow = true; land.receiveShadow = site.receiveShadow = true; }
+  const LIT_MATS = [groundMat, paintMat, treeMat];
+  const shadowFit = () => {
+    sun.position.copy(sun.target.position).addScaledVector(SUN, 1500);
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [SBOX[0], SBOX[2]]) for (const y of [-5, 70]) for (const z of [SBOX[1], SBOX[3]]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x - 4; cam.right = hi.x + 4; cam.bottom = lo.y - 4; cam.top = hi.y + 4; cam.near = Math.max(1, -hi.z - 100); cam.far = -lo.z + 100; cam.updateProjectionMatrix();
+  };
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    skyU.uZenith.value.set(d ? "#03050e" : "#4878c0"); skyU.uMid.value.set(d ? "#0a1226" : "#9ebde2"); skyU.uHorizon.value.set(d ? "#1a2238" : "#f2dcc4");
+    skyU.uSunGlow.value.set("#ffc080").multiplyScalar(d ? 0 : 0.5); skyU.uDay.value = d ? 0 : 1;
+    skyU.uCloudLit.value.set(d ? "#3a4458" : "#fff6ea"); skyU.uCloudShade.value.set(d ? "#141a28" : "#a0aac0"); skyU.uCloudAmt.value = d ? 0.5 : 1;
+    starU.uAmt.value = d ? 1 : 0; stars.visible = d;
+    const haze = new THREE.Color(d ? "#0c1424" : "#b8c8dc"); scene.fog.color.copy(haze); fogD.value = d ? 1 / 5200 : 1 / 4800; scene.fog.density = fogD.value;
+    if (d) { sun.position.copy(sun.target.position).addScaledVector(MOON, 1500); sun.castShadow = false; } else { sun.castShadow = !preview; shadowFit(); }
+    sun.color.set(d ? "#9fb4dc" : "#ffd2a0"); sun.intensity = d ? 0.55 : 2.5;
+    hemi.color.set(d ? "#24345a" : "#a8c0e0"); hemi.groundColor.set(d ? "#10100e" : "#6a5a3a"); hemi.intensity = d ? 0.6 : 0.7;
+    nightU.value = d ? 1 : 0; leafGlowU.value = d ? 0.03 : 0.3;
+    smU.uCol.value.set(d ? "#2a3040" : "#d8d4cc");
+    waterU.uDeep.value.set(d ? "#020406" : "#1a221c"); waterU.uFoam.value.set(d ? "#2a3038" : "#dce4e0"); waterU.uHaze.value.copy(haze);
+    waterU.uGlintCol.value.set("#f0d8b8"); waterU.uGlint.value = d ? 0.7 : 0;
+    streamMat.color.set(d ? "#121a26" : "#9fb2c8");
+    glowU.uAmt.value = d ? 1 : 0;
+    for (let i = 0; i < NGL; i++) aGlow.setW(i, d ? GL[i][3] : 0);
+    aGlow.needsUpdate = true;
+  }
+  applyPalette(pal);
+
+  /* --- the camera; the mirrored pass, clipped at the water, drawn only below the horizon on screen --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 32 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.set(C0.x, C0.y, C0.z - 4 * k);
+    const yaw = 0.01 * Math.sin(clock * 0.025) - 0.12 * k, pitch = -0.045 + 0.02 * k; // a phone steps nearer the water and turns toward the church
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, camera.position.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const RS = 0.5, buf = new THREE.Vector2(), clip = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)], NONE = [], primeRT = keep(new THREE.WebGLRenderTarget(1, 1));
+  let reflecting = false, shadowsOn = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (reflecting) return;
+    reflecting = true;
+    if (!preview && !shadowsOn) { // before the first frame: compiled once, with shadows, and the shadow map drawn by a throwaway render, so the mirrored pass never samples a map that is not there yet (a still frame is that first frame)
+      shadowsOn = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true;
+      const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip; sea.visible = false; renderer.setRenderTarget(primeRT); renderer.render(scene, camera); renderer.setRenderTarget(before); renderer.clippingPlanes = NONE; sea.visible = true; /* with the mirror's clipping on, it compiles the very programs the mirrored pass uses (the shadow map ignores the clipping) */
+    }
+    renderer.getDrawingBufferSize(buf); waterU.uRes.value.copy(buf);
+    const w = Math.max(2, Math.round(buf.x * RS)), h = Math.max(2, Math.round(buf.y * RS));
+    if (reflectRT.width !== w || reflectRT.height !== h) reflectRT.setSize(w, h);
+    V.set(C0.x, 0, C0.z - 50000).project(camera);
+    const y1 = Math.min(h, Math.ceil(((V.y + 1) / 2) * h) + 10); // the pond on screen: everything below the horizon
+    if (y1 > 0) {
+      reflectRT.scissor.set(0, 0, w, y1); reflectRT.scissorTest = true;
+      const auto = renderer.shadowMap.autoUpdate, need = renderer.shadowMap.needsUpdate, si = sun.shadow.intensity;
+      renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false; sun.shadow.intensity = 0; // the mirrored world must not draw the shadow map, nor read it
+      world.scale.y = -1; world.updateMatrixWorld(true); sea.visible = false; leaves.count = NFALL; glowU.uPx.value = pxFor(h); glowU.uMinK.value = minK(h); /* the leaves floating on the water have no reflection of their own */
+      const before = renderer.getRenderTarget(); renderer.clippingPlanes = clip;
+      renderer.setRenderTarget(reflectRT); renderer.render(scene, camera); renderer.setRenderTarget(before);
+      renderer.clippingPlanes = NONE; world.scale.y = 1; world.updateMatrixWorld(true); sea.visible = true; leaves.count = NFALL + NFLOAT + NDOWN;
+      renderer.shadowMap.autoUpdate = auto; renderer.shadowMap.needsUpdate = need; sun.shadow.intensity = si;
+    }
+    glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); smU.uPx.value = pxFor(buf.y);
+    reflecting = false;
+  };
+
+  /* --- the clock --- */
+  const T0 = 30, LEAF_T = 16, WIND = [-0.35, 0.12];
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, night = pal.dark;
+    // the mill's wheel turning under the flume
+    M.compose(V.set(MILL.x, MILL.y, MILL.z), Q.setFromEuler(E.set(0, 0, -t * 0.45)), ONE); wheel.setMatrixAt(0, M); wheel.instanceMatrix.needsUpdate = true;
+    // leaves falling from the two maples, fluttering and tumbling; those that land on the water float there, a ring spreading where each came down
+    let nd = 0;
+    FALLING.forEach((l, k) => {
+      const u = t / LEAF_T + l.ph, cyc = Math.floor(u), age = (u - cyc) * LEAF_T, fall = 0.85 * l.sp;
+      if (l.cyc !== cyc) { l.cyc = cyc; let fl = 0.03; for (let it = 0; it < 2; it++) { const tl = Math.max(0, (l.y - fl) / fall), x = l.x + WIND[0] * tl + 0.8 * Math.sin(tl * 1.9 + k), z = l.z + WIND[1] * tl + 0.6 * Math.cos(tl * 1.4 + k * 2); l.wet = pondD(x, z) < 0.98; fl = l.wet ? 0.03 : groundH(x, z) + 0.04; } l.floor = fl; } // where this fall comes down, found once a fall
+      const wet = l.wet, floor = l.floor, yf = l.y - fall * age, down = yf <= floor;
+      const tl = (l.y - floor) / fall, a = down ? tl : age, fade = 1 - smooth(LEAF_T - 2.5, LEAF_T, age);
+      const lx = l.x + WIND[0] * a + 0.8 * Math.sin(a * 1.9 + k), lz = l.z + WIND[1] * a + 0.6 * Math.cos(a * 1.4 + k * 2);
+      M.compose(V.set(lx, down ? floor : yf, lz), Q.setFromEuler(down ? E.set(-Math.PI / 2, 0, k * 1.3) : E.set(a * 2.7 + k, a * 1.9, a * 3.3 + k * 0.7)), V2.setScalar(fade)); leaves.setMatrixAt(k, M);
+      if (down && wet && age - tl < 6 && nd < 10) dropsU.value[nd++].set(lx, lz, t - (age - tl) - T0, 0.5);
+    });
+    for (; nd < 10; nd++) dropsU.value[nd].set(0, 0, 0, 0);
+    FLOATING.forEach((l, k) => { M.compose(V.set(l.x + 0.4 * Math.sin(t * 0.05 + l.ph), 0.03, l.z + 0.3 * Math.cos(t * 0.04 + l.ph)), Q.setFromEuler(E.set(-Math.PI / 2, 0, l.a + t * 0.02)), V2.setScalar(1.6)); leaves.setMatrixAt(NFALL + k, M); });
+    leaves.instanceMatrix.needsUpdate = true;
+    // the canoe going round the pond, its paddlers' strokes keeping time with the distance, its wake
+    { const s = t * CANOE_V; ROUND.at(s, CQ); const yaw = yawOf(CQ[2], CQ[3]), ph = (s / STROKE) * Math.PI * 2;
+      M.compose(V.set(CQ[0], 0.02 * Math.sin(t * 1.3), CQ[1]), Q.setFromEuler(E.set(0.025 * Math.sin(ph), yaw, 0, "YXZ")), ONE); canoe.setMatrixAt(0, M);
+      [[1.4, 1], [-1.5, -1]].forEach(([px, side], i) => { M2.compose(V.set(px + 0.25, 0.85, side * 0.32), Q.setFromEuler(E.set(side * 0.25, 0, 0.55 * Math.sin(ph + i * Math.PI) - 0.15, "XYZ")), ONE); paddles.setMatrixAt(i, M2.premultiply(M)); });
+      canoe.instanceMatrix.needsUpdate = paddles.instanceMatrix.needsUpdate = true; boatsU.value[0].set(CQ[0], CQ[1], Math.atan2(CQ[3], CQ[2]), 0.35); }
+    // geese in a V, high over the village, beating west, round again just past the widest view; by night none
+    { const lead = wrap(400 - 14 * t, -420, 400);
+      for (let k = 0; k < NGOOSE; k++) { const rank = Math.ceil(k / 2), side = k === 0 ? 0 : k % 2 ? 1 : -1; M.compose(V.set(lead + rank * 3.4, 92 - rank * 0.3 + 0.3 * Math.sin(t * 0.7 + k), -480 + side * rank * 2.8), Q.setFromEuler(E.set(0, Math.PI, 0)), V2.setScalar(night ? 0 : 1.15)); geese.setMatrixAt(k, M); }
+      geese.instanceMatrix.needsUpdate = true; }
+    // smoke from the chimneys, drifting west on the breeze
+    let n = 0; const per = preview ? 6 : 12;
+    SMOKE.forEach(([x, y, z], c) => { for (let i = 0; i < per; i++, n++) { const life = 14, age = ((t + c * 3.7 + (i * life) / per) % life + life) % life, k = age / life; smPos.set([x - age * 0.5 * (1 + 0.3 * k) + Math.sin(age * 0.7 + c) * 0.4, y + age * 0.85 * (1 - 0.35 * k), z + age * 0.12], n * 3); smA[n] = (night ? 0.22 : 0.4) * smooth(0, 0.08, k) * (1 - k); smS[n] = 0.9 + age * 0.5; } });
+    smGeo.attributes.position.needsUpdate = smGeo.attributes.aA.needsUpdate = smGeo.attributes.aS.needsUpdate = true;
+    // by night the jack-o'-lanterns' candles gutter
+    if (night) { for (let i = 0; i < NGL; i++) aGlow.setW(i, GL[i][3] * (0.85 + 0.1 * Math.sin(t * 8.0 + i * 2.3) + 0.05 * Math.sin(t * 21.0 + i))); aGlow.needsUpdate = true; }
+  }
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { houses: HOUSES.length, trees: TREES.length, near: DN.length, leaves: NFALL + NFLOAT + NDOWN, geese: NGOOSE, glows: NGL, smoke: SMOKE.length, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
