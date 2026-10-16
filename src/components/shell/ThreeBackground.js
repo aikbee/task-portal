@@ -29140,7 +29140,358 @@ function glacier(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier };
+/* ---------- Total solar eclipse: totality over a desert of red buttes, watchers with their telescopes out on the red sand, a camper van in your colour ---------- */
+// The eclipse is drawn in the sky's shader, larger than life as a long lens would show it: the sun's disc with the moon's disc over it (by day the
+// last crescent, blinding, its glare; by night totality: the black moon in its pearly corona, streamers and polar plumes, pink prominences at
+// the limb, now and then the diamond ring as the moon uncovers one bead of sunlight), and at totality a sunset glowing all round the horizon.
+const EC_SKY_FS = /* glsl */ `
+  uniform vec3 uZenith; uniform vec3 uMid; uniform vec3 uHorizon; uniform vec3 uGlowRing; uniform float uTotal;
+  uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uRs; uniform float uRm; uniform float uVis; uniform vec4 uBead; uniform vec2 uLimb;
+  uniform sampler2D uNoise; uniform float uTime;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir); float h = d.y;
+    vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.25, h));
+    col = mix(col, uZenith, smoothstep(0.18, 0.9, h));
+    float azn = texture2D(uNoise, vec2(atan(d.x, d.z) * 1.6, 0.31)).r;
+    col += uGlowRing * exp(-max(h, 0.0) * 16.0) * (0.8 + 0.3 * azn) * uTotal; // at totality: a sunset all round the horizon
+    float as = acos(clamp(dot(d, uSunDir), -1.0, 1.0)), am = acos(clamp(dot(d, uMoonDir), -1.0, 1.0));
+    if (as < uRs * 10.0) {
+      vec3 sx = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0))), sy = cross(sx, uSunDir);
+      vec2 q = vec2(dot(d, sx), dot(d, sy)); float th = atan(q.y, q.x), rr = as / uRs, out1 = smoothstep(uRm * 0.996, uRm * 1.004, am);
+      vec2 cs = vec2(cos(th), sin(th)); float ir = 1.0 / max(rr, 1.0); // round the sun on a circle in the noise, so nothing breaks where the angle wraps
+      float big = texture2D(uNoise, cs * 0.13 + vec2(0.31, 0.62)).r, fine = texture2D(uNoise, cs * 0.6 + vec2(0.7, 0.2) + vec2(rr * 0.012, 0.0)).g, eq = pow(abs(cos(th - 0.35)), 2.0), pole = pow(abs(sin(th - 0.35)), 10.0);
+      float strm = smoothstep(0.38, 0.7, big) * (0.2 + 0.8 * eq) * (0.6 + 0.6 * fine); // long streamers out along the equator, combed into rays
+      float corona = (pow(ir, 9.0) * (0.7 + 0.4 * fine) + pow(ir, 2.1) * strm * 0.7 * smoothstep(1.0, 1.3, rr) + pow(ir, 3.2) * pow(fine, 3.0) * (0.5 + 1.2 * pole) * 0.6) * (1.0 - smoothstep(5.0, 9.5, rr)); // fading out well inside the patch drawn
+      col += mix(vec3(1.0, 0.94, 0.86), vec3(0.88, 0.92, 1.0), smoothstep(1.0, 2.0, rr)) * corona * out1 * uTotal; // pearly, a little warmer at the limb
+      float clump = smoothstep(0.56, 0.64, texture2D(uNoise, cs * 0.34 + vec2(0.15, 0.85)).r), ph = uRs * (0.015 + 0.13 * smoothstep(0.3, 0.8, texture2D(uNoise, cs * 2.6 + vec2(0.5, 0.1)).g) * clump);
+      float prom = clump * (1.0 - smoothstep(uRm + ph * 0.6, uRm + ph, am)) * smoothstep(uRm * 0.999, uRm * 1.002, am);
+      col = mix(col, vec3(1.25, 0.26, 0.42), prom * uTotal); // prominences, pink, standing off the moon's edge
+      float side = smoothstep(0.2, 1.0, dot(cs, uLimb));
+      col = mix(col, vec3(1.3, 0.34, 0.5), exp(-max(am - uRm, 0.0) / (uRs * 0.022)) * out1 * uTotal * (0.3 + 0.7 * side)); // the chromosphere's thin red rim, brightest where the sun is about to show
+      float sun = (1.0 - smoothstep(uRs * 0.985, uRs, as)) * out1;
+      col += vec3(1.0, 0.97, 0.9) * sun * 9.0; // what the moon leaves of the sun: by day the crescent, blinding
+      col = mix(col, vec3(0.002, 0.0024, 0.0036), (1.0 - out1) * uTotal); // at totality the moon black against the corona
+    }
+    col += vec3(1.0, 0.95, 0.86) * (1.0 - uTotal) * sqrt(uVis) * (exp(-as / (uRs * 1.3)) * 1.2 + exp(-as / (uRs * 3.5)) * 0.5 + exp(-as / (uRs * 11.0)) * 0.32); // the crescent's glare
+    if (uBead.w > 0.0) { // the diamond ring: one bead of sunlight at the limb, its glare and rays
+      float ab = acos(clamp(dot(d, uBead.xyz), -1.0, 1.0));
+      vec3 bx = normalize(cross(uBead.xyz, vec3(0.0, 1.0, 0.0))), by = cross(bx, uBead.xyz); float ta = atan(dot(d, by), dot(d, bx));
+      float mo = mix(0.02, 1.0, smoothstep(uRm * 0.97, uRm * 1.01, am)); // its glare lighter over the moon, which stays dark
+      col += vec3(1.0, 0.97, 0.92) * uBead.w * (exp(-ab / (uRs * 0.05)) * 14.0 + (exp(-ab / (uRs * 0.4)) * 1.8 + exp(-ab / (uRs * 2.2)) * 0.4 + pow(abs(cos(ta * 2.0)), 60.0) * exp(-ab / (uRs * 0.8)) * 1.2) * mo);
+    }
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    gl_FragColor.rgb += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0; // dithered after the encoding, so the dark moon stays clean
+  }
+`;
+// the desert: red sand with saltbush dotting it, the dirt road, our rise of it close by (crusts, drifts), the buttes' cliffs red with
+// streaks of desert varnish, their talus darker; by night the camper's light on the sand round it
+const EC_GROUND_PARS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uNight; uniform vec2 uCam; uniform vec4 uRoad; uniform sampler2D uNightMap; uniform vec4 uNightRect; uniform vec3 uLampCol;
+  varying vec3 vPW; varying float vSlope;
+  vec3 ecGround(out float bump) {
+    vec2 p = vPW.xz; float y = vPW.y, fw = fwidth(vPW.x) + fwidth(vPW.z);
+    float n1 = texture2D(uNoise, p * 0.0013).r, n2 = texture2D(uNoise, p * 0.014 + 0.3).g, n3 = texture2D(uNoise, p * 0.11 + 0.6).r * 0.6 + texture2D(uNoise, p * 0.037 + 0.2).g * 0.4;
+    vec3 sand = mix(vec3(0.6, 0.22, 0.09), vec3(0.72, 0.32, 0.14), n2) * (0.86 + 0.28 * n3);
+    float sage = smoothstep(0.62, 0.7, texture2D(uNoise, p * 0.45 + 0.1).r) * (1.0 - smoothstep(0.3, 2.0, fw)) + smoothstep(0.4, 0.8, n2) * smoothstep(0.6, 6.0, fw) * 0.3;
+    sand = mix(sand, vec3(0.42, 0.46, 0.36), sage * 0.7); // sagebrush dotting it
+    float rd = abs(dot(p - uRoad.xy, vec2(-uRoad.w, uRoad.z)) + 18.0 * sin(dot(p - uRoad.xy, uRoad.zw) * 0.004));
+    sand = mix(sand, vec3(0.7, 0.5, 0.36) * (0.9 + 0.2 * n3), (1.0 - smoothstep(3.0, 4.5 + fw, rd)) * step(0.0, dot(p - uRoad.xy, uRoad.zw))); // the dirt road out across it
+    vec3 cliff = mix(vec3(0.6, 0.2, 0.09), vec3(0.74, 0.3, 0.14), n2) * (0.8 + 0.3 * n3);
+    cliff = mix(cliff, vec3(0.24, 0.13, 0.09), smoothstep(0.55, 0.85, texture2D(uNoise, vec2(p.x * 0.05 + p.y * 0.05, y * 0.004)).r) * 0.6); // desert varnish streaking down it
+    cliff *= 0.9 + 0.18 * smoothstep(0.3, 0.7, sin(y * 0.11 + n1 * 5.0) * 0.5 + 0.5); // its beds
+    vec3 talus = mix(vec3(0.55, 0.25, 0.13), vec3(0.66, 0.34, 0.18), n3);
+    vec3 col = mix(sand, talus, smoothstep(0.22, 0.42, vSlope) * smoothstep(8.0, 40.0, y));
+    col = mix(col, cliff, smoothstep(0.55, 0.75, vSlope));
+    float near = 1.0 - smoothstep(70.0, 95.0, length(p - uCam));
+    float n4 = texture2D(uNoise, p * 0.7 + 0.15).r * (1.0 - smoothstep(0.05, 0.4, fw));
+    vec3 slick = mix(vec3(0.56, 0.18, 0.07), vec3(0.7, 0.28, 0.11), smoothstep(0.3, 0.7, n2 * 0.6 + n3 * 0.4)) * (0.88 + 0.24 * n3) * (0.93 + 0.14 * n4); // the red sand round us, close by its grain
+    slick = mix(slick, vec3(0.34, 0.15, 0.07), smoothstep(0.64, 0.76, texture2D(uNoise, p * 0.09 + 0.45).g) * 0.55); // dark crusts of desert soil
+    slick = mix(slick, vec3(0.78, 0.44, 0.24), smoothstep(0.6, 0.8, texture2D(uNoise, p * 0.035 + 0.6).r) * 0.35); // paler, wind-sorted drifts
+    float onRock = near * smoothstep(9.0, 13.0, y);
+    col = mix(col, slick, onRock);
+    bump = n3 * mix(0.9, 0.2, onRock) * (1.0 - smoothstep(0.3, 3.0, fw)) + n4 * 0.04 * onRock; // the sand round us smooth
+    return col;
+  }
+  vec3 ecBump(vec3 pos, vec3 n, float h) { vec3 dpx = dFdx(pos), dpy = dFdy(pos); float dhx = dFdx(h), dhy = dFdy(h); vec3 r1 = cross(dpy, n), r2 = cross(n, dpx); float det = dot(dpx, r1); return normalize(abs(det) * n - sign(det) * (dhx * r1 + dhy * r2)); }
+  vec3 ecLamps(vec3 albedo, vec3 p) {
+    if (uNight <= 0.0) return vec3(0.0);
+    vec2 uv = (p.xz - uNightRect.xy) * uNightRect.zw;
+    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    return albedo * uLampCol * texture2D(uNightMap, clamp(uv, 0.0, 1.0)).r * inside * uNight;
+  }
+`;
+// ravens wheeling over the desert by day
+const EC_BIRD_VS = /* glsl */ `
+  uniform float uPx; uniform float uMinPx; uniform float uTime; attribute float aPh; varying float vA;
+  void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv; float px = 1.2 * uPx / max(-mv.z, 1.0); gl_PointSize = max(uMinPx, px); vA = (0.6 + 0.4 * sin(uTime * 6.0 + aPh * 40.0)) * min(1.0, px / uMinPx + 0.5); }
+`;
+const EC_BIRD_FS = /* glsl */ `
+  uniform vec3 uCol; uniform float uAmt; varying float vA;
+  void main() { vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard; float a = (1.0 - r2 * 0.5) * vA * uAmt; vec4 c = linearToOutputTexel(vec4(uCol, 1.0)); gl_FragColor = vec4(c.rgb * a, a); }
+`;
+function eclipse(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1999);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 36; camera.near = 0.5; camera.far = 90000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), M = new THREE.Matrix4(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const sph = (az, el) => new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)); // az from straight ahead (−z), positive to the right
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx); // the yaw that points a model's +x along (fx, fz)
+  const place = (ox, oy, oz, yaw) => (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().makeRotationY(yaw).setPosition(ox, oy, oz).multiply(at(x, y, z, rx, ry, rz));
+  const pt = (F, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(F(0, 0, 0)).toArray();
+  const SUN = sph(0.14, 0.36), RS = 0.034, RM = RS * 1.04; // the eclipse ahead, a little to the right, 22 degrees up; drawn as a long lens would show it
+  const SX = new THREE.Vector3().crossVectors(SUN, UP).normalize(), SY = new THREE.Vector3().crossVectors(SX, SUN); // a frame on the sky round the sun (as in the shader)
+  const ACC = 0xff00ff, LAMP = 0xffff00;
+
+  /* --- the desert: the sandy rise we stand on, the floor out to the buttes, mesas on the skyline --- */
+  const C0 = new THREE.Vector3(0, 16.7, 0);
+  const curve = (x, z) => (x * x + z * z) / 12742000;
+  const BUTTES = [[-950, -2700, 140, 90, 260, 110, 0.3, 0], [-762, -2690, 22, 20, 205, 0, 1.1, 1], [620, -3300, 180, 110, 240, 120, 2.1, 0], [862, -3330, 28, 22, 190, 0, 0.7, 1], [2150, -2550, 420, 160, 215, 130, 1.6, 0], [-2500, -4300, 320, 200, 290, 140, 2.9, 0], [-330, -1850, 30, 26, 125, 45, 0.2, 1], [1250, -5200, 520, 240, 300, 150, 0.9, 0]]; // x, z, half-widths, height, talus height, seed, a spire: the mittens, their thumbs, a long mesa, a lone spire
+  function groundH(x, z) {
+    const d = Math.hypot(x - C0.x, z - C0.z);
+    let h = 3.2 * (fbm(x * 0.002, z * 0.002, 3) - 0.5) + 6 * (fbm(x * 0.0007 + 4, z * 0.0007, 2) - 0.5) * smooth(300, 2000, d); // the desert floor, gentle swells
+    for (const [bx, bz, rx, rz, , tal] of BUTTES) if (tal > 0) { const dd = Math.hypot((x - bx) / rx, (z - bz) / rz); if (dd < 3.2) h = Math.max(h, tal * Math.pow(smooth(3.0, 0.9, dd), 1.4) * (0.85 + 0.3 * fbm(x * 0.01, z * 0.01, 2))); } // talus round each butte
+    const m = fbm(x * 0.00028 + 3, z * 0.00028, 4), far = smooth(5000, 8000, d); h = Math.max(h, far * (360 * smooth(0.52, 0.545, m) + 120 * smooth(0.44, 0.52, m))); // mesas on the skyline
+    const px = x / 88, pz = (z + 12) / 74, pe = Math.pow(Math.pow(Math.abs(px), 3) + Math.pow(Math.abs(pz), 3), 1 / 3) + 0.08 * (fbm(x * 0.05, z * 0.05, 2) - 0.5); // the rise's edge
+    if (pe < 1.25) h = Math.max(h, (15 + 1.6 * (fbm(x * 0.03, z * 0.03, 3) - 0.5) + 2.2 * Math.max(0, Math.sin(x * 0.07) * Math.sin(z * 0.05)) + 0.5 * (fbm(x * 0.09 + 2, z * 0.09, 2) - 0.5)) * smooth(1.12, 1.0, pe)); // its swells and hummocks, the drop at its edge
+    return h - curve(x, z);
+  }
+  const RINGS = [];
+  for (let rr = 1.5; rr < 60000; rr *= 1 + (preview ? 2.2 : 1) * (rr < 120 ? 0.02 : rr < 4000 ? 0.014 : 0.03)) RINGS.push(rr);
+  RINGS.push(60000);
+  const NA = preview ? 110 : 240, AW = 1.0, NR = RINGS.length, N1 = NA + 1;
+  const landGeo = keep(new THREE.BufferGeometry());
+  { const pos = new Float32Array(NR * N1 * 3), li = [];
+    for (let j = 0; j < NR; j++) for (let i = 0; i < N1; i++) { const a = -AW + (2 * AW * i) / NA, x = C0.x + RINGS[j] * Math.sin(a), z = C0.z - RINGS[j] * Math.cos(a), k = j * N1 + i; pos[k * 3] = x; pos[k * 3 + 1] = groundH(x, z); pos[k * 3 + 2] = z; }
+    for (let j = 0; j < NR - 1; j++) for (let i = 0; i < NA; i++) { const a = j * N1 + i, b = a + 1, c = a + N1, d = c + 1; li.push(a, b, c, b, d, c); }
+    landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); landGeo.setIndex(li); landGeo.computeVertexNormals(); }
+  const butteGeo = keep(new THREE.BufferGeometry()); // their towers: ragged, fluted walls on the talus, a little wider at the foot, spires tapering, flat tops; their own mesh (the ring mesh is too coarse out there for cliffs)
+  { const pos = [], idx = [], NS = preview ? 40 : 96, NH = preview ? 4 : 8;
+    for (const [bx, bz, rx, rz, H, tal, seed, spire] of BUTTES) {
+      const base = tal > 0 ? tal * 0.55 : groundH(bx, bz) - 4, o0 = pos.length / 3;
+      const rim = (i, k) => { const a = (i / NS) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), e = 3.2, sx = Math.sign(ca) * Math.pow(Math.abs(ca), 2 / e), sz = Math.sign(sa) * Math.pow(Math.abs(sa), 2 / e);
+        const w = (1 + 0.28 * (fbm(ca * 1.2 + seed * 3, sa * 1.2 + seed, 3) - 0.5)) * (1 + 0.06 * (fbm(a * 9 + seed * 7, k * 1.5, 2) - 0.5)) * (spire ? 1.18 - 0.5 * k : 1.06 - 0.06 * k);
+        return [bx + sx * rx * w, base + k * H, bz - sz * rz * w]; };
+      for (let j = 0; j <= NH; j++) for (let i = 0; i < NS; i++) pos.push(...rim(i, j / NH));
+      for (let j = 0; j < NH; j++) for (let i = 0; i < NS; i++) { const a = o0 + j * NS + i, b = o0 + j * NS + ((i + 1) % NS), c = a + NS, d = b + NS; idx.push(a, b, c, b, d, c); }
+      const top = pos.length / 3; for (let i = 0; i < NS; i++) pos.push(...rim(i, 1)); pos.push(bx, base + H, bz); // the top on its own vertices, so its edge stays sharp
+      for (let i = 0; i < NS; i++) idx.push(top + NS, top + i, top + ((i + 1) % NS));
+    }
+    butteGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); butteGeo.setIndex(idx); butteGeo.computeVertexNormals(); }
+
+  /* --- the watchers on the sand: standing, sitting back in folding chairs, at their telescopes and cameras, all aimed at the sun; their camper van in your colour --- */
+  const S = [], Pp = (geo, m, hex) => S.push([geo, m, hex]), GL = [], POOLS = [];
+  const Pb = (a, b, w, hex) => { V.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]); const L = V.length(); Pp(box(w, L, w), new THREE.Matrix4().compose(V2.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), Q.setFromUnitVectors(UP, V.normalize()), ONE), hex); }; // a strut from a to b
+  const JACKETS = [0x3a5a8a, 0x8a3a2a, 0x2a6a4a, 0xc89a3a, 0x5a3a6a, 0x2a2a2e, 0xb05a2a, 0x4a7a8a];
+  const towardSun = yawOf(SUN.x, SUN.z), ARMS = [];
+  const person = (x, z, k, sit) => { // everyone facing the sun; sitting ones lean back in their chairs
+    const y = groundH(x, z), L = place(x, y, z, towardSun + (hash(k, 3) - 0.5) * 0.5), coat = JACKETS[k % JACKETS.length];
+    if (sit) { Pp(box(0.5, 0.06, 0.5), L(0, 0.45, 0), 0x2a4a6a); for (const [u, v] of [[-0.22, -0.22], [0.22, -0.22], [-0.22, 0.22], [0.22, 0.22]]) Pp(cyl(0.015, 0.015, 0.45, 4), L(u, 0.22, v), 0x8a8a8a); Pp(box(0.06, 0.6, 0.5), L(-0.26, 0.78, 0, 0, 0, 0.35), 0x2a4a6a); // the chair
+      for (const v of [-0.1, 0.1]) { Pp(box(0.42, 0.14, 0.14), L(0.12, 0.52, v), 0x2a3040); Pp(box(0.13, 0.44, 0.13), L(0.32, 0.25, v), 0x2a3040); }
+      Pp(box(0.26, 0.58, 0.4), L(-0.08, 0.86, 0, 0, 0, 0.4), coat); Pp(blob(0.11, 0.13, 0.11, 1), L(-0.24, 1.22, 0), 0xc89a78); }
+    else { for (const v of [-0.1, 0.1]) Pp(box(0.14, 0.86, 0.14), L(0, 0.43, v), 0x2a3040); Pp(box(0.28, 0.62, 0.42), L(0, 1.17, 0), coat); Pp(blob(0.11, 0.13, 0.11, 1), L(-0.03, 1.62, 0), 0xc89a78); Pp(box(0.1, 0.58, 0.1), L(0, 1.12, 0.27), coat);
+      if (hash(k, 5) < 0.4) ARMS.push({ F: L, coat, ph: hash(k, 6) * 6.28 }); else Pp(box(0.1, 0.58, 0.1), L(0, 1.12, -0.27), coat); } // some point now and then
+    if (!sit && k % 3 === 0) GL.push([...pt(L, 0.32, 1.58, 0.05), 0.05, 0.75, 0.85, 1.0, 1.6]); // a phone held up to it, its screen lit at totality
+  };
+  const scope = (x, z, big) => { // a telescope on its tripod, its tube on the sun
+    const y = groundH(x, z), top = [x, y + (big ? 0.9 : 1.25), z];
+    if (big) Pp(box(0.6, 0.9, 0.6), at(x, y + 0.45, z), 0x6a5a48); else for (const a of [0, 2.1, 4.2]) Pb([x + Math.cos(a) * 0.45, y, z + Math.sin(a) * 0.45], top, 0.03, 0x3a3a3a);
+    const len = big ? 2.2 : 1.1, rad = big ? 0.2 : 0.07, c = new THREE.Vector3(...top).addScaledVector(SUN, len * 0.25);
+    Pp(cyl(rad, rad, len, 12), new THREE.Matrix4().compose(c, Q.setFromUnitVectors(UP, SUN), ONE), 0xe8e8e8); Pp(cyl(rad * 1.15, rad * 1.15, 0.08, 12), new THREE.Matrix4().compose(c.clone().addScaledVector(SUN, len * 0.5), Q.setFromUnitVectors(UP, SUN), ONE), 0x1a1a1a); // its solar filter
+  };
+  [[-9, -20, 0], [-6, -24, 1], [4, -27, 0], [8, -22, 1], [-15, -31, 0], [14, -34, 0], [-3, -38, 0], [19, -27, 1]].forEach(([x, z, sit], k) => person(x, z, k, !!sit));
+  scope(-7.5, -22.5, false); scope(5.5, -29, false); scope(-1.5, -34.5, true);
+  for (const [x, z] of [[11, -25], [-12, -27]]) { const y = groundH(x, z); for (const a of [0, 2.1, 4.2]) Pb([x + Math.cos(a) * 0.35, y, z + Math.sin(a) * 0.35], [x, y + 1.35, z], 0.025, 0x2a2a2a); Pp(box(0.16, 0.12, 0.12), at(x, y + 1.42, z), 0x111111); Pp(cyl(0.05, 0.05, 0.25, 8), new THREE.Matrix4().compose(new THREE.Vector3(x, y + 1.42, z).addScaledVector(SUN, 0.14), Q.setFromUnitVectors(UP, SUN), ONE), 0x111111); GL.push([x - SUN.x * 0.1, y + 1.44, z - SUN.z * 0.1, 0.05, 0.75, 0.85, 1.0, 1.6]); } // cameras on tripods, their screens lit at totality
+  const VAN = { x: 15, z: -46 }, STR = [0, 0]; VAN.y = groundH(VAN.x, VAN.z);
+  { const L = place(VAN.x, VAN.y, VAN.z, 0.35); // the camper van: two-tone, its awning out over a table, string lights along it
+    Pp(box(5.2, 1.15, 2.05), L(0, 0.95, 0), ACC); Pp(box(5.0, 1.0, 2.0), L(0, 2.0, 0), 0xf0ede4); Pp(new THREE.CylinderGeometry(1.0, 1.0, 5.0, 12, 1, false, 0, Math.PI).rotateZ(Math.PI / 2).scale(1, 0.25, 1), L(0, 2.5, 0), 0xf0ede4); // the body, the white top, its rounded roof
+    for (const u of [-1.6, -0.4, 0.8]) Pp(box(0.9, 0.55, 0.04), L(u, 2.05, 1.02), LAMP); Pp(box(0.04, 0.6, 1.7), L(2.52, 1.95, 0), 0x18202a); // its windows
+    for (const u of [-1.7, 1.7]) for (const v of [-0.95, 0.95]) Pp(cyl(0.38, 0.38, 0.28, 12), L(u, 0.38, v, Math.PI / 2, 0, 0), 0x141414); // wheels
+    Pp(box(3.4, 0.05, 2.0), L(-0.4, 2.55, 2.0, 0.12, 0, 0), 0xc8a050); for (const u of [-2.0, 1.2]) Pp(cyl(0.025, 0.025, 2.4, 5), L(u, 1.25, 2.95), 0x8a8a8a); // the awning, its poles
+    Pp(box(1.0, 0.04, 0.6), L(-0.4, 0.75, 2.2), 0xe8e4dc); for (const [u, v] of [[-0.85, 1.95], [0.05, 1.95], [-0.85, 2.45], [0.05, 2.45]]) Pp(cyl(0.015, 0.015, 0.73, 4), L(u, 0.37, v), 0x8a8a8a); // a folding table
+    STR[0] = GL.length; for (let i = 0; i < 9; i++) GL.push([...pt(L, -2.0 + i * 0.4, 2.42 - 0.08 * Math.sin((i / 8) * Math.PI), 2.95), 0.12, 1, 1, 1, 2.2]); // string lights, in your colour
+    STR[1] = GL.length; POOLS.push([...pt(L, -0.4, 0, 2.6).filter((_, i) => i !== 1), 6, 0.3, 0]); }
+  const VENUS = sph(0.14 - 0.25, 0.38 - 0.1), JUPITER = sph(0.14 + 0.42, 0.38 + 0.06);
+  for (const [dir, s, mn] of [[VENUS, 260, 3.0], [JUPITER, 170, 2.4]]) GL.push([C0.x + dir.x * 60000, C0.y + dir.y * 60000, C0.z + dir.z * 60000, s, 1.6, 1.55, 1.4, mn]); // the planets out at totality
+  const SAGE = [];
+  for (let tries = 0; SAGE.length < (preview ? 40 : 110) && tries < 6000; tries++) { const d = 16 + Math.pow(r(), 1.2) * 70, a = r(-1, 1) * 0.8, x = C0.x + Math.sin(a) * d, z = C0.z - Math.cos(a) * d, y = groundH(x, z); if (y < 12 || fbm(x * 0.15, z * 0.15, 2) < 0.5) continue; SAGE.push([x, y - 0.08, z, r(0.22, 0.45)]); } // saltbush dotting the sand
+
+  /* --- materials --- */
+  const rectU = (q) => ({ value: new THREE.Vector4(q[0], q[1], 1 / (q[2] - q[0]), 1 / (q[3] - q[1])) });
+  const NIGHT_RECT = [6, -56, 40, -22];
+  const accentU = { value: new THREE.Color() }, nightU = { value: 0 }, nightMapU = { value: null }, lampColU = { value: new THREE.Color(1.0, 0.82, 0.55).multiplyScalar(1.1) };
+  const groundMat = keep(new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+  groundMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uNoise: { value: noise }, uNight: nightU, uCam: { value: new THREE.Vector2(C0.x, C0.z) }, uRoad: { value: new THREE.Vector4(60, -120, -0.12, -0.99) }, uNightMap: nightMapU, uNightRect: rectU(NIGHT_RECT), uLampCol: lampColU });
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vPW; varying float vSlope;").replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPW = position; vSlope = 1.0 - normalize(objectNormal).y;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\n" + EC_GROUND_PARS)
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  float ecB; diffuseColor.rgb = ecGround(ecB);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  normal = ecBump(-vViewPosition, normal, ecB);")
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance += ecLamps(diffuseColor.rgb, vPW);");
+  };
+  groundMat.customProgramCacheKey = () => "ec-ground";
+  const lit = (mat, key, accNight = 0.1) => { // markers: the accent; windows dark by day, lit by night
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, { uAccent: accentU, uNight: nightU });
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec3 uAccent; uniform float uNight;")
+        .replace("#include <color_fragment>", `#include <color_fragment>
+  float ecLamp = 0.0, ecAcc = 0.0;
+  #if defined( USE_COLOR )
+  { vec3 c = vColor.rgb; float isAcc = step(0.9, c.r) * step(c.g, 0.1) * step(0.9, c.b), isLamp = step(0.9, c.r) * step(0.9, c.g) * step(c.b, 0.1);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uAccent * 0.9, isAcc); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.05, 0.06), isLamp); ecLamp = isLamp; ecAcc = isAcc; }
+  #endif`)
+        .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.74, 0.42) * ecLamp * (0.03 + 1.4 * uNight) + uAccent * ecAcc * ${accNight.toFixed(2)} * uNight;`);
+    };
+    mat.customProgramCacheKey = () => "ec-" + key;
+    return mat;
+  };
+  const paintMat = lit(keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 })), "paint", 0.3);
+  const land = new THREE.Mesh(landGeo, groundMat); land.frustumCulled = false; scene.add(land);
+  const buttes = new THREE.Mesh(butteGeo, groundMat); buttes.frustumCulled = false; scene.add(buttes);
+  const partMesh = (geo, mat, count, name) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, count)); m.name = name; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); keep(m); return m; };
+  const WHITE = new THREE.Color(1, 1, 1), site = partMesh(keep(mergeColored(THREE, S)), paintMat, 1, "ec-site"); site.setMatrixAt(0, new THREE.Matrix4()); site.setColorAt(0, WHITE); // one instance, white: it shares the arms' program
+  const armGeo = keep(mergeColored(THREE, [[box(0.1, 0.6, 0.1).translate(0, -0.27, 0), new THREE.Matrix4(), 0xffffff]])); // an arm hanging from its shoulder
+  const arms = partMesh(armGeo, paintMat, ARMS.length, "ec-arms");
+  { const col = new THREE.Color(); ARMS.forEach((a, i) => arms.setColorAt(i, col.set(a.coat))); }
+  const sageGeo = keep(mergeColored(THREE, Array.from({ length: 8 }, (_, i) => { const a = i * 2.4, d = i ? 0.45 + 0.2 * r() : 0, s = i ? r(0.38, 0.55) : 0.7; return [blob(s, s * r(0.7, 0.95), s, i ? 0 : 1), at(Math.cos(a) * d, 0.32 + r(-0.06, 0.14) - d * 0.25, Math.sin(a) * d), [0xb0ac84, 0xa4a27c, 0xbab690, 0x9a9a74][i % 4]]; }))); // saltbush: lumps of silvery grey-green
+  const sage = partMesh(sageGeo, paintMat, SAGE.length, "ec-saltbush");
+  SAGE.forEach(([x, y, z, s], i) => { sage.setMatrixAt(i, M.compose(V.set(x, y, z), Q.setFromEuler(E.set(0, r(0, 6.28), 0)), V2.setScalar(s))); sage.setColorAt(i, WHITE.clone().setRGB(r(0.8, 1), r(0.8, 1), r(0.75, 0.95))); }); // a little paler or greener, bush to bush
+
+  /* --- the sky with the eclipse in it, the stars, ravens by day --- */
+  const skyU = { uZenith: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uGlowRing: { value: new THREE.Color() }, uTotal: { value: 0 }, uSunDir: { value: SUN.clone() }, uMoonDir: { value: SUN.clone() }, uRs: { value: RS }, uRm: { value: RM }, uVis: { value: 0.2 }, uBead: { value: new THREE.Vector4() }, uLimb: { value: new THREE.Vector2() }, uNoise: { value: noise }, uTime: time };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(80000, 64, 32)), shader(LANTERN_SKY_VS, EC_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NSTAR = preview ? 300 : 900, starPos = new Float32Array(NSTAR * 3), starSize = new Float32Array(NSTAR), starCol = new Float32Array(NSTAR * 3);
+  for (let i = 0; i < NSTAR; i++) { const a = r(0, 6.283), e = Math.asin(r(0.12, 1)); starPos.set([C0.x + Math.cos(a) * Math.cos(e) * 60000, C0.y + Math.sin(e) * 60000, C0.z + Math.sin(a) * Math.cos(e) * 60000], i * 3); starSize[i] = (preview ? 0.8 : 1) * (r() < 0.9 ? r(1, 1.6) : r(1.8, 2.6)); const t = r(); starCol.set(t < 0.15 ? [1, 0.85, 0.7] : t < 0.3 ? [0.75, 0.85, 1] : [0.95, 0.96, 1], i * 3); } // only the brightest come out at totality
+  const starGeo = keep(new THREE.BufferGeometry()); starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3)); starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1)); starGeo.setAttribute("aCol", new THREE.BufferAttribute(starCol, 3));
+  const starU = { uAmt: { value: 1 }, uTime: time };
+  const stars = new THREE.Points(starGeo, shader(DC_STAR_VS, DC_STAR_FS, starU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  stars.renderOrder = -9; stars.frustumCulled = false; scene.add(stars);
+  const NRV = preview ? 4 : 7, RV = Array.from({ length: NRV }, () => ({ cx: r(-500, 500), cz: r(-1400, -500), R: r(40, 120), y: r(60, 180), w: r(0.12, 0.3) * (r() < 0.5 ? -1 : 1), p: r(0, 6.28) }));
+  const rvPos = new Float32Array(NRV * 3), rvPh = Float32Array.from(RV, () => r());
+  const rvGeo = keep(new THREE.BufferGeometry()); rvGeo.setAttribute("position", new THREE.BufferAttribute(rvPos, 3)); rvGeo.setAttribute("aPh", new THREE.BufferAttribute(rvPh, 1));
+  const rvU = { uPx: { value: 1300 }, uMinPx: { value: 1.8 }, uTime: time, uCol: { value: new THREE.Color("#141210") }, uAmt: { value: 1 } };
+  const ravens = new THREE.Points(rvGeo, shader(EC_BIRD_VS, EC_BIRD_FS, rvU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+  ravens.frustumCulled = false; ravens.renderOrder = 7; scene.add(ravens);
+
+  /* --- glows: the van's string lights in your colour, headlamps, the planets --- */
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+  nightMapU.value = keep(nlNightMap(THREE, POOLS, NIGHT_RECT));
+
+  /* --- light: by day the crescent's strange light; at totality the glow off every horizon --- */
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1), sun = new THREE.DirectionalLight(0xffffff, 1), ringA = new THREE.DirectionalLight(0xffa860, 0), ringB = new THREE.DirectionalLight(0xffa860, 0);
+  scene.add(hemi, sun, sun.target, ringA, ringA.target, ringB, ringB.target);
+  sun.target.position.set(0, 10, -30); ringA.position.set(-800, 260, 400); ringB.position.set(900, 260, -300); ringA.target.position.set(0, 10, -30); ringB.target.position.set(0, 10, -30);
+  scene.fog = new THREE.FogExp2(0xffffff, 1 / 14000);
+  const SBOX = [-40, -60, 40, 6];
+  if (!preview) { sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.04; sun.shadow.intensity = 0.75; site.castShadow = arms.castShadow = sage.castShadow = true; land.receiveShadow = site.receiveShadow = true; }
+  const LIT_MATS = [groundMat, paintMat];
+  const shadowFit = () => {
+    sun.position.copy(sun.target.position).addScaledVector(SUN, 400);
+    const cam = sun.shadow.camera; cam.position.copy(sun.position); cam.lookAt(sun.target.position); cam.updateMatrixWorld(true);
+    const inv = cam.matrixWorld.clone().invert(), lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const x of [SBOX[0], SBOX[2]]) for (const y of [8, 22]) for (const z of [SBOX[1], SBOX[3]]) { V.set(x, y, z).applyMatrix4(inv); lo.min(V); hi.max(V); }
+    cam.left = lo.x - 2; cam.right = hi.x + 2; cam.bottom = lo.y - 2; cam.top = hi.y + 2; cam.near = Math.max(1, -hi.z - 60); cam.far = -lo.z + 60; cam.updateProjectionMatrix();
+  };
+  const overlap = (d) => { const a = RS, b = RM; if (d >= a + b) return 0; if (d <= b - a) return 1; const a2 = a * a, b2 = b * b, x = (d * d + a2 - b2) / (2 * d), y = Math.sqrt(Math.max(0, a2 - x * x)); return (a2 * Math.acos(x / a) + b2 * Math.acos((d - x) / b) - d * y) / (Math.PI * a2); }; // how much of the sun the moon covers, offset by d
+
+  let base = null;
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent);
+    base = d ? { zen: new THREE.Color("#070c20"), mid: new THREE.Color("#14204a"), hor: new THREE.Color("#2e2c4c") } : { zen: new THREE.Color("#24447e"), mid: new THREE.Color("#6386be"), hor: new THREE.Color("#b0c2d8") };
+    skyU.uGlowRing.value.set("#ff9850").multiplyScalar(0.95); skyU.uTotal.value = d ? 1 : 0;
+    starU.uAmt.value = d ? 1 : 0; stars.visible = d; rvU.uAmt.value = d ? 0 : 1; ravens.visible = !d;
+    scene.fog.color.set(d ? "#1c1a30" : "#b8c6d6"); scene.fog.density = d ? 1 / 12000 : 1 / 14000;
+    sun.color.set("#fff4e4"); sun.castShadow = !preview; shadowFit();
+    hemi.color.set(d ? "#1c2448" : "#9ab4dc"); hemi.groundColor.set(d ? "#2a160c" : "#6a4430"); hemi.intensity = d ? 0.4 : 0.55;
+    ringA.intensity = ringB.intensity = d ? 0.12 : 0;
+    nightU.value = d ? 1 : 0;
+    const acc = new THREE.Color(p.accent);
+    for (let i = 0; i < NGL; i++) { if (i >= STR[0] && i < STR[1]) aTint.setXYZ(i, acc.r * 2.2, acc.g * 2.2, acc.b * 2.2); aGlow.setW(i, d ? GL[i][3] : 0); } // all of them only at totality; the string lights in your colour
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    frameLight(clock + T0);
+  }
+
+  /* --- the camera --- */
+  const look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 36 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const yaw = 0.05 + 0.006 * Math.sin(clock * 0.03) + 0.05 * k, pitch = 0.17 + 0.02 * k; // turned a little to the eclipse; a phone more so
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 1000, C0.y + Math.tan(pitch) * 1000, C0.z - Math.cos(yaw) * 1000));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  let primed = false, priming = false;
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => {
+    layout();
+    if (priming) return;
+    if (!preview && !primed) { primed = priming = true; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = true; for (const m of LIT_MATS) m.needsUpdate = true; renderer.render(scene, camera); priming = false; } // compiled once with shadows and the shadow map drawn before the first frame, into the frame's own target (a still frame is that first frame)
+    renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); rvU.uPx.value = pxFor(buf.y); rvU.uMinPx.value = 1.8 * minK(buf.y);
+  };
+
+  /* --- the clock: by day the moon sliding over the sun, the crescent thinning and thickening; at totality the diamond ring now and then --- */
+  const T0 = 20, MO = new THREE.Vector3();
+  function frameLight(t) {
+    const night = pal.dark;
+    let off, ang, bead = 0;
+    if (night) { const u = ((((t + 13) / 60) % 1) + 1) % 1; bead = smooth(0.74, 0.82, u) * (1 - smooth(0.9, 0.99, u)); off = (RM - RS) * (0.3 + 0.8 * bead) + 0.0004 * Math.sin(t * 0.3); ang = Math.PI * 0.25 + Math.PI; } // totality; now and then the moon slips enough to let one bead of the sun through, up on its right
+    else { off = RS * (0.24 + 0.16 * Math.sin((t * Math.PI * 2) / 240)); ang = 0.65 + Math.PI; } // the crescent, thinning and thickening as the moon slides
+    MO.copy(SUN).addScaledVector(SX, Math.cos(ang) * off).addScaledVector(SY, Math.sin(ang) * off).normalize(); skyU.uMoonDir.value.copy(MO);
+    const vis = 1 - overlap(off); skyU.uVis.value = vis;
+    const bd = V.copy(SUN).addScaledVector(SX, -Math.cos(ang) * RS).addScaledVector(SY, -Math.sin(ang) * RS).normalize(); skyU.uBead.value.set(bd.x, bd.y, bd.z, bead * bead); skyU.uLimb.value.set(-Math.cos(ang), -Math.sin(ang));
+    const lift = night ? 1 + 0.35 * bead : 0.62 + 0.6 * Math.sqrt(vis); // the sky and the land as bright as the sun left showing lets them be
+    skyU.uZenith.value.copy(base.zen).multiplyScalar(lift); skyU.uMid.value.copy(base.mid).multiplyScalar(lift); skyU.uHorizon.value.copy(base.hor).multiplyScalar(lift);
+    sun.intensity = night ? 0.07 * bead : 0.5 + 2.1 * Math.sqrt(vis); if (!night) scene.fog.color.copy(skyU.uHorizon.value); // the haze the sky's own colour at the horizon starU.uAmt.value = night ? 1 - 0.75 * bead : 0;
+  }
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0;
+    frameLight(t);
+    ARMS.forEach((a, i) => { const up = smooth(0.55, 0.8, Math.sin(t * 0.17 + a.ph)); M.copy(a.F(0, 1.4, -0.27, 0, 0, 0.1 + 1.85 * up)); arms.setMatrixAt(i, M); }); // pointing up at it, now and then
+    arms.instanceMatrix.needsUpdate = true;
+    RV.forEach((b, i) => { const a = b.p + t * b.w; rvPos[i * 3] = b.cx + Math.cos(a) * b.R; rvPos[i * 3 + 1] = b.y + 5 * Math.sin(t * 0.4 + b.p); rvPos[i * 3 + 2] = b.cz + Math.sin(a) * b.R; });
+    rvGeo.attributes.position.needsUpdate = true;
+  }
+  applyPalette(pal);
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { watchers: 8, scopes: 3, sage: SAGE.length, glows: NGL, vis: +skyU.uVis.value.toFixed(3), bead: +skyU.uBead.value.w.toFixed(2), accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.fog = null; scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
