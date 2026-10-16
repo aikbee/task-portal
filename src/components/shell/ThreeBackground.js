@@ -29926,7 +29926,307 @@ function firefall(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall };
+/* ---------- Antelope Canyon: shafts of sun falling into a slot canyon of flowing sandstone, dust drifting in them, sand tossed into the light ---------- */
+// The walls, the sand and the people in one material with its own light: from the slit above (the higher, the brighter), off the beams and the
+// pools they make on the sand, all run through the colour the sandstone shows for it (purple in the shade, red, orange, gold, nearly white
+// where the sun is); the beds of the sandstone flowing along the walls; the dusty air between. By night starlight from the slit and a lantern
+// in your colour.
+const AN_ROCK_VS = /* glsl */ `
+  attribute float aKind; attribute float aS; varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK; varying float vS;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vC = color; vK = aKind; vS = aS;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const AN_ROCK_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uNight; uniform float uH; uniform vec4 uBF[3]; uniform vec4 uBT[3];
+  uniform vec3 uLamp; uniform vec3 uLampCol; uniform vec3 uAccent; uniform vec3 uHaze;
+  varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK; varying float vS;
+  vec3 ramp(float L) {
+    vec3 c = mix(vec3(0.05, 0.016, 0.04), vec3(0.26, 0.065, 0.14), smoothstep(0.0, 0.22, L));
+    c = mix(c, vec3(0.66, 0.18, 0.085), smoothstep(0.18, 0.52, L));
+    c = mix(c, vec3(1.0, 0.47, 0.15), smoothstep(0.48, 0.92, L));
+    c = mix(c, vec3(1.0, 0.78, 0.44), smoothstep(0.88, 1.32, L));
+    return mix(c, vec3(1.0, 0.94, 0.8), smoothstep(1.28, 1.9, L));
+  }
+  void main() {
+    vec3 P = vW, N = normalize(vN), toEye = cameraPosition - P; float dist = length(toEye);
+    if (dot(N, toEye) < 0.0) N = -N; // seen from inside the slot, whichever way the mesh faces
+    float hf = clamp(P.y / uH, 0.0, 1.0);
+    float up = max(N.y, 0.0), dn = max(-N.y, 0.0), sky = pow(hf, 1.5) * (0.4 + 0.75 * up - 0.25 * dn) + 0.45 * pow(hf, 5.0), bounce = (0.3 + 0.22 * hf) * (0.75 + 0.35 * up - 0.3 * dn); // the light from the slit above; bounced round the slot off the sunlit walls
+    float bl = 0.0, pool = 0.0;
+    for (int i = 0; i < 3; i++) {
+      vec3 F = uBF[i].xyz, ab = uBT[i].xyz - F; float t = clamp(dot(P - F, ab) / dot(ab, ab), 0.0, 1.0); vec3 dq = F + ab * t - P; float d2 = dot(dq, dq);
+      vec3 dp = F - P; float p2 = dot(dp, dp);
+      bl += uBF[i].w * ((0.3 + 0.7 * max(dot(N, dq * inversesqrt(max(d2, 1e-4))), 0.0)) * 0.95 / (1.0 + d2 / 3.0) * (0.4 + 0.6 * (1.0 - t)) + (0.25 + 0.75 * max(dot(N, dp * inversesqrt(max(p2, 1e-4))), 0.0)) * 0.9 / (1.0 + p2 / 9.0));
+      pool += uBF[i].w * (1.0 - smoothstep(uBT[i].w * 0.75, uBT[i].w * 1.25, length(P.xz - F.xz))) * step(abs(P.y - F.y), 0.6);
+    }
+    vec3 col, alb = vec3(0.95, 0.55, 0.35);
+    if (vK < 0.5) { // the walls: beds of sandstone flowing along them
+      float n1 = texture2D(uNoise, vec2(vS * 0.031, P.y * 0.021)).r, n2 = texture2D(uNoise, vec2(vS * 0.12, P.y * 0.11) + 0.4).g;
+      float ph = P.y * 2.1 + 1.3 * sin(P.y * 0.85 + vS * 0.4) + n1 * 6.0 + vS * 0.09; // the beds bend with the flutes
+      float st = sin(ph) * 0.5 + 0.5, fine = sin(ph * 3.7 + n2 * 4.0) * 0.5 + 0.5, lam = pow(abs(sin(ph * 1.9 + n2 * 2.0)), 18.0);
+      float L = (bounce + 0.9 * sky + 0.55 * bl) * (0.66 + 0.5 * st + 0.14 * fine - 0.2 * lam) * (0.9 + 0.18 * n2);
+      col = ramp(L * (1.0 - uNight));
+      col = mix(col, vec3(0.02, 0.02, 0.045) * (0.7 + 2.6 * sky) * (0.72 + 0.4 * st - 0.15 * lam), uNight); // starlight from the slit
+    } else if (vK < 1.5) { // the sand: rippled, trodden; the beams' pools blazing on it
+      float rp = sin(dot(P.xz, vec2(1.7, 2.6)) * 3.0 + texture2D(uNoise, P.xz * 0.21).r * 8.0) * 0.5 + 0.5;
+      float L = (bounce * 0.9 + 0.6 * sky + 0.6 * bl + 2.0 * pool) * (0.9 + 0.12 * rp) * (0.92 + 0.12 * texture2D(uNoise, P.xz * 0.9 + 0.3).g);
+      col = ramp(L * 0.95 * (1.0 - uNight)) * vec3(1.0, 0.96, 0.92);
+      col = mix(col, vec3(0.025, 0.022, 0.04) * (0.8 + 0.3 * rp), uNight);
+    } else { // the people and their kit, in the canyon's light (against the beams mostly in silhouette)
+      vec3 a = vC; float acc = step(0.9, a.r) * step(a.g, 0.1) * step(0.9, a.b); a = mix(a, uAccent * 0.85, acc); alb = a;
+      float L = bounce * 0.7 + 0.7 * sky + 0.5 * bl + 1.2 * pool;
+      col = a * mix(vec3(1.0, 0.62, 0.42), vec3(1.0, 0.9, 0.78), smoothstep(0.6, 1.4, L)) * L * (1.0 - uNight) + a * vec3(0.02, 0.02, 0.035) * uNight;
+    }
+    vec3 dl = uLamp - P; float l2 = dot(dl, dl); // the lantern, by night
+    col += uLampCol * alb * (0.2 + 0.8 * max(dot(N, dl * inversesqrt(max(l2, 1e-4))), 0.0)) * 3.2 / (1.0 + l2 / 4.0) * uNight;
+    col = mix(col, uHaze, 1.0 - exp(-dist * 0.012)); // the dusty air
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    gl_FragColor.rgb += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  }
+`;
+// the sky up through the slit: glaring white at its edges, blue straight up; by night stars and the Milky Way
+const AN_SKY_FS = /* glsl */ `
+  uniform float uNight; uniform sampler2D uNoise; varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir); float h = max(d.y, 0.0);
+    vec3 col = mix(vec3(1.0, 0.97, 0.9) * 1.5, vec3(0.5, 0.68, 0.98) * 1.15, smoothstep(0.55, 0.97, h));
+    vec3 nc = vec3(0.004, 0.006, 0.016) + vec3(0.008, 0.011, 0.028) * h;
+    vec3 mwN = normalize(vec3(0.98, 0.05, 0.05)); float b = dot(d, mwN); // the band running along the slit, as we look up it
+    vec2 mq = vec2(dot(d, vec3(0.3, 0.0, -0.95)), dot(d, vec3(0.0, 1.0, 0.0)));
+    nc += vec3(0.6, 0.62, 0.75) * exp(-b * b / 0.012) * (0.4 + 0.8 * texture2D(uNoise, mq * 1.6 + 0.2).r) * (1.0 - 0.7 * smoothstep(0.5, 0.66, texture2D(uNoise, mq * 3.4 + vec2(b * 5.0, 0.5)).g)) * (0.35 + 1.3 * pow(texture2D(uNoise, mq * 21.0 + 0.4).r, 3.0)) * 0.1; // the Milky Way along the slit
+    vec3 sd = d * 380.0, ci = floor(sd); float hs = fract(sin(dot(ci, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    if (hs > 0.992) nc += mix(vec3(1.0, 0.85, 0.7), vec3(0.75, 0.85, 1.0), fract(hs * 37.0)) * smoothstep(0.38, 0.0, length(sd - ci - 0.5)) * (0.4 + 0.9 * fract(hs * 91.0)); // stars
+    col = mix(col, nc, uNight);
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// a beam: a quad strip turned to face us round the shaft's axis, its core bright, dust streaming in it
+const AN_BEAM_VS = /* glsl */ `
+  uniform vec4 uBF[3]; uniform vec4 uBT[3]; attribute vec3 aBm; varying vec3 vB; varying float vAmt; // across (−1…1), up (0 at the sand, 1 in the slit), which beam
+  void main() {
+    int i = int(aBm.z + 0.5); vec3 F = uBF[i].xyz, T = uBT[i].xyz, P = mix(F, T, aBm.y), ax = normalize(T - F), side = normalize(cross(ax, cameraPosition - P));
+    P += side * aBm.x * uBT[i].w * (1.0 + 0.3 * (1.0 - aBm.y)) * 1.9;
+    vB = aBm; vAmt = uBF[i].w;
+    gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+  }
+`;
+const AN_BEAM_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uCol;
+  varying vec3 vB; varying float vAmt;
+  void main() {
+    float u = vB.x * 1.9, v = vB.y, core = exp(-u * u * 2.6) + 0.12 * exp(-u * u * 0.5);
+    float dust = texture2D(uNoise, vec2(vB.x * 0.5 + vB.z * 0.37, v * 2.2 - uTime * 0.013)).r * 0.6 + texture2D(uNoise, vec2(vB.x * 1.4 + vB.z * 0.71, v * 7.0 - uTime * 0.035)).g * 0.4;
+    float a = core * (0.3 + 1.0 * smoothstep(0.32, 0.78, dust)) * (0.45 + 0.75 * (1.0 - v)) * smoothstep(0.0, 0.025, v) * (1.0 - smoothstep(0.88, 1.0, v)) * vAmt;
+    gl_FragColor = vec4(uCol * a, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// dust drifting in the air (lit where it crosses a beam), sand tossed up into the light now and then, a trickle of sand off a ledge
+const AN_DUST_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform vec4 uBF[3]; uniform vec4 uBT[3]; uniform vec3 uLamp; uniform float uNight; uniform vec4 uToss; uniform vec3 uTossDir; uniform float uH;
+  attribute vec2 aD; varying float vA; // its seed; which kind (0 dust, 1 tossed sand, 2 the trickle)
+  void main() {
+    vec3 p = position; float sd = aD.x, kind = aD.y, alpha = 1.0, size = 0.035;
+    if (kind < 0.5) { p += vec3(sin(uTime * 0.13 + sd * 40.0), sin(uTime * 0.09 + sd * 23.0) * 0.5, sin(uTime * 0.11 + sd * 17.0)) * 0.4; p.y = mod(p.y - uTime * 0.04 * fract(sd * 9.1), uH * 0.8); }
+    else if (kind < 1.5) {
+      float age = uToss.w - fract(sd * 7.3) * 0.3, g = 3.2; // thrown up in a fan, hanging in the air and drifting down slowly
+      vec3 side = normalize(cross(uTossDir, vec3(0.0, 1.0, 0.0))), v0 = uTossDir * (0.9 + 1.5 * fract(sd * 3.1)) + vec3(0.0, 4.2 + 3.0 * fract(sd * 5.7), 0.0) + side * (fract(sd * 11.3) - 0.5) * 0.9;
+      float tt = (1.0 - exp(-age * 1.6)) / 1.6; p = uToss.xyz + v0 * tt - vec3(0.0, g * age * age * 0.12 + 0.35 * max(age - 1.2, 0.0), 0.0) + vec3(sin(age * 1.3 + sd * 30.0), 0.0, cos(age * 1.1 + sd * 20.0)) * 0.15 * age;
+      alpha = step(0.0, age) * (1.0 - smoothstep(4.0, 8.0, age)) * step(0.0, p.y); size = 0.04;
+    } else { float ph = fract(uTime * (0.45 + 0.2 * fract(sd * 5.0)) + sd); p.y = position.y * (1.0 - ph); p.x += (fract(sd * 13.0) - 0.5) * 0.06 * (1.0 + ph * 3.0); size = 0.03; alpha = 0.8; }
+    float lit = 0.0;
+    for (int i = 0; i < 3; i++) { vec3 F = uBF[i].xyz, ab = uBT[i].xyz - F; float t = clamp(dot(p - F, ab) / dot(ab, ab), 0.0, 1.0); vec3 dq = F + ab * t - p; float r = uBT[i].w * 1.15; lit += uBF[i].w * exp(-dot(dq, dq) / (r * r)); }
+    vec3 dl = uLamp - p; lit = lit * (1.0 - uNight) + uNight * 0.9 / (1.0 + dot(dl, dl) / 1.5);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
+    gl_PointSize = max(1.0, size * uPx / max(-mv.z, 0.3)); vA = alpha * ((kind > 0.5 && kind < 1.5 ? 0.22 : 0.06) + 0.94 * min(lit, 1.4)) * min(1.0, size * uPx / max(-mv.z, 0.3)); // the tossed sand catches the canyon's glow too
+  }
+`;
+const AN_DUST_FS = /* glsl */ `
+  uniform vec3 uCol; uniform vec3 uLampCol; uniform float uNight; varying float vA;
+  void main() { vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard; float a = (1.0 - r2) * vA; vec4 c = linearToOutputTexel(vec4(mix(uCol, uLampCol, uNight), 1.0)); gl_FragColor = vec4(c.rgb * a, a * 0.6); }
+`;
+function antelope(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1931);
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 56; camera.near = 0.05; camera.far = 3000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight); // resize() corrects it right after the build
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1), V = new THREE.Vector3(), V2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const blob = (sx, sy, sz, detail = 1) => new THREE.IcosahedronGeometry(1, detail).scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx); // the yaw that points a model's +x along (fx, fz)
+  const place = (ox, oy, oz, yaw) => (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().makeRotationY(yaw).setPosition(ox, oy, oz).multiply(at(x, y, z, rx, ry, rz));
+  const pt = (F, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(F(0, 0, 0)).toArray();
+  const ACC = 0xff00ff;
+
+  /* --- the slot: its floor line (gently winding to the beams, then turning away out of sight), how wide it is at each height (chambers mid-way, a
+     crack at the top opening out where a beam comes in), how its middle wanders as it rises (the walls twist), the flutes in each wall --- */
+  const H = 26, S0 = -14, S1 = 72, BEAMS = [8.5, 12.5, 26], BLAT = [0.95, -0.9, 0.2], T0 = 79.2, PT = 26; // the beams side by side where we look; the first frame (a still one too) catches the sand hanging in the first
+  const nearBeam = (s) => BEAMS.reduce((m, b) => Math.max(m, Math.exp(-(((s - b) / 2.6) ** 2))), 0);
+  const pathX = (s) => 0.5 * Math.sin(s * 0.13 - 0.4) + 0.3 * Math.sin(s * 0.41 + 0.4) + 6 * Math.pow(smooth(24, 50, s), 1.5) - 3 * smooth(-4, -14, s);
+  const frameAt = (s) => { const x = pathX(s), dx = (pathX(s + 0.05) - pathX(s - 0.05)) / 0.1, L = Math.hypot(dx, 1); return [x, -s, 1 / L, dx / L]; }; // the floor line's point and its normal to the right
+  const baseW = (s, y) => { const v = Math.min(1, Math.max(0, y / H)), nb = nearBeam(s);
+    const w0 = 1.0 + 0.5 * fbm(s * 0.09, 5.1, 2) + 1.2 * Math.pow(Math.sin(v * Math.PI), 1.3) * (0.4 + 0.9 * fbm(s * 0.05 + 3.3, 1.7, 2)) + 0.55 * nb * (1 - v) + 1.7 * Math.exp(-(((s + 1) / 6) ** 2)) * (1 - 0.5 * v); // a wider chamber where we stand
+    const open = 0.16 + 1.25 * nb * (0.85 + 0.15 * Math.sin(s * 1.3)); // wide enough over each beam for its shaft
+    return w0 + (open - w0) * smooth(0.76, 1.0, v); };
+  const snake = (s, y) => (0.85 - 0.68 * nearBeam(s)) * (Math.sin(y * 0.21 + s * 0.17 + 0.8 * Math.sin(s * 0.09 + y * 0.05)) + 0.35 * Math.sin(y * 0.47 - s * 0.29 + 1.1));
+  const ridge = (s, y, side) => 0.5 * Math.sin(y * 0.85 + s * 0.4 + side * 1.9 + 0.6 * Math.sin(s * 0.21)) + 0.16 * Math.sin(y * 2.2 - s * 0.7 + side * 0.6) + 0.14 * Math.sin(y * 3.1 + s * 1.1 + side * 2.4 + Math.sin(s * 0.5 + y * 0.3)); // the flutes the floods carved, big and small
+  const wallPt = (s, y, side) => { const [x, z, nx, nz] = frameAt(s), v = Math.min(1, Math.max(0, y / H)), off = snake(s, y) + side * (baseW(s, y) + ridge(s, y, side) * (1 - 0.85 * smooth(0.74, 1, v))); return [x + nx * off, y, z + nz * off]; };
+  const midAt = (s, y) => { const [x, z, nx, nz] = frameAt(s), o = snake(s, y); return new THREE.Vector3(x + nx * o, y, z + nz * o); }; // the slot's middle at a height
+
+  /* --- one geometry for the rock, the sand and the people who stay (walls 0, sand 1, painted 2) --- */
+  const pos = [], nrm = [], col = [], kind = [], arc = [], idx = [];
+  const add = (g, k, sArc) => { const o = pos.length / 3, p = g.attributes.position, n = g.attributes.normal, c = g.attributes.color; for (let i = 0; i < p.count; i++) { pos.push(p.getX(i), p.getY(i), p.getZ(i)); nrm.push(n.getX(i), n.getY(i), n.getZ(i)); if (c) col.push(c.getX(i), c.getY(i), c.getZ(i)); else col.push(1, 1, 1); kind.push(k); arc.push(typeof sArc === "function" ? sArc(i) : sArc); } if (g.index) for (let i = 0; i < g.index.count; i++) idx.push(o + g.index.getX(i)); else for (let i = 0; i < p.count; i++) idx.push(o + i); g.dispose(); };
+  const grid = (nu, nv, f) => { const g = new THREE.BufferGeometry(), P = [], I = []; for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) P.push(...f(i / nu, j / nv)); for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) { const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1; I.push(a, b, c, b, d, c); } g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals(); return g; };
+  const NS = Math.round((S1 - S0) / (preview ? 0.55 : 0.25)), NY = Math.round((H + 0.6) / (preview ? 0.75 : 0.34));
+  for (const side of [-1, 1]) add(grid(NS, NY, (u, v) => wallPt(S0 + (S1 - S0) * u, -0.6 + (H + 0.6) * v, side)), 0, (i) => S0 + (S1 - S0) * ((i % (NS + 1)) / NS));
+  const NF = Math.round((S1 - S0) / (preview ? 0.6 : 0.3)), sandH = (s, u) => 0.1 * Math.sin(s * 0.7 + u * 2) + 0.06 * Math.sin(s * 2.1 - u * 3) + 0.3 * u ** 4; // banked against the walls
+  add(grid(10, NF, (u, v) => { const s = S0 + (S1 - S0) * v, w = u * 2 - 1, [x, z, nx, nz] = frameAt(s), o = snake(s, 0) + w * (Math.min(baseW(s, 0), baseW(s, 0.6)) + 0.35); return [x + nx * o, sandH(s, w), z + nz * o]; }), 1, 0);
+
+  /* --- the people: a guide in your colour tossing sand into the first beam, visitors looking up, a photographer at a tripod; a lantern --- */
+  const S = [], D = [], Pp = (geo, m, hex, list = S) => list.push([geo, m, hex]), GL = [];
+  const Pb = (a, b, w, hex, list) => { V.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]); const L = V.length(); Pp(box(w, L, w), new THREE.Matrix4().compose(V2.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), Q.setFromUnitVectors(UP, V.normalize()), ONE), hex, list); };
+  const spot = (s, lat) => { const m = midAt(s, 0), [, , nx, nz] = frameAt(s); return [m.x + nx * lat, sandH(s, lat / Math.max(0.5, baseW(s, 0))), m.z + nz * lat]; };
+  const person = ([x, y, z], face, shirt, pants, hat, list, opts = {}) => { // standing at a spot on the sand facing `face` (a point), arms down, or one raised with a phone
+    const L = place(x, y, z, yawOf(face.x - x, face.z - z));
+    for (const v of [-0.1, 0.1]) { Pp(box(0.14, 0.82, 0.14), L(0, 0.41, v), pants, list); Pp(box(0.25, 0.1, 0.13), L(0.04, 0.05, v), 0x3a2e24, list); }
+    Pp(box(0.3, 0.62, 0.42), L(0, 1.14, 0), shirt, list); Pp(blob(0.11, 0.13, 0.11, 1), L(-0.01, 1.6, 0), 0xc89a78, list);
+    if (hat) Pp(cyl(0.2, 0.2, 0.02, 12), L(-0.01, 1.7, 0), hat, list), Pp(cyl(0.11, 0.12, 0.1, 10), L(-0.01, 1.75, 0), hat, list);
+    if (opts.phone) { Pp(box(0.09, 0.6, 0.09), L(0.18, 1.62, 0.25, 0, 0, 2.6), shirt, list); Pp(box(0.02, 0.15, 0.08), L(0.38, 1.96, 0.25, 0, 0, -0.2), 0x111111, list); } else Pp(box(0.09, 0.58, 0.09), L(0, 1.1, 0.26), shirt, list);
+    if (!opts.arm) Pp(box(0.09, 0.58, 0.09), L(0, 1.1, -0.26), shirt, list);
+    return L;
+  };
+  const BT = BEAMS.map((s, i) => { const m = midAt(s, H), [, , nx, nz] = frameAt(s); return new THREE.Vector4(m.x + nx * BLAT[i], H + 0.4, m.z + nz * BLAT[i], [0.26, 0.22, 0.2][i]); }); // where each comes in at the slit
+  const SUNB = new THREE.Vector3(), sunAt = (t) => SUNB.set(0.02 + 0.015 * Math.sin(t * 0.008), 1, 0.012 + 0.01 * Math.cos(t * 0.006)).normalize(); // the sun nearly overhead, creeping
+  const footAt = (i, t) => { sunAt(t); const T = BT[i]; return new THREE.Vector3(T.x - SUNB.x * (T.y / SUNB.y), 0.05, T.z - SUNB.z * (T.y / SUNB.y)); };
+  const F0 = footAt(0, T0), F1 = footAt(1, T0), [, , gnx, gnz] = frameAt(BEAMS[0]);
+  const guide = person([F0.x + gnx * 0.6 + gnz * 0.4, 0.02, F0.z + gnz * 0.6 + 0.4], F0, ACC, 0x3a3a40, 0x8a6a40, D, { arm: true }); // the guide beside the first beam, one arm to throw
+  person(spot(14.6, 0.55), F1, 0x2a4a6a, 0x262a30, 0, D, { phone: true }); // a visitor just out of the second beam, photographing it person(spot(21.5, -0.3), midAt(26, 0), 0x8a3a2a, 0x2a2a2a, 0xd8d0c0, D);
+  { const aim = midAt(BEAMS[0], H), L = person(spot(17.5, 0.75), aim, 0x3a4a3a, 0x2a2e36, 0, S); // the photographer at a tripod beyond the beams, aimed up the slot
+    const head = pt(L, 0.6, 1.4, 0), dir = new THREE.Vector3().subVectors(aim, new THREE.Vector3(...head)).normalize();
+    for (const a of [0, 2.1, 4.2]) Pb(pt(L, 0.6 + Math.cos(a) * 0.32, 0, Math.sin(a) * 0.32), head, 0.025, 0x2a2a2a, S);
+    Pp(box(0.15, 0.11, 0.12), at(head[0], head[1] + 0.06, head[2]), 0x111111); Pp(cyl(0.045, 0.055, 0.22, 8), new THREE.Matrix4().compose(new THREE.Vector3(head[0], head[1] + 0.06, head[2]).addScaledVector(dir, 0.13), Q.setFromUnitVectors(UP, dir), ONE), 0x1a1a1a);
+    GL.push([...pt(L, 0.52, 1.47, 0), 0.04, 0.75, 0.85, 1.0, 1.5], [...pt(L, 0.08, 1.66, 0), 0.07, 2.6, 0.2, 0.1, 1.6]); } // its screen; a red headlamp
+  const LAMP = new THREE.Vector3(...spot(16.4, 0.15)); LAMP.y += 0.28; // a lantern on the sand
+  Pp(cyl(0.09, 0.1, 0.05, 10), at(LAMP.x, LAMP.y - 0.24, LAMP.z), 0x2a2a2a); Pp(cyl(0.075, 0.075, 0.2, 10), at(LAMP.x, LAMP.y - 0.1, LAMP.z), ACC); Pp(cyl(0.05, 0.09, 0.06, 10), at(LAMP.x, LAMP.y + 0.03, LAMP.z), 0x2a2a2a);
+  GL.push([LAMP.x, LAMP.y - 0.1, LAMP.z, 0.32, 1, 1, 1, 3.2]); const LAMP_GL = GL.length - 1;
+  add(mergeColored(THREE, S), 2, 0);
+  const rockGeo = keep(new THREE.BufferGeometry());
+  rockGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); rockGeo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3)); rockGeo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  rockGeo.setAttribute("aKind", new THREE.Float32BufferAttribute(kind, 1)); rockGeo.setAttribute("aS", new THREE.Float32BufferAttribute(arc, 1)); rockGeo.setIndex(idx);
+  const kindGeo = (g) => { g.setAttribute("aKind", new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(2), 1)); g.setAttribute("aS", new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count), 1)); return keep(g); };
+  const dayGeo = kindGeo(mergeColored(THREE, D)), armGeo = kindGeo(mergeColored(THREE, [[box(0.09, 0.6, 0.09).translate(0, -0.27, 0), new THREE.Matrix4(), ACC]]));
+
+  /* --- the light: the sun nearly overhead, three beams through the openings, the pools they make; the lantern by night --- */
+  const BF = [0, 1, 2].map(() => new THREE.Vector4());
+  const bfU = { value: BF }, btU = { value: BT }, nightU = { value: 0 }, lampU = { value: LAMP.clone() }, lampColU = { value: new THREE.Color() }, accentU = { value: new THREE.Color() }, hazeU = { value: new THREE.Color() };
+  const rockU = { uNoise: { value: noise }, uTime: time, uNight: nightU, uH: { value: H }, uBF: bfU, uBT: btU, uLamp: lampU, uLampCol: lampColU, uAccent: accentU, uHaze: hazeU };
+  const rockMat = shader(AN_ROCK_VS, AN_ROCK_FS, rockU, { vertexColors: true, side: THREE.DoubleSide });
+  const rock = new THREE.Mesh(rockGeo, rockMat); rock.frustumCulled = false; scene.add(rock);
+  const dayPeople = new THREE.Mesh(dayGeo, rockMat); dayPeople.frustumCulled = false; scene.add(dayPeople);
+  const arm = new THREE.Mesh(armGeo, rockMat); arm.frustumCulled = false; arm.matrixAutoUpdate = false; dayPeople.add(arm);
+
+  /* --- the sky up through the slit; the beams; the dust --- */
+  const skyU = { uNight: nightU, uNoise: { value: noise } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(2000, 32, 16)), shader(LANTERN_SKY_VS, AN_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false }));
+  sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const beamGeo = keep(new THREE.BufferGeometry());
+  { const NB = preview ? 12 : 24, am = [], ii = [];
+    for (let b = 0; b < 3; b++) { const o = am.length / 3; for (let j = 0; j <= NB; j++) for (const u of [-1, 0, 1]) am.push(u, j / NB, b); for (let j = 0; j < NB; j++) for (let i = 0; i < 2; i++) { const a = o + j * 3 + i, c = a + 3; ii.push(a, c, a + 1, a + 1, c, c + 1); } }
+    beamGeo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(am.length), 3)); beamGeo.setAttribute("aBm", new THREE.Float32BufferAttribute(am, 3)); beamGeo.setIndex(ii); }
+  const beamU = { uBF: bfU, uBT: btU, uNoise: { value: noise }, uTime: time, uCol: { value: new THREE.Color(1.0, 0.84, 0.58).multiplyScalar(0.5) } };
+  const beams = new THREE.Mesh(beamGeo, shader(AN_BEAM_VS, AN_BEAM_FS, beamU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  beams.frustumCulled = false; beams.renderOrder = 5; scene.add(beams);
+  const NDUST = preview ? 300 : 900, NTOSS = preview ? 90 : 260, NTRICK = preview ? 20 : 50, ND = NDUST + NTOSS + NTRICK, dPos = new Float32Array(ND * 3), dD = new Float32Array(ND * 2);
+  const TRICK = midAt(19, 15); { const [, , nx, nz] = frameAt(19), w = baseW(19, 15) - 0.25; TRICK.x -= nx * w; TRICK.z -= nz * w; } // a ledge on the left wall, sand trickling off it
+  for (let i = 0; i < ND; i++) {
+    if (i < NDUST) { const s = r(3, 34), y = r(0.2, 19), m = midAt(s, y), [, , nx, nz] = frameAt(s), lat = r(-0.8, 0.8) * baseW(s, y); dPos.set([m.x + nx * lat, y, m.z + nz * lat], i * 3); dD.set([r(), 0], i * 2); }
+    else if (i < NDUST + NTOSS) dD.set([r(), 1], i * 2);
+    else { dPos.set([TRICK.x, TRICK.y, TRICK.z], i * 3); dD.set([r(), 2], i * 2); }
+  }
+  const dustGeo = keep(new THREE.BufferGeometry()); dustGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3)); dustGeo.setAttribute("aD", new THREE.BufferAttribute(dD, 2));
+  const tossU = { value: new THREE.Vector4(0, 0, 0, -10) }, tossDirU = { value: new THREE.Vector3(0, 0, -1) };
+  const dustU = { uTime: time, uPx: { value: 1000 }, uBF: bfU, uBT: btU, uLamp: lampU, uNight: nightU, uToss: tossU, uTossDir: tossDirU, uH: { value: H }, uCol: { value: new THREE.Color(1.0, 0.86, 0.62) }, uLampCol: lampColU };
+  const dust = new THREE.Points(dustGeo, shader(AN_DUST_VS, AN_DUST_FS, dustU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor }));
+  dust.frustumCulled = false; dust.renderOrder = 6; scene.add(dust);
+
+  /* --- glows by night: the lantern in your colour, the photographer's screen and headlamp --- */
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  function applyPalette(p) {
+    pal = p;
+    const d = p.dark;
+    accentU.value.set(p.accent); nightU.value = d ? 1 : 0;
+    const acc = new THREE.Color(p.accent);
+    lampColU.value.copy(acc).lerp(new THREE.Color(1.0, 0.72, 0.4), 0.4).multiplyScalar(d ? 1.6 : 0); // the lantern's light, your colour warmed a little
+    hazeU.value.set(d ? "#020206" : "#7a2c16").multiplyScalar(d ? 1 : 0.55);
+    for (let i = 0; i < NGL; i++) { if (i === LAMP_GL) aTint.setXYZ(i, acc.r * 2.6, acc.g * 2.6, acc.b * 2.6); aGlow.setW(i, d ? GL[i][3] : 0); }
+    aGlow.needsUpdate = aTint.needsUpdate = true;
+    dayPeople.visible = !d; beams.visible = !d;
+    frameLight(clock + T0);
+  }
+
+  /* --- the camera, in the slot at eye height, looking along it and up to the beams --- */
+  const C0 = midAt(0, 1.65), look = new THREE.Vector3();
+  let clock = 0;
+  function layout() { // on every render: a still frame gets no update() call
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 56 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const tgt = midAt(16, 1.65), pitch = 0.3 + 0.08 * k + 0.012 * Math.sin(clock * 0.05), sway = 0.25 * Math.sin(clock * 0.037);
+    camera.lookAt(look.set(tgt.x + sway, 1.65 + Math.tan(pitch) * C0.distanceTo(tgt), tgt.z));
+    camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2();
+  const pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360)), minK = (px) => Math.min(2, Math.max(0.35, px / 900));
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = minK(buf.y); dustU.uPx.value = pxFor(buf.y); };
+
+  /* --- the clock: the sun creeping (the beams' pools sliding, one coming and going), sand tossed into the first beam now and then --- */
+  function frameLight(t) {
+    sunAt(t);
+    const amt = [0.9 + 0.1 * Math.sin(t * 0.05), 0.55 + 0.45 * Math.sin(t * 0.021 + 1), 0.85 * Math.max(0, Math.sin(t * 0.013 + 2))];
+    for (let i = 0; i < 3; i++) { const T = BT[i]; BF[i].set(T.x - SUNB.x * (T.y / SUNB.y), 0.05, T.z - SUNB.z * (T.y / SUNB.y), pal.dark ? 0 : amt[i]); }
+  }
+  function frame(dt) {
+    clock += dt; time.value = clock;
+    const t = clock + T0, age = ((t % PT) + PT) % PT, swing = smooth(PT - 0.7, PT, age) + (age < 1.2 ? 1 - smooth(0.15, 1.2, age) : 0); // the arm comes up, throws, and drops
+    frameLight(t);
+    arm.matrix.copy(guide(0.0, 1.42, -0.26, 0, 0, 0.15 + 2.3 * swing)); arm.matrixWorldNeedsUpdate = true;
+    const hand = pt(guide, 0.35, 1.55, -0.26); tossU.value.set(hand[0], hand[1], hand[2], pal.dark ? -10 : age); // no guide, no toss, by night tossDirU.value.set(BF[0].x - hand[0], 0, BF[0].z - hand[2]).normalize();
+  }
+  applyPalette(pal);
+  frame(0);
+
+  return {
+    update: sceneStep(frame),
+    setPalette: applyPalette,
+    stats() { return { beams: BF.map((b) => +b.w.toFixed(2)), toss: +tossU.value.w.toFixed(1), dust: ND, glows: NGL, accent: "#" + accentU.value.getHexString(), night: nightU.value }; }, // for checking by hand
+    dispose() { scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall, antelope };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
