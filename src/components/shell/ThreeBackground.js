@@ -31585,7 +31585,7 @@ const BB_SKY_GLSL = /* glsl */ `
   vec3 bbSky(vec3 d) {
     float h = d.y, day = 1.0 - uNight, cs = dot(d, uSunDir);
     vec3 col = mix(uHor, uZen, smoothstep(0.0, 0.55, h));
-    col += uSunCol * (0.25 * exp((cs - 1.0) * 60.0) + 0.12 * exp((cs - 1.0) * 6.0)) * day + vec3(1.0, 0.97, 0.9) * smoothstep(0.99985, 0.99993, cs) * day;
+    col += uSunCol * (0.25 * exp((cs - 1.0) * 60.0) + 0.12 * exp((cs - 1.0) * 6.0)) * day + vec3(1.0, 0.86, 0.62) * 1.35 * smoothstep(0.99993, 0.99997, cs) * day;
     if (h > 0.0) { vec2 cp = d.xz / (h + 0.15) * 0.8 + vec2(uTime * 0.0015, 0.0); float c = texture2D(uNoise, cp * 0.2).r * 0.6 + texture2D(uNoise, cp * 0.7 + 0.3).g * 0.4;
       col = mix(col, mix(uCloudDark, uCloudLit, smoothstep(0.55, 0.9, c)), smoothstep(0.56, 0.78, c) * smoothstep(0.02, 0.12, h) * 0.85 * (0.15 + 0.85 * day)); }
     if (uNight > 0.0) { // stars, and the Milky Way arching over the bay with its dark lanes
@@ -31628,6 +31628,7 @@ const BB_LAND_FS = BB_SKY_GLSL + /* glsl */ `
     g += step(0.93, hs) * smoothstep(0.08, 0.0, tw) * smoothstep(0.5, 0.1, length(fract(p * 1.6) - 0.5)) * 0.9; // stray sparks: fish turning, drops falling
     return g;
   }
+  float bbDock(vec3 P) { vec2 q = P.xz + uSunDir.xz * (0.95 - P.y) / max(uSunDir.y, 0.05); float soft = 0.12 + 0.08 * (0.95 - P.y); return smoothstep(0.5 - soft, 0.5 + soft, q.x) * smoothstep(2.72 + soft, 2.72 - soft, q.x) * smoothstep(-9.7 - soft, -9.7 + soft, q.y) * smoothstep(3.6 + soft, 3.6 - soft, q.y) * 0.75; } // under the dock's shadow, its edges soft
   void main() {
     vec3 P = vW, N = normalize(vN), toEye = cameraPosition - P; float dist = length(toEye); vec3 V = toEye / max(dist, 1e-3);
     if (dot(N, V) < 0.0) N = -N;
@@ -31636,20 +31637,35 @@ const BB_LAND_FS = BB_SKY_GLSL + /* glsl */ `
       float far = smoothstep(30.0, 140.0, dist); vec2 rp = (1.0 - 0.7 * far) * (vec2(texture2D(uNoise, P.xz * 0.06 + uTime * vec2(0.006, 0.004)).r, texture2D(uNoise, P.xz * 0.06 - uTime * vec2(0.005, 0.007) + 0.5).g) - 0.5) * 0.06 + (1.0 - far) * (vec2(texture2D(uNoise, P.xz * 0.35 + uTime * 0.02).g, texture2D(uNoise, P.xz * 0.35 - uTime * 0.025 + 0.3).r) - 0.5) * 0.04; // calmer far off, so the far shore's mirror holds
       vec3 Nw = normalize(vec3(rp.x, 1.0, rp.y)), R = reflect(-V, Nw); float fr = 0.03 + 0.97 * pow(1.0 - max(dot(Nw, V), 0.0), 5.0);
       vec2 o = (P.xz - uBay.xy) / uBay.zw, dd = R.xz / uBay.zw; float A = dot(dd, dd), B = dot(o, dd), C = dot(o, o) - 1.0, t = (-B + sqrt(max(B * B - A * C, 0.0))) / max(A, 1e-5); // to the mangroves across the bay along the reflection
-      vec3 refl = t * R.y < 9.0 + 3.0 * texture2D(uNoise, vec2(atan(R.x, R.z) * 4.0, 0.6)).r ? uTree * (0.35 + 0.65 * day) : bbSky(R);
+      float tl = 9.0 + 3.0 * texture2D(uNoise, vec2(atan(R.x, R.z) * 4.0, 0.6)).r; vec3 refl = mix(bbSky(R), uTree * (0.35 + 0.65 * day), smoothstep(tl + 3.0, tl - 3.0, t * R.y)); // the far mangroves mirrored, their edge soft in the ripples
       float depth = clamp(-P.y * 0.0 + length(o) * 1.0, 0.0, 1.0), shallow = smoothstep(0.82, 1.0, length(o)) + uHand.z * exp(-dot(P.xz - uHand.xy, P.xz - uHand.xy) / 40.0); // shallower toward the shore and the dock
       vec3 body = mix(vec3(0.02, 0.17, 0.2), vec3(0.15, 0.48, 0.42), clamp(shallow, 0.0, 1.0)) * (amb * 0.8 + uSunCol * 0.4 * day);
-      col = mix(body, refl, fr * 0.9) + uSunCol * pow(max(dot(R, uSunDir), 0.0), 300.0) * 2.5 * day;
+      float sh = 1.0 - 0.55 * bbDock(P) * day;
+      col = mix(body, refl, fr * 0.9) * sh + uSunCol * (pow(max(dot(R, uSunDir), 0.0), 300.0) * 3.0 + pow(max(dot(R, uSunDir), 0.0), 40.0) * 0.25) * day * sh; // the glitter path, broad and sharp
       float gl = bbLight(P.xz);
       vec2 sq = mat2(0.8, -0.6, 0.6, 0.8) * P.xz; float spk = smoothstep(0.3, 0.8, texture2D(uNoise, sq * 0.53 + uTime * vec2(0.03, -0.02)).r * 0.55 + texture2D(uNoise, mat2(0.6, 0.8, -0.8, 0.6) * P.xz * 1.37 - uTime * 0.04).g * 0.45); // plankton flashing, not a smooth line
       col += uGlow * gl * (0.2 + 1.6 * spk) * uNight + vec3(0.8, 0.9, 0.95) * min(gl, 1.2) * 0.12 * day; // blue fire by night, a little white water by day
     } else if (vK < 1.5) { // the land: mud and sand at the water's edge, the forest floor, the hills
-      float n = texture2D(uNoise, P.xz * 0.05).r; vec3 alb = mix(vec3(0.42, 0.36, 0.26), vec3(0.12, 0.2, 0.08), smoothstep(0.4, 1.6, P.y + n)) * (0.7 + 0.5 * n);
-      col = alb * (amb + uSunCol * dif * day);
+      float n = texture2D(uNoise, P.xz * 0.05).r, n2 = texture2D(uNoise, P.xz * 0.9).g, rip = 0.5 + 0.5 * sin(dot(P.xz, vec2(4.3, 2.1)) + n * 9.0); // sand ripples
+      vec3 sand = mix(vec3(0.62, 0.53, 0.4), vec3(0.72, 0.64, 0.5), n2) * (0.88 + 0.16 * rip);
+      float wet = 1.0 - smoothstep(0.08, 0.35, P.y + 0.05 * sin(uTime * 0.6 + P.x * 0.4)), weed = smoothstep(0.62, 0.72, texture2D(uNoise, P.xz * 0.3 + 0.4).r) * (1.0 - wet);
+      sand = mix(sand, sand * vec3(0.55, 0.52, 0.48), wet); sand = mix(sand, vec3(0.2, 0.18, 0.1), weed * 0.7);
+      vec3 alb = mix(sand, mix(vec3(0.16, 0.24, 0.09), vec3(0.24, 0.3, 0.12), n2), smoothstep(0.5, 1.4, P.y + n)) * (0.85 + 0.3 * n);
+      col = alb * (amb + uSunCol * dif * day * (1.0 - 0.7 * bbDock(P))) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 60.0) * 0.6 * wet * day; // wet sand at the water's edge, shining
     } else if (vK < 2.5) { // mangroves: glossy dark leaves, their stilt roots
-      float lf = texture2D(uNoise, vec2(P.x + P.z, P.y) * 0.7).r * 0.6 + texture2D(uNoise, P.xz * 0.9 + P.y * 0.3).g * 0.4;
-      col = vC * (0.6 + 0.7 * lf) * (amb + uSunCol * (0.2 + 0.8 * dif) * day) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 20.0) * 0.12 * day;
-    } else { // the dock, the kayaks and their paddlers (one in your colour)
+      float lf = texture2D(uNoise, vec2(P.x + P.z * 0.7, P.y) * 1.3).r * 0.6 + texture2D(uNoise, (P.xz + P.y) * 3.1).g * 0.4, leaf = step(vC.r * 1.15, vC.g);
+      if (leaf > 0.5 && lf < (1.0 - abs(dot(N, V))) * 1.15 - 0.3) discard; // the crowns' edges ragged with leaves, not a smooth ball
+      vec3 Nl = normalize(N + (vec3(lf, texture2D(uNoise, P.zy * 2.2).r, texture2D(uNoise, P.xy * 2.2).g) - 0.5) * 1.2 * leaf);
+      float ao = mix(1.0, 0.45 + 0.55 * smoothstep(-0.6, 0.8, N.y), leaf); // the crowns' undersides in their own shade
+      col = vC * (0.55 + 0.8 * lf) * ao * (amb + uSunCol * (0.15 + 0.85 * max(dot(Nl, uSunDir), 0.0)) * day) + uSunCol * pow(max(dot(reflect(-V, Nl), uSunDir), 0.0), 24.0) * 0.22 * day * leaf; // glossy leaves
+    } else if (vK > 3.5) { // the dock: weathered boards, their grain along them, some silvered, darker and wet toward the water, slimy green at the waterline
+      bool top = abs(N.y) > 0.6; vec2 gq = top ? vec2(P.x * 0.7, P.z * 30.0) : vec2(P.y * 0.6 + P.x * 0.3, (P.x + P.z) * 30.0);
+      float id = floor((P.z + 50.0) / 0.18), bh = fract(sin(id * 12.9898) * 43758.5453), grain = texture2D(uNoise, gq * vec2(1.0, 0.04) + bh * 3.1).r * 0.6 + texture2D(uNoise, gq * vec2(3.0, 0.11) + 0.4).g * 0.4;
+      vec3 wood = mix(vec3(0.38, 0.27, 0.17), vec3(0.52, 0.5, 0.46), smoothstep(0.3, 0.8, bh * 0.7 + texture2D(uNoise, P.xz * 0.4).r * 0.5)) * (0.75 + 0.45 * grain);
+      float wetw = 1.0 - smoothstep(-0.1, 0.5, P.y); wood = mix(wood, mix(wood * 0.45, vec3(0.08, 0.13, 0.06), smoothstep(0.25, -0.25, abs(P.y + 0.05) - 0.1)), wetw);
+      col = wood * (amb + uSunCol * dif * day) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 30.0) * (0.05 + 0.4 * wetw) * day;
+      col += uGlow * bbLight(P.xz) * 0.15 * uNight * step(P.y, 0.3); // the posts lit from the water by night
+    } else { // the dock's things, the kayaks and their paddlers (one in your colour)
       vec3 a = vC; float acc = step(0.9, a.r) * step(a.g, 0.1) * step(0.9, a.b); a = mix(a, uAccent * 0.85, acc);
       col = a * (amb + uSunCol * dif * day) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 40.0) * 0.2 * day;
       if (P.y < 0.6) col += uGlow * bbLight(P.xz) * 0.12 * uNight; // lit from below by the water they stir
@@ -31698,7 +31714,7 @@ function biobay(THREE, scene, camera, pal, preview) {
   const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
   const yawOf = (fx, fz) => Math.atan2(-fz, fx);
   const ACC = 0xff00ff;
-  const SUN = new THREE.Vector3(0.45, 0.6, -0.66).normalize(); // ahead and to the right: a glitter path on the water by day
+  const SUN = new THREE.Vector3(0.5, 0.2, -0.84).normalize(); // low ahead on the right: golden hour, its glitter path running to us over the bay
 
   /* --- the bay: an oval of water ringed by mangroves, two mangrove islets near us, low wooded hills behind --- */
   const BAY = [0, -128, 175, 125], ISL = [[-34, -30, 9], [46, -52, 12], [-80, -150, 14]];
@@ -31718,28 +31734,50 @@ function biobay(THREE, scene, camera, pal, preview) {
   const M = [], O = [], Pp = (geo, m, hex, list) => list.push([geo, m, hex]), GL = [], LAMPS = [];
   const MANG = [0x1e4a1c, 0x2a5a22, 0x183c18, 0x2f6226];
   const seen = (x, z) => Math.atan2(Math.abs(x - C0.x) - 10, C0.z - z) < 0.95 && C0.z - z > 2 && Math.hypot(x - 1.6, z + 4) > 20; // in view, and clear of the dock
-  const mangrove = (x, z, h, near) => { const y = Math.max(gH(x, z), 0.4);
-    if (near) for (let k = 0; k < 7; k++) { const a = r(0, 6.28), rr = h * r(0.18, 0.32); const g = new THREE.TorusGeometry(rr, 0.04 + h * 0.004, 3, 8, Math.PI); Pp(g, new THREE.Matrix4().makeRotationY(a).setPosition(x, y - 0.3, z).multiply(at(0, 0, 0, 0, 0, 0)), 0x5a4a36, M); } // stilt roots arching into the water
-    for (let i = 0; i < (near ? 9 : 4); i++) { const a = r(0, 6.28), d = h * Math.sqrt(r()) * 0.45, s = h * r(0.16, 0.3); Pp(blob(s * 1.3, s * 0.75, s * 1.3, !near), at(x + Math.cos(a) * d, y + h * 0.45 + r(-0.12, 0.22) * h, z + Math.sin(a) * d), MANG[i % 4], M); } };
-  for (let i = 0; i < (preview ? 260 : 700); i++) { const a = r(0, 6.283), e = r(1.0, 1.35), x = BAY[0] + Math.cos(a) * BAY[2] * e, z = BAY[1] + Math.sin(a) * BAY[3] * e; if (!seen(x, z) || gH(x, z) < -0.3) continue; mangrove(x, z, r(6, 11), Math.hypot(x - C0.x, z - C0.z) < 70); } // the shore's forest
-  for (const [ix, iz, ir] of ISL) for (let i = 0; i < ir * (preview ? 1.2 : 2.4); i++) { const a = r(0, 6.283), d = Math.sqrt(r()) * ir * 0.8; mangrove(ix + Math.cos(a) * d, iz + Math.sin(a) * d, r(5, 9), Math.hypot(ix - C0.x, iz - C0.z) < 80); } // the islets
-  for (let s = 0; s < 10; s++) { const z = 3 - s * 1.3; Pp(box(2.2, 0.08, 1.1), at(1.6, 0.9, z), [0x7a5a3a, 0x6e5034, 0x86643e][s % 3], O); } for (const [x, z] of [[0.6, -8.6], [2.6, -8.6], [0.6, -4], [2.6, -4], [0.6, 0.5], [2.6, 0.5]]) Pp(cyl(0.09, 0.1, 3, 6), at(x, -0.6, z), 0x4a3a28, O); // the dock
-  const HAND = new THREE.Vector3(2.9, 0, -9.3); { const L = (x, y, z, rx = 0, ry = 0, rz = 0) => at(2.5 + x, 0.95 + y, -8.7 + z, rx, ry, rz); // someone sitting at the dock's end, trailing a hand in the water
-    Pp(new THREE.CapsuleGeometry(0.19, 0.38, 4, 10), L(0, 0.42, 0, 0.15, 0, 0), ACC, O); Pp(blob(0.1, 0.12, 0.1), L(0, 0.9, -0.05), 0xb8885e, O); Pp(blob(0.12, 0.08, 0.12), L(0, 0.98, -0.04), 0x2a2a2a, O);
-    Pp(new THREE.CapsuleGeometry(0.07, 0.5, 3, 7), L(0, -0.05, -0.32, 1.45, 0, 0), 0x2a3040, O); Pp(new THREE.CapsuleGeometry(0.07, 0.5, 3, 7), L(-0.22, -0.05, -0.32, 1.45, 0, 0), 0x2a3040, O);
-    Pp(new THREE.CapsuleGeometry(0.06, 0.6, 3, 7), L(0.25, 0.2, -0.45, 0.9, 0, -0.4), ACC, O); Pp(cyl(0.07, 0.08, 0.18, 8), at(0.9, 1.05, -8.2), 0x2a2a2a, O);
+  const Y = new THREE.Vector3(0, 1, 0);
+  const limb = (list, a, b, rad, hex, M0) => { const A = new THREE.Vector3(...a), B = new THREE.Vector3(...b), d = B.clone().sub(A), len = d.length(); list.push([new THREE.CapsuleGeometry(rad, Math.max(len - 2 * rad, 0.01), 3, 8), M0.clone().multiply(new THREE.Matrix4().compose(A.clone().add(B).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(Y, d.normalize()), ONE)), hex]); };
+  const TORSO = [[0.12, 0], [0.145, 0.1], [0.15, 0.24], [0.175, 0.38], [0.19, 0.46], [0.15, 0.53], [0.06, 0.57]].map(([a, b]) => new THREE.Vector2(a, b));
+  const human = (list, M0, o) => { // a person sitting, facing +x, hips at the origin: torso, neck, head and hair, jointed arms and legs, hands and shoes
+    const lean = o.lean || 0.12, T = at(0, 0.1, 0, 0, 0, -lean), MT = M0.clone().multiply(T);
+    list.push([new THREE.LatheGeometry(TORSO, 12).scale(0.78, 1, 1), MT, o.cloth], [blob(0.16, 0.1, 0.18), M0.clone().multiply(at(0, 0.06, 0)), o.legs]);
+    list.push([cyl(0.045, 0.05, 0.1, 8), MT.clone().multiply(at(0, 0.6, 0)), o.skin], [blob(0.092, 0.115, 0.098), MT.clone().multiply(at(0.015, 0.74, 0)), o.skin], [blob(0.099, 0.075, 0.105), MT.clone().multiply(at(-0.015, 0.79, 0)), o.hair]);
+    for (const sd of [-1, 1]) {
+      const sh = new THREE.Vector3(0, 0.5, 0.17 * sd).applyMatrix4(T).toArray(), [el, ha] = o.arm(sd), [kn, an] = o.leg(sd), hip = [0.02, 0.05, 0.09 * sd];
+      limb(list, sh, el, 0.043, o.cloth, M0); limb(list, el, ha, 0.036, o.skinArm ? o.skin : o.cloth, M0); list.push([blob(0.042, 0.05, 0.03), M0.clone().multiply(at(...ha)), o.skin]);
+      limb(list, hip, kn, 0.064, o.legs, M0); limb(list, kn, an, 0.05, o.legs, M0); list.push([blob(0.11, 0.045, 0.052), M0.clone().multiply(at(an[0] + 0.05, an[1] - 0.035, an[2])), o.shoe]);
+    } };
+  const mangrove = (x, z, h, near) => { const y = Math.max(gH(x, z), 0.2), base = y + h * 0.2;
+    for (let k = 0; k < (near ? 3 : 1); k++) Pp(cyl(0.06, 0.1, h * 0.35, 5), at(x + r(-0.4, 0.4), base + h * 0.12, z + r(-0.4, 0.4), r(-0.2, 0.2), 0, r(-0.2, 0.2)), 0x4a3c2c, M); // trunks
+    if (near) for (let k = 0; k < 7; k++) { const a = r(0, 6.28), out = h * r(0.22, 0.36), top = base + r(-0.2, 0.5); // stilt roots, arching out from the trunk and down into the water
+      const c = new THREE.QuadraticBezierCurve3(new THREE.Vector3(x, top, z), new THREE.Vector3(x + Math.cos(a) * out * 0.45, top + 0.35, z + Math.sin(a) * out * 0.45), new THREE.Vector3(x + Math.cos(a) * out, -0.5, z + Math.sin(a) * out));
+      Pp(new THREE.TubeGeometry(c, 8, 0.035 + h * 0.003, 4), new THREE.Matrix4(), 0x5a4a38, M); }
+    for (let i = 0; i < (near ? 12 : 5); i++) { const a = r(0, 6.28), d = h * Math.sqrt(r()) * 0.5, s = h * r(0.14, 0.26); Pp(blob(s * 1.35, s * 0.7, s * 1.35, !near), at(x + Math.cos(a) * d, y + h * 0.55 + r(-0.15, 0.25) * h, z + Math.sin(a) * d), MANG[i % 4], M); } };
+  for (let i = 0; i < (preview ? 260 : 700); i++) { const a = r(0, 6.283), e = r(1.0, 1.35), x = BAY[0] + Math.cos(a) * BAY[2] * e, z = BAY[1] + Math.sin(a) * BAY[3] * e; if (!seen(x, z) || gH(x, z) < -0.3) continue; mangrove(x, z, r(6, 11), Math.hypot(x - C0.x, z - C0.z) < 55); } // the shore's forest
+  for (const [ix, iz, ir] of ISL) for (let i = 0; i < ir * (preview ? 1.2 : 2.4); i++) { const a = r(0, 6.283), d = Math.sqrt(r()) * ir * 0.8; mangrove(ix + Math.cos(a) * d, iz + Math.sin(a) * d, r(5, 9), Math.hypot(ix - C0.x, iz - C0.z) < 60); } // the islets
+  const W = []; // the dock in weathered boards: decking across two stringers on posts going down into the water, a cleat and a coil of rope
+  for (let z = 3.6; z > -9.7; z -= 0.18) { const l = 2.3 + r(-0.04, 0.04); W.push([box(l, 0.05, 0.16), at(1.6 + r(-0.03, 0.03), 0.95 + r(-0.008, 0.008), z, r(-0.01, 0.01), r(-0.012, 0.012), r(-0.01, 0.01)), 0xffffff]); }
+  for (const x of [0.62, 2.58]) W.push([box(0.08, 0.16, 13.4), at(x, 0.84, -3.05), 0xffffff]);
+  for (let z = 3.2; z > -9.8; z -= 2.6) for (const x of [0.55, 2.65]) W.push([cyl(0.1, 0.11, 2.8, 8), at(x, -0.45, z), 0xffffff]);
+  W.push([box(0.3, 0.05, 0.08), at(2.45, 1.0, -9.3), 0xffffff]); O.push([new THREE.TorusGeometry(0.16, 0.035, 5, 14).rotateX(Math.PI / 2), at(0.85, 1.0, -7.4), 0xb8a888], [new THREE.TorusGeometry(0.11, 0.035, 5, 12).rotateX(Math.PI / 2), at(0.85, 1.05, -7.4), 0xa89878]);
+  const SIT = new THREE.Matrix4().makeTranslation(2.5, 0.98, -8.95); // someone at the dock's end, sitting on its edge, feet over the water, trailing a hand in it
+  human(O, SIT, { cloth: ACC, legs: 0x3a4250, skin: 0xb07a52, hair: 0x2a1e18, shoe: 0x22201e, lean: 0.25, skinArm: true,
+    arm: (sd) => (sd > 0 ? [[0.26, 0.28, 0.22], [0.42, -0.86, 0.3]] : [[-0.02, 0.24, -0.27], [-0.1, 0.0, -0.32]]), leg: (sd) => [[0.43, 0.06, 0.1 * sd], [0.5, -0.4, 0.11 * sd]] });
+  const HAND = new THREE.Vector3(0.42, -0.86, 0.3).applyMatrix4(SIT); HAND.y = 0;
+  { Pp(cyl(0.07, 0.08, 0.18, 8), at(0.9, 1.05, -8.2), 0x2a2a2a, O);
     GL.push([0.9, 1.25, -8.2, 0.14, 1, 1, 1, 2.4]); LAMPS.push([new THREE.Vector3(0.9, 1.4, -8.2), "lantern"]); }
-  add(mergeColored(THREE, M), 2); add(mergeColored(THREE, O), 3);
+  add(mergeColored(THREE, M), 2); add(mergeColored(THREE, O), 3); add(mergeColored(THREE, W), 4);
 
   /* --- the kayaks, paddling round circles on the bay, posed afresh each frame; fish darting --- */
-  const KAY = [[-5, -27, 10, 0.4, ACC], [20, -55, 16, 2.0, 0xd84a2a], [-26, -80, 20, 4.1, 0xe8c030]], FISH = [];
+  const KAY = [[-5, -27, 10, 0.4, ACC], [20, -55, 16, 2.0, 0x2a8ac8], [-26, -80, 20, 4.1, 0xe8c030]], FISH = [];
   for (let i = 0; i < 5; i++) FISH.push([r(-14, 16), -r(14, 45), r(1.5, 4), r(0, 6.28), r(1.6, 3.2)]); // all round the same way, as the wakes are traced
   const MOV = [];
   KAY.forEach(([, , , , hex], k) => { const pc = []; const L = at;
-    pc.push([blob(2.1, 0.18, 0.3), L(0, 0.1, 0), hex], [blob(0.4, 0.06, 0.26), L(0.1, 0.27, 0), 0x1a1a1a]); // the hull, its cockpit
-    pc.push([new THREE.CapsuleGeometry(0.17, 0.32, 4, 8), L(0.05, 0.62, 0), k === 0 ? ACC : 0x2a4a6a], [blob(0.1, 0.12, 0.1), L(0.07, 1.02, 0), 0xc89a70], [blob(0.11, 0.06, 0.11), L(0.06, 1.1, 0), 0x2a2a2a]);
+    const hp = []; for (let i = 0; i <= 18; i++) { const t = i / 18; hp.push(new THREE.Vector2(0.33 * Math.pow(Math.sin(Math.PI * t), 0.5) + 0.002, (t - 0.5) * 4.2)); }
+    pc.push([new THREE.LatheGeometry(hp, 16).rotateZ(-Math.PI / 2).scale(1, 0.45, 1), L(0, 0.06, 0), hex], [blob(0.42, 0.04, 0.22), L(-0.05, 0.2, 0), 0x18181a]); // a sea kayak's hull, its cockpit
+    human(pc, at(-0.05, 0.16, 0), { cloth: [0xe86a1a, 0xe0b020, 0xd84a2a][k], legs: 0x2a2e38, skin: [0xc89a70, 0x8a5a3a, 0xe0b090][k], hair: [0x3a2a1a, 0x1a1a1a, 0x8a6a3a][k], shoe: 0x222222, lean: 0.05,
+      arm: (sd) => [[0.22, 0.28, 0.27 * sd], [0.38, 0.42, 0.3 * sd]], leg: (sd) => [[0.45, 0.16, 0.12 * sd], [0.85, 0.04, 0.12 * sd]] }); // its paddler in a life vest
     MOV.push({ g: mergeColored(THREE, pc), at: (t) => { const [cx, cz, R, th0] = KAY[k], th = th0 + t * (1.1 / R), x = cx + Math.cos(th) * R, z = cz + Math.sin(th) * R; return new THREE.Matrix4().makeRotationY(yawOf(-Math.sin(th), Math.cos(th))).setPosition(x, 0, z); } });
-    const pd = [[cyl(0.02, 0.02, 2.2, 5), at(0, 0, 0, Math.PI / 2, 0, 0), 0x222222], [box(0.03, 0.12, 0.4), at(0, 0, 1.1), 0xd8d8d8], [box(0.03, 0.12, 0.4), at(0, 0, -1.1), 0xd8d8d8]];
+    const pd = [[cyl(0.016, 0.016, 2.2, 6), at(0, 0, 0, Math.PI / 2, 0, 0), 0x2a2a2a], [blob(0.09, 0.012, 0.23), at(0, 0, 1.15, 0, 0.3, 0), 0xe8e4dc], [blob(0.09, 0.012, 0.23), at(0, 0, -1.15, 0, -0.3, 0), 0xe8e4dc]]; // shaft, blades feathered
     MOV.push({ g: mergeColored(THREE, pd), at: (t) => { const [cx, cz, R, th0] = KAY[k], th = th0 + t * (1.1 / R), x = cx + Math.cos(th) * R, z = cz + Math.sin(th) * R, ph = t * 2.6 + k; return new THREE.Matrix4().makeRotationY(yawOf(-Math.sin(th), Math.cos(th))).setPosition(x, 0.75, z).multiply(at(0.35, 0, 0, Math.sin(ph) * 0.55, Math.cos(ph) * 0.35, 0)); } }); // its paddle, stroking left and right
     GL.push([0, 0, 0, k === 0 ? 0.08 : 0.05, 1, 0.95, 0.85, 1.6]); });
   const movGeo = (() => { let n = 0; for (const m of MOV) n += m.g.attributes.position.count; const p = new Float32Array(n * 3), nr = new Float32Array(n * 3), c = new Float32Array(n * 3), kd = new Float32Array(n).fill(3); let o = 0; for (const m of MOV) { m.o = o; m.p = m.g.attributes.position.array.slice(); m.n = m.g.attributes.normal.array.slice(); c.set(m.g.attributes.color.array, o * 3); o += m.g.attributes.position.count; m.g.dispose(); }
@@ -31791,10 +31829,10 @@ function biobay(THREE, scene, camera, pal, preview) {
   function applyPalette(p) {
     pal = p; const d = p.dark, acc = new THREE.Color(p.accent);
     landU.uAccent.value.copy(acc); nightU.value = d ? 1 : 0;
-    sunColU.value.set(d ? "#000000" : "#fff4e0").multiplyScalar(d ? 0 : 1.1);
-    skyCols.uZen.value.set(d ? "#02050e" : "#2f6cbc"); skyCols.uHor.value.set(d ? "#0c1428" : "#bcd8ee"); skyCols.uCloudLit.value.set(d ? "#151c2c" : "#ffffff"); skyCols.uCloudDark.value.set(d ? "#080c16" : "#b8c6d6");
-    landU.uSkyCol.value.set(d ? "#1a2440" : "#a8c8e8").multiplyScalar(d ? 0.18 : 0.7); landU.uGndCol.value.set(d ? "#06080c" : "#4a4434").multiplyScalar(d ? 0.2 : 0.5);
-    landU.uHaze.value.set(d ? "#070b16" : "#c8dcee"); landU.uTree.value.set(d ? "#020304" : "#1c3418");
+    sunColU.value.set(d ? "#000000" : "#ffd29a").multiplyScalar(d ? 0 : 1.25); // golden hour by day
+    skyCols.uZen.value.set(d ? "#02050e" : "#3a62a0"); skyCols.uHor.value.set(d ? "#0c1428" : "#f2c9a0"); skyCols.uCloudLit.value.set(d ? "#151c2c" : "#ffe2c0"); skyCols.uCloudDark.value.set(d ? "#080c16" : "#b89aa8");
+    landU.uSkyCol.value.set(d ? "#1a2440" : "#9cb0d0").multiplyScalar(d ? 0.18 : 0.6); landU.uGndCol.value.set(d ? "#06080c" : "#5a4430").multiplyScalar(d ? 0.2 : 0.5);
+    landU.uHaze.value.set(d ? "#070b16" : "#e8c8a8"); landU.uTree.value.set(d ? "#020304" : "#1a2a16");
     lampU.value[0].set(LAMPS[0][0].x, LAMPS[0][0].y, LAMPS[0][0].z, d ? 0.35 : 0); lampColU.value[0].copy(acc).lerp(new THREE.Color(1, 0.8, 0.55), 0.35);
     aTint.setXYZ(0, acc.r * 2.4, acc.g * 2.4, acc.b * 2.4); aGlow.setW(0, d ? GL[0][3] : 0); aTint.setXYZ(1, acc.r * 2.2, acc.g * 2.2, acc.b * 2.2); aTint.needsUpdate = true;
     step(clock);
