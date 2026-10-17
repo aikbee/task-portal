@@ -31342,7 +31342,241 @@ function yuanyang(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall, antelope, icecave, victoria, yuanyang };
+/* ---------- Yellowstone geysers: a prismatic hot spring steaming at our feet, Old Faithful erupting across the basin, pines, bison ---------- */
+// The basin, the spring, the pines, the boardwalk, bison and people in one material with its own light. The spring is drawn by its distance
+// from its heart: deep blue water mirroring the sky, then turquoise, then the mats of heat-loving microbes in green, yellow, orange and rust,
+// streaked outward along the runoff, all on pale sinter; by night under the moon.
+const YS_LAND_VS = /* glsl */ `
+  attribute float aKind; varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vC = color; vK = aKind; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const YS_LAND_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uNight; uniform vec3 uLightDir; uniform vec3 uLightCol; uniform vec3 uSkyCol; uniform vec3 uGndCol; uniform vec3 uHaze;
+  uniform vec3 uAccent; uniform vec3 uSpring; uniform vec4 uLamp; uniform vec3 uLampCol; uniform vec3 uZen;
+  varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK;
+  void main() {
+    vec3 P = vW, N = normalize(vN), toEye = cameraPosition - P; float dist = length(toEye); vec3 V = toEye / max(dist, 1e-3);
+    if (dot(N, V) < 0.0) N = -N;
+    float dif = max(dot(N, uLightDir), 0.0); vec3 amb = mix(uGndCol, uSkyCol, 0.5 + 0.5 * N.y), col;
+    if (vK < 0.5) { // the basin: sinter, the spring and its mats, runoff channels; meadow and the hills further off
+      vec2 d = P.xz - uSpring.xy; float rr = length(d) / uSpring.z, ang = atan(d.y, d.x);
+      float wob = (texture2D(uNoise, vec2(ang * 0.8, 0.3)).r - 0.5) * 0.18, r = rr + wob; // its ragged edge
+      float streak = texture2D(uNoise, vec2(ang * 5.0, rr * 0.6)).r * 0.6 + texture2D(uNoise, vec2(ang * 13.0, rr * 1.4 + 0.3)).g * 0.4; // the runoff fanning out
+      float run = smoothstep(0.55, 0.75, texture2D(uNoise, vec2(ang * 1.1 + 0.4, 0.71)).r); // where most of it spills
+      float n = texture2D(uNoise, P.xz * 0.08).r, n2 = texture2D(uNoise, P.xz * 0.6 + 0.2).g;
+      float crust = texture2D(uNoise, P.xz * 1.7 + 0.4).r; vec3 sinter = mix(vec3(0.5, 0.48, 0.44), vec3(0.72, 0.7, 0.65), n) * (0.75 + 0.35 * n2) * (0.85 + 0.25 * crust); // grey-white crust, cracked
+      vec3 mat = r < 1.25 ? mix(vec3(0.85, 0.72, 0.18), vec3(0.88, 0.45, 0.1), smoothstep(1.02, 1.2, r)) : mix(vec3(0.75, 0.32, 0.08), vec3(0.45, 0.2, 0.08), smoothstep(1.25, 1.9, r)); // yellow, then orange, then rust
+      mat *= 0.8 + 0.4 * streak;
+      float matA = (1.0 - smoothstep(1.35 + 1.4 * run, 2.0 + 2.6 * run, r + (0.5 - streak) * 0.6)) * smoothstep(0.96, 1.0, r);
+      vec3 ground = mix(sinter, mat, matA);
+      float meadow = smoothstep(150.0, 260.0, length(P.xz - vec2(0.0, -40.0)) + 60.0 * (n - 0.5));
+      ground = mix(ground, mix(vec3(0.42, 0.42, 0.2), vec3(0.3, 0.36, 0.16), n2), meadow);
+      ground = mix(ground, vec3(0.13, 0.2, 0.1) * (0.7 + 0.6 * n2), smoothstep(30.0, 60.0, P.y + 20.0 * (n - 0.5))); // the pines' floor on the hills
+      col = ground * (amb + uLightCol * dif);
+      if (r < 1.0) { // the water: blue as deep glass at the heart, turquoise to green at the shallow rim, the sky on it
+        vec3 w = mix(vec3(0.02, 0.18, 0.45), vec3(0.1, 0.55, 0.62), smoothstep(0.25, 0.8, r)); w = mix(w, vec3(0.45, 0.62, 0.3), smoothstep(0.82, 0.98, r));
+        vec2 rp = (vec2(texture2D(uNoise, P.xz * 0.15 + uTime * 0.01).r, texture2D(uNoise, P.xz * 0.15 - uTime * 0.012 + 0.5).g) - 0.5) * 0.04;
+        vec3 Nw = normalize(vec3(rp.x, 1.0, rp.y)), R = reflect(-V, Nw); float fr = 0.03 + 0.97 * pow(1.0 - max(dot(Nw, V), 0.0), 5.0);
+        vec3 sky = mix(uSkyCol * 1.4, uZen, smoothstep(0.0, 0.6, R.y));
+        col = mix(w * (amb * 0.6 + uLightCol * 0.55), sky, fr * 0.85) * (1.0 - 0.4 * uNight) + uLightCol * pow(max(dot(R, uLightDir), 0.0), 200.0) * 1.5;
+      }
+    } else if (vK < 1.5) { // pines: dark needles, sunlit on one side
+      float t = texture2D(uNoise, vec2(P.x + P.z, P.y) * 0.9).r;
+      col = vC * (0.7 + 0.5 * t) * (amb + uLightCol * (0.2 + 0.8 * dif));
+    } else { // the boardwalk, bison, people (one in your colour)
+      vec3 a = vC; float acc = step(0.9, a.r) * step(a.g, 0.1) * step(0.9, a.b); a = mix(a, uAccent * 0.85, acc);
+      col = a * (amb + uLightCol * dif);
+    }
+    vec3 dl = uLamp.xyz - P; float l2 = dot(dl, dl); col += uLampCol * uLamp.w * (0.3 + 0.7 * max(dot(N, dl * inversesqrt(max(l2, 1e-4))), 0.0)) / (1.0 + l2 / 6.0); // a flashlight, by night
+    col = mix(col, uHaze, 1.0 - exp(-dist * 0.0006));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    gl_FragColor.rgb += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  }
+`;
+// steam: puffs rising from the spring, the vents and the geyser, each a soft ball lit on its sunny side, their billows from one noise field
+// in the world so that overlapping puffs run together; the eruption's puffs only while it plays
+const YS_PUFF_VS = /* glsl */ `
+  uniform float uTime; uniform float uErupt; uniform float uWind; attribute vec4 aP; attribute vec4 aS; // aP: where it starts, size; aS: seed, rise (m/s), life (s), kind (0 steam, >0 eruption: its height fraction)
+  varying vec2 vUv; varying vec3 vW; varying float vA; varying vec3 vR; varying vec3 vU; varying vec3 vF;
+  void main() {
+    float ph = fract(uTime / aS.z + aS.x), size = aP.w * (0.6 + 0.9 * ph), a = smoothstep(0.0, 0.15, ph) * (1.0 - smoothstep(0.55, 1.0, ph));
+    vec3 c = aP.xyz + vec3(ph * aS.z * uWind, ph * aS.y * aS.z, sin(ph * 6.0 + aS.x * 20.0) * 1.5);
+    if (aS.w < 0.0) a *= -aS.w; /* plain steam, as thick as it is */ if (aS.w > 0.0) { c = aP.xyz + vec3(ph * 18.0 * uWind, aS.w * 48.0 * uErupt + ph * 14.0, sin(aS.x * 30.0) * 2.0); a *= smoothstep(0.02, 0.2, uErupt); size *= 0.7 + 0.6 * uErupt; } // the eruption's column, as high as it reaches
+    vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]), up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+    vW = c + (right * position.x + up * position.y) * size; vR = right; vU = up; vF = normalize(cameraPosition - c); vUv = position.xy * 2.0; vA = a;
+    gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+  }
+`;
+const YS_PUFF_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uSunDir; uniform float uAmt;
+  varying vec2 vUv; varying vec3 vW; varying float vA; varying vec3 vR; varying vec3 vU; varying vec3 vF;
+  void main() {
+    float r2 = dot(vUv, vUv); if (r2 > 1.0) discard;
+    vec2 q = vec2(vW.x * 0.03 + vW.z * 0.02, vW.y * 0.04 - uTime * 0.05); float n = texture2D(uNoise, q).r * 0.55 + texture2D(uNoise, q * 2.7 + 0.4).g * 0.3 + texture2D(uNoise, q * 6.3 + 0.7).r * 0.15;
+    float a = smoothstep(1.0, 0.0, r2) * smoothstep(0.25, 0.75, n + 0.35 * (1.0 - r2) - 0.1) * vA * uAmt;
+    if (a < 0.004) discard;
+    vec3 nrm = normalize(vR * vUv.x + vU * vUv.y + vF * sqrt(max(1.0 - r2, 0.0)));
+    vec3 c = mix(uShade, uLit, clamp(0.5 + 0.5 * dot(nrm, uSunDir) + (n - 0.5) * 0.5, 0.0, 1.0));
+    gl_FragColor = vec4(linearToOutputTexel(vec4(c, 1.0)).rgb * a, a);
+  }
+`;
+// the geyser's jet: water roaring up in white streaks, ragged at its edges, as high as the eruption has reached
+const YS_JET_VS = /* glsl */ `
+  uniform float uH; varying vec2 vUv; varying vec3 vW; varying vec3 vN;
+  void main() { vec3 p = position; p.y *= uH; p.xz *= 0.6 + 0.4 * uv.y + 0.6 * uv.y * uv.y; vUv = uv; vec4 w = modelMatrix * vec4(p, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const YS_JET_FS = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uH; uniform vec3 uLit; uniform vec3 uShade; uniform vec3 uSunDir;
+  varying vec2 vUv; varying vec3 vW; varying vec3 vN;
+  void main() {
+    if (uH < 0.5) discard;
+    vec3 V = normalize(cameraPosition - vW); float face = abs(dot(normalize(vN), V));
+    float s = texture2D(uNoise, vec2(vUv.x * 3.0, vUv.y * 1.5 - uTime * 0.9)).r * 0.6 + texture2D(uNoise, vec2(vUv.x * 7.0 + 0.3, vUv.y * 3.0 - uTime * 1.7)).g * 0.4;
+    float a = smoothstep(0.25, 0.6, face + (s - 0.5) * 0.6) * (1.0 - smoothstep(0.75, 1.0, vUv.y + (s - 0.5) * 0.3)) * smoothstep(0.3, 0.55, s + 0.2);
+    if (a < 0.01) discard;
+    vec3 c = mix(uShade, uLit, clamp(0.55 + 0.45 * dot(normalize(vN), uSunDir) + 0.3 * (s - 0.5), 0.0, 1.0));
+    gl_FragColor = vec4(linearToOutputTexel(vec4(c, 1.0)).rgb * a, a);
+  }
+`;
+// the sky: blue with drifting clouds over the Absaroka peaks by day; by night the moon's blue, stars
+const YS_SKY_FS = /* glsl */ `
+  uniform float uNight; uniform sampler2D uNoise; uniform float uTime; uniform vec3 uZen; uniform vec3 uHor; uniform vec3 uCloudLit; uniform vec3 uCloudDark; uniform vec3 uRidge;
+  varying vec3 vDir;
+  void main() {
+    vec3 d = normalize(vDir); float h = d.y, az = atan(d.x, -d.z);
+    vec3 col = mix(uHor, uZen, smoothstep(0.0, 0.5, h));
+    if (h > 0.0) { vec2 cp = d.xz / (h + 0.15) * 0.9 + vec2(uTime * 0.002, 0.0); float c = texture2D(uNoise, cp * 0.22).r * 0.6 + texture2D(uNoise, cp * 0.75 + 0.3).g * 0.4;
+      col = mix(col, mix(uCloudDark, uCloudLit, smoothstep(0.55, 0.9, c)), smoothstep(0.55, 0.78, c) * smoothstep(0.02, 0.12, h) * 0.9); }
+    float rg = 0.035 + 0.04 * texture2D(uNoise, vec2(az * 0.5 + 0.1, 0.3)).r + 0.015 * abs(sin(az * 9.0 + 1.0)); // far peaks
+    col = mix(col, mix(uRidge, uHor, 0.35), 1.0 - smoothstep(rg - 0.002, rg + 0.002, h));
+    vec3 sd = d * 360.0, ci = floor(sd); float hs = fract(sin(dot(ci, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    if (hs > 0.994 && h > rg) col += vec3(0.85, 0.9, 1.0) * smoothstep(0.38, 0.0, length(sd - ci - 0.5)) * (0.3 + 0.7 * fract(hs * 91.0)) * uNight;
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+function yellowstone(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1872); // the year Yellowstone became the first national park
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 56; camera.near = 0.3; camera.far = 20000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight);
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const ICO = keep(new THREE.IcosahedronGeometry(1, 1)), blob = (sx, sy, sz) => ICO.clone().scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx);
+  const place = (ox, oy, oz, yaw) => (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().makeRotationY(yaw).setPosition(ox, oy, oz).multiply(at(x, y, z, rx, ry, rz));
+  const pt = (F, x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(F(0, 0, 0)).toArray();
+  const ACC = 0xff00ff;
+  const SUN = new THREE.Vector3(-0.45, 0.55, 0.7).normalize(), MOON = new THREE.Vector3(-0.4, 0.45, 0.8).normalize(); // behind us on the left: the steam lit, the spring's colours full on
+
+  /* --- the basin: flat sinter, the spring's shallow bowl, Old Faithful's mound, hills of pines rising beyond --- */
+  const SPR = [-12, -34, 24], OF = [34, -150]; // the spring's heart and radius; the geyser's vent
+  const gH = (x, z) => { const d = -z; let y = 0.4 * (fbm(x * 0.02, z * 0.02, 2) - 0.5) + 4.5 * Math.exp(-((x - OF[0]) ** 2 + (z - OF[1]) ** 2) / 500);
+    const rs = Math.hypot(x - SPR[0], z - SPR[1]) / SPR[2]; y -= 0.5 * (1 - smooth(0.6, 1.05, rs)); y += 0.25 * Math.exp(-(((rs - 1.08) / 0.08) ** 2)); // its bowl and terraced rim
+    return y + 85 * smooth(260, 900, d + 150 * (fbm(x * 0.003, 3.1, 2) - 0.5)) * (0.55 + 0.6 * fbm(x * 0.006, z * 0.006, 3)) + 30 * smooth(200, 600, Math.abs(x)); };
+  const parts = [], add = (g, k) => parts.push([g, k]);
+  { const NU = preview ? 90 : 220, NV = preview ? 60 : 150, P = [], I = [];
+    for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) { const t = j / NV, z = 14 - 3000 * t ** 2.1, half = 40 + 1.2 * (14 - z), x = (i / NU * 2 - 1) * half; P.push(x, gH(x, z), z); }
+    for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) { const a = j * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1; I.push(a, c, b, b, c, d); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals(); add(g, 0); }
+
+  /* --- lodgepole pines on the hills, a few dead grey snags in the basin; bison; the boardwalk and its people --- */
+  const T = [], O = [], Pp = (geo, m, hex, list) => list.push([geo, m, hex]), GL = [];
+  const PINES = [0x1e3a22, 0x24442a, 0x2a4a2c, 0x1a3020];
+  const pine = (x, z, h, lo, y = gH(x, z)) => { Pp(cyl(h * 0.012, h * 0.02, h * 0.5, 4), at(x, y + h * 0.25, z), 0x4a3a2c, T); Pp(new THREE.ConeGeometry(h * 0.13, h * 0.75, lo ? 5 : 7), at(x, y + h * 0.6, z), PINES[Math.floor(r(0, 4))], T); };
+  for (let i = 0; i < (preview ? 500 : 1400); i++) { const z = -r(180, 2600), x = r(-1.2, 1.2) * (60 + 1.1 * -z); if (Math.atan2(Math.abs(x), -z) > 0.95) continue; const y = gH(x, z); if (y < 8 + 20 * r()) continue; pine(x, z, r(16, 26), -z > 500, y); } // the forest on the hills
+  for (let i = 0; i < 14; i++) { const x = r(-90, 110), z = -r(40, 220); if (Math.hypot(x - SPR[0], z - SPR[1]) < SPR[2] * 1.6) continue; const y = gH(x, z), h = r(6, 12); Pp(cyl(0.08, 0.16, h, 5), at(x, y + h / 2, z, r(-0.1, 0.1), 0, r(-0.1, 0.1)), 0xbab4a8, O); } // dead pines, bleached by the hot ground
+  const bison = (x, z, yaw) => { const y = gH(x, z), L = place(x, y, z, yaw); Pp(blob(1.3, 0.75, 0.6), L(0.2, 1.35, 0), 0x3a2a1e, O); Pp(blob(0.9, 0.85, 0.65), L(0.9, 1.45, 0), 0x2e2016, O); Pp(blob(0.38, 0.42, 0.34), L(1.75, 1.1, 0), 0x241810, O); for (const [lx, lz] of [[0.95, 0.28], [0.95, -0.28], [-0.6, 0.28], [-0.6, -0.28]]) Pp(cyl(0.11, 0.09, 0.95, 5), L(lx, 0.47, lz), 0x241a12, O); };
+  bison(60, -95, 0.4); bison(68, -102, 2.2); bison(48, -118, 1.1);
+  const bw = (s) => [6 + s * 0.42, 13 - s]; // the boardwalk's line, away ahead of us past the spring's right-hand edge
+  for (let s = 0; s < 90; s += 2.4) { const [x, z] = bw(s); Pp(box(2.0, 0.08, 2.62), at(x, gH(x, z) + 0.5, z, 0, -Math.atan2(0.42, 1), 0), [0x8a6a48, 0x7e6042, 0x94744e][Math.floor(s / 2.4) % 3], O); for (const v of [-1, 1]) Pp(box(0.1, 0.5, 0.1), at(x + v * 1.05, gH(x, z) + 0.25, z), 0x5a4430, O); }
+  const person = (s, lat, face, jacket, opts = {}) => { const [bx, bz] = bw(s), x = bx + lat, z = bz, y = gH(x, z) + 0.55, L = place(x, y, z, yawOf(face[0] - x, face[1] - z));
+    for (const v of [-0.1, 0.1]) Pp(new THREE.CapsuleGeometry(0.07, 0.66, 3, 7), L(0, 0.42, v), 0x2a2e38, O);
+    Pp(new THREE.CapsuleGeometry(0.19, 0.42, 4, 10).scale(0.85, 1, 1.05), L(0, 1.18, 0), jacket, O); Pp(blob(0.1, 0.12, 0.1), L(0.02, 1.6, 0), 0xc89a70, O); Pp(new THREE.CylinderGeometry(0.06, 0.2, 0.12, 10), L(0, 1.72, 0), opts.hat || 0x6a5a40, O);
+    if (opts.phone) { Pp(new THREE.CapsuleGeometry(0.05, 0.4, 3, 6), L(0.2, 1.4, 0.12, 0, 0, -1.25), jacket, O); Pp(box(0.02, 0.15, 0.08), L(0.44, 1.52, 0.12, 0, 0, -0.2), 0x111111, O); }
+    if (opts.lamp) { GL.push([...pt(L, 0.35, 1.15, 0.18), 0.12, 1, 1, 1, 2.6]); return new THREE.Vector3(...pt(L, 1.6, 0.2, 0.18)); } };
+  const LAMPAT = person(9, 0.3, OF, ACC, { phone: true, lamp: true }); person(10.5, -0.5, [SPR[0], SPR[1]], 0x3a6a9a, { hat: 0x2a2a2a }); person(14, 0.2, OF, 0xc8a040); person(16, -0.3, OF, 0x8a2a2a, { hat: 0xd8d0c0 });
+  add(mergeColored(THREE, T), 1); add(mergeColored(THREE, O), 2);
+  let nV = 0, nI = 0; for (const [g] of parts) { nV += g.attributes.position.count; nI += g.index ? g.index.count : g.attributes.position.count; }
+  const pos = new Float32Array(nV * 3), nrm = new Float32Array(nV * 3), colA = new Float32Array(nV * 3).fill(1), kind = new Float32Array(nV), idx = new Uint32Array(nI);
+  { let o = 0, oi = 0; for (const [g, k] of parts) { const cnt = g.attributes.position.count; pos.set(g.attributes.position.array, o * 3); nrm.set(g.attributes.normal.array, o * 3); if (g.attributes.color) colA.set(g.attributes.color.array, o * 3); kind.fill(k, o, o + cnt);
+    if (g.index) { const ia = g.index.array; for (let i = 0; i < ia.length; i++) idx[oi + i] = o + ia[i]; oi += ia.length; } else { for (let i = 0; i < cnt; i++) idx[oi + i] = o + i; oi += cnt; } o += cnt; g.dispose(); } }
+  const geo = keep(new THREE.BufferGeometry()); geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); geo.setAttribute("color", new THREE.BufferAttribute(colA, 3)); geo.setAttribute("aKind", new THREE.BufferAttribute(kind, 1)); geo.setIndex(new THREE.BufferAttribute(idx, 1));
+
+  /* --- materials, sky, steam, the jet, glows --- */
+  const nightU = { value: 0 }, lightU = { value: SUN.clone() }, lightColU = { value: new THREE.Color() }, skyColU = { value: new THREE.Color() }, gndColU = { value: new THREE.Color() }, hazeU = { value: new THREE.Color() }, accentU = { value: new THREE.Color() }, zenU = { value: new THREE.Color() };
+  const lampU = { value: new THREE.Vector4() }, lampColU = { value: new THREE.Color() };
+  const landU = { uNoise: { value: noise }, uTime: time, uNight: nightU, uLightDir: lightU, uLightCol: lightColU, uSkyCol: skyColU, uGndCol: gndColU, uHaze: hazeU, uAccent: accentU, uSpring: { value: new THREE.Vector3(...SPR) }, uLamp: lampU, uLampCol: lampColU, uZen: zenU };
+  const land = new THREE.Mesh(geo, shader(YS_LAND_VS, YS_LAND_FS, landU, { vertexColors: true, side: THREE.DoubleSide })); land.frustumCulled = false; scene.add(land);
+  const skyU = { uNight: nightU, uNoise: { value: noise }, uTime: time, uZen: zenU, uHor: { value: new THREE.Color() }, uCloudLit: { value: new THREE.Color() }, uCloudDark: { value: new THREE.Color() }, uRidge: { value: new THREE.Color() } };
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(15000, 32, 16)), shader(LANTERN_SKY_VS, YS_SKY_FS, skyU, { side: THREE.BackSide, depthWrite: false, depthTest: false })); sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const eruptU = { value: 0 }, steamU = { uNoise: { value: noise }, uTime: time, uErupt: eruptU, uWind: { value: 0.35 }, uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uSunDir: lightU, uAmt: { value: 1 } };
+  const PUFF = [];
+  for (let i = 0; i < (preview ? 30 : 70); i++) { const a = r(0, 6.283), d = Math.sqrt(r()) * SPR[2] * 0.95; PUFF.push([SPR[0] + Math.cos(a) * d, gH(SPR[0], SPR[1]) + r(0, 1), SPR[1] + Math.sin(a) * d * 0.9, r(4, 8), r(), r(0.6, 1.2), r(14, 24), -r(0.35, 0.6)]); } // steam off the spring, faint
+  for (let i = 0; i < (preview ? 12 : 30); i++) { const x = r(-120, 160), z = -r(60, 300); if (Math.hypot(x - SPR[0], z - SPR[1]) < SPR[2]) continue; PUFF.push([x, gH(x, z), z, r(3, 6), r(), r(1, 2), r(10, 18), -r(0.3, 0.55)]); } // vents about the basin, faint
+  for (let i = 0; i < 8; i++) PUFF.push([OF[0] + r(-1, 1), gH(...OF), OF[1], r(3, 6), r(), r(1.2, 2), r(10, 16), -0.6]); // the geyser between eruptions, steaming
+  for (let i = 0; i < (preview ? 20 : 46); i++) PUFF.push([OF[0] + r(-3, 3), gH(...OF), OF[1] + r(-3, 3), r(7, 16), r(), 1, r(8, 16), r(0.15, 1.15)]); // the eruption's column
+  PUFF.sort((a, b) => Math.hypot(b[0], b[2] - 13) - Math.hypot(a[0], a[2] - 13));
+  const pq = keep(new THREE.PlaneGeometry(1, 1)), pg = keep(new THREE.InstancedBufferGeometry()); pg.setIndex(pq.index); pg.setAttribute("position", pq.attributes.position);
+  pg.setAttribute("aP", new THREE.InstancedBufferAttribute(new Float32Array(PUFF.flatMap((p) => p.slice(0, 4))), 4)); pg.setAttribute("aS", new THREE.InstancedBufferAttribute(new Float32Array(PUFF.flatMap((p) => p.slice(4, 8))), 4)); pg.instanceCount = PUFF.length;
+  const steam = new THREE.Mesh(pg, shader(YS_PUFF_VS, YS_PUFF_FS, steamU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor })); steam.frustumCulled = false; steam.renderOrder = 5; scene.add(steam);
+  const jetH = { value: 0 }, jetU = { uNoise: { value: noise }, uTime: time, uH: jetH, uLit: steamU.uLit, uShade: steamU.uShade, uSunDir: lightU };
+  const jetG = keep(new THREE.CylinderGeometry(2.4, 1.8, 1, 16, 8, true).translate(0, 0.5, 0)), jet = new THREE.Mesh(jetG, shader(YS_JET_VS, YS_JET_FS, jetU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, side: THREE.DoubleSide }));
+  jet.position.set(OF[0], gH(...OF), OF[1]); jet.frustumCulled = false; jet.renderOrder = 4; scene.add(jet);
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })); glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  function applyPalette(p) {
+    pal = p; const d = p.dark, acc = new THREE.Color(p.accent);
+    accentU.value.copy(acc); nightU.value = d ? 1 : 0; lightU.value.copy(d ? MOON : SUN);
+    lightColU.value.set(d ? "#7085a8" : "#fff2dc").multiplyScalar(d ? 0.5 : 1.1); skyColU.value.set(d ? "#1a2a48" : "#a8c4e4").multiplyScalar(d ? 0.45 : 0.7); gndColU.value.set(d ? "#0c1018" : "#5a5040").multiplyScalar(d ? 0.5 : 0.55);
+    hazeU.value.set(d ? "#141e34" : "#c4d6ea"); zenU.value.set(d ? "#040a1c" : "#3a70b8");
+    skyU.uHor.value.set(d ? "#16243e" : "#cadcee"); skyU.uCloudLit.value.set(d ? "#46526c" : "#ffffff"); skyU.uCloudDark.value.set(d ? "#182036" : "#b0bfd2"); skyU.uRidge.value.set(d ? "#0a1020" : "#6a7a96");
+    steamU.uLit.value.set(d ? "#6a7a96" : "#ffffff").multiplyScalar(d ? 0.6 : 1.0); steamU.uShade.value.set(d ? "#242c40" : "#9aa6ba").multiplyScalar(d ? 0.6 : 0.95);
+    lampU.value.set(LAMPAT.x, LAMPAT.y, LAMPAT.z, d ? 1.4 : 0); lampColU.value.copy(acc).lerp(new THREE.Color(1, 0.85, 0.6), 0.4);
+    aTint.setXYZ(0, acc.r * 2.6, acc.g * 2.6, acc.b * 2.6); aGlow.setW(0, d ? GL[0][3] : 0); aGlow.needsUpdate = aTint.needsUpdate = true;
+  }
+
+  /* --- the camera on the boardwalk by the spring, Old Faithful across the basin --- */
+  const C0 = new THREE.Vector3(2, 3.0, 16), look = new THREE.Vector3();
+  let clock = 0;
+  const erupt = (t) => { const p = (((t / 75) % 1) + 1) % 1; return smooth(0.0, 0.04, p) * (1 - smooth(0.18, 0.34, p)) * (0.85 + 0.15 * Math.sin(t * 3.1)); }; // every 75 s it plays for about 20
+  function layout() {
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 56 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const pitch = -0.05 + 0.04 * k + 0.006 * Math.sin(clock * 0.05), yaw = 0.06 + 0.3 * k + 0.01 * Math.sin(clock * 0.03); // a phone turns toward the boardwalk's people
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 100, C0.y + Math.tan(pitch) * 100, C0.z - Math.cos(yaw) * 100)); camera.updateMatrixWorld();
+    const e = erupt(clock); eruptU.value = e; jetH.value = e * 48; // set here too, so a still frame shows the same moment
+  }
+  const buf = new THREE.Vector2(), pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); glowU.uPx.value = pxFor(buf.y); glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900)); };
+  function frame(dt) { clock += dt; time.value = clock; }
+  applyPalette(pal); frame(0);
+  return {
+    update: sceneStep(frame), setPalette: applyPalette,
+    stats() { return { verts: geo.attributes.position.count, puffs: PUFF.length, erupt: +eruptU.value.toFixed(2), accent: "#" + accentU.value.getHexString(), night: nightU.value }; },
+    dispose() { scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall, antelope, icecave, victoria, yuanyang, yellowstone };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
