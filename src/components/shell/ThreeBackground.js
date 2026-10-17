@@ -31576,7 +31576,249 @@ function yellowstone(THREE, scene, camera, pal, preview) {
   };
 }
 
-const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall, antelope, icecave, victoria, yuanyang, yellowstone };
+/* ---------- Bioluminescent bay: a mangrove bay at night glowing blue wherever its water is stirred: paddles, wakes, fish, a trailing hand ---------- */
+// Water, land, mangroves, the dock and the kayaks in one material with its own light. The water mirrors the sky (by night the stars and the
+// Milky Way) and the mangroves along the shore; by night its plankton flare blue where it is stirred: the V of each kayak's wake, traced
+// along the circle the kayak is paddling, the splash of each paddle stroke, fish darting, a hand trailed from the dock, the shore's lap.
+const BB_SKY_GLSL = /* glsl */ `
+  uniform sampler2D uNoise; uniform float uTime; uniform float uNight; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uZen; uniform vec3 uHor; uniform vec3 uCloudLit; uniform vec3 uCloudDark;
+  vec3 bbSky(vec3 d) {
+    float h = d.y, day = 1.0 - uNight, cs = dot(d, uSunDir);
+    vec3 col = mix(uHor, uZen, smoothstep(0.0, 0.55, h));
+    col += uSunCol * (0.25 * exp((cs - 1.0) * 60.0) + 0.12 * exp((cs - 1.0) * 6.0)) * day + vec3(1.0, 0.97, 0.9) * smoothstep(0.99985, 0.99993, cs) * day;
+    if (h > 0.0) { vec2 cp = d.xz / (h + 0.15) * 0.8 + vec2(uTime * 0.0015, 0.0); float c = texture2D(uNoise, cp * 0.2).r * 0.6 + texture2D(uNoise, cp * 0.7 + 0.3).g * 0.4;
+      col = mix(col, mix(uCloudDark, uCloudLit, smoothstep(0.55, 0.9, c)), smoothstep(0.56, 0.78, c) * smoothstep(0.02, 0.12, h) * 0.85 * (0.15 + 0.85 * day)); }
+    if (uNight > 0.0) { // stars, and the Milky Way arching over the bay with its dark lanes
+      vec3 sd = d * 420.0, ci = floor(sd); float hs = fract(sin(dot(ci, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      vec3 mwN = vec3(0.86, 0.2, 0.47), e1 = normalize(cross(mwN, vec3(0.0, 1.0, 0.0))), e2 = cross(mwN, e1); float mw = dot(d, mwN), u = atan(dot(d, e2), dot(d, e1));
+      float band = exp(-mw * mw * 50.0); vec2 mq = vec2(u, mw);
+      float neb = texture2D(uNoise, mq * 3.0 + 0.2).r * 0.5 + texture2D(uNoise, mq * 9.0 + 0.6).g * 0.3 + texture2D(uNoise, mq * 24.0 + 0.3).r * 0.2, lane = smoothstep(0.48, 0.66, texture2D(uNoise, mq * vec2(4.0, 10.0) + 0.1).g) * exp(-mw * mw * 200.0);
+      float st = step(0.9935 - 0.02 * band, hs) * smoothstep(0.45, 0.05, length(sd - ci - 0.5)) * (0.25 + 0.75 * fract(hs * 91.0)) * (0.7 + 0.3 * sin(uTime * (1.3 + 2.0 * fract(hs * 37.0)) + hs * 60.0));
+      col += (vec3(0.82, 0.86, 1.0) * st + vec3(0.62, 0.64, 0.78) * band * smoothstep(0.35, 0.85, neb) * (1.0 - 0.8 * lane) * 0.34) * uNight * smoothstep(-0.01, 0.06, h);
+    }
+    return col;
+  }
+`;
+const BB_LAND_VS = /* glsl */ `
+  attribute float aKind; varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK;
+  void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vC = color; vK = aKind; gl_Position = projectionMatrix * viewMatrix * w; }
+`;
+const BB_LAND_FS = BB_SKY_GLSL + /* glsl */ `
+  uniform vec3 uLightCol; uniform vec3 uSkyCol; uniform vec3 uGndCol; uniform vec3 uHaze; uniform vec3 uAccent; uniform vec3 uGlow; uniform vec4 uBay; uniform vec4 uPath[8]; uniform vec4 uPathB[8]; uniform vec4 uHand; uniform vec3 uTree;
+  uniform vec4 uLamp[3]; uniform vec3 uLampCol[3];
+  varying vec3 vW; varying vec3 vN; varying vec3 vC; varying float vK;
+  float bbLight(vec2 p) { // how brightly the water glows here: wakes, paddle strokes, fish, the trailed hand, the shore's lap, stray sparks
+    float g = 0.0;
+    for (int i = 0; i < 8; i++) {
+      vec4 a = uPath[i], b = uPathB[i]; if (b.y <= 0.0) continue;
+      vec2 d = p - a.xy; float rho = length(d), phi = atan(d.y, d.x), beh = mod(a.w - phi, 6.2832), s = (beh > 3.1416 ? beh - 6.2832 : beh) * a.z, l = rho - a.z; // along the arc behind it, and out to its side
+      if (i < 3) { // a kayak: its hull, the V of its wake spreading behind it, its paddle's strokes on either side
+        float hull = exp(-(pow(max(abs(s) - 2.0, 0.0), 2.0) + l * l / 0.12) / 0.25);
+        float wk = s > 0.0 && s < 30.0 ? exp(-s / b.w) * (exp(-pow(abs(l) - (0.45 + s * 0.13), 2.0) / (0.06 + 0.03 * s)) * 0.8 + exp(-l * l / (0.15 + 0.06 * s)) * 0.45) : 0.0;
+        float side = sin(b.x), sp = exp(-(pow(s + 0.4, 2.0) + pow(l - sign(side) * 1.05, 2.0)) / 0.25) * pow(abs(side), 3.0) * 3.0;
+        float sp2 = exp(-(pow(s - 1.6, 2.0) + pow(l + sign(side) * 1.2, 2.0)) / 0.8) * 0.8; // the last stroke's swirl, fading behind
+        g += (hull * 0.9 + wk + sp + sp2) * b.y;
+      } else { g += (s > -0.3 ? exp(-max(s, 0.0) / b.w) * exp(-l * l / 0.03) : 0.0) * b.y; } // a fish's streak
+    }
+    vec2 dh = p - uHand.xy; float rh = length(dh), ph = fract(uTime * 0.45);
+    g += (exp(-rh * rh / 0.08) * 1.6 + exp(-pow(rh - ph * 2.4, 2.0) / 0.02) * (1.0 - ph) * 1.2 + exp(-pow(rh - fract(ph + 0.5) * 2.4, 2.0) / 0.02) * (1.0 - fract(ph + 0.5)) * 1.2) * uHand.w; // the hand, its rings spreading
+    vec2 q = (p - uBay.xy) / uBay.zw; float e = length(q) * (1.0 + 0.1 * (texture2D(uNoise, vec2(atan(q.y, q.x) * 0.9, 0.4)).r - 0.5));
+    g += smoothstep(0.972, 0.992, e) * smoothstep(14.0, 40.0, length(p - cameraPosition.xz)) * smoothstep(0.55, 0.8, texture2D(uNoise, vec2(atan(q.y, q.x) * 9.0, uTime * 0.12)).r) * 0.9; // the lap along the mangroves' roots
+    vec2 c = floor(p * 1.6); float hs = fract(sin(dot(c, vec2(41.3, 289.1))) * 43758.5453), tw = fract(uTime * (0.08 + 0.1 * hs) + hs * 7.0);
+    g += step(0.93, hs) * smoothstep(0.08, 0.0, tw) * smoothstep(0.5, 0.1, length(fract(p * 1.6) - 0.5)) * 0.9; // stray sparks: fish turning, drops falling
+    return g;
+  }
+  void main() {
+    vec3 P = vW, N = normalize(vN), toEye = cameraPosition - P; float dist = length(toEye); vec3 V = toEye / max(dist, 1e-3);
+    if (dot(N, V) < 0.0) N = -N;
+    float day = 1.0 - uNight, dif = max(dot(N, uSunDir), 0.0); vec3 amb = mix(uGndCol, uSkyCol, 0.5 + 0.5 * N.y), col;
+    if (vK < 0.5) { // the water
+      float far = smoothstep(30.0, 140.0, dist); vec2 rp = (1.0 - 0.7 * far) * (vec2(texture2D(uNoise, P.xz * 0.06 + uTime * vec2(0.006, 0.004)).r, texture2D(uNoise, P.xz * 0.06 - uTime * vec2(0.005, 0.007) + 0.5).g) - 0.5) * 0.06 + (1.0 - far) * (vec2(texture2D(uNoise, P.xz * 0.35 + uTime * 0.02).g, texture2D(uNoise, P.xz * 0.35 - uTime * 0.025 + 0.3).r) - 0.5) * 0.04; // calmer far off, so the far shore's mirror holds
+      vec3 Nw = normalize(vec3(rp.x, 1.0, rp.y)), R = reflect(-V, Nw); float fr = 0.03 + 0.97 * pow(1.0 - max(dot(Nw, V), 0.0), 5.0);
+      vec2 o = (P.xz - uBay.xy) / uBay.zw, dd = R.xz / uBay.zw; float A = dot(dd, dd), B = dot(o, dd), C = dot(o, o) - 1.0, t = (-B + sqrt(max(B * B - A * C, 0.0))) / max(A, 1e-5); // to the mangroves across the bay along the reflection
+      vec3 refl = t * R.y < 9.0 + 3.0 * texture2D(uNoise, vec2(atan(R.x, R.z) * 4.0, 0.6)).r ? uTree * (0.35 + 0.65 * day) : bbSky(R);
+      float depth = clamp(-P.y * 0.0 + length(o) * 1.0, 0.0, 1.0), shallow = smoothstep(0.82, 1.0, length(o)) + uHand.z * exp(-dot(P.xz - uHand.xy, P.xz - uHand.xy) / 40.0); // shallower toward the shore and the dock
+      vec3 body = mix(vec3(0.02, 0.17, 0.2), vec3(0.15, 0.48, 0.42), clamp(shallow, 0.0, 1.0)) * (amb * 0.8 + uSunCol * 0.4 * day);
+      col = mix(body, refl, fr * 0.9) + uSunCol * pow(max(dot(R, uSunDir), 0.0), 300.0) * 2.5 * day;
+      float gl = bbLight(P.xz);
+      vec2 sq = mat2(0.8, -0.6, 0.6, 0.8) * P.xz; float spk = smoothstep(0.3, 0.8, texture2D(uNoise, sq * 0.53 + uTime * vec2(0.03, -0.02)).r * 0.55 + texture2D(uNoise, mat2(0.6, 0.8, -0.8, 0.6) * P.xz * 1.37 - uTime * 0.04).g * 0.45); // plankton flashing, not a smooth line
+      col += uGlow * gl * (0.2 + 1.6 * spk) * uNight + vec3(0.8, 0.9, 0.95) * min(gl, 1.2) * 0.12 * day; // blue fire by night, a little white water by day
+    } else if (vK < 1.5) { // the land: mud and sand at the water's edge, the forest floor, the hills
+      float n = texture2D(uNoise, P.xz * 0.05).r; vec3 alb = mix(vec3(0.42, 0.36, 0.26), vec3(0.12, 0.2, 0.08), smoothstep(0.4, 1.6, P.y + n)) * (0.7 + 0.5 * n);
+      col = alb * (amb + uSunCol * dif * day);
+    } else if (vK < 2.5) { // mangroves: glossy dark leaves, their stilt roots
+      float lf = texture2D(uNoise, vec2(P.x + P.z, P.y) * 0.7).r * 0.6 + texture2D(uNoise, P.xz * 0.9 + P.y * 0.3).g * 0.4;
+      col = vC * (0.6 + 0.7 * lf) * (amb + uSunCol * (0.2 + 0.8 * dif) * day) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 20.0) * 0.12 * day;
+    } else { // the dock, the kayaks and their paddlers (one in your colour)
+      vec3 a = vC; float acc = step(0.9, a.r) * step(a.g, 0.1) * step(0.9, a.b); a = mix(a, uAccent * 0.85, acc);
+      col = a * (amb + uSunCol * dif * day) + uSunCol * pow(max(dot(reflect(-V, N), uSunDir), 0.0), 40.0) * 0.2 * day;
+      if (P.y < 0.6) col += uGlow * bbLight(P.xz) * 0.12 * uNight; // lit from below by the water they stir
+    }
+    for (int i = 0; i < 3; i++) { vec3 dl = uLamp[i].xyz - P; float l2 = dot(dl, dl); col += uLampCol[i] * uLamp[i].w * (0.3 + 0.7 * max(dot(N, dl * inversesqrt(max(l2, 1e-4))), 0.0)) / (1.0 + l2 * 0.8); }
+    col = mix(col, uHaze, 1.0 - exp(-dist * 0.0012));
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+    gl_FragColor.rgb += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  }
+`;
+const BB_SKY_FS = BB_SKY_GLSL + /* glsl */ `
+  varying vec3 vDir;
+  void main() { gl_FragColor = vec4(bbSky(normalize(vDir)), 1.0);
+    #include <colorspace_fragment>
+  }
+`;
+// fireflies over the mangroves by night, blinking
+const BB_FLY_VS = /* glsl */ `
+  uniform float uTime; uniform float uPx; uniform float uNight; attribute float aSd; varying float vA;
+  void main() { vec3 p = position + vec3(sin(uTime * 0.3 + aSd * 40.0), sin(uTime * 0.23 + aSd * 17.0) * 0.5, cos(uTime * 0.27 + aSd * 29.0)) * 1.5;
+    vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv; float px = 0.06 * uPx / max(-mv.z, 0.3); gl_PointSize = max(1.5, px);
+    vA = pow(max(sin(uTime * (0.8 + fract(aSd * 7.0)) + aSd * 60.0), 0.0), 8.0) * uNight; }
+`;
+const BB_FLY_FS = /* glsl */ `
+  varying float vA;
+  void main() { vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard; float a = (1.0 - r2) * vA; gl_FragColor = vec4(linearToOutputTexel(vec4(0.75, 1.0, 0.35, 1.0)).rgb * a, a); }
+`;
+function biobay(THREE, scene, camera, pal, preview) {
+  const disposables = [];
+  const keep = (d) => { disposables.push(d); return d; };
+  const r = koiRng(1493); // the year Columbus reached Puerto Rico, home of Mosquito Bay
+  const smooth = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  camera.fov = 56; camera.near = 0.1; camera.far = 20000;
+  camera.aspect = preview ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight);
+  camera.updateProjectionMatrix();
+  const time = { value: 0 }, noise = keep(lhNoise(THREE)), glow = keep(lhGlow(THREE));
+  const E = new THREE.Euler(), Q = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+  const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), Q.setFromEuler(E.set(rx, ry, rz)), ONE);
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (r0, r1, h, seg = 8) => new THREE.CylinderGeometry(r0, r1, h, seg);
+  const ICO = keep(new THREE.IcosahedronGeometry(1, 1)), ICO0 = keep(new THREE.IcosahedronGeometry(1, 0)), blob = (sx, sy, sz, lo) => (lo ? ICO0 : ICO).clone().scale(sx, sy, sz);
+  const shader = (vs, fs, uniforms, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms, vertexShader: vs, fragmentShader: fs, ...extra }));
+  const hash = (x, y) => { let h = (x * 374761393 + y * 668265263 + 1013904223) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy); const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1); return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v; };
+  const fbm = (x, y, o) => { let s = 0, a = 0.5, n = 0; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); n += a; a *= 0.5; const nx = (x * 0.8 - y * 0.6) * 2.03 + 11.7; y = (x * 0.6 + y * 0.8) * 2.03 - 5.3; x = nx; } return s / n; };
+  const yawOf = (fx, fz) => Math.atan2(-fz, fx);
+  const ACC = 0xff00ff;
+  const SUN = new THREE.Vector3(0.45, 0.6, -0.66).normalize(); // ahead and to the right: a glitter path on the water by day
+
+  /* --- the bay: an oval of water ringed by mangroves, two mangrove islets near us, low wooded hills behind --- */
+  const BAY = [0, -128, 175, 125], ISL = [[-34, -30, 9], [46, -52, 12], [-80, -150, 14]];
+  const eOf = (x, z) => { const qx = (x - BAY[0]) / BAY[2], qz = (z - BAY[1]) / BAY[3], a = Math.atan2(qz, qx); return Math.hypot(qx, qz) * (1 + 0.1 * (fbm(a * 3 + 5, 1.7, 2) - 0.5)); };
+  const isl = (x, z) => ISL.reduce((m, [ix, iz, ir]) => Math.max(m, 1 - Math.hypot(x - ix, z - iz) / ir), 0);
+  const gH = (x, z) => { const e = eOf(x, z), il = isl(x, z); let y = -2.5 * (1 - smooth(0.85, 1.0, e)) + 1.6 * smooth(0.99, 1.08, e) + 40 * smooth(1.5, 3.2, e) * fbm(x * 0.006, z * 0.006, 3);
+    return Math.max(y, -2.5 + 3.9 * smooth(0.0, 0.35, il)) + 0.3 * (fbm(x * 0.1, z * 0.1, 2) - 0.5); };
+  const parts = [], add = (g, k) => parts.push([g, k]);
+  const C0 = new THREE.Vector3(1.6, 2.6, 0.5);
+  { const NU = preview ? 100 : 240, NV = preview ? 60 : 140, P = [], I = [];
+    for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) { const t = j / NV, rr = 3 + 3000 * t ** 2.3, th = (-1.6 + 3.2 * i / NU), x = C0.x + Math.sin(th) * rr, z = C0.z - Math.cos(th) * rr; P.push(x, gH(x, z), z); }
+    for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) { const a = j * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1; I.push(a, c, b, b, c, d); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals(); add(g, 1); }
+  add(new THREE.CircleGeometry(900, preview ? 48 : 96).rotateX(-Math.PI / 2).translate(0, 0, -128), 0); // the water
+
+  /* --- mangroves: dark glossy crowns on arching stilt roots, along the shore and on the islets; the dock --- */
+  const M = [], O = [], Pp = (geo, m, hex, list) => list.push([geo, m, hex]), GL = [], LAMPS = [];
+  const MANG = [0x1e4a1c, 0x2a5a22, 0x183c18, 0x2f6226];
+  const seen = (x, z) => Math.atan2(Math.abs(x - C0.x) - 10, C0.z - z) < 0.95 && C0.z - z > 2 && Math.hypot(x - 1.6, z + 4) > 20; // in view, and clear of the dock
+  const mangrove = (x, z, h, near) => { const y = Math.max(gH(x, z), 0.4);
+    if (near) for (let k = 0; k < 7; k++) { const a = r(0, 6.28), rr = h * r(0.18, 0.32); const g = new THREE.TorusGeometry(rr, 0.04 + h * 0.004, 3, 8, Math.PI); Pp(g, new THREE.Matrix4().makeRotationY(a).setPosition(x, y - 0.3, z).multiply(at(0, 0, 0, 0, 0, 0)), 0x5a4a36, M); } // stilt roots arching into the water
+    for (let i = 0; i < (near ? 9 : 4); i++) { const a = r(0, 6.28), d = h * Math.sqrt(r()) * 0.45, s = h * r(0.16, 0.3); Pp(blob(s * 1.3, s * 0.75, s * 1.3, !near), at(x + Math.cos(a) * d, y + h * 0.45 + r(-0.12, 0.22) * h, z + Math.sin(a) * d), MANG[i % 4], M); } };
+  for (let i = 0; i < (preview ? 260 : 700); i++) { const a = r(0, 6.283), e = r(1.0, 1.35), x = BAY[0] + Math.cos(a) * BAY[2] * e, z = BAY[1] + Math.sin(a) * BAY[3] * e; if (!seen(x, z) || gH(x, z) < -0.3) continue; mangrove(x, z, r(6, 11), Math.hypot(x - C0.x, z - C0.z) < 70); } // the shore's forest
+  for (const [ix, iz, ir] of ISL) for (let i = 0; i < ir * (preview ? 1.2 : 2.4); i++) { const a = r(0, 6.283), d = Math.sqrt(r()) * ir * 0.8; mangrove(ix + Math.cos(a) * d, iz + Math.sin(a) * d, r(5, 9), Math.hypot(ix - C0.x, iz - C0.z) < 80); } // the islets
+  for (let s = 0; s < 10; s++) { const z = 3 - s * 1.3; Pp(box(2.2, 0.08, 1.1), at(1.6, 0.9, z), [0x7a5a3a, 0x6e5034, 0x86643e][s % 3], O); } for (const [x, z] of [[0.6, -8.6], [2.6, -8.6], [0.6, -4], [2.6, -4], [0.6, 0.5], [2.6, 0.5]]) Pp(cyl(0.09, 0.1, 3, 6), at(x, -0.6, z), 0x4a3a28, O); // the dock
+  const HAND = new THREE.Vector3(2.9, 0, -9.3); { const L = (x, y, z, rx = 0, ry = 0, rz = 0) => at(2.5 + x, 0.95 + y, -8.7 + z, rx, ry, rz); // someone sitting at the dock's end, trailing a hand in the water
+    Pp(new THREE.CapsuleGeometry(0.19, 0.38, 4, 10), L(0, 0.42, 0, 0.15, 0, 0), ACC, O); Pp(blob(0.1, 0.12, 0.1), L(0, 0.9, -0.05), 0xb8885e, O); Pp(blob(0.12, 0.08, 0.12), L(0, 0.98, -0.04), 0x2a2a2a, O);
+    Pp(new THREE.CapsuleGeometry(0.07, 0.5, 3, 7), L(0, -0.05, -0.32, 1.45, 0, 0), 0x2a3040, O); Pp(new THREE.CapsuleGeometry(0.07, 0.5, 3, 7), L(-0.22, -0.05, -0.32, 1.45, 0, 0), 0x2a3040, O);
+    Pp(new THREE.CapsuleGeometry(0.06, 0.6, 3, 7), L(0.25, 0.2, -0.45, 0.9, 0, -0.4), ACC, O); Pp(cyl(0.07, 0.08, 0.18, 8), at(0.9, 1.05, -8.2), 0x2a2a2a, O);
+    GL.push([0.9, 1.25, -8.2, 0.14, 1, 1, 1, 2.4]); LAMPS.push([new THREE.Vector3(0.9, 1.4, -8.2), "lantern"]); }
+  add(mergeColored(THREE, M), 2); add(mergeColored(THREE, O), 3);
+
+  /* --- the kayaks, paddling round circles on the bay, posed afresh each frame; fish darting --- */
+  const KAY = [[-5, -27, 10, 0.4, ACC], [20, -55, 16, 2.0, 0xd84a2a], [-26, -80, 20, 4.1, 0xe8c030]], FISH = [];
+  for (let i = 0; i < 5; i++) FISH.push([r(-14, 16), -r(14, 45), r(1.5, 4), r(0, 6.28), r(1.6, 3.2)]); // all round the same way, as the wakes are traced
+  const MOV = [];
+  KAY.forEach(([, , , , hex], k) => { const pc = []; const L = at;
+    pc.push([blob(2.1, 0.18, 0.3), L(0, 0.1, 0), hex], [blob(0.4, 0.06, 0.26), L(0.1, 0.27, 0), 0x1a1a1a]); // the hull, its cockpit
+    pc.push([new THREE.CapsuleGeometry(0.17, 0.32, 4, 8), L(0.05, 0.62, 0), k === 0 ? ACC : 0x2a4a6a], [blob(0.1, 0.12, 0.1), L(0.07, 1.02, 0), 0xc89a70], [blob(0.11, 0.06, 0.11), L(0.06, 1.1, 0), 0x2a2a2a]);
+    MOV.push({ g: mergeColored(THREE, pc), at: (t) => { const [cx, cz, R, th0] = KAY[k], th = th0 + t * (1.1 / R), x = cx + Math.cos(th) * R, z = cz + Math.sin(th) * R; return new THREE.Matrix4().makeRotationY(yawOf(-Math.sin(th), Math.cos(th))).setPosition(x, 0, z); } });
+    const pd = [[cyl(0.02, 0.02, 2.2, 5), at(0, 0, 0, Math.PI / 2, 0, 0), 0x222222], [box(0.03, 0.12, 0.4), at(0, 0, 1.1), 0xd8d8d8], [box(0.03, 0.12, 0.4), at(0, 0, -1.1), 0xd8d8d8]];
+    MOV.push({ g: mergeColored(THREE, pd), at: (t) => { const [cx, cz, R, th0] = KAY[k], th = th0 + t * (1.1 / R), x = cx + Math.cos(th) * R, z = cz + Math.sin(th) * R, ph = t * 2.6 + k; return new THREE.Matrix4().makeRotationY(yawOf(-Math.sin(th), Math.cos(th))).setPosition(x, 0.75, z).multiply(at(0.35, 0, 0, Math.sin(ph) * 0.55, Math.cos(ph) * 0.35, 0)); } }); // its paddle, stroking left and right
+    GL.push([0, 0, 0, k === 0 ? 0.08 : 0.05, 1, 0.95, 0.85, 1.6]); });
+  const movGeo = (() => { let n = 0; for (const m of MOV) n += m.g.attributes.position.count; const p = new Float32Array(n * 3), nr = new Float32Array(n * 3), c = new Float32Array(n * 3), kd = new Float32Array(n).fill(3); let o = 0; for (const m of MOV) { m.o = o; m.p = m.g.attributes.position.array.slice(); m.n = m.g.attributes.normal.array.slice(); c.set(m.g.attributes.color.array, o * 3); o += m.g.attributes.position.count; m.g.dispose(); }
+    const g = keep(new THREE.BufferGeometry()); g.setAttribute("position", new THREE.BufferAttribute(p, 3)); g.setAttribute("normal", new THREE.BufferAttribute(nr, 3)); g.setAttribute("color", new THREE.BufferAttribute(c, 3)); g.setAttribute("aKind", new THREE.BufferAttribute(kd, 1)); g.attributes.position.setUsage(THREE.DynamicDrawUsage); g.attributes.normal.setUsage(THREE.DynamicDrawUsage); return g; })();
+  const NM = new THREE.Matrix3(), V3 = new THREE.Vector3();
+  function pose(t) { const P = movGeo.attributes.position.array, Nn = movGeo.attributes.normal.array;
+    for (const m of MOV) { const mat = m.at(t), e = mat.elements, o = m.o * 3; NM.getNormalMatrix(mat); const f = NM.elements;
+      for (let i = 0; i < m.p.length; i += 3) { const x = m.p[i], y = m.p[i + 1], z = m.p[i + 2]; P[o + i] = e[0] * x + e[4] * y + e[8] * z + e[12]; P[o + i + 1] = e[1] * x + e[5] * y + e[9] * z + e[13]; P[o + i + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+        V3.set(f[0] * m.n[i] + f[3] * m.n[i + 1] + f[6] * m.n[i + 2], f[1] * m.n[i] + f[4] * m.n[i + 1] + f[7] * m.n[i + 2], f[2] * m.n[i] + f[5] * m.n[i + 1] + f[8] * m.n[i + 2]).normalize(); Nn[o + i] = V3.x; Nn[o + i + 1] = V3.y; Nn[o + i + 2] = V3.z; } }
+    movGeo.attributes.position.needsUpdate = movGeo.attributes.normal.needsUpdate = true; }
+
+  let nV = 0, nI = 0; for (const [g] of parts) { nV += g.attributes.position.count; nI += g.index ? g.index.count : g.attributes.position.count; }
+  const pos = new Float32Array(nV * 3), nrm = new Float32Array(nV * 3), colA = new Float32Array(nV * 3).fill(1), kind = new Float32Array(nV), idx = new Uint32Array(nI);
+  { let o = 0, oi = 0; for (const [g, k] of parts) { const cnt = g.attributes.position.count; pos.set(g.attributes.position.array, o * 3); nrm.set(g.attributes.normal.array, o * 3); if (g.attributes.color) colA.set(g.attributes.color.array, o * 3); kind.fill(k, o, o + cnt);
+    if (g.index) { const ia = g.index.array; for (let i = 0; i < ia.length; i++) idx[oi + i] = o + ia[i]; oi += ia.length; } else { for (let i = 0; i < cnt; i++) idx[oi + i] = o + i; oi += cnt; } o += cnt; g.dispose(); } }
+  const geo = keep(new THREE.BufferGeometry()); geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); geo.setAttribute("color", new THREE.BufferAttribute(colA, 3)); geo.setAttribute("aKind", new THREE.BufferAttribute(kind, 1)); geo.setIndex(new THREE.BufferAttribute(idx, 1));
+
+  /* --- materials --- */
+  const nightU = { value: 0 }, sunColU = { value: new THREE.Color() }, skyCols = { uZen: { value: new THREE.Color() }, uHor: { value: new THREE.Color() }, uCloudLit: { value: new THREE.Color() }, uCloudDark: { value: new THREE.Color() } };
+  const common = { uNoise: { value: noise }, uTime: time, uNight: nightU, uSunDir: { value: SUN }, uSunCol: sunColU, ...skyCols };
+  const pathU = { value: [...Array(8)].map(() => new THREE.Vector4()) }, pathBU = { value: [...Array(8)].map(() => new THREE.Vector4()) }, lampU = { value: [0, 1, 2].map(() => new THREE.Vector4(0, 0, 0, 0)) }, lampColU = { value: [0, 1, 2].map(() => new THREE.Color(0, 0, 0)) }; // unused lamps dark (a Vector4 starts with w = 1, a Color white)
+  const landU = { ...common, uLightCol: sunColU, uSkyCol: { value: new THREE.Color() }, uGndCol: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uAccent: { value: new THREE.Color() }, uGlow: { value: new THREE.Color(0.12, 0.7, 1.0).multiplyScalar(2.4) }, uBay: { value: new THREE.Vector4(...BAY) }, uPath: pathU, uPathB: pathBU, uHand: { value: new THREE.Vector4(HAND.x, HAND.z, 1, 1) }, uTree: { value: new THREE.Color() }, uLamp: lampU, uLampCol: lampColU };
+  const mat = shader(BB_LAND_VS, BB_LAND_FS, landU, { vertexColors: true, side: THREE.DoubleSide });
+  const land = new THREE.Mesh(geo, mat); land.frustumCulled = false; scene.add(land);
+  const movers = new THREE.Mesh(movGeo, mat); movers.frustumCulled = false; scene.add(movers);
+  const sky = new THREE.Mesh(keep(new THREE.SphereGeometry(15000, 32, 16)), shader(LANTERN_SKY_VS, BB_SKY_FS, { ...common }, { side: THREE.BackSide, depthWrite: false, depthTest: false })); sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+  const NF = preview ? 30 : 70, fPos = new Float32Array(NF * 3), fSd = new Float32Array(NF);
+  for (let i = 0; i < NF; i++) { const [ix, iz, ir] = ISL[i % 2], a = r(0, 6.28), d = r(0, ir); fPos.set([ix + Math.cos(a) * d, r(1.5, 6), iz + Math.sin(a) * d], i * 3); fSd[i] = r(); }
+  const fGeo = keep(new THREE.BufferGeometry()); fGeo.setAttribute("position", new THREE.BufferAttribute(fPos, 3)); fGeo.setAttribute("aSd", new THREE.BufferAttribute(fSd, 1));
+  const flyU = { uTime: time, uPx: { value: 1000 }, uNight: nightU };
+  const flies = new THREE.Points(fGeo, shader(BB_FLY_VS, BB_FLY_FS, flyU, { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor })); flies.frustumCulled = false; flies.renderOrder = 6; scene.add(flies);
+  const NGL = GL.length, quad = keep(new THREE.PlaneGeometry(1, 1)), glowGeo = keep(new THREE.InstancedBufferGeometry());
+  glowGeo.setIndex(quad.index); glowGeo.setAttribute("position", quad.attributes.position); glowGeo.setAttribute("uv", quad.attributes.uv);
+  const aGlow = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 4), 4), aTint = new THREE.InstancedBufferAttribute(new Float32Array(NGL * 3), 3), aMin = new THREE.InstancedBufferAttribute(new Float32Array(NGL), 1);
+  aGlow.setUsage(THREE.DynamicDrawUsage); aTint.setUsage(THREE.DynamicDrawUsage);
+  GL.forEach(([x, y, z, s, cr, cg, cb, mn], i) => { aGlow.setXYZW(i, x, y, z, s); aTint.setXYZ(i, cr, cg, cb); aMin.setX(i, mn); });
+  glowGeo.setAttribute("aGlow", aGlow); glowGeo.setAttribute("aTint", aTint); glowGeo.setAttribute("aMin", aMin); glowGeo.instanceCount = NGL;
+  const glowU = { uMap: { value: glow }, uAmt: { value: 1 }, uPx: { value: 500 }, uMinK: { value: 1 } };
+  const glows = new THREE.Mesh(glowGeo, shader(AIR_LIGHT_VS, AIR_LIGHT_FS, glowU, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })); glows.frustumCulled = false; glows.renderOrder = 20; scene.add(glows);
+
+  let clock = 0;
+  function step(t) { // where everything is at time t: the kayaks round their circles, their strokes, the fish; the headlamps
+    const d = nightU.value > 0.5;
+    KAY.forEach(([cx, cz, R, th0], k) => { const th = th0 + t * (1.1 / R); pathU.value[k].set(cx, cz, R, th); pathBU.value[k].set(t * 2.6 + k, 1, 0, 5);
+      aGlow.setXYZW(1 + k, cx + Math.cos(th) * R, 1.12, cz + Math.sin(th) * R, d ? GL[1 + k][3] : 0); });
+    FISH.forEach(([cx, cz, R, th0, w], j) => { pathU.value[3 + j].set(cx, cz, R, th0 + t * w / R); pathBU.value[3 + j].set(0, 0.9, 0, 1.6); });
+    pose(t); aGlow.needsUpdate = true;
+  }
+  function applyPalette(p) {
+    pal = p; const d = p.dark, acc = new THREE.Color(p.accent);
+    landU.uAccent.value.copy(acc); nightU.value = d ? 1 : 0;
+    sunColU.value.set(d ? "#000000" : "#fff4e0").multiplyScalar(d ? 0 : 1.1);
+    skyCols.uZen.value.set(d ? "#02050e" : "#2f6cbc"); skyCols.uHor.value.set(d ? "#0c1428" : "#bcd8ee"); skyCols.uCloudLit.value.set(d ? "#151c2c" : "#ffffff"); skyCols.uCloudDark.value.set(d ? "#080c16" : "#b8c6d6");
+    landU.uSkyCol.value.set(d ? "#1a2440" : "#a8c8e8").multiplyScalar(d ? 0.18 : 0.7); landU.uGndCol.value.set(d ? "#06080c" : "#4a4434").multiplyScalar(d ? 0.2 : 0.5);
+    landU.uHaze.value.set(d ? "#070b16" : "#c8dcee"); landU.uTree.value.set(d ? "#020304" : "#1c3418");
+    lampU.value[0].set(LAMPS[0][0].x, LAMPS[0][0].y, LAMPS[0][0].z, d ? 0.35 : 0); lampColU.value[0].copy(acc).lerp(new THREE.Color(1, 0.8, 0.55), 0.35);
+    aTint.setXYZ(0, acc.r * 2.4, acc.g * 2.4, acc.b * 2.4); aGlow.setW(0, d ? GL[0][3] : 0); aTint.setXYZ(1, acc.r * 2.2, acc.g * 2.2, acc.b * 2.2); aTint.needsUpdate = true;
+    step(clock);
+  }
+  const look = new THREE.Vector3();
+  function layout() {
+    const A = camera.aspect || 1, k = A >= 1 ? 0 : Math.min(1, (1 - A) / 0.54), fov = 56 + k * 16;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.copy(C0);
+    const pitch = -0.07 + 0.05 * k + 0.006 * Math.sin(clock * 0.05), yaw = -0.04 - 0.06 * k + 0.012 * Math.sin(clock * 0.03);
+    camera.lookAt(look.set(C0.x + Math.sin(yaw) * 100, C0.y + Math.tan(pitch) * 100, C0.z - Math.cos(yaw) * 100)); camera.updateMatrixWorld();
+  }
+  const buf = new THREE.Vector2(), pxFor = (h) => h / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  scene.onBeforeRender = (renderer) => { layout(); renderer.getDrawingBufferSize(buf); const px = pxFor(buf.y); glowU.uPx.value = px; glowU.uMinK.value = Math.min(2, Math.max(0.35, buf.y / 900)); flyU.uPx.value = px; };
+  function frame(dt) { clock += dt; time.value = clock; step(clock); }
+  applyPalette(pal); frame(0);
+  return {
+    update: sceneStep(frame), setPalette: applyPalette,
+    stats() { return { verts: geo.attributes.position.count, movers: movGeo.attributes.position.count, accent: "#" + landU.uAccent.value.getHexString(), night: nightU.value }; },
+    dispose() { scene.onBeforeRender = () => {}; disposables.forEach((x) => x.dispose()); },
+  };
+}
+
+const BUILDERS = { galaxy, terrain, crystals, earth, neon, island, bloodmoon, ocean, balloons, hearts, jellyfish, ghosts, portal, wisps, saturn, nebula, orbits, meadow, citydrive, neural, frostpeaks, luckycat, campsite, koipond, inkwash, rainwindow, skylanterns, snowglobe, lighthouse, clockwork, sakura, observatory, hotair, reef, northernlights, venice, santorini, paris, steamengine, robotfactory, v8engine, rocketlaunch, containerport, airport, mountainrailway, windfarm, fairground, racecircuit, bambooforest, desertcaravan, skiresort, volcanoisland, waterfall, dinovalley, futurecity, floatislands, marscolony, pyramids, greatwall, spacestation, savanna, penguins, halong, castle, autumn, tornado, murmuration, glacier, eclipse, firefall, antelope, icecave, victoria, yuanyang, yellowstone, biobay };
 
 /**
  * WebGL background. three.js is loaded on demand (only when one of these styles is active),
