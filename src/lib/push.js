@@ -1,5 +1,6 @@
 import webpush from "web-push";
 import { query, execute } from "./db";
+import { sendApns } from "./apns";
 
 /**
  * Web Push delivery. Needs VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (and VAPID_SUBJECT)
@@ -24,11 +25,16 @@ export const CALL_PUSH = { urgency: "high", ttl: 50 };
 export const GROUP_CALL_PUSH = { urgency: "high", ttl: 90 };
 
 /**
- * Send a payload ({ title, body, href, tag, … }) to every device a user opted in with. `options`: { ttl (seconds),
- * urgency: very-low | low | normal | high, topic }. Subscriptions the push service reports as gone (404/410)
- * are removed. Never throws.
+ * Send a payload ({ title, body, href, tag, … }) to every device a user opted in with: browsers through Web Push,
+ * iPhones through Apple's push service (lib/apns.js). `options`: { ttl (seconds), urgency: very-low | low | normal
+ * | high, topic }. Subscriptions the push service reports as gone (404/410) are removed. Never throws.
  */
-export async function sendPush(userId, payload, { ttl = 12 * 3600, urgency = "normal", topic = undefined } = {}) {
+export async function sendPush(userId, payload, options = {}) {
+  const [web, apple] = await Promise.all([sendWebPush(userId, payload, options), sendApns(userId, payload, options)]);
+  return { sent: web.sent + apple.sent, total: web.total + apple.total };
+}
+
+async function sendWebPush(userId, payload, { ttl = 12 * 3600, urgency = "normal", topic = undefined } = {}) {
   try {
     if (!setup()) return { sent: 0, total: 0 };
     const subs = await query("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?", [userId]);

@@ -209,6 +209,12 @@ const zhCN = {
   "Arrange cards": "排列卡片", "Drag the cards or use the arrows, and hide the ones you do not need. Every page of this kind opens like this.": "拖动卡片或使用箭头调整顺序，并隐藏不需要的卡片。同类页面都会按此打开。", "Back to the default": "恢复默认", "Done arranging": "完成排列",
   "Main column": "主栏", "Side column": "侧栏", "Hidden": "已隐藏", "Move up": "上移", "Move down": "下移", "Move to the side column": "移到侧栏", "Move to the main column": "移到主栏", "Show this card": "显示此卡片",
   "Drop a card here, or use the arrow on a card in the other column.": "把卡片拖到这里，或在另一栏的卡片上使用箭头。", "Linked tasks": "关联任务", "Workload": "工作量",
+  // iPhone notifications (Mobile app page)
+  "iPhone notifications": "iPhone 通知", "The iPhone app gets its notifications through Apple's push service, which needs a key from the Apple Developer account: Certificates, IDs & Profiles → Keys → add a key with Apple Push Notifications service (APNs) and download it. The file (AuthKey_<Key ID>.p8) can be downloaded only once; keep a copy somewhere safe. The Team ID is under Membership details.": "iPhone 应用通过 Apple 推送服务接收通知，这需要 Apple 开发者账户中的一个密钥：Certificates, IDs & Profiles → Keys → 添加一个启用 Apple Push Notifications service (APNs) 的密钥并下载。该文件（AuthKey_<Key ID>.p8）只能下载一次，请妥善保存一份副本。Team ID 位于 Membership details 中。",
+  "Team ID": "Team ID", "Key ID": "Key ID", "Key file (.p8)": "密钥文件（.p8）", "A key is saved. Choose a new file to replace it.": "已保存一个密钥。选择新文件即可替换。", "Remove the key": "移除密钥",
+  "iPhone notification key saved": "iPhone 通知密钥已保存", "Apple accepts the key": "Apple 接受此密钥", "iPhones that turned notifications on get them from now on.": "开启了通知的 iPhone 从现在起会收到通知。", "Apple does not accept the key": "Apple 不接受此密钥",
+  "The key is removed": "密钥已移除", "iPhones get no notifications until a key is saved again.": "在重新保存密钥之前，iPhone 不会收到通知。", "Remove the iPhone notification key?": "移除 iPhone 通知密钥？",
+  "iPhones signed in with notifications on: {n}": "已登录并开启通知的 iPhone：{n}", "No key yet: the iPhone app works, but gets no notifications while it is closed.": "尚未设置密钥：iPhone 应用可以使用，但关闭时收不到通知。", "Apple last accepted a notification {when}.": "Apple 最近一次接受通知是在{when}。", "Last problem ({when}): {error}": "最近的问题（{when}）：{error}",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

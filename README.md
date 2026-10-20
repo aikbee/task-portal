@@ -545,6 +545,18 @@ which a cron job calls with `CRON_SECRET` so pushes go out even when nobody has 
 simply off. Subscriptions live in `push_subscriptions`; dead ones are pruned when the push
 service reports them gone.
 
+**iPhone app** (`src/lib/apns.js`): the same notifications go to the native iPhone app through
+Apple's push service (APNs). An administrator saves the key on **Mobile app → iPhone
+notifications**: the `.p8` file from Apple Developer → Keys (with APNs ticked), its Key ID and
+the Team ID; the key is stored encrypted with `DATA_KEY` and never shown again, and **Test the
+key** asks Apple without a phone. The app registers its device token with `POST /api/push/apns`
+for the session it is signed in with (`apns_devices`, which goes with the session: signing out,
+expiry or a revoked session stops the pushes). Each push carries the bell's unread count as the
+app-icon badge and the link (`href`) the app opens on a tap. Call rings are not sent (the app has
+no calls yet; the missed-call notice is). Tokens Apple reports gone (410) are dropped; a token
+from the other environment (a build from Xcode vs TestFlight) is retried there once. Outside
+production the settings accept a `test_host`, which the smoke test points at a stand-in for Apple.
+
 ## Deployment
 
 Pushing to `main` runs lint and build in GitHub Actions, then deploys over SSH to a

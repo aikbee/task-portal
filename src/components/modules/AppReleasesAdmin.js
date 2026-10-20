@@ -1,11 +1,12 @@
 "use client";
 import { useRef, useState } from "react";
-import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package } from "lucide-react";
+import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package, BellRing, Save, KeyRound } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card, { CardHeader } from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import { Input, Field } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import { Skeleton, EmptyState } from "@/components/ui/Misc";
 import { api } from "@/lib/api";
@@ -115,7 +116,94 @@ export default function AppReleasesAdmin() {
           </table>
         )}
       </Card>
-      <ConfirmDialog open={Boolean(doomed)} title={tr("Remove version {v}?", { v: doomed?.version_name ?? "" })} description={tr("Phones that already have it keep it. The newest remaining build is offered from now on.")} confirmLabel={tr("Remove")} onConfirm={remove} onClose={() => setDoomed(null)} />
+      <IphonePush tr={tr} />
+      <ConfirmDialog open={Boolean(doomed)} title={tr("Remove version {v}?", { v: doomed?.version_name ?? "" })} description={tr("Phones that already have it keep it. The newest remaining build is offered from now on.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setDoomed(null)} />
     </div>
+  );
+}
+
+/** The key iPhone notifications go out with: Apple's push service wants a .p8 key with its Key ID and the Team ID. */
+function IphonePush({ tr }) {
+  const toast = useToast();
+  const { data: s, refetch } = useFetch("/api/app/apns");
+  const [form, setForm] = useState(null); // { teamId, keyId } or null = untouched
+  const [key, setKey] = useState(null); // { name, text } of a chosen .p8 file
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const input = useRef(null);
+  const shown = form ?? { teamId: s?.team_id || "", keyId: s?.key_id || "" };
+  const dirty = Boolean(key) || (Boolean(form) && (shown.teamId !== (s?.team_id || "") || shown.keyId !== (s?.key_id || "")));
+  const pick = async (file) => {
+    if (!file) return setKey(null);
+    const text = await file.text();
+    setKey({ name: file.name, text });
+    // Apple names the file after the key: AuthKey_<Key ID>.p8
+    const id = /AuthKey_([A-Z0-9]{10})\.p8$/i.exec(file.name)?.[1];
+    if (id) setForm({ ...shown, keyId: id.toUpperCase() });
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = { team_id: shown.teamId, key_id: shown.keyId };
+      if (key) body.key = key.text;
+      await api.put("/api/app/apns", body);
+      toast.success(tr("iPhone notification key saved"));
+      setForm(null);
+      setKey(null);
+      if (input.current) input.current.value = "";
+      refetch();
+    } catch (e) {
+      toast.error(tr("Could not save"), e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const test = async () => {
+    setTesting(true);
+    try {
+      await api.post("/api/app/apns/test");
+      toast.success(tr("Apple accepts the key"), tr("iPhones that turned notifications on get them from now on."));
+    } catch (e) {
+      toast.error(tr("Apple does not accept the key"), e.message);
+    } finally {
+      setTesting(false);
+      refetch();
+    }
+  };
+  const remove = async () => {
+    setRemoving(false);
+    try {
+      await api.put("/api/app/apns", { key: "" });
+      toast.success(tr("The key is removed"), tr("iPhones get no notifications until a key is saved again."));
+      refetch();
+    } catch (e) {
+      toast.error(tr("Could not remove"), e.message);
+    }
+  };
+  return (
+    <Card className="space-y-4">
+      <CardHeader title={tr("iPhone notifications")} description={tr("The iPhone app gets its notifications through Apple's push service, which needs a key from the Apple Developer account: Certificates, IDs & Profiles → Keys → add a key with Apple Push Notifications service (APNs) and download it. The file (AuthKey_<Key ID>.p8) can be downloaded only once; keep a copy somewhere safe. The Team ID is under Membership details.")} />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label={tr("Team ID")}><Input value={shown.teamId} onChange={(e) => setForm({ ...shown, teamId: e.target.value.toUpperCase() })} maxLength={10} autoComplete="off" placeholder="ABCDE12345" className="apns-team" /></Field>
+        <Field label={tr("Key ID")}><Input value={shown.keyId} onChange={(e) => setForm({ ...shown, keyId: e.target.value.toUpperCase() })} maxLength={10} autoComplete="off" placeholder="XYZ987WVUT" className="apns-key-id" /></Field>
+        <Field label={tr("Key file (.p8)")} hint={s?.key_set && !key ? tr("A key is saved. Choose a new file to replace it.") : key ? key.name : undefined}>
+          <input ref={input} type="file" accept=".p8" onChange={(e) => pick(e.target.files?.[0] ?? null)} className="apns-key-file block w-full text-sm file:mr-3 file:rounded-app file:border-0 file:bg-accent/10 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-accent" />
+        </Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button icon={Save} onClick={save} loading={saving} disabled={!dirty} className="apns-save">{tr("Save changes")}</Button>
+        <Button variant="outline" icon={KeyRound} onClick={test} loading={testing} disabled={dirty || !s?.ready} className="apns-test">{tr("Test the key")}</Button>
+        {s?.key_set ? <Button variant="ghost" icon={Trash2} onClick={() => setRemoving(true)}>{tr("Remove the key")}</Button> : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+        <BellRing className="h-3.5 w-3.5" />
+        {s?.ready ? <Badge tone="emerald">{tr("On")}</Badge> : <Badge>{tr("Off")}</Badge>}
+        <span>{s?.ready ? tr("iPhones signed in with notifications on: {n}", { n: s.devices }) : tr("No key yet: the iPhone app works, but gets no notifications while it is closed.")}</span>
+        {s?.ready && s.last_ok_at ? <span>· {tr("Apple last accepted a notification {when}.", { when: relativeTime(s.last_ok_at) })}</span> : null}
+      </div>
+      {s?.last_error ? <p className="rounded-app bg-rose-500/10 p-2 text-xs text-rose-600 dark:text-rose-400">{tr("Last problem ({when}): {error}", { when: relativeTime(s.last_error_at), error: s.last_error })}</p> : null}
+      <ConfirmDialog open={removing} title={tr("Remove the iPhone notification key?")} description={tr("iPhones get no notifications until a key is saved again.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setRemoving(false)} />
+    </Card>
   );
 }

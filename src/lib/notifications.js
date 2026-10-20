@@ -40,7 +40,7 @@ export async function notify({ userId, type, title, body = null, href = null, en
   publish(userId, { type: "notification", notification: { id: res.insertId, type, category: NOTIFICATION_TYPES[type].category, title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : null, href: href || null, profile_id: profileId, tag: tag || dedupeKey || `n-${res.insertId}`, created_at: new Date().toISOString(), data: push?.data ?? null } });
   // devices that opted in get the same notification as a push (fire and forget)
   // `push`: { ttl, urgency, topic, data } — calls go out urgent and short-lived and carry what the banner needs
-  sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type, ...(push?.data ?? {}) }, push ?? undefined).catch(() => {});
+  sendPush(userId, { title: title.slice(0, 200), body: body ? String(body).slice(0, 500) : "", href: href || "/notifications", tag: tag || dedupeKey || `n-${res.insertId}`, type, notification_id: res.insertId, profile_id: profileId, ...(push?.data ?? {}) }, push ?? undefined).catch(() => {});
   // the important ones also go out by email when the portal has a mail account and the person did not opt out
   if (email && address && EMAIL_TYPES.has(type)) sendNotificationEmail({ id: res.insertId, to: address, type, title: title.slice(0, 200), body }).catch(() => {});
   return true;

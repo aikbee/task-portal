@@ -3098,6 +3098,104 @@ console.log("email (password reset, invitations, notification emails)");
   check("the smoke builds are cleaned up", (await call("GET", `/api/app/android/latest?package=${PKG}`, { noAuth: true })).data.release === null);
 }
 
+console.log("iPhone notifications (Apple push key, devices, delivery)");
+{
+  // a stand-in for Apple's push service over HTTP/2: it checks the provider token's signature like Apple does
+  const http2 = await import("node:http2");
+  const nodeCrypto = await import("node:crypto");
+  const { privateKey, publicKey } = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const got = [];
+  const apple = http2.createServer();
+  apple.on("stream", (stream, headers) => {
+    let raw = "";
+    stream.on("data", (c) => (raw += c));
+    stream.on("end", () => {
+      const [h, c, sig] = String(headers.authorization || "").replace(/^bearer /, "").split(".");
+      const valid = Boolean(sig) && nodeCrypto.verify("sha256", Buffer.from(`${h}.${c}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(sig, "base64url"));
+      const token = headers[":path"].split("/").pop();
+      got.push({ token, headers, valid, head: valid ? JSON.parse(Buffer.from(h, "base64url")) : null, claims: valid ? JSON.parse(Buffer.from(c, "base64url")) : null, body: raw ? JSON.parse(raw) : null });
+      const answer = (status, reason) => { stream.respond({ ":status": status, "content-type": "application/json" }); stream.end(reason ? JSON.stringify({ reason }) : ""); };
+      if (!valid) return answer(403, "InvalidProviderToken");
+      if (/^0+$/.test(token)) return answer(400, "BadDeviceToken");
+      if (token.startsWith("dead")) return answer(410, "Unregistered");
+      answer(200);
+    });
+  });
+  await new Promise((r) => apple.listen(0, "127.0.0.1", r));
+  const fakeApple = `http://127.0.0.1:${apple.address().port}`;
+  // the newest push to this token after the first `since` requests (pushes go out after the API has answered)
+  const pushTo = async (token, since = 0, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { const hit = got.slice(since).filter((g) => g.token === token); if (hit.length) return hit.at(-1); await new Promise((r) => setTimeout(r, 50)); } return null; };
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...adminJar };
+
+  check("only an administrator sees the push key settings -> 403", (await as(userJar, () => call("GET", "/api/app/apns"))).status === 403);
+  check("testing before a key is saved -> 400", (await call("POST", "/api/app/apns/test")).status === 400);
+  check("a Team ID must be ten letters and digits -> 400", (await call("PUT", "/api/app/apns", { body: { team_id: "nope" } })).status === 400);
+  check("a key that is no .p8 file -> 400", (await call("PUT", "/api/app/apns", { body: { key: "hello" } })).status === 400);
+  const p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-384" }).privateKey.export({ type: "pkcs8", format: "pem" });
+  check("a private key of another kind -> 400", (await call("PUT", "/api/app/apns", { body: { key: p384 } })).status === 400);
+  const saved = await call("PUT", "/api/app/apns", { body: { team_id: "smoketeam1", key_id: "SMOKEKEY01", key: pem, test_host: fakeApple } });
+  check("the admin saves Team ID, Key ID and key (the key is never echoed)", saved.status === 200 && saved.data.ready === true && saved.data.team_id === "SMOKETEAM1" && saved.data.key_set === true && !JSON.stringify(saved.raw).includes("PRIVATE KEY"), JSON.stringify(saved.raw).slice(0, 200));
+  const keyTest = await call("POST", "/api/app/apns/test");
+  const probe = got.at(-1);
+  check("testing the key: Apple's BadDeviceToken for a made-up phone means the key works", keyTest.status === 200 && keyTest.data.ok === true && /^0{64}$/.test(probe?.token ?? ""), JSON.stringify(keyTest.raw));
+  check("…signed ES256 with the Key ID, issued by the Team ID, for the app's topic", probe?.valid && probe.head.alg === "ES256" && probe.head.kid === "SMOKEKEY01" && probe.claims.iss === "SMOKETEAM1" && probe.headers["apns-topic"] === "com.systemportal.task");
+
+  const phone = "a1".repeat(32);
+  check("a device token must be hex -> 400", (await as(userJar, () => call("POST", "/api/push/apns", { body: { token: "not-a-token" } }))).status === 400);
+  check("another app may not register -> 400", (await as(userJar, () => call("POST", "/api/push/apns", { body: { token: phone, bundle_id: "com.example.other" } }))).status === 400);
+  const reg = await as(userJar, () => call("POST", "/api/push/apns", { body: { token: phone.toUpperCase(), environment: "sandbox", bundle_id: "com.systemportal.task", app_version: "1.0", device: "iPhone · iOS 26.5" } }));
+  check("the iPhone app registers its token for its session", reg.status === 200 && reg.data.registered === true && reg.data.enabled === true, JSON.stringify(reg.raw));
+  const sentBefore = got.length;
+  const devTest = await as(userJar, () => call("POST", "/api/push/apns/test"));
+  const testPush = await pushTo(phone, sentBefore);
+  check("a test notification goes to this phone only", devTest.status === 200 && devTest.data.sent === 1 && devTest.data.total === 1 && testPush?.body?.aps?.alert?.title === "Task Portal" && /working on this iPhone/.test(testPush.body.aps.alert.body), JSON.stringify(devTest.raw));
+  check("…as an alert with sound, a badge and an expiry", testPush?.headers["apns-push-type"] === "alert" && testPush.headers["apns-priority"] === "10" && Number(testPush.headers["apns-expiration"]) > Date.now() / 1000 && testPush.body.aps.sound === "default" && Number.isInteger(testPush.body.aps.badge));
+
+  // a real notification: a friend request lands on the phone like it lands in the bell
+  const code = (await as(userJar, () => call("GET", "/api/chat/friends"))).data.code;
+  const before = got.length;
+  await call("POST", "/api/chat/friends", { body: { code } });
+  const asked = await pushTo(phone, before);
+  check("a notification for the account reaches its iPhone (title, body, where it leads, its bell entry)", got.length > before && asked?.body?.aps?.alert?.title?.includes("wants to be your friend") && asked.body.aps.alert.body?.startsWith("Accept the request") && asked.body.href === "/chat?tab=friends" && asked.body.type === "friend_request" && Number.isInteger(asked.body.notification_id), JSON.stringify(asked?.body));
+  const adminId = (await call("GET", "/api/auth/me")).data.id;
+  await as(userJar, () => call("DELETE", `/api/chat/friends/requests/${adminId}`));
+
+  // tokens Apple calls gone (410) or bad are dropped
+  await as(userJar, () => call("POST", "/api/push/apns", { body: { token: `dead${"b".repeat(60)}`, environment: "production" } }));
+  await as(userJar, () => call("POST", "/api/push/apns", { body: { token: "0".repeat(64), environment: "production" } }));
+  const three = await as(userJar, () => call("POST", "/api/push/apns/test"));
+  const one = await as(userJar, () => call("POST", "/api/push/apns/test"));
+  check("a token Apple says is gone, or bad in both environments, is removed", three.data?.total === 3 && three.data.sent === 1 && one.data?.total === 1 && one.data.sent === 1, `${JSON.stringify(three.raw)} ${JSON.stringify(one.raw)}`);
+
+  // the phone's registration lives and dies with the session it was made in
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const secondJar = { ...jar };
+  jar = { ...adminJar };
+  const other = "c3".repeat(32);
+  await as(secondJar, () => call("POST", "/api/push/apns", { body: { token: other } }));
+  const counted = (await call("GET", "/api/app/apns")).data.devices;
+  await as(secondJar, () => call("POST", "/api/auth/logout"));
+  const after = (await call("GET", "/api/app/apns")).data.devices;
+  check("signing out removes that phone's registration", counted - after === 1, `${counted} -> ${after}`);
+
+  await as(userJar, () => call("DELETE", "/api/push/apns", { body: { token: phone } }));
+  const gone = await as(userJar, () => call("POST", "/api/push/apns/test"));
+  check("the app can unregister its token", gone.status === 400 && /not registered/.test(gone.error ?? ""), JSON.stringify(gone.raw));
+  const removed = await call("PUT", "/api/app/apns", { body: { key: "" } });
+  const noKey = await as(userJar, () => call("POST", "/api/push/apns/test"));
+  check("without the key nothing goes out, and the phone is told why", removed.data.ready === false && removed.data.key_set === false && noKey.status === 400 && /not set up/.test(noKey.error ?? ""), JSON.stringify(noKey.raw));
+  await call("PUT", "/api/app/apns", { body: { team_id: "", key_id: "" } });
+  await as(userJar, () => call("POST", "/api/auth/logout"));
+  apple.close();
+}
+
 console.log("Bitara PMS (connections, project pairing, sending a task)");
 {
   jar = { ...adminJar };

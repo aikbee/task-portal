@@ -703,6 +703,26 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- iPhones that get notifications through Apple's push service (lib/apns.js): one APNs device token per phone,
+-- bound to the session the app is signed in with, so signing out, expiry or a revoked session stops the pushes
+CREATE TABLE IF NOT EXISTS apns_devices (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  session_id CHAR(48) NOT NULL,
+  token VARCHAR(200) NOT NULL,
+  environment ENUM('production','sandbox') NOT NULL DEFAULT 'production', -- sandbox: builds run from Xcode
+  bundle_id VARCHAR(160) NOT NULL,
+  app_version VARCHAR(40) NULL,
+  device VARCHAR(120) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_sent_at TIMESTAMP NULL,
+  last_error VARCHAR(255) NULL,
+  UNIQUE KEY uq_apns_token (token),
+  KEY idx_apns_user (user_id),
+  CONSTRAINT fk_apns_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_apns_session FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Draw boards: freehand drawings with images, saved as Fabric.js JSON; pasted images are attachments
 CREATE TABLE IF NOT EXISTS draw_boards (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
