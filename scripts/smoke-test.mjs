@@ -1375,6 +1375,8 @@ console.log("chat (friends by code, one-to-one messages)");
   const unreadBefore = (await as(adminJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId)?.unread ?? 0;
   const sticker = await as(userJar, () => call("POST", `/api/chat/conversations/${convoId}/messages`, { body: { sticker: "🎉" } }));
   check("POST { sticker } -> 201 kind sticker", sticker.status === 201 && sticker.data.kind === "sticker" && sticker.data.body === "🎉", JSON.stringify(sticker.raw).slice(0, 160));
+  const art = await Promise.all(["1f389.webp", "1f389-s.webp"].map((f) => fetch(`${BASE}/stickers/noto/${f}`)));
+  check("a sticker's animation and still are served without signing in", art.every((r) => r.status === 200 && (r.headers.get("content-type") || "").startsWith("image/webp")), art.map((r) => `${r.status} ${r.headers.get("content-type")}`).join(", "));
   const rowSticker = (await as(adminJar, () => call("GET", "/api/chat/conversations"))).data.find((c) => c.id === convoId);
   check("stickers count as unread and show in the preview", rowSticker.unread === unreadBefore + 1 && rowSticker.last_kind === "sticker" && rowSticker.last_body === "🎉", JSON.stringify({ unread: rowSticker.unread, before: unreadBefore, kind: rowSticker.last_kind }));
   const nSticker = await as(adminJar, () => call("GET", "/api/notifications?unread=1&limit=30"));

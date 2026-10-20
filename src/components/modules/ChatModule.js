@@ -18,7 +18,7 @@ import { Input, Textarea, Checkbox, Field } from "@/components/ui/Controls";
 import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
-import { STICKER_PACK } from "@/lib/stickers";
+import { STICKER_PACK, STICKER_CREDIT_URL, stickerArt } from "@/lib/stickers";
 import { callText, parseCall } from "./ChatCalls";
 import { useChatLive } from "@/components/shell/ChatLive";
 import { useToast } from "@/components/ui/Toast";
@@ -328,11 +328,53 @@ const parseLocation = (body) => {
 };
 const mapsUrl = (loc) => `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
 
-/** A sticker: one big emoji, no bubble. */
+const reducedMotion = () => typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+/**
+ * An animated sticker: its still, with the animation played over it a few times when it comes into view, and again on hover or a tap.
+ * The animation's own first frame is not always its resting pose, so the still hides once the animation has arrived and comes back as it
+ * fades out. Reduced motion shows the still (a deliberate tap still plays it). An emoji without art shows as the emoji.
+ */
+function AnimatedSticker({ emoji, size, auto = true, className }) {
+  const art = useMemo(() => stickerArt(emoji), [emoji]); // one object per emoji: the observer below must not be set up again on every render
+  const ref = useRef(null);
+  const [run, setRun] = useState(0); // how many times it has started (a new number restarts the picture from its first frame)
+  const [phase, setPhase] = useState("still"); // still | play (the animation over the still) | fade (the animation fading off it)
+  const [shown, setShown] = useState(false); // the animation's first frame has arrived
+  const play = useCallback(() => {
+    if (!art) return;
+    setShown(false);
+    setRun((n) => n + 1);
+    setPhase("play");
+  }, [art]);
+  useEffect(() => {
+    if (!art || !auto || reducedMotion() || typeof IntersectionObserver === "undefined") return;
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) play(); }, { threshold: 0.6 });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [art, auto, play]);
+  useEffect(() => {
+    if (phase === "play" && shown) { const t = setTimeout(() => setPhase("fade"), (art.ms < 1200 ? 3 : 2) * art.ms); return () => clearTimeout(t); } // a few loops
+    if (phase === "fade") { const t = setTimeout(() => setPhase("still"), 220); return () => clearTimeout(t); }
+  }, [phase, shown, run, art]);
+  if (!art) return <span className={cn("select-none leading-none", className)} style={{ fontSize: Math.round(size * 0.58) }}>{emoji}</span>;
+  return (
+    <span ref={ref} className={cn("relative inline-block shrink-0 select-none", className)} style={{ width: size, height: size }} onMouseEnter={() => phase === "still" && !reducedMotion() && play()} onClick={() => phase === "still" && play()}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- small static stickers from /public */}
+      <img src={art.still} alt={emoji} width={size} height={size} draggable={false} className={cn("absolute inset-0 h-full w-full transition-opacity duration-200", phase === "play" && shown ? "opacity-0" : "opacity-100")} />
+      {phase !== "still" ? (
+        // eslint-disable-next-line @next/next/no-img-element -- an animated WebP; the fragment gives each playing its own timeline
+        <img key={run} src={`${art.anim}#${run}`} alt="" aria-hidden="true" width={size} height={size} draggable={false} onLoad={() => setShown(true)} onError={() => setPhase("still")} className={cn("absolute inset-0 h-full w-full transition-opacity duration-200", shown && phase === "play" ? "opacity-100" : "opacity-0")} />
+      ) : null}
+    </span>
+  );
+}
+/** A sticker: one big animated emoji, no bubble. */
 function StickerMessage({ m, mine, time }) {
   return (
     <div className={cn("chat-sticker flex flex-col", mine ? "items-end" : "items-start")} title={formatDateTime(m.created_at)}>
-      <span className="select-none text-[64px] leading-none drop-shadow-sm">{m.body}</span>
+      <AnimatedSticker emoji={m.body} size={112} className="drop-shadow-sm" />
       <span className="mt-1 px-1">{time}</span>
     </div>
   );
@@ -399,8 +441,8 @@ function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
               <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{tr(g.label)}</p>
               <div className="grid grid-cols-8 gap-1">
                 {g.items.map((e) => (
-                  <button key={e} type="button" onClick={() => onSticker(e)} className="chat-sticker-btn grid aspect-square place-items-center rounded-app-sm text-2xl transition hover:scale-125 hover:bg-surface-2 focus-ring" aria-label={e}>
-                    {e}
+                  <button key={e} type="button" onClick={() => onSticker(e)} className="chat-sticker-btn grid aspect-square place-items-center rounded-app-sm transition hover:scale-110 hover:bg-surface-2 focus-ring" aria-label={e} title={e}>
+                    <AnimatedSticker emoji={e} size={34} auto={false} />
                   </button>
                 ))}
               </div>
@@ -426,6 +468,11 @@ function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
         )}
       </div>
       {tab === "gifs" && res?.configured ? <p className="border-t border-line px-2 py-1 text-right text-[10px] text-fg-faint">{res.provider === "giphy" ? "Powered by GIPHY" : "Powered by Tenor"}</p> : null}
+      {tab === "stickers" ? (
+        <p className="border-t border-line px-2 py-1 text-right text-[10px] text-fg-faint">
+          {tr("Animated emoji: Noto by Google")} · <a href={STICKER_CREDIT_URL} target="_blank" rel="noreferrer" className="underline-offset-2 hover:underline">CC BY 4.0</a>
+        </p>
+      ) : null}
     </div>
   );
 }
