@@ -4,5 +4,5 @@ Creative Commons Attribution 4.0 International (CC BY 4.0):
 https://creativecommons.org/licenses/by/4.0/
 
 Changes: the animations were resized to 160 x 160 pixels and re-encoded as
-animated WebP (a few at half their frame rate); the stills (<codepoint>-s.webp) were
+animated WebP (the heaviest at half their frame rate); the stills (<codepoint>-s.webp) were
 rendered from the static Noto Emoji designs at the same size.

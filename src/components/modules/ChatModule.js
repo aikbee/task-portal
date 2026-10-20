@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation, Phone, Video } from "lucide-react";
+import { Clock3, MessageCircle, Users, Copy, RefreshCw, UserPlus, Check, X, Send, ArrowLeft, Ban, UserMinus, Link2, Image as ImageIcon, ChevronLeft, ChevronRight, Download, Settings2, LogOut, Crown, Pencil, SmilePlus, Mic, Play, Pause, Search, ChevronUp, ChevronDown, ArrowDown, MoreHorizontal, Trash2, CheckCheck, Circle, CircleCheck, Paperclip, File, FileText, FileSpreadsheet, FileArchive, FileCode, FileVideo, FileAudio, Reply, Forward, AtSign, Pin, PinOff, Bell, BellOff, Archive, ArchiveRestore, EllipsisVertical, Shield, Timer, Flag, FileJson, QrCode, Sticker, MapPin, Plus, Clapperboard, Navigation, Phone, Video } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth, useFeature } from "@/lib/auth-context";
 import { useUI } from "@/lib/store";
@@ -18,7 +18,7 @@ import { Input, Textarea, Checkbox, Field } from "@/components/ui/Controls";
 import { EmptyState, Spinner, Skeleton } from "@/components/ui/Misc";
 import { DropdownMenu } from "@/components/ui/Popover";
 import { RETENTION_OPTIONS, retentionLabel } from "@/lib/chat-ui";
-import { STICKER_PACK, STICKER_CREDIT_URL, stickerArt } from "@/lib/stickers";
+import { STICKER_GROUPS, STICKERS, STICKER_CREDIT_URL, stickerArt, stickerName, inTone, variantsOf, searchStickers } from "@/lib/stickers";
 import { callText, parseCall } from "./ChatCalls";
 import { useChatLive } from "@/components/shell/ChatLive";
 import { useToast } from "@/components/ui/Toast";
@@ -334,7 +334,7 @@ const reducedMotion = () => typeof window !== "undefined" && Boolean(window.matc
  * The animation's own first frame is not always its resting pose, so the still hides once the animation has arrived and comes back as it
  * fades out. Reduced motion shows the still (a deliberate tap still plays it). An emoji without art shows as the emoji.
  */
-function AnimatedSticker({ emoji, size, auto = true, className }) {
+function AnimatedSticker({ emoji, size, auto = true, lazy = false, className }) {
   const art = useMemo(() => stickerArt(emoji), [emoji]); // one object per emoji: the observer below must not be set up again on every render
   const ref = useRef(null);
   const [run, setRun] = useState(0); // how many times it has started (a new number restarts the picture from its first frame)
@@ -362,7 +362,7 @@ function AnimatedSticker({ emoji, size, auto = true, className }) {
   return (
     <span ref={ref} className={cn("relative inline-block shrink-0 select-none", className)} style={{ width: size, height: size }} onMouseEnter={() => phase === "still" && !reducedMotion() && play()} onClick={() => phase === "still" && play()}>
       {/* eslint-disable-next-line @next/next/no-img-element -- small static stickers from /public */}
-      <img src={art.still} alt={emoji} width={size} height={size} draggable={false} className={cn("absolute inset-0 h-full w-full transition-opacity duration-200", phase === "play" && shown ? "opacity-0" : "opacity-100")} />
+      <img src={art.still} alt={emoji} width={size} height={size} loading={lazy ? "lazy" : undefined} draggable={false} className={cn("absolute inset-0 h-full w-full transition-opacity duration-200", phase === "play" && shown ? "opacity-0" : "opacity-100")} />
       {phase !== "still" ? (
         // eslint-disable-next-line @next/next/no-img-element -- an animated WebP; the fragment gives each playing its own timeline
         <img key={run} src={`${art.anim}#${run}`} alt="" aria-hidden="true" width={size} height={size} draggable={false} onLoad={() => setShown(true)} onError={() => setPhase("still")} className={cn("absolute inset-0 h-full w-full transition-opacity duration-200", shown && phase === "play" ? "opacity-100" : "opacity-0")} />
@@ -401,7 +401,24 @@ function LocationMessage({ tr, m, mine, time, onOpen }) {
   );
 }
 
-/** Stickers (built-in emoji pack) and GIF search (when an administrator configured a provider). */
+const STICKER_RECENT = "tp.chat.stickers.recent", STICKER_TONE = "tp.chat.stickers.tone"; // this browser's last-used stickers and skin tone
+const readPref = (k, d) => { try { const v = window.localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
+const writePref = (k, v) => { try { window.localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked: it just is not remembered */ } };
+const RAISED_HAND = STICKER_GROUPS.flatMap((g) => g.items).find((f) => f.c === "270b"); // ✋, to show the skin tone picked
+/** One sticker in the picker: it plays on hover, a click sends it, a long press or a right-click lists its variants (skin tones). */
+function StickerCell({ emoji, name, onPick, onVariants }) {
+  const timer = useRef(0), held = useRef(false);
+  const press = (e) => { if (!onVariants) return; held.current = false; const el = e.currentTarget; timer.current = window.setTimeout(() => { held.current = true; onVariants(el); }, 450); };
+  const release = () => window.clearTimeout(timer.current);
+  return (
+    <button type="button" title={name} aria-label={name || emoji} className="chat-sticker-btn grid aspect-square place-items-center rounded-app-sm transition hover:scale-110 hover:bg-surface-2 focus-ring"
+      onClick={() => { if (held.current) { held.current = false; return; } onPick(emoji); }} onContextMenu={onVariants ? (e) => { e.preventDefault(); onVariants(e.currentTarget); } : undefined}
+      onTouchStart={press} onTouchEnd={release} onTouchMove={release}>
+      <AnimatedSticker emoji={emoji} size={34} auto={false} lazy />
+    </button>
+  );
+}
+/** Stickers (all of Google's animated emoji, in tabs, with search, recents and a skin tone) and GIF search (when an administrator configured a provider). */
 function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
   const ref = useRef(null);
   useClickOutside(ref, onClose);
@@ -409,6 +426,12 @@ function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
   const [q, setQ] = useState("");
   const dq = useDebouncedValue(q.trim(), 350);
   const [res, setRes] = useState(null); // { q, configured, provider, items, next, error }
+  const [sq, setSq] = useState(""); // the sticker search
+  const [tone, setTone] = useState(() => Number(readPref(STICKER_TONE, 0)) || 0);
+  const [toneOpen, setToneOpen] = useState(false);
+  const [recent, setRecent] = useState(() => (readPref(STICKER_RECENT, []) || []).filter((e) => STICKERS.has(e)));
+  const [vars, setVars] = useState(null); // the long-pressed sticker and where its list goes
+  const bodyRef = useRef(null);
   useEffect(() => {
     if (tab !== "gifs" || !gifSearch) return;
     let alive = true;
@@ -421,33 +444,73 @@ function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
     };
   }, [tab, dq, gifSearch]);
   useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
+    const onKey = (e) => { if (e.key !== "Escape") return; if (vars) setVars(null); else onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, vars]);
   const loading = tab === "gifs" && gifSearch && (!res || res.q !== dq);
   const tabCls = (on) => cn("rounded-app-sm px-2.5 py-1 text-xs font-medium transition", on ? "bg-accent/12 text-accent" : "text-fg-muted hover:bg-surface-2");
+  const found = useMemo(() => searchStickers(sq), [sq]);
+  const pick = (e) => { const next = [e, ...recent.filter((x) => x !== e)].slice(0, 24); setRecent(next); writePref(STICKER_RECENT, next); onSticker(e); };
+  const chooseTone = (t) => { setTone(t); writePref(STICKER_TONE, t); setToneOpen(false); };
+  const variants = (f) => (f.t || f.x ? (el) => { const p = ref.current.getBoundingClientRect(), r = el.getBoundingClientRect(); setVars({ f, top: Math.max(8, Math.min(r.bottom - p.top + 4, p.height - 130)) }); /* under the sticker, kept inside the panel */ } : null);
+  const jump = (key) => { const box = bodyRef.current, el = box?.querySelector(`[data-sec="${key}"]`); if (el) box.scrollTo({ top: el.offsetTop - 6, behavior: "smooth" }); };
+  const cell = (f) => <StickerCell key={f.c} emoji={inTone(f, tone)} name={stickerName(f)} onPick={pick} onVariants={variants(f)} />;
+  const head = (label) => <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{label}</p>;
   return (
-    <div ref={ref} className="chat-sticker-pop absolute bottom-full left-0 z-20 mb-2 flex w-[min(24rem,100%)] flex-col overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop" role="dialog" aria-label={tr("Stickers and GIFs")}>
+    <div ref={ref} className="chat-sticker-pop absolute bottom-full left-0 z-20 mb-2 flex w-[min(26rem,100%)] flex-col overflow-hidden rounded-app border border-line bg-surface shadow-app-lg anim-pop" role="dialog" aria-label={tr("Stickers and GIFs")}>
       <div className="flex items-center gap-1 border-b border-line p-1.5">
         <button type="button" onClick={() => setTab("stickers")} className={tabCls(tab === "stickers")}>{tr("Stickers")}</button>
         <button type="button" onClick={() => setTab("gifs")} className={tabCls(tab === "gifs")}>GIF</button>
         {tab === "gifs" && gifSearch ? <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Search GIFs…")} className="control ml-auto h-7 w-40 min-w-0 text-xs" aria-label={tr("Search GIFs…")} autoFocus /> : null}
-      </div>
-      <div className="chat-sticker-body max-h-72 overflow-y-auto p-2">
         {tab === "stickers" ? (
-          STICKER_PACK.map((g) => (
-            <div key={g.key} className="mb-2 last:mb-0">
-              <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-fg-muted">{tr(g.label)}</p>
-              <div className="grid grid-cols-8 gap-1">
-                {g.items.map((e) => (
-                  <button key={e} type="button" onClick={() => onSticker(e)} className="chat-sticker-btn grid aspect-square place-items-center rounded-app-sm transition hover:scale-110 hover:bg-surface-2 focus-ring" aria-label={e} title={e}>
-                    <AnimatedSticker emoji={e} size={34} auto={false} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))
+          <>
+            <input value={sq} onChange={(e) => { setSq(e.target.value); setVars(null); }} placeholder={tr("Search stickers…")} className="control ml-auto h-7 w-36 min-w-0 text-xs" aria-label={tr("Search stickers…")} />
+            <button type="button" onClick={() => setToneOpen((v) => !v)} className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-app-sm transition hover:bg-surface-2 focus-ring", toneOpen && "bg-surface-2")} title={tr("Skin tone")} aria-label={tr("Skin tone")} aria-expanded={toneOpen}>
+              <AnimatedSticker emoji={inTone(RAISED_HAND, tone)} size={20} auto={false} />
+            </button>
+          </>
+        ) : null}
+      </div>
+      {tab === "stickers" && toneOpen ? (
+        <div className="flex items-center justify-end gap-0.5 border-b border-line px-1.5 py-1" role="radiogroup" aria-label={tr("Skin tone")}>
+          {[0, 1, 2, 3, 4, 5].map((t) => (
+            <button key={t} type="button" role="radio" aria-checked={tone === t} onClick={() => chooseTone(t)} className={cn("grid h-8 w-8 place-items-center rounded-app-sm transition hover:bg-surface-2 focus-ring", tone === t && "bg-accent/12 ring-1 ring-accent/40")}>
+              <AnimatedSticker emoji={inTone(RAISED_HAND, t)} size={24} auto={false} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {tab === "stickers" && !sq.trim() ? (
+        <div className="flex items-center gap-0.5 overflow-x-auto border-b border-line px-1.5 py-1">
+          {recent.length ? <button type="button" onClick={() => jump("recent")} className="grid h-7 w-7 shrink-0 place-items-center rounded-app-sm text-fg-muted transition hover:bg-surface-2 focus-ring" title={tr("Recent")} aria-label={tr("Recent")}><Clock3 size={15} /></button> : null}
+          {STICKER_GROUPS.map((g) => (
+            <button key={g.key} type="button" onClick={() => jump(g.key)} className="grid h-7 w-7 shrink-0 place-items-center rounded-app-sm transition hover:bg-surface-2 focus-ring" title={tr(g.label)} aria-label={tr(g.label)}>
+              <AnimatedSticker emoji={g.icon} size={18} auto={false} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div ref={bodyRef} className="chat-sticker-body relative max-h-80 overflow-y-auto p-2" onScroll={() => vars && setVars(null)}>
+        {tab === "stickers" ? (
+          sq.trim() ? (
+            found.length ? <div className="grid grid-cols-8 gap-1">{found.map(cell)}</div> : <p className="px-2 py-6 text-center text-xs text-fg-muted">{tr("No stickers found")}</p>
+          ) : (
+            <>
+              {recent.length ? (
+                <section data-sec="recent" className="mb-2">
+                  {head(tr("Recent"))}
+                  <div className="grid grid-cols-8 gap-1">{recent.map((e) => <StickerCell key={e} emoji={e} onPick={pick} />)}</div>
+                </section>
+              ) : null}
+              {STICKER_GROUPS.map((g) => (
+                <section key={g.key} data-sec={g.key} className="mb-2 last:mb-0">
+                  {head(tr(g.label))}
+                  <div className="grid grid-cols-8 gap-1">{g.items.map(cell)}</div>
+                </section>
+              ))}
+            </>
+          )
         ) : !gifSearch || (res && !res.configured) ? (
           <p className="px-2 py-6 text-center text-xs text-fg-muted">{tr("GIF search is not set up yet. An administrator can add a GIPHY or Tenor key on the Moderation page.")}</p>
         ) : loading ? (
@@ -467,6 +530,14 @@ function StickerPanel({ tr, gifSearch, onSticker, onGif, onClose }) {
           </div>
         )}
       </div>
+      {vars ? (
+        <>
+          <div className="absolute inset-0 z-20" onClick={() => setVars(null)} aria-hidden="true" />
+          <div className="absolute inset-x-2 z-30 grid grid-cols-8 gap-1 rounded-app border border-line bg-surface p-1 shadow-app-lg" style={{ top: vars.top }} role="menu" aria-label={stickerName(vars.f)}>
+            {variantsOf(vars.f).map((e) => <StickerCell key={e} emoji={e} onPick={(x) => { setVars(null); pick(x); }} />)}
+          </div>
+        </>
+      ) : null}
       {tab === "gifs" && res?.configured ? <p className="border-t border-line px-2 py-1 text-right text-[10px] text-fg-faint">{res.provider === "giphy" ? "Powered by GIPHY" : "Powered by Tenor"}</p> : null}
       {tab === "stickers" ? (
         <p className="border-t border-line px-2 py-1 text-right text-[10px] text-fg-faint">
