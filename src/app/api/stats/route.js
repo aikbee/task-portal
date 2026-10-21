@@ -32,6 +32,7 @@ export const GET = handler(async (_request, _params, user) => {
   );
 
   if (user.access !== "owner") counts.info = 0; // the Info vault is not shared
+  if (user.role !== "admin") counts.users = 0; // how many accounts the portal has is the administrators' business
   counts.profile_invites = await pendingInviteCount(user.id);
   counts.trash = can(user, "manager") ? await trashCount(user) : 0;
   // open tasks assigned to me (an employee record linked to my account) in any profile I can open

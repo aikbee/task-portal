@@ -6,7 +6,7 @@ import { finishLogin } from "@/lib/login";
 import { setProfileCookie } from "@/lib/auth";
 import { autoLinkByEmail } from "@/lib/sharing";
 import { notify, notifyAdmins } from "@/lib/notifications";
-import { applyDefaultAccess } from "@/lib/access-defaults";
+import { createAccount } from "@/lib/accounts";
 
 const DEAD = "This invitation is no longer valid. Ask for a new one.";
 async function invitation(token) {
@@ -47,15 +47,11 @@ export const POST = handler(async (request) => {
   const used = await useToken(row.id);
   if (!used.affectedRows) throw new HttpError(DEAD, 410);
 
-  const res = await execute("INSERT INTO users (name, email, role, status, password_hash) VALUES (?, ?, 'user', 'active', ?)", [name, row.email, hashPassword(password)]);
-  const userId = res.insertId;
-  await execute("INSERT INTO profiles (user_id, name, description, color, is_default) VALUES (?, 'Personal', 'Default profile', '#6366f1', 1)", [userId]);
-  await applyDefaultAccess(userId, "user"); // people who join by invitation start with the default access set too
+  // their own profile and the default access set, like any new account; other workspaces that invited the same
+  // address become ordinary invitations to accept
+  const userId = await createAccount({ name, email: row.email, passwordHash: hashPassword(password), joinProfileId: profile.id });
   await execute("INSERT INTO profile_members (profile_id, user_id, role, status, invited_by, accepted_at) VALUES (?, ?, ?, 'active', ?, NOW())", [profile.id, userId, row.role, row.invited_by]);
   await autoLinkByEmail(profile.id, { userId }).catch(() => {});
-  // other workspaces that invited the same address: those become ordinary invitations to accept
-  await execute("INSERT IGNORE INTO profile_members (profile_id, user_id, role, status, invited_by) SELECT profile_id, ?, role, 'invited', invited_by FROM mail_tokens WHERE purpose = 'join' AND email = ? AND used_at IS NULL AND expires_at > NOW() AND profile_id <> ?", [userId, row.email, profile.id]).catch(() => {});
-  await execute("UPDATE mail_tokens SET used_at = NOW() WHERE purpose = 'join' AND email = ? AND used_at IS NULL", [row.email]);
 
   const user = await queryOne("SELECT * FROM users WHERE id = ?", [userId]);
   await finishLogin(request, user, { method: "join" });

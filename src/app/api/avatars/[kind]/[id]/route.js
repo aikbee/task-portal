@@ -4,8 +4,12 @@ import { readStoredFile } from "@/lib/uploads";
 import { imageMeta } from "@/lib/images";
 import { parseAvatar } from "@/lib/avatar-presets";
 
-/** An uploaded profile picture (kind "user") or group picture (kind "group", members only). */
-export const GET = handler(async (_request, params, user) => {
+/**
+ * An uploaded profile picture (kind "user") or group picture (kind "group", members only). A person's picture needs
+ * the file name the portal hands out with it (?v=…): whoever was shown the person has it, while trying account
+ * numbers one after another finds nothing (anyone can make an account).
+ */
+export const GET = handler(async (request, params, user) => {
   const id = requireId(params.id);
   let value = null;
   if (params.kind === "user") value = (await queryOne("SELECT avatar FROM users WHERE id = ?", [id]))?.avatar ?? null;
@@ -13,6 +17,7 @@ export const GET = handler(async (_request, params, user) => {
   else throw new HttpError("Not found.", 404);
   const a = parseAvatar(value);
   if (a.kind !== "upload") throw new HttpError("No picture.", 404);
+  if (params.kind === "user" && id !== user.id && new URL(request.url).searchParams.get("v") !== a.stored) throw new HttpError("No picture.", 404);
   const buf = await readStoredFile(a.stored).catch(() => null);
   if (!buf) throw new HttpError("No picture.", 404);
   return new Response(buf, {

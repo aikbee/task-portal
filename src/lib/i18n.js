@@ -222,6 +222,11 @@ const zhCN = {
   "{n} Info vault items": "{n} 条资料", "{n} chat messages": "{n} 条聊天消息", "To keep a shared profile going for the others, hand it over first (Share → make someone the owner).": "若要让共享档案继续供其他人使用，请先移交（共享 → 设为所有者）。",
   "What you added to other people's profiles stays there, as part of their profile.": "你在他人档案中添加的内容会保留在那里，作为其档案的一部分。", "You are the only administrator of this portal. Make someone else an administrator first.": "你是此门户唯一的管理员。请先将其他人设为管理员。",
   "Your account has been deleted.": "你的账户已被删除。",
+  // open sign-up (sign-in page, Email page)
+  "Anyone can create an account": "任何人都可以创建账户", "“Create an account” on the sign-in page and in the iPhone app: a code sent to the address confirms it. New accounts get the default access set (Users). Off = only administrators and invitations make accounts.": "登录页和 iPhone 应用中的“创建账户”：发送到该地址的验证码用于确认。新账户获得默认的访问设置（用户）。关闭 = 只有管理员和邀请才能创建账户。",
+  "New here?": "初次使用？", "Create an account": "创建账户", "Create your account": "创建你的账户", "One moment…": "请稍候…", "Creating an account is not open on this portal. Ask an administrator for one.": "此门户未开放创建账户。请向管理员申请。",
+  "We sent a 6-digit code to {email}. Enter it to finish. It works for 15 minutes.": "我们已向 {email} 发送了 6 位验证码。输入验证码即可完成，15 分钟内有效。", "A new code is on its way.": "新的验证码正在发送中。", "No email? Check the spam folder, or": "没收到邮件？请查看垃圾邮件，或", "send a new code": "重新发送验证码", "change the address": "更改地址",
+  "Send me a code": "发送验证码", "Already have an account?": "已有账户？", "Signed up": "注册", "Verification code": "验证码",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

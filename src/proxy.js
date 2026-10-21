@@ -4,6 +4,7 @@ import { verifySessionToken, SESSION_COOKIE, sessionSecret } from "@/lib/session
 const PUBLIC = new Set([
   "/login", "/api/auth/login", "/api/auth/methods", "/api/auth/passkeys/login/options", "/api/auth/passkeys/login/verify", "/api/auth/google", "/api/auth/google/callback", "/api/auth/totp/verify",
   "/forgot", "/reset", "/join", "/api/auth/forgot", "/api/auth/reset", "/api/auth/join",
+  "/signup", "/api/auth/signup", "/api/auth/signup/verify",
   "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds",
   "/bg", // the animated background on its own, shown behind the native apps' screens: no data, only the animation
   "/developers", "/api/v1", "/api/v1/openapi.json", // the API's documentation: no data

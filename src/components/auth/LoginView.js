@@ -229,6 +229,11 @@ function LoginCard({ demo }) {
                 ) : null}
               </>
             ) : null}
+            {methods?.signup ? (
+              <p className="login-signup text-center text-sm text-fg-muted">
+                {tr("New here?")} <Link href="/signup" className="font-medium text-accent hover:underline">{tr("Create an account")}</Link>
+              </p>
+            ) : null}
           </div>
         </form>
         )}

@@ -703,6 +703,23 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Sign-ups waiting for the code sent to the address (lib/signup.js): the account is only made once the code comes
+-- back, so an address nobody controls never gets an account. One open request per address; only a keyed hash of the
+-- code is kept.
+CREATE TABLE IF NOT EXISTS signup_requests (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(190) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  ip VARCHAR(45) NULL,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_signup_email (email),
+  KEY idx_signup_ip (ip, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- iPhones that get notifications through Apple's push service (lib/apns.js): one APNs device token per phone,
 -- bound to the session the app is signed in with, so signing out, expiry or a revoked session stops the pushes
 CREATE TABLE IF NOT EXISTS apns_devices (

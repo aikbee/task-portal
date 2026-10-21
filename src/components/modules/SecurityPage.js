@@ -24,6 +24,7 @@ const METHOD = {
   passkey: { label: "Passkey", icon: Fingerprint },
   reset: { label: "Password reset by email", icon: KeyRound },
   join: { label: "Joined by invitation", icon: KeyRound },
+  signup: { label: "Signed up", icon: KeyRound },
   google: { label: "Google", icon: GoogleMark },
 };
 const REASON = { wrong_password: "Wrong password", wrong_code: "Wrong code", disabled: "Account disabled", passkey_failed: "Passkey rejected" };

@@ -7,6 +7,22 @@ import { pruneOrphanConversations, purgeMessagePhotos } from "./chat";
 import { uploadedFileOf } from "./avatar-presets";
 import { deleteStoredFile } from "./uploads";
 import { notify } from "./notifications";
+import { applyDefaultAccess } from "./access-defaults";
+
+/**
+ * A new account of the "user" role (someone who signed up, or followed an invitation link), with its own "Personal"
+ * profile and the default access set. Invitations that were waiting for the address become ordinary invitations
+ * under Profiles, except `joinProfileId`, which the caller joins directly. Returns the new id.
+ */
+export async function createAccount({ name, email, passwordHash, joinProfileId = null }) {
+  const res = await execute("INSERT INTO users (name, email, role, status, password_hash) VALUES (?, ?, 'user', 'active', ?)", [name, email, passwordHash]);
+  const userId = res.insertId;
+  await execute("INSERT INTO profiles (user_id, name, description, color, is_default) VALUES (?, 'Personal', 'Default profile', '#6366f1', 1)", [userId]);
+  await applyDefaultAccess(userId, "user");
+  await execute("INSERT IGNORE INTO profile_members (profile_id, user_id, role, status, invited_by) SELECT profile_id, ?, role, 'invited', invited_by FROM mail_tokens WHERE purpose = 'join' AND email = ? AND used_at IS NULL AND expires_at > NOW() AND profile_id <> ?", [userId, email, joinProfileId ?? 0]).catch(() => {});
+  await execute("UPDATE mail_tokens SET used_at = NOW() WHERE purpose = 'join' AND email = ? AND used_at IS NULL", [email]);
+  return userId;
+}
 
 /**
  * Deleting an account, by its owner (Security page, the iPhone app) or by an administrator (Users). Everything that is

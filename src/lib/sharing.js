@@ -69,7 +69,10 @@ export async function membersOf(profileId) {
      FROM profile_members pm JOIN users u ON u.id = pm.user_id WHERE pm.profile_id = ? ORDER BY FIELD(pm.role, 'manager', 'editor', 'viewer'), u.name`,
     [profileId]
   );
-  return [{ ...owner, role: "owner", status: "active" }, ...rows];
+  // until they accept, an invited person is only the address they were invited with: typing an address must not
+  // tell a stranger whose it is (anyone can make an account)
+  const shown = rows.map((r) => (r.status === "invited" ? { ...r, name: r.email, avatar: "preset:pro" } : r));
+  return [{ ...owner, role: "owner", status: "active" }, ...shown];
 }
 
 /**

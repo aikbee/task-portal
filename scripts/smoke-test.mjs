@@ -440,8 +440,15 @@ console.log("profiles");
   check("DELETE profile (cascades its data)", del.status === 200);
   const gone = await call("GET", `/api/projects/${sameCode.data.id}`);
   check("profile's project gone", gone.status === 404);
-  const last = await call("DELETE", `/api/profiles/${original}`);
-  check("cannot delete the last profile", last.status === 400);
+  // only ask when it really is the last one: a profile left over by an interrupted run would make this delete the
+  // admin's real workspace (it did once)
+  const own = (await call("GET", "/api/profiles")).data?.items ?? [];
+  if (own.length === 1 && own[0].id === original) {
+    const last = await call("DELETE", `/api/profiles/${original}`);
+    check("cannot delete the last profile", last.status === 400);
+  } else {
+    console.log(`  - skipped "cannot delete the last profile": this account has ${own.length} profiles (left over by an earlier run?)`);
+  }
 }
 
 console.log("notifications");
@@ -1610,7 +1617,9 @@ console.log("chat (friends by code, one-to-one messages)");
   fdAvatar.append("file", new Blob([png], { type: "image/png" }), "me.png");
   const uploaded = await as(userJar, () => call("POST", "/api/auth/avatar", { form: fdAvatar }));
   check("POST /api/auth/avatar uploads a photo", uploaded.status === 201 && uploaded.data.avatar.startsWith(`upload:user:${userId}:`), JSON.stringify(uploaded.raw));
-  const served = await as(adminJar, () => call("GET", `/api/avatars/user/${userId}`));
+  const servedName = uploaded.data.avatar.split(":").pop();
+  check("…not by trying account numbers: the picture's name is needed", (await as(adminJar, () => call("GET", `/api/avatars/user/${userId}`))).status === 404);
+  const served = await as(adminJar, () => call("GET", `/api/avatars/user/${userId}?v=${encodeURIComponent(servedName)}`));
   check("others can load the picture, cached and nosniff", served.status === 200 && served.headers.get("content-type") === "image/png" && /private/.test(served.headers.get("cache-control") || "") && served.headers.get("x-content-type-options") === "nosniff" && served.raw.byteLength === png.length);
   const fdFakeAvatar = new FormData();
   fdFakeAvatar.append("file", new Blob(["nope"], { type: "image/png" }), "fake.png");
@@ -3010,13 +3019,82 @@ console.log("email (password reset, invitations, notification emails)");
     const nowMail = await as(userJar2, () => call("POST", "/api/auth/digest"));
     check("POST /api/auth/digest sends it now", nowMail.status === 200 && nowMail.data.sent && Boolean(await mailTo(smokeEmail, from)));
     await as(userJar2, () => call("PUT", "/api/auth/profile", { body: { notification_prefs: { email_mode: "instant" } } }));
+    // open sign-up: a code by email makes the account; an address that has one is told so instead, the same answer
+    {
+      const methods = () => anon(() => call("GET", "/api/auth/methods"));
+      const codeIn = (m) => /(\d{6}) is your Task Portal code/.exec(m?.raw ?? "")?.[1] ?? null;
+      check("sign-up is off by default", (await methods()).data.signup === false && (await anon(() => call("POST", "/api/auth/signup", { body: { name: "X", email: "x@example.test", password: "long-enough-1" } }))).status === 403);
+      await call("PUT", "/api/mail", { body: { enabled: true, allow_signup: true } });
+      check("…an administrator opens it on the Email page", (await methods()).data.signup === true);
+      check("a name, a real address and 8 characters are needed -> 400", (await anon(() => call("POST", "/api/auth/signup", { body: { name: "", email: "a@b.test", password: "long-enough-1" } }))).status === 400 && (await anon(() => call("POST", "/api/auth/signup", { body: { name: "A", email: "nope", password: "long-enough-1" } }))).status === 400 && (await anon(() => call("POST", "/api/auth/signup", { body: { name: "A", email: "a@b.test", password: "short" } }))).status === 400);
+      const signupEmail = `smoke.signup.${suffix.toLowerCase()}@example.test`;
+      from = inbox.length;
+      const asked = await anon(() => call("POST", "/api/auth/signup", { body: { name: "Sam Signup", email: signupEmail, password: "signup-pass1" } }));
+      const codeMail = await mailTo(signupEmail, from);
+      const code = codeIn(codeMail);
+      check("POST /api/auth/signup mails a 6-digit code", asked.status === 201 && asked.data.sent === true && Boolean(code), JSON.stringify(asked.raw));
+      from = inbox.length;
+      const taken = await anon(() => call("POST", "/api/auth/signup", { body: { name: "Someone", email: smokeEmail, password: "signup-pass1" } }));
+      const takenMail = await mailTo(smokeEmail, from);
+      check("an address with an account gets the same answer, and its owner an email saying so (no code)", taken.status === 201 && taken.data.sent === true && /already have/i.test(takenMail?.raw ?? "") && !codeIn(takenMail), JSON.stringify(taken.raw));
+      check("…and no code makes an account there", (await anon(() => call("POST", "/api/auth/signup/verify", { body: { email: smokeEmail, code: "123456" } }))).status === 400);
+      check("a wrong code -> 400", (await anon(() => call("POST", "/api/auth/signup/verify", { body: { email: signupEmail, code: code === "000000" ? "111111" : "000000" } }))).status === 400);
+      jar = {};
+      const made = await call("POST", "/api/auth/signup/verify", { body: { email: signupEmail, code } });
+      const newJar = { ...jar };
+      jar = { ...adminJar };
+      const newMe = await as(newJar, () => call("GET", "/api/auth/me"));
+      check("the right code makes the account and signs it in, with a profile of its own", made.status === 201 && Boolean(newJar.ap_session) && newMe.data?.email === signupEmail && newMe.data.role === "user" && newMe.data.profiles?.length === 1, JSON.stringify(made.raw));
+      check("…once (the code is spent)", (await anon(() => call("POST", "/api/auth/signup/verify", { body: { email: signupEmail, code } }))).status === 400);
+      const told = (await call("GET", "/api/notifications?limit=20")).data.items.find((n) => n.type === "user_created" && n.title.includes("Sam Signup"));
+      check("administrators hear about the new account", Boolean(told));
+      // what a stranger with a fresh account does not get: the head count, people's photos by number, names behind addresses
+      check("the number of accounts is for administrators", (await as(newJar, () => call("GET", "/api/stats"))).data.counts.users === 0);
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+      const pic = new FormData(); pic.append("file", new Blob([png], { type: "image/png" }), "me.png");
+      await as(userJar2, () => call("POST", "/api/auth/avatar", { form: pic }));
+      const stored = /^upload:user:\d+:(.+)$/.exec((await call("GET", `/api/users/${userId}`)).data.avatar ?? "")?.[1];
+      const guess = await as(newJar, () => call("GET", `/api/avatars/user/${userId}`));
+      const shown = await as(newJar, () => call("GET", `/api/avatars/user/${userId}?v=${encodeURIComponent(stored ?? "")}`));
+      check("a person's photo needs the name the portal hands out with it (no trying account numbers)", Boolean(stored) && guess.status === 404 && shown.status === 200);
+      await as(userJar2, () => call("DELETE", "/api/auth/avatar"));
+      const theirs = (await as(newJar, () => call("GET", "/api/auth/me"))).data.profile_id;
+      const inv = await as(newJar, () => call("POST", `/api/profiles/${theirs}/members`, { body: { email: smokeEmail, role: "viewer" } }));
+      const pending = inv.data?.members?.find((m) => m.status === "invited");
+      check("inviting an address shows the address until they accept, not the name behind it", inv.status === 201 && pending?.name === smokeEmail && pending?.avatar === "preset:pro", JSON.stringify(pending));
+      // five wrong codes end a request; three requests an hour per address
+      const other = `smoke.signup2.${suffix.toLowerCase()}@example.test`;
+      from = inbox.length;
+      await anon(() => call("POST", "/api/auth/signup", { body: { name: "Pat Twice", email: other, password: "signup-pass2" } }));
+      const code2 = codeIn(await mailTo(other, from));
+      let last;
+      for (let i = 0; i < 5; i++) last = await anon(() => call("POST", "/api/auth/signup/verify", { body: { email: other, code: code2 === "000000" ? "111111" : "000000" } }));
+      const after = await anon(() => call("POST", "/api/auth/signup/verify", { body: { email: other, code: code2 } }));
+      check("five wrong codes end the request: even the right one is refused then", /too many/i.test(last.error ?? "") && after.status === 400);
+      await anon(() => call("POST", "/api/auth/signup", { body: { name: "Pat Twice", email: other, password: "signup-pass2" } }));
+      from = inbox.length;
+      await anon(() => call("POST", "/api/auth/signup", { body: { name: "Pat Twice", email: other, password: "signup-pass2" } }));
+      const code3 = codeIn(await mailTo(other, from));
+      check("a fourth request for one address within the hour -> 429", (await anon(() => call("POST", "/api/auth/signup", { body: { name: "Pat Twice", email: other, password: "signup-pass2" } }))).status === 429);
+      jar = {};
+      const made2 = await call("POST", "/api/auth/signup/verify", { body: { email: other, code: code3 } });
+      jar = { ...adminJar };
+      check("…the newest code still works", made2.status === 201);
+      // tidy: both accounts (and their profiles), the bell entries about them, sign-up closed again
+      for (const id of [made.data?.id, made2.data?.id].filter(Boolean)) await call("DELETE", `/api/users/${id}`);
+      for (const n of (await call("GET", "/api/notifications?limit=50")).data.items.filter((x) => /Sam Signup|Pat Twice/.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
+      for (const n of (await as(userJar2, () => call("GET", "/api/notifications?limit=50"))).data.items.filter((x) => /Sam Signup/.test(x.title + (x.body ?? "")))) await as(userJar2, () => call("DELETE", `/api/notifications/${n.id}`));
+      await call("PUT", "/api/mail", { body: { enabled: true, allow_signup: false } });
+      check("closing sign-up again takes the link away", (await methods()).data.signup === false);
+    }
+
     // tidy up (the password goes back to what the rest of the suite expects)
     await call("PUT", `/api/users/${userId}`, { body: { password: "smoke456" } });
     check("DELETE the invited account", (await call("DELETE", `/api/users/${jme.data.id}`)).status === 200);
     check("DELETE the shared profile", (await call("DELETE", `/api/profiles/${spaceId}`)).status === 200);
     const bell = await call("GET", "/api/notifications?limit=50");
     for (const n of bell.data.items.filter((x) => /Joy Joiner/.test(x.title))) await call("DELETE", `/api/notifications/${n.id}`);
-    const back = await call("PUT", "/api/mail", { body: { enabled: prev.enabled, host: prev.host, port: prev.port, secure: prev.secure, username: prev.username, from_name: prev.from_name, from_email: prev.from_email, app_url: prev.app_url, allow_reset: prev.allow_reset, allow_notifications: prev.allow_notifications, allow_invites: prev.allow_invites } });
+    const back = await call("PUT", "/api/mail", { body: { enabled: prev.enabled, host: prev.host, port: prev.port, secure: prev.secure, username: prev.username, from_name: prev.from_name, from_email: prev.from_email, app_url: prev.app_url, allow_reset: prev.allow_reset, allow_notifications: prev.allow_notifications, allow_invites: prev.allow_invites, allow_signup: Boolean(prev.allow_signup) } });
     check("the mail settings are put back as they were", back.status === 200 && back.data.settings.enabled === prev.enabled && back.data.settings.host === prev.host);
   }
   server.close();

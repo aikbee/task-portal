@@ -120,6 +120,19 @@ Default accounts created by `npm run db:setup`: `admin@example.com / admin123` (
 
 **Security page.** Account menu → **Security & sessions** (`/security`) lists every active session with its browser, OS, device class, IP, sign-in time, last activity and expiry, marks the current one, and lets the user terminate any other session or sign out all others at once. Below it, the **login history** shows the last 100 successful sign-ins and failed attempts (wrong password, wrong two-factor code, rejected passkey, disabled account) with method, device and IP; events are kept for 180 days. Admins get a **Sign out everywhere** action per account in the Users module.
 
+**Open sign-up.** Off by default. On the Email page an administrator can let **anyone create an account**
+(it needs working email): the sign-in page and the iPhone app then offer **Create an account** — name, address and
+a password of at least 8 characters, then a 6-digit code mailed to the address (`POST /api/auth/signup`, then
+`/api/auth/signup/verify`; `lib/signup.js`). The account is only made once the code comes back (pending requests in
+`signup_requests`, a keyed hash of the code, 15 minutes, five wrong codes end a request, three requests per address
+and five per IP an hour). An address that already has an account gets the same answer, and its owner an email saying
+so instead of a code, so nobody can test which addresses have one. New accounts are ordinary users with their own
+"Personal" profile and the default access set (`createAccount()` in `lib/accounts.js`, shared with joining by
+invitation); administrators get a notification. Because strangers can now have accounts: a person's uploaded photo
+is only served with the file name the portal hands out with it (`?v=`), an invited person shows only as the
+invited address until they accept, invitations are limited to 20 an hour per person, and only administrators see
+how many accounts the portal has.
+
 **Deleting one's own account.** At the bottom of the Security page (and in the iPhone app under More, as Apple
 requires) **Delete account…** shows what goes with it (the person's profiles, which of them are shared and with
 how many people, and counts of projects, tasks, Info vault items, files and chat messages) and asks for the password

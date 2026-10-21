@@ -113,6 +113,7 @@ export default function MailAdmin() {
               <Toggle checked={draft.allow_reset} onChange={set("allow_reset")} label={tr("Password reset links")} description={tr("“Forgot password?” on the sign-in page.")} />
               <Toggle checked={draft.allow_notifications} onChange={set("allow_notifications")} label={tr("Notification emails")} description={tr("Assignments, mentions, due dates, security. Each person can turn theirs off.")} />
               <Toggle checked={draft.allow_invites} onChange={set("allow_invites")} label={tr("Invitations to people without an account")} description={tr("Whoever shares a workspace with a new address lets that person create an account. Off = only administrators create accounts.")} />
+              <Toggle checked={Boolean(draft.allow_signup)} onChange={set("allow_signup")} label={tr("Anyone can create an account")} description={tr("“Create an account” on the sign-in page and in the iPhone app: a code sent to the address confirms it. New accounts get the default access set (Users). Off = only administrators and invitations make accounts.")} className="mail-allow-signup" />
             </div>
           </Card>
           <Card>

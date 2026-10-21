@@ -10,7 +10,7 @@ import { lastOrigin } from "./origin";
  * (the password encrypted with DATA_KEY); SMTP_* environment variables work as a fallback. Every attempt is
  * written to `mail_log` without its body. Nothing here throws into a caller unless asked to (`strict`).
  */
-const DEFAULTS = { enabled: false, host: "", port: 587, secure: "starttls", username: "", from_name: "Task Portal", from_email: "", app_url: "", allow_reset: true, allow_notifications: true, allow_invites: true };
+const DEFAULTS = { enabled: false, host: "", port: 587, secure: "starttls", username: "", from_name: "Task Portal", from_email: "", app_url: "", allow_reset: true, allow_notifications: true, allow_invites: true, allow_signup: false };
 export const MAIL_SECURITY = ["none", "starttls", "tls"];
 
 export async function readMailSettings() {
@@ -26,7 +26,7 @@ const ready = (s) => Boolean(s.enabled && s.configured);
 /** What anybody may know: whether the portal can send mail and which flows are on. */
 export async function publicMailSettings() {
   const s = await readMailSettings();
-  return { enabled: ready(s), reset: ready(s) && Boolean(s.allow_reset), invites: ready(s) && Boolean(s.allow_invites), notifications: ready(s) && Boolean(s.allow_notifications) };
+  return { enabled: ready(s), reset: ready(s) && Boolean(s.allow_reset), invites: ready(s) && Boolean(s.allow_invites), notifications: ready(s) && Boolean(s.allow_notifications), signup: ready(s) && Boolean(s.allow_signup) };
 }
 export async function adminMailSettings() {
   const { password, password_enc, ...rest } = await readMailSettings();
@@ -47,6 +47,7 @@ export async function saveMailSettings(body, userId) {
     allow_reset: "allow_reset" in body ? Boolean(body.allow_reset) : cur.allow_reset,
     allow_notifications: "allow_notifications" in body ? Boolean(body.allow_notifications) : cur.allow_notifications,
     allow_invites: "allow_invites" in body ? Boolean(body.allow_invites) : cur.allow_invites,
+    allow_signup: "allow_signup" in body ? Boolean(body.allow_signup) : Boolean(cur.allow_signup),
   };
   if (next.port < 1 || next.port > 65535) throw new HttpError("The port must be between 1 and 65535.", 400);
   if (next.from_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next.from_email)) throw new HttpError("The sender address does not look like an email address.", 400);

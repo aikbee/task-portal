@@ -29,12 +29,18 @@ export const POST = handler(async (request, params, user) => {
       ? await queryOne("SELECT id, name FROM users WHERE LOWER(email) = ? AND status = 'active'", [email])
       : null;
   if (!body.user_id && !email) throw new HttpError("Pick a person or enter their email.", 400);
+  // anyone can make an account: inviting is not a way to bother people, or to try which addresses have one
+  const recent = await queryOne(
+    "SELECT (SELECT COUNT(*) FROM profile_members WHERE invited_by = ? AND created_at > NOW() - INTERVAL 1 HOUR) + (SELECT COUNT(*) FROM mail_tokens WHERE purpose = 'join' AND invited_by = ? AND created_at > NOW() - INTERVAL 1 HOUR) AS n",
+    [user.id, user.id]
+  );
+  if (Number(recent?.n) >= 20 && user.role !== "admin") throw new HttpError("That is a lot of invitations in one hour. Try again later.", 429);
   if (!target && email) return inviteNewPerson(request, user, profile, email, role);
   if (!target) throw new HttpError("That account does not exist.", 404);
   if (target.id === profile.user_id) throw new HttpError("That person owns this profile.", 409);
   if (target.id === user.id) throw new HttpError("You are already in this profile.", 409);
   const existing = await queryOne("SELECT status FROM profile_members WHERE profile_id = ? AND user_id = ?", [profile.id, target.id]);
-  if (existing) throw new HttpError(existing.status === "active" ? `${target.name} is already a member.` : `${target.name} has already been invited.`, 409);
+  if (existing) throw new HttpError(existing.status === "active" ? `${target.name} is already a member.` : "That person has already been invited.", 409);
   await execute("INSERT INTO profile_members (profile_id, user_id, role, status, invited_by) VALUES (?, ?, ?, 'invited', ?)", [profile.id, target.id, role, user.id]);
   await notify({ userId: target.id, type: "profile_invite", title: `${user.name} invited you to the profile "${profile.name}"`, body: `As ${role}. Open Profiles to accept or decline.`, href: "/profiles", entityType: "profile", entityId: profile.id, actorId: user.id, dedupeKey: `profile-invite:${profile.id}:${target.id}:${Date.now()}` }).catch(() => {});
   return ok({ members: await membersOf(profile.id) }, { status: 201 });
@@ -43,7 +49,8 @@ export const POST = handler(async (request, params, user) => {
 /** Nobody has that address yet: mail a link that creates the account and joins the profile in one go. */
 async function inviteNewPerson(request, user, profile, email, role) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 190) throw new HttpError("That does not look like an email address.", 400);
-  if (await queryOne("SELECT id FROM users WHERE LOWER(email) = ?", [email])) throw new HttpError("The account with that email is disabled.", 409);
+  // a disabled account answers like no account at all
+  if (await queryOne("SELECT id FROM users WHERE LOWER(email) = ?", [email])) throw new HttpError("No active account uses that email. They need a portal account first.", 404);
   const settings = await readMailSettings();
   if (!(settings.enabled && settings.configured && settings.allow_invites)) throw new HttpError("No active account uses that email. They need a portal account first.", 404);
   const sent = await queryOne("SELECT COUNT(*) AS n FROM mail_tokens WHERE purpose = 'join' AND invited_by = ? AND created_at > NOW() - INTERVAL 1 HOUR", [user.id]);
