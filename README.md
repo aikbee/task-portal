@@ -120,6 +120,17 @@ Default accounts created by `npm run db:setup`: `admin@example.com / admin123` (
 
 **Security page.** Account menu → **Security & sessions** (`/security`) lists every active session with its browser, OS, device class, IP, sign-in time, last activity and expiry, marks the current one, and lets the user terminate any other session or sign out all others at once. Below it, the **login history** shows the last 100 successful sign-ins and failed attempts (wrong password, wrong two-factor code, rejected passkey, disabled account) with method, device and IP; events are kept for 180 days. Admins get a **Sign out everywhere** action per account in the Users module.
 
+**Deleting one's own account.** At the bottom of the Security page (and in the iPhone app under More, as Apple
+requires) **Delete account…** shows what goes with it (the person's profiles, which of them are shared and with
+how many people, and counts of projects, tasks, Info vault items, files and chat messages) and asks for the password
+(`GET` / `DELETE /api/account`; a signed-in session only, never an API token; five wrong passwords lock it for a
+minute). `lib/accounts.js` then deletes everything that is only theirs, files on disk included (task, requirement,
+Info vault and draw board files, chat photos and files, the avatar, the recycle bin), their chat messages, sessions,
+passkeys, tokens and integrations; what they added to other people's shared profiles stays with those profiles.
+Members of their shared profiles lose them and get a notification (hand a profile over first to keep it going);
+administrators are told; a confirmation email goes out when email is set up. The last active administrator
+cannot delete their account. The admin **Delete** in Users uses the same routine.
+
 **Continue with Google.** When `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set (an OAuth 2.0 web client whose authorised redirect URI is `APP_URL/api/auth/google/callback`), the login page shows a Google button. It never creates accounts: the Google identity is matched to an existing user by its stored id, or the first time by the verified Google email, which links the two. Users can also connect or disconnect Google from **Profile & password → Google account**. Every sign-in method ends in the same server-side session and sends the "new sign-in" security notification, which names the method.
 
 Environment: `SESSION_SECRET` signs session cookies (regenerate it to sign everyone out); `DATA_KEY` encrypts Info secrets (keep it stable — changing it makes stored secrets unreadable); `COOKIE_SECURE=1` when serving over HTTPS; `APP_URL` is the public URL used for passkeys and the Google redirect.

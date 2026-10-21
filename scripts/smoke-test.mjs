@@ -3196,6 +3196,54 @@ console.log("iPhone notifications (Apple push key, devices, delivery)");
   apple.close();
 }
 
+console.log("deleting one's own account");
+{
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  const smokeEmail = `smoke.user.${suffix.toLowerCase()}@example.com`;
+  const email = `smoke.leaver.${suffix.toLowerCase()}@example.com`;
+  jar = { ...adminJar };
+  const made = await call("POST", "/api/users", { body: { name: "Smoke Leaver", email, password: "leaver123", role: "user" } });
+  check("an account to delete", made.status === 201, JSON.stringify(made.raw));
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email, password: "leaver123" }, noAuth: true });
+  const leaverJar = { ...jar };
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: smokeEmail, password: "smoke456" }, noAuth: true });
+  const userJar = { ...jar };
+  jar = { ...leaverJar };
+  // something of theirs: a task with a file, and their profile shared with the smoke user
+  const me = (await call("GET", "/api/auth/me")).data;
+  const task = await call("POST", "/api/tasks", { body: { title: `Leaver task ${suffix}` } });
+  const form = new FormData();
+  form.append("files", new Blob(["mine"], { type: "text/plain" }), "mine.txt");
+  await call("POST", `/api/tasks/${task.data.id}/attachments`, { form });
+  await call("POST", `/api/profiles/${me.profile_id}/members`, { body: { user_id: userId, role: "editor" } });
+  await as(userJar, () => call("PUT", `/api/profiles/${me.profile_id}/membership`, { body: { accept: true } }));
+
+  const summary = await call("GET", "/api/account");
+  const mine = summary.data?.profiles?.find((p) => p.id === me.profile_id);
+  check("GET /api/account says what goes: the profile, who shares it, tasks and files", summary.status === 200 && summary.data.email === email && mine?.members === 1 && summary.data.counts.tasks >= 1 && summary.data.counts.files >= 1 && summary.data.last_admin === false, JSON.stringify(summary.raw).slice(0, 300));
+  check("no password -> 400", (await call("DELETE", "/api/account", { body: {} })).status === 400);
+  const wrong = await call("DELETE", "/api/account", { body: { password: "not-it" } });
+  check("a wrong password -> 401, nothing deleted", wrong.status === 401 && (await call("GET", "/api/auth/me")).status === 200);
+  check("an administrator cannot delete their own account from Users", (await as(adminJar, async () => call("DELETE", `/api/users/${(await call("GET", "/api/auth/me")).data.id}`))).status === 400);
+  const gone = await call("DELETE", "/api/account", { body: { password: "leaver123" } });
+  check("DELETE /api/account with the password deletes it and ends the session", gone.status === 200 && gone.data.deleted === true && !jar.ap_session, JSON.stringify(gone.raw));
+  jar = {};
+  const again = await call("POST", "/api/auth/login", { body: { email, password: "leaver123" }, noAuth: true });
+  check("…signing in no longer works", again.status >= 400 && !jar.ap_session);
+  const shared = (await as(userJar, () => call("GET", "/api/auth/me"))).data;
+  const told = (await as(userJar, () => call("GET", "/api/notifications?limit=20"))).data.items.find((n) => n.type === "profile_removed" && n.entity_id === me.profile_id);
+  check("the member lost the profile and was told why", !shared.shared_profiles.some((p) => p.id === me.profile_id) && told?.body?.includes("deleted their account"), JSON.stringify(told));
+  const users = await as(adminJar, () => call("GET", "/api/users"));
+  const adminTold = (await as(adminJar, () => call("GET", "/api/notifications?limit=20"))).data.items.find((n) => n.type === "user_deleted" && n.title.includes("Smoke Leaver"));
+  check("the account is gone from Users, and administrators were told", !users.data.some((u) => u.email === email) && Boolean(adminTold), JSON.stringify(adminTold));
+  if (told) await as(userJar, () => call("DELETE", `/api/notifications/${told.id}`));
+  if (adminTold) await as(adminJar, () => call("DELETE", `/api/notifications/${adminTold.id}`));
+  await as(userJar, () => call("POST", "/api/auth/logout"));
+  jar = { ...adminJar };
+}
+
 console.log("Bitara PMS (connections, project pairing, sending a task)");
 {
   jar = { ...adminJar };

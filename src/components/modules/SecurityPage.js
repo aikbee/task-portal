@@ -1,13 +1,15 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { ShieldCheck, Monitor, Smartphone, Tablet, LogOut, KeyRound, Fingerprint, CheckCircle2, XCircle } from "lucide-react";
+import { ShieldCheck, Monitor, Smartphone, Tablet, LogOut, KeyRound, Fingerprint, CheckCircle2, XCircle, Trash2, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFetch, useMediaQuery } from "@/lib/hooks";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import Modal from "@/components/ui/Modal";
+import { Input, Field } from "@/components/ui/Controls";
 import GoogleMark from "@/components/ui/GoogleMark";
 import { EmptyState, Spinner } from "@/components/ui/Misc";
 import { useToast } from "@/components/ui/Toast";
@@ -187,6 +189,7 @@ export default function SecurityPage() {
             </div>
           )}
         </section>
+        <DeleteAccount />
       </div>
       <ConfirmDialog
         open={!!target}
@@ -198,6 +201,94 @@ export default function SecurityPage() {
         description={target === "others" ? tr("Every other device and browser is signed out immediately. This one stays signed in.") : target ? `${target.label}${target.ip ? ` · ${target.ip}` : ""} — ${tr("that device is signed out immediately.")}` : ""}
       />
     </>
+  );
+}
+
+/** Delete my account: what goes with it, then the password. Signs out for good. */
+function DeleteAccount() {
+  const tr = useT();
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState(null);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const start = async () => {
+    setOpen(true);
+    setError(null);
+    setPassword("");
+    try {
+      setSummary(await api.get("/api/account"));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const remove = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.del("/api/account", { body: { password } });
+      // full reload on purpose: the session is gone and every bit of client state with it
+      window.location.href = new URL("/login?reason=deleted", window.location.origin).href;
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+  const c = summary?.counts;
+  const parts = c ? [
+    c.projects ? tr("{n} projects", { n: c.projects }) : null,
+    c.tasks ? tr("{n} tasks", { n: c.tasks }) : null,
+    c.info_items ? tr("{n} Info vault items", { n: c.info_items }) : null,
+    c.files ? tr("{n} files", { n: c.files }) : null,
+    c.messages ? tr("{n} chat messages", { n: c.messages }) : null,
+  ].filter(Boolean) : [];
+
+  return (
+    <section className="ui-card card delete-account flex flex-wrap items-center gap-3 border-rose-500/30 p-5">
+      <Trash2 size={18} className="shrink-0 text-rose-500" />
+      <div className="min-w-0 flex-1">
+        <h2 className="text-base font-semibold">{tr("Delete account")}</h2>
+        <p className="text-xs text-fg-muted">{tr("Deletes your account and everything that is only yours: your profiles with their projects, tasks and files, your Info vault and your chat messages. It cannot be undone.")}</p>
+      </div>
+      <Button variant="outline" size="sm" className="delete-account-open text-rose-500" onClick={start}>{tr("Delete account…")}</Button>
+      <Modal open={open} onClose={() => !busy && setOpen(false)} size="sm" title={tr("Delete your account?")} description={summary ? tr("{email} and everything that is only yours goes for good.", { email: summary.email }) : null}>
+        <form onSubmit={remove} className="space-y-4">
+          {!summary && !error ? <Spinner className="text-fg-muted" /> : null}
+          {summary ? (
+            <div className="space-y-3 text-sm">
+              <ul className="space-y-1.5">
+                {summary.profiles.map((p) => (
+                  <li key={p.id} className="flex items-start gap-2">
+                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-fg-muted" />
+                    <span>
+                      <span className="font-medium">{p.name}</span>
+                      {p.members ? <span className="text-rose-500"> · {tr("shared with {n} people, who lose it too", { n: p.members })}</span> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {parts.length ? <p className="text-fg-muted">{tr("With them: {list}.", { list: parts.join(", ") })}</p> : null}
+              {summary.profiles.some((p) => p.members) ? <p className="text-xs text-fg-muted">{tr("To keep a shared profile going for the others, hand it over first (Share → make someone the owner).")}</p> : null}
+              <p className="text-xs text-fg-muted">{tr("What you added to other people's profiles stays there, as part of their profile.")}</p>
+              {summary.last_admin ? (
+                <p className="flex items-start gap-2 rounded-app bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300"><AlertTriangle size={14} className="mt-0.5 shrink-0" /> {tr("You are the only administrator of this portal. Make someone else an administrator first.")}</p>
+              ) : (
+                <Field label={tr("Your password")}>
+                  <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" autoFocus className="delete-account-password" />
+                </Field>
+              )}
+            </div>
+          ) : null}
+          {error ? <p className="text-sm text-rose-500">{error}</p> : null}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={busy}>{tr("Cancel")}</Button>
+            <Button type="submit" variant="danger" icon={Trash2} loading={busy} disabled={!summary || summary.last_admin || !password} className="delete-account-confirm">{tr("Delete my account")}</Button>
+          </div>
+        </form>
+      </Modal>
+    </section>
   );
 }
 

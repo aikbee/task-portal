@@ -1,15 +1,10 @@
 import { queryOne, execute } from "@/lib/db";
-import { purgeTrashOf } from "@/lib/trash";
-import { forgetMember } from "@/lib/sharing";
 import { handler, ok, readJson, pick, oneOf, requireId, HttpError } from "@/lib/api-utils";
 import { hashPassword, PASSWORD_MIN } from "@/lib/password";
 import { USER_ROLES, USER_STATUS } from "@/lib/constants";
 import { USER_SELECT } from "../route";
 import { notifyAdmins } from "@/lib/notifications";
-import { purgeFiles } from "@/lib/attachments";
-import { pruneOrphanConversations, purgeMessagePhotos } from "@/lib/chat";
-import { uploadedFileOf } from "@/lib/avatar-presets";
-import { deleteStoredFile } from "@/lib/uploads";
+import { deleteAccount } from "@/lib/accounts";
 
 async function find(id) {
   const row = await queryOne(`${USER_SELECT} WHERE u.id = ?`, [id]);
@@ -59,18 +54,9 @@ export const PUT = handler(
 export const DELETE = handler(
   async (_req, params, me) => {
     const id = requireId(params.id);
-    if (id === me.id) throw new HttpError("You cannot delete your own account.", 400);
+    if (id === me.id) throw new HttpError("Delete your own account on the Security page.", 400);
     const existing = await find(id);
-    if (existing.role === "admin") await assertNotLastAdmin(id);
-    await purgeTrashOf("p.user_id = ?", [id]);
-    await purgeFiles("task", "p.user_id = ?", [id]);
-    await purgeFiles("requirement", "p.user_id = ?", [id]);
-    await purgeMessagePhotos("m.sender_id = ?", [id]).catch(() => {});
-    const pic = uploadedFileOf((await queryOne("SELECT avatar FROM users WHERE id = ?", [id]))?.avatar);
-    if (pic) await deleteStoredFile(pic).catch(() => {});
-    await forgetMember(id); // memberships carry no foreign key (see db/schema.sql)
-    await execute("DELETE FROM users WHERE id = ?", [id]);
-    await pruneOrphanConversations().catch(() => {});
+    await deleteAccount(id); // everything that is only theirs, files included (lib/accounts.js)
     notifyAdmins(me, { type: "user_deleted", title: `Account removed: ${existing.name}`, body: existing.email, href: "/users", entityType: "user", entityId: id });
     return ok({ id });
   },

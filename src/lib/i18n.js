@@ -215,6 +215,13 @@ const zhCN = {
   "iPhone notification key saved": "iPhone 通知密钥已保存", "Apple accepts the key": "Apple 接受此密钥", "iPhones that turned notifications on get them from now on.": "开启了通知的 iPhone 从现在起会收到通知。", "Apple does not accept the key": "Apple 不接受此密钥",
   "The key is removed": "密钥已移除", "iPhones get no notifications until a key is saved again.": "在重新保存密钥之前，iPhone 不会收到通知。", "Remove the iPhone notification key?": "移除 iPhone 通知密钥？",
   "iPhones signed in with notifications on: {n}": "已登录并开启通知的 iPhone：{n}", "No key yet: the iPhone app works, but gets no notifications while it is closed.": "尚未设置密钥：iPhone 应用可以使用，但关闭时收不到通知。", "Apple last accepted a notification {when}.": "Apple 最近一次接受通知是在{when}。", "Last problem ({when}): {error}": "最近的问题（{when}）：{error}",
+  // deleting one's own account (Security page)
+  "Delete account": "删除账户", "Delete account…": "删除账户…", "Delete your account?": "删除你的账户？", "Delete my account": "删除我的账户", "Your password": "你的密码",
+  "Deletes your account and everything that is only yours: your profiles with their projects, tasks and files, your Info vault and your chat messages. It cannot be undone.": "删除你的账户以及只属于你的一切：你的档案及其中的项目、任务和文件、你的资料以及你的聊天消息。此操作无法撤销。",
+  "{email} and everything that is only yours goes for good.": "{email} 以及只属于你的一切将被永久删除。", "shared with {n} people, who lose it too": "已与 {n} 人共享，他们也将失去它", "With them: {list}.": "其中包括：{list}。",
+  "{n} Info vault items": "{n} 条资料", "{n} chat messages": "{n} 条聊天消息", "To keep a shared profile going for the others, hand it over first (Share → make someone the owner).": "若要让共享档案继续供其他人使用，请先移交（共享 → 设为所有者）。",
+  "What you added to other people's profiles stays there, as part of their profile.": "你在他人档案中添加的内容会保留在那里，作为其档案的一部分。", "You are the only administrator of this portal. Make someone else an administrator first.": "你是此门户唯一的管理员。请先将其他人设为管理员。",
+  "Your account has been deleted.": "你的账户已被删除。",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

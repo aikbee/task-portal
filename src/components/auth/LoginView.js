@@ -183,7 +183,7 @@ function LoginCard({ demo }) {
         <form onSubmit={submit} className="glass rounded-app-lg p-6 shadow-app-lg">
           <h1 className="text-xl font-semibold tracking-tight">{tr("Sign in")}</h1>
           <p className="mt-1 text-sm text-fg-muted">
-            {tr(reason === "expired" ? "Your session has expired. Please sign in again." : "Use your account email and password.")}
+            {tr(reason === "expired" ? "Your session has expired. Please sign in again." : reason === "deleted" ? "Your account has been deleted." : "Use your account email and password.")}
           </p>
 
           <div className="mt-5 space-y-4">
