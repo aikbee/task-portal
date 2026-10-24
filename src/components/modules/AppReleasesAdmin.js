@@ -6,7 +6,7 @@ import Button from "@/components/ui/Button";
 import Card, { CardHeader } from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Field } from "@/components/ui/Controls";
+import { Input, Field, Select } from "@/components/ui/Controls";
 import { useToast } from "@/components/ui/Toast";
 import { Skeleton, EmptyState } from "@/components/ui/Misc";
 import { api } from "@/lib/api";
@@ -262,6 +262,7 @@ function ReviewAccount({ tr }) {
   const toast = useToast();
   const { data, refetch } = useFetch("/api/app/review");
   const [email, setEmail] = useState("");
+  const [lang, setLang] = useState("en");
   const [busy, setBusy] = useState(null); // "create" | "password" | "remove"
   const [shown, setShown] = useState(null); // { email, password } right after it was made
   const [removing, setRemoving] = useState(false);
@@ -277,7 +278,7 @@ function ReviewAccount({ tr }) {
       refetch();
     }
   };
-  const create = () => run("create", async () => setShown(await api.post("/api/app/review", { email: email.trim() || undefined })));
+  const create = () => run("create", async () => setShown(await api.post("/api/app/review", { email: email.trim() || undefined, lang })));
   const newPassword = () => run("password", async () => setShown(await api.post("/api/app/review/password")));
   const remove = () => {
     setRemoving(false);
@@ -325,6 +326,12 @@ function ReviewAccount({ tr }) {
         <div className="flex flex-wrap items-end gap-2">
           <Field label={tr("Address it signs in with (it need not receive mail)")} className="min-w-[16rem] flex-1">
             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={data?.default_email ?? ""} maxLength={190} className="review-address" />
+          </Field>
+          <Field label={tr("Sample content")} className="w-36">
+            <Select value={lang} onChange={(e) => setLang(e.target.value)} className="review-lang">
+              <option value="en">English</option>
+              <option value="zh-CN">简体中文</option>
+            </Select>
           </Field>
           <Button icon={UserCheck} onClick={create} loading={busy === "create"} className="review-create">{tr("Create the review account")}</Button>
         </div>
