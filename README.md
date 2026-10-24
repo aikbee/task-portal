@@ -144,7 +144,8 @@ page (`GET` / `PUT /api/settings/legal`, admin); until then the pages name "the 
 
 **App Review account.** Apple's reviewers need an account to sign in to the iPhone app with. On the **Mobile app**
 page an administrator makes one (`POST /api/app/review`, admin; `lib/review-account.js`): an ordinary user, "App
-Review" (appreview@example.com unless another address is given; it need not receive mail), with a small workspace —
+Review" (appreview@example.com unless another address is given; it need not receive mail), with a small workspace,
+"Northwind Studio", in English or (for the Chinese App Store screenshots) in Chinese —
 three projects, five people of whom one is linked to the account, twelve tasks with checklists, comments (written
 by people without an account, so they show their own names) and due dates around the day it was made, seven of
 them assigned to the reviewer — and a friend, "Sam Lee" (a second account, `<name>.friend@<domain>`), who already

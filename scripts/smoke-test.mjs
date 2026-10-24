@@ -3348,6 +3348,17 @@ console.log("App Review account (Mobile app page)");
       const users = (await call("GET", "/api/users")).data ?? [];
       check("DELETE removes it and its friend with everything in them", gone.status === 200 && (await call("GET", "/api/app/review")).data.account === null && !users.some((u) => u.email.startsWith(`smoke.review.${suffix.toLowerCase()}`)), JSON.stringify(gone.raw));
     }
+    // the sample in Chinese, for the Chinese App Store screenshots
+    const zh = await call("POST", "/api/app/review", { body: { email, lang: "zh-CN" } });
+    try {
+      const reviewer = {};
+      await as(reviewer, () => call("POST", "/api/auth/login", { body: { email, password: zh.data.password }, noAuth: true }));
+      const zhTasks = (await as(reviewer, () => call("GET", "/api/tasks"))).data;
+      const zhChats = (await as(reviewer, () => call("GET", "/api/chat/conversations"))).data;
+      check("lang zh-CN: the same workspace in Chinese", zh.status === 201 && (zhTasks?.items ?? zhTasks).some((t) => t.title === "首页主视觉和导航") && (zhChats?.items ?? zhChats)[0]?.last_body?.startsWith("谢谢"), JSON.stringify(zhChats).slice(0, 200));
+    } finally {
+      check("…and removed again", (await call("DELETE", "/api/app/review")).status === 200);
+    }
   }
 }
 
