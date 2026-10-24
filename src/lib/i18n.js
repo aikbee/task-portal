@@ -234,7 +234,7 @@ const zhCN = {
   // the App Review account (Mobile app page)
   "App Review account": "App Review 审核账户", "Apple's reviewers need an account to sign in to the iPhone app with. This makes one with a small workspace (three projects, five people, a dozen tasks with checklists and comments, several of them assigned to the reviewer) and a friend in Chat who already wrote, so chat, reporting and blocking can be tried. Put the address and the password under App Review Information in App Store Connect. It gets no emails.": "Apple 的审核人员需要一个账户来登录 iPhone 应用。这里会创建一个带有小型示例工作区的账户（三个项目、五个人员、十几个带清单和评论的任务，其中几个分配给审核人员），以及一个已经发来消息的聊天好友，方便试用聊天、举报和拉黑。请把邮箱和密码填写到 App Store Connect 的“App 审核信息”中。该账户不会收到任何邮件。",
   "The password is shown only now. Copy it to App Store Connect; if it gets lost, make a new one.": "密码只在此时显示。请复制到 App Store Connect；如果丢失，可以重新生成。", "Made {when}": "创建于 {when}", "Last sign-in {when}": "上次登录 {when}", "Nobody has signed in with it yet": "还没有人用它登录过",
-  "New password": "新密码", "Remove the account": "删除此账户", "Could not do that": "无法完成操作", "Address it signs in with (it need not receive mail)": "登录邮箱（无需能收到邮件）", "Create the review account": "创建审核账户",
+  "New password": "新密码", "Remove the account": "删除此账户", "Could not do that": "无法完成操作", "Address it signs in with (it need not receive mail)": "登录邮箱（无需能收到邮件）", "Sample content": "示例内容", "Create the review account": "创建审核账户",
   "Remove the App Review account?": "删除 App Review 审核账户？", "The account and its friend are deleted with the sample workspace and the chat. Apple cannot sign in with it any more.": "该账户及其好友会连同示例工作区和聊天一起删除。Apple 将无法再用它登录。", "The review account is removed": "审核账户已删除",
 };
 
