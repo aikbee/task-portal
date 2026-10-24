@@ -3300,6 +3300,57 @@ console.log("iPhone notifications (Apple push key, devices, delivery)");
   apple.close();
 }
 
+console.log("App Review account (Mobile app page)");
+{
+  const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };
+  jar = { ...adminJar };
+  const before = await call("GET", "/api/app/review");
+  check("GET /api/app/review (admin): the account or null, and the default address", before.status === 200 && "account" in before.data && before.data.default_email === "appreview@example.com", JSON.stringify(before.raw));
+  jar = {};
+  await call("POST", "/api/auth/login", { body: { email: `smoke.user.${suffix.toLowerCase()}@example.com`, password: "smoke456" }, noAuth: true });
+  check("role user -> 403 on the App Review account", (await call("GET", "/api/app/review")).status === 403 && (await call("POST", "/api/app/review", { body: {} })).status === 403 && (await call("POST", "/api/app/review/password")).status === 403 && (await call("DELETE", "/api/app/review")).status === 403);
+  await call("POST", "/api/auth/logout");
+  jar = { ...adminJar };
+  if (before.data.account) console.log("  (an App Review account exists already: making one is not tried)");
+  else {
+    const email = `smoke.review.${suffix.toLowerCase()}@example.com`;
+    const made = await call("POST", "/api/app/review", { body: { email } });
+    try {
+      check("POST makes it and shows the password once", made.status === 201 && made.data.email === email && /^[A-Za-z0-9]{4}(-[A-Za-z0-9]{4}){3}$/.test(made.data.password) && made.data.account?.email === email, JSON.stringify(made.raw).slice(0, 200));
+      check("…one at a time -> 409", (await call("POST", "/api/app/review", { body: {} })).status === 409);
+      check("…and the password is never handed out again", !JSON.stringify((await call("GET", "/api/app/review")).raw).includes(made.data.password));
+      jar = {};
+      const login = await call("POST", "/api/auth/login", { body: { email, password: made.data.password }, noAuth: true });
+      const reviewJar = { ...jar };
+      check("the reviewer signs in with it", login.status === 200 && Boolean(reviewJar.ap_session));
+      const mine = await call("GET", "/api/tasks/mine?open=1");
+      check("My tasks has seven, the overdue one first", mine.status === 200 && mine.data.length === 7 && mine.data[0].title === "Fix contact form validation", JSON.stringify(mine.raw).slice(0, 200));
+      const all = await call("GET", "/api/tasks");
+      const items = all.data?.items ?? all.data;
+      check("a dozen tasks in three projects", items.length === 12 && new Set(items.map((t) => t.project_id)).size === 3);
+      const hero = items.find((t) => t.title === "Homepage hero and navigation");
+      const comments = (await call("GET", `/api/tasks/${hero.id}/comments`)).data;
+      const said = comments?.items ?? comments;
+      check("comments carry the colleague's name and are not the reviewer's own", said.map((c) => c.author_name).join() === "Maya Chen,Tom Becker" && said.every((c) => !c.mine), JSON.stringify(said).slice(0, 200));
+      const chats = (await call("GET", "/api/chat/conversations")).data;
+      const list = chats?.items ?? chats;
+      check("a friend already wrote: one chat, two unread", list.length === 1 && list[0].unread === 2 && list[0].friend_status === "accepted", JSON.stringify(list).slice(0, 300));
+      const bell = (await call("GET", "/api/notifications?unread=1")).data;
+      check("the bell has the seven assignments", (bell?.items ?? bell).filter((n) => n.type === "task_assigned").length === 7);
+      jar = { ...adminJar };
+      const fresh = await call("POST", "/api/app/review/password");
+      check("a new password, shown once", fresh.status === 200 && fresh.data.email === email && fresh.data.password !== made.data.password);
+      check("…the old one stops working, and so do its sessions", (await as({}, () => call("POST", "/api/auth/login", { body: { email, password: made.data.password }, noAuth: true }))).status === 401 && (await as(reviewJar, () => call("GET", "/api/auth/me"))).status === 401);
+      check("…the new one works", (await as({}, () => call("POST", "/api/auth/login", { body: { email, password: fresh.data.password }, noAuth: true }))).status === 200);
+    } finally {
+      jar = { ...adminJar };
+      const gone = await call("DELETE", "/api/app/review");
+      const users = (await call("GET", "/api/users")).data ?? [];
+      check("DELETE removes it and its friend with everything in them", gone.status === 200 && (await call("GET", "/api/app/review")).data.account === null && !users.some((u) => u.email.startsWith(`smoke.review.${suffix.toLowerCase()}`)), JSON.stringify(gone.raw));
+    }
+  }
+}
+
 console.log("deleting one's own account");
 {
   const as = async (j, fn) => { const keep = jar; jar = j; try { return await fn(); } finally { jar = keep; } };

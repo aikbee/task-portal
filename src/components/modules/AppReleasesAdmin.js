@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
-import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package, BellRing, Save, KeyRound, ExternalLink } from "lucide-react";
+import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package, BellRing, Save, KeyRound, ExternalLink, UserCheck, Copy, RefreshCw } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card, { CardHeader } from "@/components/ui/Card";
@@ -118,6 +118,7 @@ export default function AppReleasesAdmin() {
       </Card>
       <IphonePush tr={tr} />
       <LegalInfo tr={tr} />
+      <ReviewAccount tr={tr} />
       <ConfirmDialog open={Boolean(doomed)} title={tr("Remove version {v}?", { v: doomed?.version_name ?? "" })} description={tr("Phones that already have it keep it. The newest remaining build is offered from now on.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setDoomed(null)} />
     </div>
   );
@@ -252,6 +253,83 @@ function LegalInfo({ tr }) {
           {link("/terms?lang=zh-CN", "使用条款")}
         </span>
       </div>
+    </Card>
+  );
+}
+
+/** The account Apple's reviewers sign in with: made here with sample work and a friend in Chat; its password is shown once. */
+function ReviewAccount({ tr }) {
+  const toast = useToast();
+  const { data, refetch } = useFetch("/api/app/review");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(null); // "create" | "password" | "remove"
+  const [shown, setShown] = useState(null); // { email, password } right after it was made
+  const [removing, setRemoving] = useState(false);
+  const acct = data?.account;
+  const run = async (what, fn) => {
+    setBusy(what);
+    try {
+      await fn();
+    } catch (e) {
+      toast.error(tr("Could not do that"), e.message);
+    } finally {
+      setBusy(null);
+      refetch();
+    }
+  };
+  const create = () => run("create", async () => setShown(await api.post("/api/app/review", { email: email.trim() || undefined })));
+  const newPassword = () => run("password", async () => setShown(await api.post("/api/app/review/password")));
+  const remove = () => {
+    setRemoving(false);
+    run("remove", async () => {
+      await api.del("/api/app/review");
+      setShown(null);
+      toast.success(tr("The review account is removed"));
+    });
+  };
+  const copy = (text) => navigator.clipboard?.writeText(text).then(() => toast.success(tr("Copied")), () => {});
+  const field = (label, value, cls) => (
+    <div className="min-w-0">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-fg-faint">{label}</p>
+      <p className="flex items-center gap-1.5">
+        <code className={`truncate font-mono text-sm ${cls}`}>{value}</code>
+        <button type="button" onClick={() => copy(value)} className="rounded p-1 text-fg-faint hover:bg-surface-2 hover:text-fg" aria-label={tr("Copy")}><Copy className="h-3.5 w-3.5" /></button>
+      </p>
+    </div>
+  );
+  return (
+    <Card className="review-account space-y-4">
+      <CardHeader title={tr("App Review account")} description={tr("Apple's reviewers need an account to sign in to the iPhone app with. This makes one with a small workspace (three projects, five people, a dozen tasks with checklists and comments, several of them assigned to the reviewer) and a friend in Chat who already wrote, so chat, reporting and blocking can be tried. Put the address and the password under App Review Information in App Store Connect. It gets no emails.")} />
+      {shown ? (
+        <div className="review-credentials space-y-3 rounded-app border border-amber-500/40 bg-amber-500/8 p-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {field(tr("Email"), shown.email, "review-email")}
+            {field(tr("Password"), shown.password, "review-password")}
+          </div>
+          <p className="text-xs text-fg-muted">{tr("The password is shown only now. Copy it to App Store Connect; if it gets lost, make a new one.")}</p>
+        </div>
+      ) : null}
+      {acct ? (
+        <>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <span className="flex items-center gap-1.5 font-medium"><UserCheck className="h-4 w-4 text-emerald-500" /> {acct.email}</span>
+            <span className="text-xs text-fg-muted">{tr("Made {when}", { when: relativeTime(acct.created_at) })}</span>
+            <span className="text-xs text-fg-muted">{acct.last_login_at ? tr("Last sign-in {when}", { when: relativeTime(acct.last_login_at) }) : tr("Nobody has signed in with it yet")}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" icon={RefreshCw} onClick={newPassword} loading={busy === "password"} className="review-new-password">{tr("New password")}</Button>
+            <Button variant="ghost" icon={Trash2} onClick={() => setRemoving(true)} loading={busy === "remove"}>{tr("Remove the account")}</Button>
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label={tr("Address it signs in with (it need not receive mail)")} className="min-w-[16rem] flex-1">
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={data?.default_email ?? ""} maxLength={190} className="review-address" />
+          </Field>
+          <Button icon={UserCheck} onClick={create} loading={busy === "create"} className="review-create">{tr("Create the review account")}</Button>
+        </div>
+      )}
+      <ConfirmDialog open={removing} title={tr("Remove the App Review account?")} description={tr("The account and its friend are deleted with the sample workspace and the chat. Apple cannot sign in with it any more.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setRemoving(false)} />
     </Card>
   );
 }

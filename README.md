@@ -142,6 +142,17 @@ history 180 days, sent-mail log 60 days, backups about six months), the person's
 account. Who runs the portal, a contact address and the country whose law applies are set on the **Mobile app**
 page (`GET` / `PUT /api/settings/legal`, admin); until then the pages name "the administrator of this portal".
 
+**App Review account.** Apple's reviewers need an account to sign in to the iPhone app with. On the **Mobile app**
+page an administrator makes one (`POST /api/app/review`, admin; `lib/review-account.js`): an ordinary user, "App
+Review" (appreview@example.com unless another address is given; it need not receive mail), with a small workspace —
+three projects, five people of whom one is linked to the account, twelve tasks with checklists, comments (written
+by people without an account, so they show their own names) and due dates around the day it was made, seven of
+them assigned to the reviewer — and a friend, "Sam Lee" (a second account, `<name>.friend@<domain>`), who already
+wrote in Chat, so chat, reporting and blocking can be tried. Both get every module and no emails. The password is
+shown once (four groups of four, no look-alike characters); **New password** makes another and ends the account's
+sessions; **Remove** deletes both accounts with everything in them (`DELETE /api/app/review`). The ids are kept in
+`app_settings.app_review`; if the reviewer deletes the account from the app, the page offers to make a new one.
+
 **Deleting one's own account.** At the bottom of the Security page (and in the iPhone app under More, as Apple
 requires) **Delete account…** shows what goes with it (the person's profiles, which of them are shared and with
 how many people, and counts of projects, tasks, Info vault items, files and chat messages) and asks for the password
