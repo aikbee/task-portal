@@ -15,6 +15,7 @@ import Logo from "@/components/ui/Logo";
 import GoogleMark from "@/components/ui/GoogleMark";
 import { useMounted } from "@/lib/hooks";
 import {LOCALES, switchLocale, useLocale, useT } from "@/lib/i18n";
+import { LegalFooter } from "./LegalLinks";
 
 export default function LoginView({ demo = false }) {
   return (
@@ -246,6 +247,7 @@ function LoginCard({ demo }) {
             </span>
           ))}
         </p>
+        <LegalFooter />
         {demo ? (
           <div className="mt-4 rounded-app border border-dashed border-line bg-surface/60 p-3 text-xs text-fg-muted">
             <p className="mb-2 font-medium text-fg">{tr("Demo accounts (development)")}</p>

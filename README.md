@@ -133,6 +133,15 @@ is only served with the file name the portal hands out with it (`?v=`), an invit
 invited address until they accept, invitations are limited to 20 an hour per person, and only administrators see
 how many accounts the portal has.
 
+**Privacy policy and terms.** `/privacy` and `/terms` are public pages in English and Chinese (`?lang=en` or
+`?lang=zh-CN`, otherwise the language picked in the portal, otherwise the browser's). The App Store asks for the
+privacy policy's address; the sign-in, sign-up and invitation screens of the web and the iPhone app link to both,
+and creating an account says that continuing means agreeing to them. The texts live in `src/lib/legal.js` (change
+`LEGAL_UPDATED` with them): what is collected, why, who sees it, how long it is kept (recycle bin 30 days, sign-in
+history 180 days, sent-mail log 60 days, backups about six months), the person's rights and how to delete the
+account. Who runs the portal, a contact address and the country whose law applies are set on the **Mobile app**
+page (`GET` / `PUT /api/settings/legal`, admin); until then the pages name "the administrator of this portal".
+
 **Deleting one's own account.** At the bottom of the Security page (and in the iPhone app under More, as Apple
 requires) **Delete account…** shows what goes with it (the person's profiles, which of them are shared and with
 how many people, and counts of projects, tasks, Info vault items, files and chat messages) and asks for the password

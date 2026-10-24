@@ -550,6 +550,31 @@ console.log("background settings");
   check("restore defaults (order, names, look and own looks too)", restore.status === 200 && restore.data.locked === false && restore.data.order.join() === before.order.join() && JSON.stringify(restore.data.names) === JSON.stringify(before.names) && JSON.stringify(restore.data.look) === JSON.stringify(before.look) && JSON.stringify(restore.data.looks) === JSON.stringify(before.looks));
 }
 
+console.log("privacy policy and terms");
+{
+  const page = async (path, headers = {}) => { const r = await fetch(BASE + path, { redirect: "manual", headers }); return { status: r.status, text: await r.text() }; };
+  const before = await call("GET", "/api/settings/legal");
+  check("GET /api/settings/legal (admin): who runs the portal", before.status === 200 && "operator" in before.data && "contact_email" in before.data && "country" in before.data, JSON.stringify(before.raw));
+  const en = await page("/privacy");
+  check("GET /privacy is public and English by default", en.status === 200 && en.text.includes("Privacy Policy") && en.text.includes("How long we keep it"));
+  if (!before.data.operator) check("…and names “the administrator of this portal” until an operator is set", en.text.includes("the administrator of this portal"));
+  const zh = await page("/privacy?lang=zh-CN");
+  check("…in Chinese with ?lang=zh-CN", zh.status === 200 && zh.text.includes("隐私政策") && zh.text.includes("我们保留多久"));
+  check("GET /terms is public and follows the browser's language", (await page("/terms", { "Accept-Language": "zh-CN,zh;q=0.9" })).text.includes("使用条款"));
+  check("…or the language picked in the portal", (await page("/terms", { Cookie: "ap_locale=zh-CN" })).text.includes("使用条款") && (await page("/terms?lang=en", { Cookie: "ap_locale=zh-CN" })).text.includes("Terms of Use"));
+  check("a contact that is not an email address -> 400", (await call("PUT", "/api/settings/legal", { body: { contact_email: "not-an-address" } })).status === 400);
+  const saved = await call("PUT", "/api/settings/legal", { body: { operator: `  Smoke Studio ${suffix}  `, contact_email: "privacy@example.test", country: "Malaysia" } });
+  check("the admin says who runs the portal (trimmed)", saved.status === 200 && saved.data.operator === `Smoke Studio ${suffix}` && saved.data.contact_email === "privacy@example.test" && saved.data.country === "Malaysia", JSON.stringify(saved.raw));
+  const named = await page("/privacy?lang=en");
+  check("…the policy names them, with the contact address as a mailto link", named.text.includes(`run by Smoke Studio ${suffix}`) && named.text.includes('href="mailto:privacy@example.test"'));
+  const zhNamed = await page("/terms?lang=zh-CN");
+  check("…in Chinese too, a Latin name and country spaced from the Chinese text", zhNamed.text.includes(`由 Smoke Studio ${suffix} 运营`) && zhNamed.text.includes("受 Malaysia 的法律管辖"));
+  const partial = await call("PUT", "/api/settings/legal", { body: { country: "" } });
+  check("a save keeps the fields it leaves out; an empty one is cleared", partial.status === 200 && partial.data.operator === `Smoke Studio ${suffix}` && partial.data.country === null);
+  await call("PUT", "/api/settings/legal", { body: { operator: before.data.operator ?? "", contact_email: before.data.contact_email ?? "", country: before.data.country ?? "" } });
+  check("…and they are put back as they were", JSON.stringify((await call("GET", "/api/settings/legal")).data) === JSON.stringify(before.data));
+}
+
 console.log("draw boards");
 {
   const created = await call("POST", "/api/drawboards", { body: { title: "Smoke board", description: "sketch", width: 1280, height: 800, background: "#ffffff" } });
@@ -975,6 +1000,7 @@ const adminJar = { ...jar };
   check("role user -> 403 on /api/users", forbidden.status === 403);
   const noAdmin = await call("DELETE", `/api/users/${userId}/passkeys`);
   check("role user -> 403 on the admin passkey reset", noAdmin.status === 403);
+  check("role user -> 403 on the privacy and terms settings", (await call("PUT", "/api/settings/legal", { body: { operator: "Not me" } })).status === 403);
   const projectsOk = await call("GET", "/api/projects");
   check("role user can read projects", projectsOk.status === 200);
 

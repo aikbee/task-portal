@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
-import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package, BellRing, Save, KeyRound } from "lucide-react";
+import { Smartphone, Upload, Download, Trash2, ShieldCheck, Package, BellRing, Save, KeyRound, ExternalLink } from "lucide-react";
 import PageHeader from "@/components/ui/PageHeader";
 import Button from "@/components/ui/Button";
 import Card, { CardHeader } from "@/components/ui/Card";
@@ -117,6 +117,7 @@ export default function AppReleasesAdmin() {
         )}
       </Card>
       <IphonePush tr={tr} />
+      <LegalInfo tr={tr} />
       <ConfirmDialog open={Boolean(doomed)} title={tr("Remove version {v}?", { v: doomed?.version_name ?? "" })} description={tr("Phones that already have it keep it. The newest remaining build is offered from now on.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setDoomed(null)} />
     </div>
   );
@@ -204,6 +205,53 @@ function IphonePush({ tr }) {
       </div>
       {s?.last_error ? <p className="rounded-app bg-rose-500/10 p-2 text-xs text-rose-600 dark:text-rose-400">{tr("Last problem ({when}): {error}", { when: relativeTime(s.last_error_at), error: s.last_error })}</p> : null}
       <ConfirmDialog open={removing} title={tr("Remove the iPhone notification key?")} description={tr("iPhones get no notifications until a key is saved again.")} confirmText={tr("Remove")} onConfirm={remove} onClose={() => setRemoving(false)} />
+    </Card>
+  );
+}
+
+/** Who runs the portal, as the public privacy policy and terms name them (the App Store listing links to both). */
+function LegalInfo({ tr }) {
+  const toast = useToast();
+  const { data: s, refetch } = useFetch("/api/settings/legal");
+  const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const saved = { operator: s?.operator || "", contact_email: s?.contact_email || "", country: s?.country || "" };
+  const shown = form ?? saved;
+  const dirty = Boolean(form) && Object.keys(saved).some((k) => shown[k].trim() !== saved[k]);
+  const set = (k) => (e) => setForm({ ...shown, [k]: e.target.value });
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put("/api/settings/legal", shown);
+      toast.success(tr("Saved"), tr("The privacy policy and the terms show it from now on."));
+      setForm(null);
+      refetch();
+    } catch (e) {
+      toast.error(tr("Could not save"), e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const link = (href, label) => (
+    <a href={href} target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-accent hover:underline">{label} <ExternalLink className="h-3 w-3" /></a>
+  );
+  return (
+    <Card className="legal-info space-y-4">
+      <CardHeader title={tr("Privacy policy and terms")} description={tr("Both pages are public and come in English and Chinese. The App Store asks for the privacy policy's address; the sign-in and sign-up screens of the web and the iPhone app link to both. Say who runs this portal and where people can reach you; until then the pages name “the administrator of this portal”.")} />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label={tr("Run by")} hint={tr("A person or a company, as on the App Store")}><Input value={shown.operator} onChange={set("operator")} maxLength={160} placeholder={tr("Your name or company")} className="legal-operator" /></Field>
+        <Field label={tr("Contact email")}><Input type="email" value={shown.contact_email} onChange={set("contact_email")} maxLength={190} placeholder="privacy@example.com" className="legal-contact" /></Field>
+        <Field label={tr("Country (law that applies)")}><Input value={shown.country} onChange={set("country")} maxLength={80} placeholder={tr("e.g. Malaysia")} className="legal-country" /></Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Button icon={Save} onClick={save} loading={saving} disabled={!dirty} className="legal-save">{tr("Save changes")}</Button>
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          {link("/privacy?lang=en", tr("Privacy Policy"))}
+          {link("/privacy?lang=zh-CN", "隐私政策")}
+          {link("/terms?lang=en", tr("Terms of Use"))}
+          {link("/terms?lang=zh-CN", "使用条款")}
+        </span>
+      </div>
     </Card>
   );
 }

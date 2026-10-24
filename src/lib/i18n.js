@@ -227,6 +227,10 @@ const zhCN = {
   "New here?": "初次使用？", "Create an account": "创建账户", "Create your account": "创建你的账户", "One moment…": "请稍候…", "Creating an account is not open on this portal. Ask an administrator for one.": "此门户未开放创建账户。请向管理员申请。",
   "We sent a 6-digit code to {email}. Enter it to finish. It works for 15 minutes.": "我们已向 {email} 发送了 6 位验证码。输入验证码即可完成，15 分钟内有效。", "A new code is on its way.": "新的验证码正在发送中。", "No email? Check the spam folder, or": "没收到邮件？请查看垃圾邮件，或", "send a new code": "重新发送验证码", "change the address": "更改地址",
   "Send me a code": "发送验证码", "Already have an account?": "已有账户？", "Signed up": "注册", "Verification code": "验证码",
+  // privacy policy and terms (sign-in screens, Mobile app page)
+  "Privacy Policy": "隐私政策", "Terms of Use": "使用条款", "By continuing, you agree to the {terms} and the {privacy}.": "继续即表示你同意{terms}和{privacy}。",
+  "Privacy policy and terms": "隐私政策和使用条款", "Both pages are public and come in English and Chinese. The App Store asks for the privacy policy's address; the sign-in and sign-up screens of the web and the iPhone app link to both. Say who runs this portal and where people can reach you; until then the pages name “the administrator of this portal”.": "这两个页面是公开的，提供英文和中文版本。App Store 需要隐私政策的地址；网页和 iPhone 应用的登录和注册页面会链接到这两个页面。请填写谁在运营本门户以及联系方式；在此之前，页面上写的是“本门户的管理员”。",
+  "Run by": "运营方", "A person or a company, as on the App Store": "个人或公司，与 App Store 上一致", "Your name or company": "你的姓名或公司名称", "Contact email": "联系邮箱", "Country (law that applies)": "国家或地区（适用法律）", "e.g. Malaysia": "例如：马来西亚", "The privacy policy and the terms show it from now on.": "隐私政策和使用条款从现在起会显示这些信息。",
 };
 
 const DICTS = { en: {}, "zh-CN": zhCN };

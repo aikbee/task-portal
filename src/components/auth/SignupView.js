@@ -7,6 +7,7 @@ import AuthShell from "./AuthShell";
 import Button from "@/components/ui/Button";
 import { Input, Field } from "@/components/ui/Controls";
 import { useT } from "@/lib/i18n";
+import { AgreeLine } from "./LegalLinks";
 
 const PASSWORD_MIN = 8; // lib/signup.js SIGNUP_PASSWORD_MIN
 
@@ -111,6 +112,7 @@ function Form() {
       </Field>
       {error ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500">{error}</p> : null}
       <Button type="submit" size="lg" className="signup-send w-full" icon={Mail} loading={busy}>{tr("Send me a code")}</Button>
+      <AgreeLine />
       <p className="text-center text-xs text-fg-muted">{tr("Already have an account?")} <Link href="/login" className="text-accent hover:underline">{tr("Sign in")}</Link></p>
     </form>
   );

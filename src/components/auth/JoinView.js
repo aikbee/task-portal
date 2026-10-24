@@ -8,6 +8,7 @@ import AuthShell from "./AuthShell";
 import Button from "@/components/ui/Button";
 import { Input, Field } from "@/components/ui/Controls";
 import { useT } from "@/lib/i18n";
+import { AgreeLine } from "./LegalLinks";
 
 export default function JoinView() {
   return <AuthShell title="You are invited"><Form /></AuthShell>;
@@ -75,6 +76,7 @@ function Form() {
       </Field>
       {error ? <p className="rounded-app-sm bg-rose-500/10 px-3 py-2 text-sm text-rose-500">{error}</p> : null}
       <Button type="submit" size="lg" className="join-create w-full" icon={UserPlus} loading={busy}>{tr("Create my account")}</Button>
+      <AgreeLine />
     </form>
   );
 }

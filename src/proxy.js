@@ -8,6 +8,7 @@ const PUBLIC = new Set([
   "/api/health", "/offline", "/manifest.webmanifest", "/sw.js", "/api/cron/reminders", "/api/settings/backgrounds",
   "/bg", // the animated background on its own, shown behind the native apps' screens: no data, only the animation
   "/developers", "/api/v1", "/api/v1/openapi.json", // the API's documentation: no data
+  "/privacy", "/terms", // the privacy policy and terms of use: the App Store and the sign-up screens link to them
 ]);
 
 /**

@@ -6,6 +6,7 @@ import AnimatedBackground from "@/components/shell/AnimatedBackground";
 import { ToastProvider } from "@/components/ui/Toast";
 import Logo from "@/components/ui/Logo";
 import { useT } from "@/lib/i18n";
+import { LegalFooter } from "./LegalLinks";
 
 /** The signed-out frame shared by "forgot password", "reset password" and "join": background, logo, one glass card. */
 export default function AuthShell({ title, description, children, back = true }) {
@@ -39,6 +40,7 @@ function Frame({ title, description, children, back }) {
             <Link href="/login" className="inline-flex items-center gap-1 hover:text-fg"><ArrowLeft size={12} /> {tr("Back to sign in")}</Link>
           </p>
         ) : null}
+        <LegalFooter />
       </div>
     </div>
   );
